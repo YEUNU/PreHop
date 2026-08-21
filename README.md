@@ -1,43 +1,45 @@
-# PreHypo: Indexing-Time Structure Preservation for Page-Grounded Financial QA
+# Prehop / HypoHop: Indexing-Time HOP-Edge Pre-Scoring for Deterministic Multi-Hop Retrieval
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Reference implementation of **PreHypo**, a GraphRAG framework whose entire advantage on FinanceBench comes from indexing-time structure preservation. The query path is a thin two-stage hybrid retrieve over a graph built once offline — no agent loop, no reflection, no refinement.
+> **This README is mid-rewrite and partly stale** — see `CLAUDE.md` for the
+> current, accurate state of the pipeline and run instructions. **No results
+> table is published yet**; the system has not been benchmarked end-to-end.
+
+Reference implementation of a GraphRAG framework whose core claim is
+indexing-time HOP-edge pre-scoring: chunk-to-chunk semantic edges are
+computed once, offline, from embedding similarity, so the query path expands
+the graph deterministically with no per-hop LLM reasoning. The query path is
+a thin two-stage hybrid retrieve over a graph built once offline — no agent
+loop, no reflection, no refinement.
 
 ---
 
 ## What this repository is
 
-Four indexing-time designs, evaluated on [FinanceBench](https://github.com/patronus-ai/financebench):
+Core indexing-time design, currently evaluated on MultiHop-RAG, HotpotQA, and MuSiQue:
 
-1. **Topology-Preserving VLM OCR** — financial tables rendered as Markdown so row-column structure survives into the LLM context.
-2. **Adaptive Context-Aware Chunking** — page-cluster boundaries respected, with a rolling header (anchor + milestone summaries + prev-group summary) attached to each chunk embedding.
-3. **Predictive Knowledge Mapping** — every chunk receives dual hypothetical-query annotations ($Q^-$ for self-contained facts, $Q^+$ for outgoing dependencies), indexed separately.
-4. **Rank-Based HOP Edges Pre-Built Offline** — chunk-to-chunk semantic edges are computed once via a cross-encoder reranker; the query path never expands the graph.
+1. **Predictive Knowledge Mapping** — every chunk receives dual hypothetical-query annotations ($Q^-$ for self-contained facts, $Q^+$ for outgoing dependencies), indexed separately. This is the structural precondition for HOP edges below, not a standalone feature.
+2. **Rank-Based HOP Edges Pre-Built Offline** — chunk-to-chunk semantic edges are computed once, offline, from Q+/candidate embedding cosine similarity (no cross-encoder model); the query path never expands the graph with an LLM call.
 
-The query path is deliberately thin: two-stage hybrid retrieve (Q⁻/body, then Q⁺ expansion), rerank with top-up, deterministic 1-hop traversal over the pre-built NEXT/HOP edges, and a single LLM synthesis call with inline citations.
+Chunking is fixed-size (page-scoped sentence windows) — see `CLAUDE.md` "Architecture notes" for details.
+
+The query path is deliberately thin: two-stage hybrid retrieve (Q⁻/body, then Q⁺ expansion), embedding-similarity rerank with top-up, deterministic 1-hop traversal over the pre-built NEXT/HOP edges, and a single LLM synthesis call with inline citations.
 
 ---
 
-## Main Results (FinanceBench, n=150, 5-fold mean ± std)
+## Results
 
-| System | Judge ↑ | J\|Att ↑ | Halluc ↓ | H\|Att ↓ | **PgM ↑** | Att | Lat (s) |
-|---|---|---|---|---|---|---|---|
-| **PreHypo (ours)** | **0.32 ± 0.11** | **0.57 ± 0.09** | 0.17 ± 0.04 | 0.31 ± 0.08 | **0.19 ± 0.07** | 0.55 ± 0.10 | 6.81 |
-| MS-GraphRAG | 0.19 ± 0.10 | 0.23 ± 0.10 | 0.32 ± 0.05 | 0.40 ± 0.11 | 0.03 ± 0.04 | 0.80 ± 0.08 | 26.4 |
-| HopRAG | 0.19 ± 0.05 | 0.39 ± 0.05 | 0.13 ± 0.06 | 0.26 ± 0.04 | 0.04 ± 0.04 | 0.50 ± 0.11 | 163.2 |
-| Naive | 0.05 ± 0.04 | 0.10 ± 0.05 | 0.04 ± 0.04 | 0.06 ± 0.04 | 0.00 ± 0.00 | 0.59 ± 0.08 | 2.1 |
-
-`J|Att` / `H|Att` are conditional metrics over attempted queries (substantive response, not abstention). DocM (gold document in retrieved set) is ≥ 0.89 for all four systems — PreHypo/HopRAG 0.99, MS-GraphRAG 0.95, Naive 0.89 — and is omitted from the table.
-
-Generator: Qwen3-4B-Instruct-2507 across every system. The defensible win is **PgM 0.19 — the largest gap relative to fold variance (vs. ≤ 0.04 for every baseline)**; the absolute level is low, since most correct answers are synthesized across sibling pages rather than from the single gold page. The Judge gap (13pp) overlaps with baselines per fold but is resolved under query-level paired bootstrap with Bonferroni correction (all three baseline pairings above zero). Naive's nominally low Halluc reflects an answered set of which only ~10% are correct, not faithfulness.
+Not yet published — the system has not been benchmarked end-to-end since
+the current core-only architecture landed. See `CLAUDE.md` "Multi-hop
+dataset suite" for how to run one.
 
 ---
 
 ## Repository layout
 
 ```
-prehypo/
+prehop/
 ├── main.py                          # single CLI entry point (--mode index|benchmark|ocr)
 ├── cli/
 │   ├── index.py                     # indexing runner
@@ -48,7 +50,7 @@ prehypo/
 │   ├── vllm_client.py               # vLLM + OpenAI routing
 │   └── schemas.py
 ├── models/
-│   ├── prehypo/                     # the paper's system
+│   ├── prehop/                     # the paper's system
 │   │   ├── graphrag.py              # GraphRAG facade; run_workflow() is the query entry point
 │   │   ├── indexing/                # §3.1 — ocr, chunking, knowledge_mapping (Q-/Q+), hop_edges, graph_writer
 │   │   ├── retrieval/               # §3.2 — hybrid (RRF), rerank, traversal, retrieve, rewrite, text_utils
@@ -57,21 +59,22 @@ prehypo/
 │   ├── hoprag/                      # baseline (runtime hop traversal via official HopRAG)
 │   └── ms_graphrag/                 # baseline (community-report retrieval via graphrag package)
 ├── utils/
-│   ├── abstain.py                   # honest-abstain detection (3-way FinanceBench taxonomy)
+│   ├── abstain.py                   # honest-abstain detection + shared 3-way answer_label
 │   ├── metrics.py                   # combined judge + hallucination call
+│   ├── similarity.py                # cosine_similarity (reranking + HOP-edge scoring)
 │   ├── prompts/                     # indexing + retrieval + judge prompts
-│   └── io.py / formatters.py / parsers.py / reporting.py / ocr_tools.py / tool_definitions.py
+│   └── io.py / formatters.py / parsers.py / reporting.py / tool_definitions.py
 ├── data/
-│   ├── prepare_financebench.py      # download/build the FinanceBench corpus + queries
-│   └── prepare_multihoprag.py       # download/build the MultiHop-RAG corpus + queries
+│   ├── prepare_multihoprag.py       # download/build the MultiHop-RAG corpus + queries
+│   ├── prepare_hotpotqa.py          # download/build the HotpotQA (distractor) corpus + queries
+│   ├── prepare_musique.py           # download/build the MuSiQue (answerable dev) corpus + queries
+│   └── make_sample.py               # stratified n≈200 query sample for hotpotqa/musique/multihoprag
 ├── scripts/                         # lib.sh (resolve_python, wait_for_server), port-probe, env-check
-├── tests/                           # chunking / retrieval / rolling-summary / live-integration
-├── run_servers.sh                   # start Neo4j + vLLM (gen / gen2 / ocr / embed / rerank)
-├── run_index.sh / run_benchmark.sh / run_ocr.sh   # low-level, dataset-agnostic
-├── run_financebench.sh              # per-dataset entry: ocr|index|benchmark|all
+├── tests/                           # chunking / retrieval / live-integration
+├── run_servers.sh                   # start Neo4j + vLLM (gen / embed / rerank)
+├── run_index.sh / run_benchmark.sh  # low-level, dataset-agnostic
 ├── run_multihoprag.sh               # per-dataset entry: index|benchmark|all
-├── run_all_indexing_parallel.sh     # full paper indexing matrix
-├── run_all_benchmark_parallel.sh    # full paper benchmark matrix
+├── run_dataset.sh                   # per-dataset entry for hotpotqa|musique: index|benchmark|all
 ├── pyproject.toml                   # canonical dependency list (uv-managed)
 └── README.md
 ```
@@ -87,7 +90,7 @@ VIRTUAL_ENV=.venv uv pip install -e .   # vllm, torch, transformers, neo4j, flas
 .venv/bin/python -m spacy download en_core_web_sm   # required by the hoprag baseline
 
 # Neo4j 5.x — Docker is simplest:
-docker run -d --name prehypo-neo4j -p 7474:7474 -p 7687:7687 \
+docker run -d --name prehop-neo4j -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/<your_password> neo4j:5
 
 # Configure env vars
@@ -95,90 +98,70 @@ cp .env.example .env
 # Required: NEO4J_PASSWORD, OPENAI_API_KEY (for the LLM judge)
 ```
 
-`pyproject.toml` is the canonical dependency list and includes the vLLM / Torch / transformers stack needed by `run_servers.sh` to serve the local generation, embedding, and reranker models. The run scripts auto-discover `.venv/bin/python` (override with `PYTHON_BIN`), so you do not need to activate the venv.
+`pyproject.toml` is the canonical dependency list. The run scripts auto-discover `.venv/bin/python` (override with `PYTHON_BIN`), so you do not need to activate the venv.
 
-vLLM servers are launched by `run_servers.sh` (separate processes for generation, embeddings, and reranker; ports listed in `scripts/probe_ports.py`).
+vLLM servers are launched by `run_servers.sh` (generation, embeddings; reranker only if you're running the HopRAG/MS-GraphRAG baselines — see `CLAUDE.md` "Reranking"; ports listed in `scripts/probe_ports.py`). Generation may instead route through a remote OpenAI-compatible proxy — see `CLAUDE.md` "Model / inference infra".
 
 ---
 
 ## Quick start
 
 ```bash
-# 0) Download FinanceBench (questions + document metadata + SEC PDFs).
-#    Use --download-pdfs to fetch the 150 source PDFs into data/finance_pdfs/.
-python3 data/prepare_financebench.py --download-pdfs
-# Produces:
-#   data/financebench_open_source.jsonl
-#   data/financebench_document_information.jsonl
-#   data/financebench_queries.json
-#   data/finance_pdfs/*.pdf
+# 0) Prepare a dataset (downloads + builds corpus + queries)
+python3 data/prepare_multihoprag.py
 
-# 1) Start services (Neo4j + vLLM gen / embed / rerank / ocr)
+# 1) Start services (Neo4j + vLLM gen / embed)
 #    Default GPU placement targets a 2-GPU box. Single GPU? Put all on GPU 0:
-#    GEN_GPU=0 EMBED_GPU=0 RERANK_GPU=0 OCR_GPU=0 ./run_servers.sh all
+#    GEN_GPU=0 EMBED_GPU=0 RERANK_GPU=0 ./run_servers.sh all
 ./run_servers.sh all
 
-# 2) OCR the PDFs into a Markdown corpus
-./run_ocr.sh --convert_tables
+# 2) Build the index
+./run_index.sh --model prehop --dataset data/multihoprag_corpus --corpus-tag multihoprag
 
-# 3) Build the PreHypo index
-./run_index.sh --model prehypo --corpus-tag prehypo_full
+# 3) Benchmark
+./run_benchmark.sh --model prehop --queries data/multihoprag_sample200_queries.json --corpus-tag multihoprag
 
-# 4) Benchmark
-./run_benchmark.sh --model prehypo --corpus-tag prehypo_full
-
-# 5) Stop services
+# 4) Stop services
 ./stop_servers.sh all
 ```
 
-Result JSON is written to `data/results/<timestamp>/prehypo/<corpus_tag>/*.json` and includes per-query details, category breakdowns, the FinanceBench 3-way label (Correct / Incorrect / Refusal), and aggregate metrics.
+Result JSON is written to `data/results/<timestamp>/prehop/<corpus_tag>/*.json` and includes per-query details, category breakdowns, the shared 3-way answer label (Correct / Incorrect / Refusal), and aggregate metrics.
 
 ### Per-dataset entrypoints
 
-`run_financebench.sh` and `run_multihoprag.sh` wrap the steps above with each
+`run_multihoprag.sh` and `run_dataset.sh` wrap the steps above with each
 dataset's corpus, queries, and tags so you don't pass them by hand:
 
 ```bash
-./run_servers.sh all            # services first (both datasets)
+./run_servers.sh all            # services first
 
-# FinanceBench (PDFs → OCR → index → benchmark, all four strategies)
-python3 data/prepare_financebench.py --download-pdfs
-./run_financebench.sh ocr
-./run_financebench.sh all       # index + benchmark
-
-# MultiHop-RAG (plain text, no OCR)
+# MultiHop-RAG
 python3 data/prepare_multihoprag.py            # downloads corpus + full queries
 ./run_multihoprag.sh all                       # index all 4 + benchmark (sample100)
 ./run_multihoprag.sh benchmark --queries full  # or the full 2556-query set
+
+# HotpotQA / MuSiQue
+python3 data/prepare_hotpotqa.py && python3 data/make_sample.py --dataset hotpotqa --per-type 100
+python3 data/prepare_musique.py && python3 data/make_sample.py --dataset musique --per-type 67
+./run_dataset.sh hotpotqa all
+./run_dataset.sh musique all
 ```
 
-`data/multihoprag_sample100_queries.json` (balanced 25×4) ships in the repo; the
-full corpus and 2556-query set are regenerated by `prepare_multihoprag.py`. (The
-optional `--queries smoke` set needs a local mini-corpus not included in clones.)
+See `CLAUDE.md` "Multi-hop dataset suite" for corpus/query file details per dataset.
 
 ---
 
-## Reproducing the paper experiments
+## Ablation toggles
 
-```bash
-# Index all four systems on the full corpus
-./run_all_indexing_parallel.sh --full
-
-# Run the benchmark matrix
-./run_all_benchmark_parallel.sh --full
-```
-
-PreHypo ablations (single indexing component disabled per run) are driven by environment toggles read in `core/config.py`:
+Indexing-time ablations are driven by environment toggles read in `core/config.py`:
 
 | Variable | Default | Effect when set to `false` |
 |---|---|---|
-| `RAG_ABLATION_TABLE` | `true` | Tables left as raw OCR text instead of Markdown |
-| `RAG_ABLATION_CHUNKING` | `true` | Fixed-length chunking instead of adaptive |
-| `RAG_ABLATION_SUMMARY` | `true` | Rolling context header removed |
-| `RAG_ABLATION_Q_PLUS` | `true` | Stage 2 Q⁺ expansion disabled |
+| `RAG_ABLATION_TABLE` | `true` | Markdown tables left as raw pipe-delimited text instead of converted to prose |
+| `RAG_ABLATION_Q_PLUS` | `true` | Stage 2 Q⁺ expansion disabled (also disables offline HOP-edge construction) |
 | `RAG_ABLATION_Q_MINUS` | `true` | Stage 1 Q⁻ channel disabled |
 
-Each ablation lives under its own corpus tag (e.g. `prehypo_full_no_chunk`) so indexed graphs never collide.
+Each ablation lives under its own corpus tag so indexed graphs never collide.
 
 ---
 
@@ -188,34 +171,26 @@ Full list in the paper appendix; the most important:
 
 | Parameter | Value | Where |
 |---|---|---|
-| `τ_page` | 0.5 | adaptive chunking (page-cluster threshold) |
-| `τ_chunk` | 0.65 | adaptive chunking (sentence cohesion threshold) |
-| `τ_r` | 0.4 | reranker threshold (used identically in HOP build and query rerank) |
+| `CHUNK_SENTENCES` | 6 | fixed-size chunking window (sentences per chunk) |
+| `MIN_CHUNK_SENTENCES` | 2 | trailing short window merges into the previous chunk below this |
+| `τ_hop` (`HOP_THRESHOLD`) | 0.82 | HOP-edge cosine-similarity gate (offline construction + runtime traversal) |
+| `τ_r` (`RERANKER_THRESHOLD`) | 0.4 | query-time embedding-rerank cosine-similarity gate |
 | `L_hop` | 5 | max outgoing HOP edges per source chunk |
 | `K_hop` | 15 | HOP candidate pool per source chunk |
 | Stage 1 weights | 0.7 / 0.3 | $Q^-$ / body |
 | Stage 2 weights | 0.6 / 0.4 | $Q^+$ / $Q^-$ support |
 | RRF `k` | 60 | $w_v=1.3$, $w_t=1.0$ |
-| Embedding dim | 1024 | Qwen3-Embedding-0.6B |
+| Embedding dim | 1024 | Qwen3-Embedding-0.6B (local) — verify if switched to a remote embedding model |
+
+`τ_hop`/`τ_r` were calibrated for the old cross-encoder reranker's classifier
+scores and now gate raw cosine similarity instead — likely need empirical
+re-tuning (see `CLAUDE.md` "Reranking").
 
 ---
 
 ## What is intentionally **not** in this repository
 
-The system the paper analyzes does not include a reflective agent loop. An earlier draft of this work explored a five-stage Perception/Planning/Execution/Reflection/Refinement loop on top of the same indexing pipeline; in our final measurements the loop was net-negative on PreHypo itself and at best baseline-dependent across the four GraphRAG systems we tried. The paper reports the retrieval-only configuration and the code here mirrors that decision.
-
----
-
-## Citation
-
-```bibtex
-@article{prehypo2026,
-  title   = {{PreHypo}: Indexing-Time Structure Preservation for Page-Grounded Financial QA},
-  author  = {Anonymous},
-  year    = {2026},
-  note    = {Under review}
-}
-```
+The system does not include a reflective agent loop. A five-stage Perception/Planning/Execution/Reflection/Refinement loop was explored on top of the same indexing pipeline; it measured net-negative on this system itself and at best baseline-dependent across the four GraphRAG systems tried. The paper reports the retrieval-only configuration and the code here mirrors that decision.
 
 ---
 

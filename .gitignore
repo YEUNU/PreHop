@@ -207,32 +207,19 @@ marimo/_lsp/
 __marimo__/
 
 benchmarks/
-data/hotpot_corpus
 *.out
 
 paper.md
 logs
-data/finance_corpus/*
-data/finance_pdfs/*
-data/finance_corpus_ocr/*
 data/debug
-data/finance_corpus_sample_ocr
 data/results
-data/financebench_sample_ocr
-data/financebench_sample_raw
-data/financebench_strat12_queries.json
 data/tmp
 tools/
 neo4j_data/
 data/hotpotqa_corpus
-data/hotpotqa_smoke_corpus
-data/hotpotqa_wikiabs_corpus
-data/hotpotqa_wiki_corpus
 *.txt
 data/enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2
 
-# Local-only paper draft
-hyporeflect.pdf
 .claude/
 data/*/
 
@@ -256,9 +243,10 @@ scripts/_test_*.py
 data/multihoprag_corpus.json
 data/MultiHopRAG.json
 data/multihoprag_queries.json
-data/financebench_open_source.jsonl
-data/financebench_document_information.jsonl
-data/financebench_queries.json
+data/hotpotqa_distractor_validation.parquet
+data/hotpotqa_queries.json
+data/musique_ans_v1.0_dev.jsonl
+data/musique_queries.json
 
 # Session-scratch orchestration scripts (hardcoded PIDs; not part of the repo).
 run_mhr_finish.sh
