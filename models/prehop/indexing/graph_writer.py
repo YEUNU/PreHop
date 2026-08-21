@@ -73,50 +73,47 @@ logger = logging.getLogger(__name__)
 
 class GraphWriterMixin:
     async def setup_index(self):
-        try:
-            analyzer = re.sub(r"[^a-zA-Z0-9_\-]", "", RAGConfig.FULLTEXT_ANALYZER) or "english"
-            vector_specs = [
-                (self.body_vector_index, "embedding"),
-                (self.q_minus_vector_index, "q_minus_embedding"),
-                (self.q_plus_vector_index, "q_plus_embedding"),
-            ]
-            for index_name, property_name in vector_specs:
-                await self.neo4j.execute_query(
-                    f"""
-                    CREATE VECTOR INDEX {index_name} IF NOT EXISTS
-                    FOR (n:{self.chunk_label}) ON (n.{property_name})
-                    OPTIONS {{indexConfig: {{`vector.dimensions`: $dimensions, `vector.similarity_function`: 'cosine'}}}} """
-                    ,
-                    {"dimensions": self.vector_dimensions},
-                )
-
-            if RAGConfig.RECREATE_TEXT_INDEX:
-                for index_name in [
-                    self.body_text_index,
-                    self.q_minus_text_index,
-                    self.q_plus_text_index,
-                ]:
-                    await self.neo4j.execute_query(f"DROP INDEX {index_name} IF EXISTS")
-
-            await self.neo4j.execute_query(f"""
-                CREATE FULLTEXT INDEX {self.body_text_index} IF NOT EXISTS
-                FOR (n:{self.chunk_label}) ON EACH [n.text, n.chunk_summary]
-                OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
-            await self.neo4j.execute_query(f"""
-                CREATE FULLTEXT INDEX {self.q_minus_text_index} IF NOT EXISTS
-                FOR (n:{self.chunk_label}) ON EACH [n.q_minus_text]
-                OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
-            await self.neo4j.execute_query(f"""
-                CREATE FULLTEXT INDEX {self.q_plus_text_index} IF NOT EXISTS
-                FOR (n:{self.chunk_label}) ON EACH [n.q_plus_text]
-                OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
-
+        analyzer = re.sub(r"[^a-zA-Z0-9_\-]", "", RAGConfig.FULLTEXT_ANALYZER) or "english"
+        vector_specs = [
+            (self.body_vector_index, "embedding"),
+            (self.q_minus_vector_index, "q_minus_embedding"),
+            (self.q_plus_vector_index, "q_plus_embedding"),
+        ]
+        for index_name, property_name in vector_specs:
             await self.neo4j.execute_query(
-                f"CREATE INDEX {self.chunk_label}_id_idx IF NOT EXISTS FOR (n:{self.chunk_label}) ON (n.id)")
-            await self.neo4j.execute_query(
-                f"CREATE INDEX {self.doc_label}_fn_idx IF NOT EXISTS FOR (n:{self.doc_label}) ON (n.filename)")
-        except Exception as error:
-            logger.error("Index creation error: %s", error)
+                f"""
+                CREATE VECTOR INDEX {index_name} IF NOT EXISTS
+                FOR (n:{self.chunk_label}) ON (n.{property_name})
+                OPTIONS {{indexConfig: {{`vector.dimensions`: $dimensions, `vector.similarity_function`: 'cosine'}}}} """
+                ,
+                {"dimensions": self.vector_dimensions},
+            )
+
+        if RAGConfig.RECREATE_TEXT_INDEX:
+            for index_name in [
+                self.body_text_index,
+                self.q_minus_text_index,
+                self.q_plus_text_index,
+            ]:
+                await self.neo4j.execute_query(f"DROP INDEX {index_name} IF EXISTS")
+
+        await self.neo4j.execute_query(f"""
+            CREATE FULLTEXT INDEX {self.body_text_index} IF NOT EXISTS
+            FOR (n:{self.chunk_label}) ON EACH [n.text, n.chunk_summary]
+            OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
+        await self.neo4j.execute_query(f"""
+            CREATE FULLTEXT INDEX {self.q_minus_text_index} IF NOT EXISTS
+            FOR (n:{self.chunk_label}) ON EACH [n.q_minus_text]
+            OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
+        await self.neo4j.execute_query(f"""
+            CREATE FULLTEXT INDEX {self.q_plus_text_index} IF NOT EXISTS
+            FOR (n:{self.chunk_label}) ON EACH [n.q_plus_text]
+            OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
+
+        await self.neo4j.execute_query(
+            f"CREATE INDEX {self.chunk_label}_id_idx IF NOT EXISTS FOR (n:{self.chunk_label}) ON (n.id)")
+        await self.neo4j.execute_query(
+            f"CREATE INDEX {self.doc_label}_fn_idx IF NOT EXISTS FOR (n:{self.doc_label}) ON (n.filename)")
 
     async def _ensure_index_ready(self):
         if self._index_ready:
@@ -197,15 +194,12 @@ class GraphWriterMixin:
         prompt = GLOBAL_SUMMARY_PROMPT.format(text=context_text)
         messages = [{"role": "user", "content": prompt}, {"role": "user", "content": GLOBAL_SUMMARY_FORMAT_INSTRUCTION}]
 
-        try:
-            summary_data = await self.indexing_llm.generate_json(messages, apply_default_sampling=False)
-            summary_text = summary_data.get("summary", "No summary.")
-            await self.retry_query(
-                f"MATCH (d:{self.doc_label} {{filename: $filename}}) SET d.summary = $summary",
-                {"filename": filename, "summary": summary_text}
-            )
-        except Exception as error:
-            logger.error("Summarize failed for %s: %s", filename, error)
+        summary_data = await self.indexing_llm.generate_json(messages, apply_default_sampling=False)
+        summary_text = summary_data.get("summary", "No summary.")
+        await self.retry_query(
+            f"MATCH (d:{self.doc_label} {{filename: $filename}}) SET d.summary = $summary",
+            {"filename": filename, "summary": summary_text}
+        )
 
     async def build_graph(self, knowledge: dict[str, Any], source: str, document_filename: str):
         await self._ensure_index_ready()
@@ -270,13 +264,10 @@ class GraphWriterMixin:
 
             primary_embedding = q_minus_embedding if q_minus_embedding else body_embedding
             if not primary_embedding:
-                logger.warning(
-                    "Skipping chunk with missing embedding: source=%s title=%s sent_id=%s",
-                    source,
-                    chunk.get("title", ""),
-                    chunk.get("sent_id", -1),
+                raise ValueError(
+                    f"Missing embedding for chunk: source={source} "
+                    f"title={chunk.get('title', '')} sent_id={chunk.get('sent_id', -1)}"
                 )
-                continue
             chunk_id = _make_semantic_chunk_id(source, chunk["title"], chunk["sent_id"])
             batch_data.append({
                 "id": chunk_id,
@@ -302,10 +293,6 @@ class GraphWriterMixin:
                 "q_plus_embed": q_plus_embedding if q_plus_embedding and q_plus_items else None,
                 "chunk_summary": chunk["summary"],
             })
-
-        if not batch_data:
-            logger.warning("All chunks skipped for %s due to missing embeddings.", source)
-            return
 
         async with self._batch_lock:
             self._pending_batch.append({"data": batch_data, "doc_id": document_filename})

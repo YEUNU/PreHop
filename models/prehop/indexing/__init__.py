@@ -1,10 +1,9 @@
-"""Offline indexing pipeline (paper §3.1).
+"""Offline indexing pipeline.
 
 Layer order:
-- §3.1.1 Topology-Preserving OCR — runs separately via cli/ocr.py + utils/ocr_tools.
-- §3.1.2 Adaptive Context-Aware Chunking — chunking.py
-- §3.1.3 Predictive Knowledge Mapping (Q-/Q+) — knowledge_mapping.py
-- §3.1.4 Rank-Based HOP Edge Pre-Construction — hop_edges.py
+- Fixed-size chunking — chunking.py
+- Predictive Knowledge Mapping (Q-/Q+) — knowledge_mapping.py
+- Rank-Based HOP Edge Pre-Construction — hop_edges.py
 - Neo4j storage (chunks + NEXT edges + index lifecycle) — graph_writer.py
 """
 from .chunking import ChunkingMixin

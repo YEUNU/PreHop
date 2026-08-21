@@ -1,15 +1,18 @@
-"""Rank-Based HOP Edge Pre-Construction (paper §3.1.4).
+"""Rank-Based HOP Edge Pre-Construction (core-only rewrite).
 
 For each source chunk c_i with Q+ embedding q+_i:
-1. Retrieve top-K_hop=10 candidates from the Q+ vector index by ANN
-   (RAGConfig.HOP_LINK_LIMIT controls L_hop, the retained edge count).
-2. Score each candidate c_j with a cross-encoder reranker on (Q+_i, c_j).
-3. Keep edges where r >= tau_r=0.5 (RAGConfig.RERANKER_THRESHOLD), retaining
-   the top L_hop edges by reranker score.
+1. Retrieve top-15 candidates from the Q+ vector index by ANN. The Neo4j
+   vector index already returns a cosine-similarity score per candidate.
+2. Keep edges where that score >= tau_hop (RAGConfig.HOP_THRESHOLD),
+   retaining the top L_hop=RAGConfig.HOP_LINK_LIMIT edges by score.
 
-Multi-hop discovery happens once, at indexing time. The same tau_r is used at
-retrieval (§3.2.3 graph traversal) so HOP edges follow the same scoring
-criterion the system applies when reading them.
+Multi-hop discovery happens once, at indexing time, entirely from embeddings
+already computed for Q+ indexing — no extra scoring model or LLM call is
+needed. (Earlier iteration used a cross-encoder reranker for step 2; that
+model is no longer part of the served model set, so edge scoring now reuses
+the ANN similarity score directly.) The same tau_hop is used at retrieval
+(§3.2.3 graph traversal, runtime HOP mode) so HOP edges follow the same
+scoring criterion the system applies when reading them.
 """
 import asyncio
 import logging
@@ -85,40 +88,29 @@ class HopEdgeMixin:
     async def _process_hop_wave(
         self,
         wave: list[dict[str, Any]],
-        rerank_sem: asyncio.Semaphore,
-        reranker_instruction: str,
+        hop_sem: asyncio.Semaphore,
     ) -> list[dict[str, Any]]:
         """Score one wave of hop_src dicts concurrently, return their edges.
 
-        Per-src embeddings are popped after the ANN candidate query so the
-        ~3 KB/embedding doesn't stay pinned for the rerank duration.
+        Edge score is the ANN cosine-similarity score Neo4j's vector index
+        already returns for each candidate — no extra model call needed.
         """
         async def _process_hop_src(hop_src: dict[str, Any]) -> list[dict[str, Any]]:
-            async with rerank_sem:
+            async with hop_sem:
                 candidates = await self._find_hop_candidates(hop_src)
                 hop_src.pop("q_plus_embed", None)  # free embedding ASAP
                 if not candidates:
                     return []
 
-                q_plus_text = " ".join(hop_src.get("q_plus", []))
-                cand_texts = [candidate["text"] for candidate in candidates]
-
-                try:
-                    scores = await self.llm.rerank(
-                        q_plus_text, cand_texts, instruction=reranker_instruction
-                    )
-                except Exception as error:
-                    logger.warning("Reranking for HOP edges failed: %s", error)
-                    return []
-
-                valid_edges = []
-                for index, score in enumerate(scores):
-                    if score >= RAGConfig.RERANKER_THRESHOLD:
-                        valid_edges.append({
-                            "src_id": hop_src["id"],
-                            "tgt_id": candidates[index]["id"],
-                            "score": score,
-                        })
+                valid_edges = [
+                    {
+                        "src_id": hop_src["id"],
+                        "tgt_id": candidate["id"],
+                        "score": candidate["score"],
+                    }
+                    for candidate in candidates
+                    if candidate["score"] >= RAGConfig.HOP_THRESHOLD
+                ]
                 valid_edges.sort(key=lambda item: item["score"], reverse=True)
                 return valid_edges[: RAGConfig.HOP_LINK_LIMIT]
 
@@ -164,10 +156,9 @@ class HopEdgeMixin:
 
         page_size = max(100, int(os.environ.get("RAG_HOP_PAGE_SIZE", "5000")))
         wave_size = max(1, int(os.environ.get("RAG_HOP_GATHER_WAVE", "1000")))
-        rerank_sem = asyncio.Semaphore(
+        hop_sem = asyncio.Semaphore(
             max(1, int(os.environ.get("RAG_HOP_RERANK_CONCURRENCY", "64")))
         )
-        reranker_instruction = self._reranker_instruction()
 
         total_proc = 0
         total_edges = 0
@@ -207,7 +198,7 @@ class HopEdgeMixin:
 
             for wave_start in range(0, page_n, wave_size):
                 wave = page_items[wave_start : wave_start + wave_size]
-                edges = await self._process_hop_wave(wave, rerank_sem, reranker_instruction)
+                edges = await self._process_hop_wave(wave, hop_sem)
                 await self._flush_hop_edges(edges)
                 total_edges += len(edges)
 

@@ -13,8 +13,8 @@ from typing import Any, Optional
 from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient, get_llm_client
-from models.prehypo.indexing import IndexingPipeline
-from models.prehypo.retrieval import RetrievalPipeline
+from models.prehop.indexing import IndexingPipeline
+from models.prehop.retrieval import RetrievalPipeline
 from utils.prompts.shared import answer_role
 
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class GraphRAG(IndexingPipeline, RetrievalPipeline):
     def __init__(
         self,
-        strategy: str = "prehypo",
+        strategy: str = "prehop",
         indexing_model_id: Optional[str] = None,
         corpus_tag: Optional[str] = None,
         save_intermediate: bool = False,
@@ -56,8 +56,6 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         indexing_model_id = indexing_model_id or RAGConfig.DEFAULT_MODEL
         self.indexing_llm = get_llm_client(indexing_model_id)
 
-        self.hop_threshold = RAGConfig.HOP_THRESHOLD
-        self.similarity_threshold = RAGConfig.SIMILARITY_THRESHOLD
         self.max_retries = RAGConfig.RETRY_COUNT
         self.vector_dimensions = RAGConfig.EMBEDDING_DIMENSIONS
         self._pending_batch = []
@@ -129,7 +127,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
 
         No agent loop, no reflection, no refinement. The path is:
           1. Two-stage hybrid retrieve (Q-/body, then Q+ expansion if needed).
-          2. Cross-encoder rerank with top-up.
+          2. Embedding-similarity rerank with top-up.
           3. Deterministic 1-hop NEXT/HOP traversal over pre-built edges
              (when RAG_GRAPH_HOP_DEPTH > 0, default).
           4. Single LLM synthesis call.

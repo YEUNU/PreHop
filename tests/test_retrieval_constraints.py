@@ -2,11 +2,16 @@ import pytest
 from unittest.mock import AsyncMock
 
 from core.config import RAGConfig
-from models.prehypo.graphrag import GraphRAG
+from models.prehop.graphrag import GraphRAG
 
 
-def test_extract_query_metadata_captures_company_and_year():
-    rag = GraphRAG(strategy="prehypo")
+def test_extract_query_metadata_captures_company_and_year(monkeypatch):
+    # Company-key extraction is gated on COMPANY_ANCHORING, which now
+    # defaults to off (DOMAIN defaults to "news" — FinanceBench, the only
+    # dataset that set DOMAIN="financial" by default, has been removed).
+    # Enable it explicitly since this test targets that mechanism directly.
+    monkeypatch.setattr(RAGConfig, "COMPANY_ANCHORING", True)
+    rag = GraphRAG(strategy="prehop")
     meta = rag._extract_query_metadata(  # noqa: SLF001 - unit test for internal helper
         "Among operations, investing, and financing activities, which brought in the most cash flow for AMD in FY22?"
     )
@@ -22,7 +27,7 @@ def test_q_plus_quality_gate_accepts_at_least_two_signals():
     graph; bridge questions about a metric across periods or about a
     related metric in the same period naturally drop one signal.
     """
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     ok = rag._is_high_quality_q_plus(  # noqa: SLF001 - unit test for internal helper
         "For AMD FY2022 cash flow statement, what was operating cash flow?",
         title="AMD_2022_10K",
@@ -49,9 +54,13 @@ def test_q_plus_quality_gate_accepts_at_least_two_signals():
 
 @pytest.mark.asyncio
 async def test_retrieve_prefers_company_matched_candidate(monkeypatch):
-    rag = GraphRAG(strategy="prehypo")
+    # Company-key extraction/filtering is gated on COMPANY_ANCHORING, off by
+    # default now (see test_extract_query_metadata_captures_company_and_year).
+    monkeypatch.setattr(RAGConfig, "COMPANY_ANCHORING", True)
+    rag = GraphRAG(strategy="prehop")
 
-    # Two candidates with identical rerank score; AMD document should win by metadata calibration.
+    # Two candidates with identical rerank score; AMD document should win —
+    # the strict company filter drops the non-AMD candidate outright.
     candidates = [
         {
             "id": "1",
@@ -72,7 +81,12 @@ async def test_retrieve_prefers_company_matched_candidate(monkeypatch):
     ]
 
     rag._hybrid_rrf_candidates = AsyncMock(return_value=candidates)  # type: ignore[method-assign]
-    rag.llm.rerank = AsyncMock(return_value=[0.8, 0.8])
+    # Identical embeddings for query and both docs -> tied cosine-similarity
+    # score, so the company-matched candidate must win via metadata
+    # calibration alone (same intent as the old tied-rerank-score mock).
+    rag.llm.get_embeddings = AsyncMock(
+        side_effect=lambda texts, encoding_type="document": [[1.0, 0.0] for _ in texts]
+    )
 
     monkeypatch.setattr(RAGConfig, "ENABLE_QUERY_REWRITE", False)
     monkeypatch.setattr(RAGConfig, "RERANKER_THRESHOLD", 0.0)
@@ -88,7 +102,7 @@ async def test_retrieve_prefers_company_matched_candidate(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_retrieve_expands_with_q_plus_when_stage1_is_insufficient(monkeypatch):
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     monkeypatch.setattr(RAGConfig, "ENABLE_QUERY_REWRITE", False)
     monkeypatch.setattr(RAGConfig, "RERANKER_THRESHOLD", 0.0)
 
@@ -117,7 +131,12 @@ async def test_retrieve_expands_with_q_plus_when_stage1_is_insufficient(monkeypa
         return []
 
     rag._hybrid_rrf_candidates = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
-    rag.llm.rerank = AsyncMock(side_effect=lambda query, docs, instruction=None: [0.7 for _ in docs])
+    # Uniform embeddings -> uniform cosine-similarity score (>= the
+    # monkeypatched 0.0 threshold below) for every candidate, same intent as
+    # the old uniform-rerank-score mock.
+    rag.llm.get_embeddings = AsyncMock(
+        side_effect=lambda texts, encoding_type="document": [[1.0, 0.0] for _ in texts]
+    )
 
     _, nodes = await rag.retrieve(
         "What was AMD FY2022 free cash flow?",
@@ -131,7 +150,7 @@ async def test_retrieve_expands_with_q_plus_when_stage1_is_insufficient(monkeypa
 
 @pytest.mark.asyncio
 async def test_build_graph_filters_q_plus_by_quality_gate():
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     rag._ensure_index_ready = AsyncMock(return_value=None)  # type: ignore[method-assign]
     rag.llm.get_embeddings = AsyncMock(side_effect=lambda texts: [[0.1] for _ in texts])
 

@@ -10,7 +10,7 @@ Modules:
 - quality_gates.py — Q+ quality gating + sparse-text embedding helpers
 - rewrite.py — query rewrite (N_r, w_r)
 - hybrid.py — RRF over {body, q_minus, q_plus} channels
-- rerank.py — cross-encoder rerank + tau_r threshold + meta calibration
+- rerank.py — embedding-similarity rerank + tau_r threshold + meta calibration
 - traversal.py — graph_search over NEXT/HOP edges (offline / runtime modes)
 - retrieve.py — two-stage Q-/Q+ retrieve entry point
 """

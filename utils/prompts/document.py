@@ -1,30 +1,3 @@
-PAGE_SUMMARY_PROMPT = """
-Summarize this page.
-Rules:
-1. Provide exactly one sentence, maximum 35 words.
-2. Use only facts explicitly present on this page; do not infer, compute, aggregate, or normalize values.
-3. If you mention numbers, copy exact value strings with unit/sign/decimal/currency/percent as written (no rounding or conversion).
-4. If this page is mostly table-of-contents, exhibit index, signatures, navigation, or boilerplate, summarize only that structural fact and avoid unsupported content claims.
-5. Do not use filler words like "This page describes...".
-
-TEXT:
-{text}
-"""
-
-GROUP_SUMMARY_PROMPT = """
-Synthesize these page summaries into one unified group summary.
-Rules:
-1. Provide exactly 2 sentences, maximum 60 words total.
-2. Use only information present in the page summaries; do not introduce new facts or derived metrics.
-3. Focus on the common thread connecting all pages.
-4. Preserve key technical terms and any cited numeric strings exactly as written (no rounding or unit conversion).
-5. If summaries are mostly structural/boilerplate, state that directly and avoid unsupported extrapolation.
-
-PAGE SUMMARIES:
-{page_summaries}
-"""
-
-
 GLOBAL_SUMMARY_PROMPT = """
 Analyze the provided page summaries to generate document-level metadata.
 Rules:

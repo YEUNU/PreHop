@@ -33,26 +33,22 @@ class QueryRewriteMixin:
             {"role": "user", "content": self._query_rewrite_prompt().format(query=query)},
             {"role": "user", "content": QUERY_REWRITE_FORMAT_INSTRUCTION},
         ]
-        try:
-            data = await self.llm.generate_json(messages, apply_default_sampling=False)
-            rewrites = data.get("positive_queries", []) if isinstance(data, dict) else []
-            if not isinstance(rewrites, list):
-                return []
-            unique: list[str] = []
-            seen: set[str] = set()
-            for rewrite in rewrites:
-                if not isinstance(rewrite, str):
-                    continue
-                normalized = self._normalize_entity_term(rewrite)
-                if not normalized:
-                    continue
-                if normalized == self._normalize_entity_term(query):
-                    continue
-                if normalized in seen:
-                    continue
-                unique.append(rewrite.strip())
-                seen.add(normalized)
-            return unique[: max(0, RAGConfig.QUERY_REWRITE_COUNT)]
-        except Exception as error:
-            logger.warning("Query rewrite failed: %s", error)
+        data = await self.llm.generate_json(messages, apply_default_sampling=False)
+        rewrites = data.get("positive_queries", []) if isinstance(data, dict) else []
+        if not isinstance(rewrites, list):
             return []
+        unique: list[str] = []
+        seen: set[str] = set()
+        for rewrite in rewrites:
+            if not isinstance(rewrite, str):
+                continue
+            normalized = self._normalize_entity_term(rewrite)
+            if not normalized:
+                continue
+            if normalized == self._normalize_entity_term(query):
+                continue
+            if normalized in seen:
+                continue
+            unique.append(rewrite.strip())
+            seen.add(normalized)
+        return unique[: max(0, RAGConfig.QUERY_REWRITE_COUNT)]

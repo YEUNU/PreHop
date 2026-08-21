@@ -6,7 +6,7 @@ import pytest
 
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient
-from models.prehypo.graphrag import GraphRAG
+from models.prehop.graphrag import GraphRAG
 from models.naive.naive_rag import NaiveRAG
 
 
@@ -164,9 +164,9 @@ async def test_live_naive_index_retrieve_roundtrip():
 async def test_live_graphrag_index_retrieve_roundtrip():
     """End-to-end smoke for the refactored GraphRAG facade.
 
-    Exercises every mixin in :mod:`models.prehypo.indexing` and
-    :mod:`models.prehypo.retrieval` against live Neo4j + vLLM:
-    ChunkingMixin (page parse + adaptive split + rolling ctx) ->
+    Exercises every mixin in :mod:`models.prehop.indexing` and
+    :mod:`models.prehop.retrieval` against live Neo4j + vLLM:
+    ChunkingMixin (page parse + fixed-size sentence windows) ->
     KnowledgeMappingMixin (Q-/Q+ generation via indexing_llm) ->
     GraphWriterMixin (Neo4j MERGE + NEXT edges + index lifecycle) ->
     HopEdgeMixin (offline HOP rerank if Q+ items pass quality gate) ->
@@ -178,7 +178,7 @@ async def test_live_graphrag_index_retrieve_roundtrip():
 
     corpus_tag = "it_live_graph"
     unique_token = "graphrag_live_unique_token_77403"
-    rag = GraphRAG(strategy="prehypo", corpus_tag=corpus_tag)
+    rag = GraphRAG(strategy="prehop", corpus_tag=corpus_tag)
 
     async def cleanup() -> None:
         await rag.neo4j.execute_query(
@@ -213,7 +213,7 @@ async def test_live_graphrag_index_retrieve_roundtrip():
             rag.extract_knowledge(content),
             timeout_seconds=180.0,
         )
-        assert knowledge.get("chunks"), "Adaptive chunking returned no chunks."
+        assert knowledge.get("chunks"), "Chunking returned no chunks."
         assert any(unique_token in c.get("text", "") for c in knowledge["chunks"]), (
             "Unique token missing from generated chunks."
         )

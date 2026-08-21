@@ -8,7 +8,7 @@ the traversal stops early.
 Two HOP modes:
 - "offline" (paper canonical): traverse the pre-built [:NEXT|HOP] edges
 - "runtime" (HopRAG-style fallback): follow only [:NEXT] in the graph but
-  expand the frontier at query time via Q+ ANN + cross-encoder rerank.
+  expand the frontier at query time via Q+ ANN + embedding-similarity rerank.
 """
 import logging
 from typing import Any, Optional
@@ -27,9 +27,9 @@ class TraversalMixin:
         When `force_expand=True`, every depth hop runs deterministically:
         the LLM `_need_more_for_next_depth` continuation check is skipped.
         This is used by the agentic-OFF baseline path so retrieval contains
-        no agentic decision-making (the only LLM calls are the cross-encoder
-        rerank and the query simplification, both of which are graders,
-        not policies).
+        no agentic decision-making (the only LLM call left is the query
+        simplification grader; reranking itself is now embedding
+        cosine-similarity, not an LLM call).
         """
         normalized_entities: list[str] = []
         for entity in entities:
@@ -40,10 +40,7 @@ class TraversalMixin:
         if not seed_query:
             return "", []
 
-        try:
-            depth = max(1, min(int(depth), 4))
-        except Exception:
-            depth = 4
+        depth = max(1, min(int(depth), 4))
 
         excluded_ids: set[str] = {str(eid).strip() for eid in (excluded_chunk_ids or set()) if str(eid).strip()}
 
@@ -61,11 +58,7 @@ class TraversalMixin:
         ]
 
         if not seed_ids:
-            fallback_ctx, fallback_nodes = await self.retrieve(seed_query, top_k=top_k, user_query=user_query)
-            if excluded_ids:
-                fallback_nodes = [n for n in fallback_nodes if str(n.get("id", "")).strip() not in excluded_ids]
-                fallback_ctx = self._build_context_from_nodes(fallback_nodes) if fallback_nodes else fallback_ctx
-            return fallback_ctx, fallback_nodes
+            return "", []
         search_query = " ".join(entities).strip() or " ".join(normalized_entities)
         # Company-key extraction must come from the human-written query when
         # available — joining LLM-generated `entities` produces synthetic
@@ -89,11 +82,7 @@ class TraversalMixin:
             if not candidates:
                 return []
             texts = [candidate.get("text", "") for candidate in candidates]
-            try:
-                scores = await self.llm.rerank(search_query, texts, instruction=self._reranker_instruction())
-            except Exception as error:
-                logger.warning("Graph search reranking failed: %s", error)
-                scores = [0.0] * len(candidates)
+            scores = await self._embedding_rerank_scores(search_query, texts)
 
             self._apply_retrieval_calibration(candidates, search_query_meta)
             for index, score in enumerate(scores):
@@ -106,28 +95,11 @@ class TraversalMixin:
 
             reranked = sorted(candidates, key=lambda item: item.get("final_score", 0.0), reverse=True)
             if any((search_query_meta.get("company_keys") or [])):
-                company_matched = [node for node in reranked if self._node_matches_company(node, search_query_meta)]
                 # Strict filter when the query is company-anchored: drop
                 # cross-company chunks rather than just demoting them.
-                # Fallback to original (no filter) if strict empties the pool.
-                if company_matched:
-                    reranked = company_matched
+                reranked = [node for node in reranked if self._node_matches_company(node, search_query_meta)]
 
-            gated = [node for node in reranked if node.get("rerank_score", 0.0) >= RAGConfig.RERANKER_THRESHOLD][:top_k]
-            # Top up to top_k with next-best ungated candidates so a
-            # too-aggressive reranker gate (single chunk crossing tau_r)
-            # does not collapse the candidate pool.
-            target_k = max(top_k, 3)
-            if len(gated) < target_k and len(gated) < len(reranked):
-                seen = {id(node) for node in gated}
-                for node in reranked:
-                    if id(node) in seen:
-                        continue
-                    gated.append(node)
-                    seen.add(id(node))
-                    if len(gated) >= target_k:
-                        break
-            return gated
+            return [node for node in reranked if node.get("rerank_score", 0.0) >= RAGConfig.RERANKER_THRESHOLD][:top_k]
 
         async def _need_more_for_next_depth(nodes_for_judge: list[dict[str, Any]]) -> bool:
             if not nodes_for_judge:
@@ -146,15 +118,11 @@ class TraversalMixin:
                 {"role": "user", "content": self._search_continuation_prompt().format(query=search_query, context=context_preview)},
                 {"role": "user", "content": SEARCH_CONTINUATION_FORMAT_INSTRUCTION},
             ]
-            try:
-                decision_data = await self.llm.generate_json(messages, apply_default_sampling=False)
-                decision = str((decision_data or {}).get("decision", "INSUFFICIENT")).strip().upper()
-                need_more = decision != "SUFFICIENT"
-                logger.info("Graph depth continuation decision=%s (need_more=%s)", decision, need_more)
-                return need_more
-            except Exception as error:
-                logger.warning("Graph continuation check failed; continuing depth expansion: %s", error)
-                return True
+            decision_data = await self.llm.generate_json(messages, apply_default_sampling=False)
+            decision = str((decision_data or {}).get("decision", "INSUFFICIENT")).strip().upper()
+            need_more = decision != "SUFFICIENT"
+            logger.info("Graph depth continuation decision=%s (need_more=%s)", decision, need_more)
+            return need_more
 
         seed_gated = await _rerank_and_gate(seed_nodes)
         frontier_ids = []
@@ -301,20 +269,16 @@ class TraversalMixin:
                        node.page as page, node.text as text, node.source as source,
                        node.published_at as published_at, node.pub_source as pub_source, score
             """
-            try:
-                rows = await self.retry_query(
-                    ann_query,
-                    {
-                        "k": per_source_k,
-                        "embed": source["embed"],
-                        "src_id": source["src_id"],
-                        "src_source": source["src_source"],
-                        "visited": list(visited_ids),
-                    },
-                )
-            except Exception as error:
-                logger.warning("Runtime HOP ANN query failed: %s", error)
-                continue
+            rows = await self.retry_query(
+                ann_query,
+                {
+                    "k": per_source_k,
+                    "embed": source["embed"],
+                    "src_id": source["src_id"],
+                    "src_source": source["src_source"],
+                    "visited": list(visited_ids),
+                },
+            )
             for row in rows or []:
                 cid = str(row.get("id") or "")
                 if not cid or cid in candidates_by_id:
