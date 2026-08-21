@@ -1,7 +1,8 @@
-"""Smoke tests for the PreHypo package layout.
+"""Smoke tests for the Prehop package layout.
 
 These tests pin the structural invariants of this repository:
-- The package was renamed `models.hyporeflect` -> `models.prehypo`.
+- `models.prehop` is the strategy package (no `hyporeflect` alias, no
+  `stages` submodule).
 - The agentic 5-stage code paths (stages/, orchestrator, service,
   agentic_core) are gone.
 - GraphRAG exposes a `run_workflow()` entry point (the retrieval-only path
@@ -33,8 +34,8 @@ def _all_python_sources():
 # ---------------------------------------------------------------------------
 
 
-def test_models_prehypo_imports_cleanly():
-    mod = importlib.import_module("models.prehypo.graphrag")
+def test_models_prehop_imports_cleanly():
+    mod = importlib.import_module("models.prehop.graphrag")
     assert hasattr(mod, "GraphRAG")
 
 
@@ -43,7 +44,7 @@ def test_models_hyporeflect_is_gone():
         importlib.import_module("models.hyporeflect")
     except ImportError:
         return
-    raise AssertionError("models.hyporeflect should not exist in PreHypo")
+    raise AssertionError("models.hyporeflect should not exist in Prehop")
 
 
 def test_models_agentic_core_is_gone():
@@ -51,23 +52,23 @@ def test_models_agentic_core_is_gone():
         importlib.import_module("models.agentic_core")
     except ImportError:
         return
-    raise AssertionError("models.agentic_core should not exist in PreHypo")
+    raise AssertionError("models.agentic_core should not exist in Prehop")
 
 
-def test_models_prehypo_stages_is_gone():
+def test_models_prehop_stages_is_gone():
     try:
-        importlib.import_module("models.prehypo.stages")
+        importlib.import_module("models.prehop.stages")
     except ImportError:
         return
-    raise AssertionError("models.prehypo.stages should not exist in PreHypo")
+    raise AssertionError("models.prehop.stages should not exist in Prehop")
 
 
 def test_agent_service_class_does_not_exist():
     try:
-        mod = importlib.import_module("models.prehypo.service")
+        mod = importlib.import_module("models.prehop.service")
     except ImportError:
         return
-    assert not hasattr(mod, "AgentService"), "AgentService leaked back into PreHypo"
+    assert not hasattr(mod, "AgentService"), "AgentService leaked back into Prehop"
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +81,7 @@ _FORBIDDEN_IMPORT_PATTERNS = (
     re.compile(r"\bimport\s+models\.hyporeflect\b"),
     re.compile(r"\bfrom\s+models\.agentic_core\b"),
     re.compile(r"\bimport\s+models\.agentic_core\b"),
-    re.compile(r"\bfrom\s+models\.prehypo\.stages\b"),
+    re.compile(r"\bfrom\s+models\.prehop\.stages\b"),
     re.compile(r"\bAgentService\b"),
 )
 
@@ -130,15 +131,15 @@ def test_no_agentic_prompt_imports():
 
 
 def test_graphrag_exposes_run_workflow():
-    from models.prehypo.graphrag import GraphRAG
+    from models.prehop.graphrag import GraphRAG
     assert hasattr(GraphRAG, "run_workflow"), \
         "GraphRAG.run_workflow() is the retrieval-only query entry; required by cli/benchmark.py"
 
 
 def test_graphrag_inherits_indexing_and_retrieval():
-    from models.prehypo.graphrag import GraphRAG
-    from models.prehypo.indexing import IndexingPipeline
-    from models.prehypo.retrieval import RetrievalPipeline
+    from models.prehop.graphrag import GraphRAG
+    from models.prehop.indexing import IndexingPipeline
+    from models.prehop.retrieval import RetrievalPipeline
     assert issubclass(GraphRAG, IndexingPipeline)
     assert issubclass(GraphRAG, RetrievalPipeline)
 

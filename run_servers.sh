@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# run_servers.sh - Centralized service manager for PreHypo
-# Usage: ./run_servers.sh {neo4j|gen|ocr|embed|rerank|all}
+# run_servers.sh - Centralized service manager for Prehop
+# Usage: ./run_servers.sh {neo4j|gen|embed|rerank|all}
 #
 # GPU placement is configurable via env vars (defaults below target a 2-GPU
 # box). On a single-GPU machine, put everything on GPU 0:
-#   GEN_GPU=0 EMBED_GPU=0 RERANK_GPU=0 OCR_GPU=0 ./run_servers.sh all
+#   GEN_GPU=0 EMBED_GPU=0 RERANK_GPU=0 ./run_servers.sh all
 # (Mind total --gpu-memory-utilization when co-locating; lower it if needed.)
 
 set -e
@@ -41,8 +41,6 @@ fi
 # GPU assignment per service. Configure in .env or the shell; defaults target a
 # 2-GPU box. Single GPU: set all to 0 (mind total --gpu-memory-utilization).
 GEN_GPU="${GEN_GPU:-1}"
-GEN2_GPU="${GEN2_GPU:-0}"
-OCR_GPU="${OCR_GPU:-1}"
 EMBED_GPU="${EMBED_GPU:-0}"
 RERANK_GPU="${RERANK_GPU:-1}"
 
@@ -133,7 +131,7 @@ start_neo4j_docker() {
         return 1
     fi
 
-    local container_name="${NEO4J_CONTAINER_NAME:-prehypo-neo4j}"
+    local container_name="${NEO4J_CONTAINER_NAME:-prehop-neo4j}"
     local neo4j_user="${NEO4J_USER:-neo4j}"
     local neo4j_password="${NEO4J_PASSWORD:-1q2w3e4r}"
     local neo4j_docker_cpus="${NEO4J_DOCKER_CPUS:-12}"
@@ -223,55 +221,6 @@ start_gen() {
         --trust-remote-code > logs/vllm_gen.log 2>&1 &
 }
 
-start_gen2() {
-    if is_vllm_server_up 28010; then
-        echo "✅ Generation Server #2 is already UP"
-        return 0
-    fi
-
-    if is_port_in_use 28010; then
-        echo "✅ Generation Server #2 is already running (port 28010 in use)"
-        return 0
-    fi
-
-    echo "Starting Generation Server #2 (Port 28010, GPU 0)..."
-    CUDA_VISIBLE_DEVICES="${GEN2_GPU}" nohup .venv/bin/vllm serve Qwen/Qwen3-4B-Instruct-2507 \
-        --served-model-name generation-model \
-        --host 0.0.0.0 \
-        --port 28010 \
-        --gpu-memory-utilization 0.50 \
-        --max-model-len 32768 \
-        --enable-auto-tool-choice \
-        --tool-call-parser qwen3_xml \
-        --attention-backend FLASHINFER \
-        --trust-remote-code > logs/vllm_gen2.log 2>&1 &
-}
-
-start_ocr() {
-    if is_vllm_server_up 28001; then
-        echo "✅ OCR Server is already UP"
-        return 0
-    fi
-
-    if is_port_in_use 28001; then
-        echo "✅ OCR Server is already running (port 28001 in use)"
-        return 0
-    fi
-
-    echo "Starting OCR Server (Port 28001)..."
-    MALLOC_TRIM_THRESHOLD_=100000 \
-    CUDA_VISIBLE_DEVICES="${OCR_GPU}" nohup .venv/bin/vllm serve lightonai/LightOnOCR-1B-1025 \
-        --served-model-name ocr-model \
-        --host 0.0.0.0 \
-        --port 28001 \
-        --gpu-memory-utilization 0.85 \
-        --max-model-len 8192 \
-        --attention-backend FLASHINFER \
-        --trust-remote-code \
-        --limit-mm-per-prompt '{"image":1}' \
-        --mm-processor-cache-gb 0.5 > logs/vllm_ocr.log 2>&1 &
-}
-
 start_embed() {
     if is_vllm_server_up 18082; then
         echo "✅ Embedding Server is already UP"
@@ -284,10 +233,6 @@ start_embed() {
     fi
 
     echo "Starting Embedding Server (Port 18082)..."
-    # GPU 0 layout: gen2 0.40 + embed 0.40 = 0.80.
-    # vllm computes "available KV" using free GPU memory at engine init, so it
-    # subtracts memory already taken by gen2. Need util high enough that
-    # (target_alloc - model_weights) is comfortably positive.
     CUDA_VISIBLE_DEVICES="${EMBED_GPU}" nohup .venv/bin/vllm serve Qwen/Qwen3-Embedding-0.6B \
         --served-model-name embedding-model \
         --host 0.0.0.0 \
@@ -329,20 +274,16 @@ start_rerank() {
 case $SERVICE in
     neo4j)  start_neo4j ;;
     gen)    start_gen ;;
-    gen2)   start_gen2 ;;
-    ocr)    start_ocr ;;
     embed)  start_embed ;;
     rerank) start_rerank ;;
     all)
         start_neo4j
         start_gen
-        start_gen2
-        start_ocr
         start_embed
         start_rerank
         ;;
     *)
-        echo "Usage: $0 {neo4j|gen|gen2|ocr|embed|rerank|all}"
+        echo "Usage: $0 {neo4j|gen|embed|rerank|all}"
         exit 1
         ;;
 esac

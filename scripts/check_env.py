@@ -3,13 +3,15 @@ import os
 import httpx
 from neo4j import AsyncGraphDatabase
 import sys
+from dotenv import load_dotenv
 
 # Ensure project root is on sys.path so `from core.* import` works regardless
 # of the cwd this script is invoked from.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+load_dotenv()
+
 from core.vllm_client import VLLMClient
-from core.neo4j_service import Neo4jService
 
 async def check_vllm(name, url):
     api_key = os.environ.get("VLLM_API_KEY", "EMPTY")
@@ -53,7 +55,7 @@ async def check_neo4j():
         return False
 
 async def main():
-    print("=== PreHypo Environment Connectivity Check (uv-based) ===\n")
+    print("=== Prehop Environment Connectivity Check (uv-based) ===\n")
     print(f"Python Interpreter: {sys.executable}")
     print(f"Working Directory: {os.getcwd()}\n")
     
@@ -62,7 +64,6 @@ async def main():
     results = await asyncio.gather(
         check_vllm("Generation Service", vllm.vllm_url),
         check_vllm("Embedding Service", vllm.embed_url),
-        check_vllm("OCR Service", vllm.ocr_url),
         check_vllm("Reranker Service", os.environ.get("VLLM_RERANK_URL", "http://localhost:18083/v1")),
         check_neo4j()
     )

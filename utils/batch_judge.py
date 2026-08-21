@@ -21,7 +21,7 @@ from typing import Optional
 
 from utils.parsers import clean_and_unwrap_json
 
-logger = logging.getLogger("PreHypo")
+logger = logging.getLogger("Prehop")
 
 # Terminal batch states per the OpenAI Batch API.
 _TERMINAL = {"completed", "failed", "expired", "cancelled"}

@@ -148,7 +148,7 @@ async def test_reconcile_pending_judges_patches_and_cleans(tmp_path, monkeypatch
         "batch_id": "batch-XYZ", "judge_model": "gpt-test",
         "result_file": str(result_file), "strategy": "naive",
         "corpus_tag": "multihoprag", "dataset": "MultiHop-RAG",
-        "is_financebench": False, "is_multihoprag": True, "submitted": 2,
+        "submitted": 2,
     }
     pending = strat_dir / "naive_multihoprag.pending_judge.json"
     pending.write_text(json.dumps(manifest))
@@ -174,8 +174,8 @@ async def test_reconcile_pending_judges_patches_and_cleans(tmp_path, monkeypatch
     assert by_cat["inference"]["llm_judge_score"] == 0.0     # custom_id 1
     # Aggregate over judged rows only.
     assert out["avg_llm_judge_score"] == pytest.approx(0.5)
-    assert out["financebench_correct_count"] == 1
-    assert out["financebench_incorrect_count"] == 1
+    assert out["correct_count"] == 1
+    assert out["incorrect_count"] == 1
     # Summary sidecar refreshed.
     sidecar = json.loads((strat_dir / "naive_multihoprag.summary.json").read_text())
     assert sidecar["avg_llm_judge_score"] == pytest.approx(0.5)

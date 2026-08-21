@@ -1,40 +1,6 @@
 import json
-import logging
-import os
 from pathlib import Path
 from typing import Any
-
-
-logger = logging.getLogger("PreHypo")
-
-
-def get_sample_companies(doc_info_path: str = "data/financebench_document_information.jsonl") -> list[str]:
-    """Determine sample companies (one per unique GICS sector)."""
-    if not os.path.exists(doc_info_path):
-        logger.error("Document info file %s not found.", doc_info_path)
-        return []
-
-    try:
-        with open(doc_info_path, "r", encoding="utf-8") as file:
-            data = [json.loads(line) for line in file]
-
-        sector_companies: dict[str, set[str]] = {}
-        for item in data:
-            sector = item.get("gics_sector")
-            company = item.get("company")
-            if sector and company:
-                if sector not in sector_companies:
-                    sector_companies[sector] = set()
-                sector_companies[sector].add(company)
-
-        sample_companies: list[str] = []
-        for sector in sorted(sector_companies.keys()):
-            companies = sorted(list(sector_companies[sector]))
-            sample_companies.append(companies[0])
-        return sample_companies
-    except Exception as exc:
-        logger.error("Error determining sample companies: %s", exc)
-        return []
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:

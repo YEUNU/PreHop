@@ -12,32 +12,8 @@ from typing import List, Dict, Any, Optional
 from utils.parsers import clean_and_unwrap_json
 from .config import RAGConfig
 
-def _filter_live_bases(bases: list) -> list:
-    """Return only the bases whose /health endpoint responds 200.
-    Falls back to the full list if none are reachable (e.g. all servers down)."""
-    import urllib.request
-    live = []
-    for base in bases:
-        health_url = base.rstrip("/").removesuffix("v1").rstrip("/") + "/health"
-        try:
-            urllib.request.urlopen(health_url, timeout=2)
-            live.append(base)
-        except Exception:
-            pass
-    if not live:
-        logging.getLogger(__name__).warning(
-            "No live gen endpoints detected; falling back to all configured: %s", bases
-        )
-        return list(bases)
-    logging.getLogger(__name__).info("Live gen endpoints: %s", live)
-    return live
-
-
 class VLLMClient:
     _client_cache = {}
-    # Round-robin counter shared across all VLLMClient instances. Single-threaded
-    # asyncio guarantees safe int increment without a lock.
-    _rr_counter = 0
 
     # Reranker prompt template state (lazy-loaded once per process).
     # We send prompts as token IDs to vllm-serve so prefix caching deduplicates
@@ -57,16 +33,10 @@ class VLLMClient:
     def __init__(self, model_name: Optional[str] = None):
         self.logger = logging.getLogger(__name__)
         self.vllm_url = RAGConfig.VLLM_URL
-        # All available generation endpoints (VLLM_URL + optional VLLM_URL_2);
-        # the `client` property round-robins across these on every access so a
-        # second vllm serve process on a separate GPU shares the LLM load.
-        self.vllm_urls = _filter_live_bases(list(RAGConfig.VLLM_URLS) or [RAGConfig.VLLM_URL])
-        self.ocr_url = RAGConfig.VLLM_OCR_URL
         self.embed_url = RAGConfig.VLLM_EMBED_URL
         self.rerank_url = RAGConfig.VLLM_RERANK_URL
-        
+
         self.model_name = model_name or RAGConfig.DEFAULT_MODEL
-        self.ocr_model_name = RAGConfig.OCR_MODEL
         self.embed_model_name = RAGConfig.EMBEDDING_MODEL
 
         self.api_key = os.environ.get("VLLM_API_KEY", "EMPTY")
@@ -660,7 +630,7 @@ class VLLMClient:
         # cached on one loop and reused on another (hoprag runs each judge call
         # in a ThreadPoolExecutor worker that spins up a fresh asyncio.run loop)
         # deadlocks forever in select() — the loop-bound read timeout never
-        # fires either. Per-loop clients keep prehypo/naive (single main loop)
+        # fires either. Per-loop clients keep prehop/naive (single main loop)
         # unchanged while isolating hoprag's multi-loop path.
         key = (url, self._running_loop_id())
         if key not in self._client_cache:
@@ -675,20 +645,9 @@ class VLLMClient:
         except RuntimeError:
             return 0
 
-    @classmethod
-    def _next_gen_url(cls, urls: List[str]) -> str:
-        """Round-robin pick across configured generation endpoints."""
-        if len(urls) <= 1:
-            return urls[0]
-        idx = cls._rr_counter % len(urls)
-        cls._rr_counter += 1
-        return urls[idx]
-
     @property
     def client(self):
-        return self._get_cached_client(self._next_gen_url(self.vllm_urls))
-    @property
-    def ocr_client(self): return self._get_cached_client(self.ocr_url)
+        return self._get_cached_client(self.vllm_url)
     @property
     def embed_client(self): return self._get_cached_client(self.embed_url)
 
@@ -718,53 +677,6 @@ class VLLMClient:
         if "</think>" in message:
             message = message.split("</think>")[-1]
         return message.replace("<end>", "").strip()
-
-    async def generate_with_image(self, image_base64: str, prompt: str = "", system_prompt: Optional[str] = None) -> str:
-        """
-        Vision Language Model OCR using dedicated OCR service.
-        
-        Args:
-            image_base64: Base64 encoded image string
-            prompt: Optional text prompt (empty for pure OCR)
-            system_prompt: Optional system prompt
-            
-        Returns:
-            OCR extracted text
-        """
-        image_url = f"data:image/png;base64,{image_base64}"
-        
-        # Build messages with specific order: Image first, then Text instructions
-        content = [{"type": "image_url", "image_url": {"url": image_url}}]
-        if prompt:
-            content.append({"type": "text", "text": prompt})
-        
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": content})
-        
-        try:
-            # Use dedicated OCR client with LightOnOCR compatible parameters
-            ocr_params: Dict[str, Any] = {
-                "model": self.ocr_model_name,
-                "messages": messages,
-                "stream": False,
-                "temperature": RAGConfig.OCR_TEMPERATURE,
-                "top_p": RAGConfig.OCR_TOP_P,
-            }
-            if os.environ.get("RAG_OCR_SEND_TOP_K", "false").lower() == "true":
-                ocr_params["extra_body"] = {
-                    "top_k": int(os.environ.get("RAG_OCR_TOP_K", "0"))
-                }
-
-            response = await self.ocr_client.chat.completions.create(**ocr_params)
-            return self.think_strip(response.choices[0].message.content or "")
-        except (httpx.TimeoutException, openai.APITimeoutError):
-            self.logger.error("OCR Request Timeout: The OCR model took too long to respond.")
-            raise Exception("OCR service timed out. Please try again.")
-        except Exception as e:
-            self.logger.error(f"Error calling OCR vLLM: {e}")
-            raise
 
     async def generate_response(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, tool_choice: Optional[str] = None, temperature: Optional[float] = None, **kwargs) -> Any:
         try:

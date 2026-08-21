@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from utils.io import _safe_float, _safe_int, _write_json, _write_jsonl
+from utils.io import _safe_float, _write_json, _write_jsonl
 
 
 def _collect_trace_steps(trace: Any) -> list[str]:

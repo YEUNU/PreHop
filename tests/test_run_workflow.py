@@ -1,6 +1,6 @@
 """Tests for the retrieval-only query path on GraphRAG.run_workflow().
 
-The PreHypo query path is deliberately thin: retrieve -> single LLM call,
+The Prehop query path is deliberately thin: retrieve -> single LLM call,
 no agent loop, no reflection, no refinement. These tests pin the public
 contract of run_workflow() and the small helpers it composes
 (_ensure_answer_prefix, _strip_format_instruction, _build_unique_sources,
@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from models.prehypo.graphrag import GraphRAG
+from models.prehop.graphrag import GraphRAG
 
 
 # ---------------------------------------------------------------------------
@@ -19,38 +19,38 @@ from models.prehypo.graphrag import GraphRAG
 
 
 def test_ensure_answer_prefix_adds_marker_when_missing():
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     out = rag._ensure_answer_prefix("Revenue was $394B in FY2022.")  # noqa: SLF001
     assert out.startswith("@@ANSWER:")
     assert "Revenue was $394B" in out
 
 
 def test_ensure_answer_prefix_is_noop_when_marker_present():
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     raw = "@@ANSWER: Revenue was $394B in FY2022."
     assert rag._ensure_answer_prefix(raw) == raw  # noqa: SLF001
 
 
 def test_ensure_answer_prefix_handles_empty_and_none():
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     assert rag._ensure_answer_prefix(None).startswith("@@ANSWER:")  # noqa: SLF001
     assert rag._ensure_answer_prefix("").startswith("@@ANSWER:")  # noqa: SLF001
 
 
 def test_strip_format_instruction_drops_benchmark_suffix():
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     q = "What was Apple's FY2022 revenue? [Benchmark Output Format] respond with..."
     assert rag._strip_format_instruction(q) == "What was Apple's FY2022 revenue?"  # noqa: SLF001
 
 
 def test_strip_format_instruction_passthrough_without_marker():
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     q = "What was Apple's FY2022 revenue?"
     assert rag._strip_format_instruction(q) == q  # noqa: SLF001
 
 
 def test_build_unique_sources_dedups_by_doc_page_sent():
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     rows = [
         {"title": "AAPL_10K", "page": 41, "sent_id": 3, "text": "..."},
         {"title": "AAPL_10K", "page": 41, "sent_id": 3, "text": "..."},  # dup
@@ -64,7 +64,7 @@ def test_build_unique_sources_dedups_by_doc_page_sent():
 
 
 def test_build_unique_sources_uses_unknown_when_doc_missing():
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     out = rag._build_unique_sources([{"page": 1, "sent_id": 0, "text": "x"}])  # noqa: SLF001
     assert out[0]["doc"] == "Unknown"
 
@@ -90,7 +90,7 @@ def _make_rag_with_mocks(
     llm_answer="Apple's FY2022 revenue was $394B.",
     graph_depth=1,
 ):
-    rag = GraphRAG(strategy="prehypo")
+    rag = GraphRAG(strategy="prehop")
     rag.llm = MagicMock()
     rag.llm.generate_response = AsyncMock(return_value=llm_answer)
     rag.graph_search = AsyncMock(return_value=(context, nodes or []))

@@ -154,7 +154,7 @@ class HopRAGAdapter:
 
         # Namespace must match models/hoprag/official_indexer.py exactly:
         # node label = HO_<safe>, edge type = HO_<safe>_p2a, vector index =
-        # HO_<safe>_node_dense_idx. The previous adapter assumed prehypo's
+        # HO_<safe>_node_dense_idx. The previous adapter assumed prehop's
         # GraphRAG-engine schema (HO_<safe>_Chunk + hoprag_<safe>_vector_idx
         # + NEXT/HOP edges); that's gone now.
         import re as _re

@@ -26,17 +26,12 @@ cd "$SCRIPT_DIR"
 PYTHON_BIN="$(resolve_python "$SCRIPT_DIR")" || exit 1
 
 # Default values
-MODEL="prehypo"
+MODEL="prehop"
 LLM="local"
 DATASET=""
-N_COMPANIES=""
-RAW_OCR=""
 CLEAR_GRAPH=""
 CORPUS_TAG=""
 SAVE_INTERMEDIATE=""
-SAMPLE=""
-SAVE_TO=""
-OCR=""
 
 SKIP_SERVER=""
 
@@ -46,14 +41,9 @@ while [ $# -gt 0 ]; do
         --dataset) DATASET="--dataset $2"; shift 2 ;;
         --model) MODEL="$2"; shift 2 ;;
         --llm) LLM="$2"; shift 2 ;;
-        --n) N_COMPANIES="--n $2"; shift 2 ;;
-        --raw-ocr) RAW_OCR="--raw-ocr"; shift 1 ;;
         --clear-graph) CLEAR_GRAPH="--clear-graph"; shift 1 ;;
         --corpus-tag) CORPUS_TAG="--corpus-tag $2"; shift 2 ;;
         --save-intermediate) SAVE_INTERMEDIATE="--save-intermediate"; shift 1 ;;
-        --sample) SAMPLE="--sample"; shift 1 ;;
-        --save-to) SAVE_TO="--save-to $2"; shift 2 ;;
-        --ocr) OCR="--ocr"; shift 1 ;;
         --skip-server) SKIP_SERVER="true"; shift 1 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -94,12 +84,9 @@ if [ "$SKIP_SERVER" != "true" ]; then
         exit 1
     fi
 
-    # Start Reranker Service (Required for Rank-based Edge Pruning)
-    ./run_servers.sh rerank
-    if ! wait_for_server "http://localhost:18083/health" "Reranker Model"; then
-        echo "Fatal: Reranker service failed." >&2
-        exit 1
-    fi
+    # No reranker server needed for indexing: HOP-edge pre-scoring uses the
+    # Neo4j ANN vector-index score directly (no cross-encoder model), and
+    # none of the baseline indexers call a reranker either.
 else
     echo "Step 1: Skipping server startup (Requested by caller)"
 fi
@@ -110,12 +97,12 @@ echo "[Step] Running indexing..."
 
 if [ "$MODEL" = "all" ]; then
     echo "🚀 Running ALL models in parallel..."
-    MODELS=("prehypo" "hoprag" "naive" "ms_graphrag")
+    MODELS=("prehop" "hoprag" "naive" "ms_graphrag")
     PIDS=()
     
     for m in "${MODELS[@]}"; do
         echo "  Starting $m..."
-        "$PYTHON_BIN" main.py --mode index $DATASET --strategy "$m" --model "$LLM" $N_COMPANIES $RAW_OCR $CLEAR_GRAPH $CORPUS_TAG $SAVE_INTERMEDIATE $SAMPLE $SAVE_TO $OCR > "logs/index_${m}.log" 2>&1 &
+        "$PYTHON_BIN" main.py --mode index $DATASET --strategy "$m" --model "$LLM" $CLEAR_GRAPH $CORPUS_TAG $SAVE_INTERMEDIATE > "logs/index_${m}.log" 2>&1 &
         PIDS+=($!)
     done
     
@@ -136,5 +123,5 @@ if [ "$MODEL" = "all" ]; then
     fi
     echo "✅ All models indexed successfully!"
 else
-    "$PYTHON_BIN" main.py --mode index $DATASET --strategy "$MODEL" --model "$LLM" $N_COMPANIES $RAW_OCR $CLEAR_GRAPH $CORPUS_TAG $SAVE_INTERMEDIATE $SAMPLE $SAVE_TO $OCR
+    "$PYTHON_BIN" main.py --mode index $DATASET --strategy "$MODEL" --model "$LLM" $CLEAR_GRAPH $CORPUS_TAG $SAVE_INTERMEDIATE
 fi

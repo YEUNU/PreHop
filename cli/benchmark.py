@@ -9,14 +9,14 @@ from typing import Any, Optional
 
 from core.config import RAGConfig
 from core.vllm_client import get_llm_client
-from models.prehypo.graphrag import GraphRAG
+from models.prehop.graphrag import GraphRAG
 from models.naive.naive_rag import NaiveRAG
 from utils.io import _safe_float
-from utils.metrics import evaluate_financebench_response, evaluate_multihoprag_response
+from utils.metrics import evaluate_multihoprag_response
 from utils.reporting import _write_model_report_artifacts
 
 
-logger = logging.getLogger("PreHypo")
+logger = logging.getLogger("Prehop")
 
 
 _BOXED_RE = re.compile(r"\\boxed\{([^{}]+(?:\{[^{}]*\}[^{}]*)*)\}")
@@ -55,14 +55,12 @@ def _build_benchmark_query(query: str, item: dict[str, Any]) -> str:
     return query
 
 
-def _apply_judge_label(result_item: dict[str, Any], is_financebench: bool, is_multihoprag: bool) -> None:
-    """Derive answer_attempted / financebench_label (+ hallucination fallback)
+def _apply_judge_label(result_item: dict[str, Any]) -> None:
+    """Derive answer_attempted / answer_label (+ hallucination fallback)
     from the (possibly just-patched) llm_judge_score. Idempotent, so it can be
     re-run after the OpenAI batch resolves a deferred judge score.
     """
-    if not (is_financebench or is_multihoprag):
-        return
-    from utils.abstain import financebench_label, is_abstain
+    from utils.abstain import answer_label, is_abstain
     answer_text = str(result_item.get("answer", "") or "")
     has_error = bool(result_item.get("error"))
     # Detect abstain on the EXTRACTED final answer (\\boxed{} / 'Final Answer:'),
@@ -76,7 +74,7 @@ def _apply_judge_label(result_item: dict[str, Any], is_financebench: bool, is_mu
     # don't fabricate a label/attempt — leave it out of the 3-way tally.
     if judge_score < 0.0:
         result_item["answer_attempted"] = -1.0
-        result_item["financebench_label"] = "Unjudged"
+        result_item["answer_label"] = "Unjudged"
         return
 
     # Judge override: a score >= 0.5 means a usable answer regardless of phrasing.
@@ -89,10 +87,10 @@ def _apply_judge_label(result_item: dict[str, Any], is_financebench: bool, is_mu
     result_item["answer_attempted"] = answer_attempted
     if not isinstance(result_item.get("hallucination"), (int, float)):
         result_item["hallucination"] = 1.0 if (answer_attempted > 0.0 and judge_score < 1.0) else 0.0
-    result_item["financebench_label"] = financebench_label(judge_score, final_answer)
+    result_item["answer_label"] = answer_label(judge_score, final_answer)
 
 
-def _recompute_aggregates(s: dict[str, Any], is_financebench: bool, is_multihoprag: bool) -> None:
+def _recompute_aggregates(s: dict[str, Any]) -> None:
     """Recompute avg_<metric>, category_summaries and the 3-way label counts
     from ``s['details']`` in place. Shared by the live benchmark pass and the
     async batch reconcile step so both yield identical aggregates. Averages skip
@@ -122,19 +120,18 @@ def _recompute_aggregates(s: dict[str, Any], is_financebench: bool, is_multihopr
         cat_summaries[cat] = cat_sum
     s["category_summaries"] = cat_summaries
 
-    if is_financebench or is_multihoprag:
-        fb_counts = {"Correct Answer": 0, "Incorrect Answer": 0, "Refusal": 0}
-        for r in rows:
-            label = r.get("financebench_label")
-            if label in fb_counts:
-                fb_counts[label] += 1
-        total = sum(fb_counts.values()) or 1  # judged rows only ("Unjudged" excluded)
-        s["financebench_correct_count"] = fb_counts["Correct Answer"]
-        s["financebench_incorrect_count"] = fb_counts["Incorrect Answer"]
-        s["financebench_refusal_count"] = fb_counts["Refusal"]
-        s["financebench_correct_rate"] = fb_counts["Correct Answer"] / total
-        s["financebench_incorrect_rate"] = fb_counts["Incorrect Answer"] / total
-        s["financebench_refusal_rate"] = fb_counts["Refusal"] / total
+    label_counts = {"Correct Answer": 0, "Incorrect Answer": 0, "Refusal": 0}
+    for r in rows:
+        label = r.get("answer_label")
+        if label in label_counts:
+            label_counts[label] += 1
+    total = sum(label_counts.values()) or 1  # judged rows only ("Unjudged" excluded)
+    s["correct_count"] = label_counts["Correct Answer"]
+    s["incorrect_count"] = label_counts["Incorrect Answer"]
+    s["refusal_count"] = label_counts["Refusal"]
+    s["correct_rate"] = label_counts["Correct Answer"] / total
+    s["incorrect_rate"] = label_counts["Incorrect Answer"] / total
+    s["refusal_rate"] = label_counts["Refusal"] / total
 
 
 def _slim_details(details: Optional[list]) -> list:
@@ -206,8 +203,6 @@ async def reconcile_pending_judges(run_dir: Path) -> int:
         with open(result_file, "r", encoding="utf-8") as f:
             s = json.load(f)
         judge_model = m.get("judge_model", "")
-        is_fb = bool(m.get("is_financebench"))
-        is_mhr = bool(m.get("is_multihoprag"))
         patched = 0
         for row in s.get("details") or []:
             cid = row.get("judge_custom_id")
@@ -217,9 +212,9 @@ async def reconcile_pending_judges(run_dir: Path) -> int:
             if payload is None:
                 continue
             row.update(_resolve_judge_fields(payload, row.get("answer", ""), judge_model))
-            _apply_judge_label(row, is_fb, is_mhr)
+            _apply_judge_label(row)
             patched += 1
-        _recompute_aggregates(s, is_fb, is_mhr)
+        _recompute_aggregates(s)
         _write_slim_main(s, result_file)
         overview = {k: v for k, v in s.items() if k != "details"}
         with open(result_file.with_name(f"{result_file.stem}.summary.json"), "w", encoding="utf-8") as f:
@@ -256,9 +251,7 @@ async def run_benchmark(
         RAGConfig.LLM_SEED = int(seed)
 
     try:
-        if strategy in ("prehypo", "hyporeflect"):
-            # Legacy "hyporeflect" alias keeps the EMNLP-rebuttal ablation
-            # pointed at the pre-built HY_<corpus>_* labels without re-indexing.
+        if strategy == "prehop":
             engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
         elif strategy == "naive":
             engine = NaiveRAG(strategy=strategy, corpus_tag=corpus_tag)
@@ -300,19 +293,22 @@ async def run_benchmark(
         benchmark_data = benchmark_data[: max(0, int(limit))]
         logger.info("--limit %d: evaluating %d queries", limit, len(benchmark_data))
 
-    # Dataset dispatch via the per-query `dataset` marker. Both branches are
-    # LLM-judge scored, so the 3-way label / abstain post-processing below is
-    # shared; only the eval function (prompt + retrieval metrics) differs.
+    # Dataset dispatch via the per-query `dataset` marker. MultiHop-RAG,
+    # HotpotQA, and MuSiQue all share one query schema (evidence_docs +
+    # evidence_facts + category) and one evaluator
+    # (evaluate_multihoprag_response: fact-level MRR/MAP/Hits@K + LLM judge).
+    _MULTIHOP_DATASET_NAMES = {
+        "multihoprag": "MultiHop-RAG",
+        "hotpotqa": "HotpotQA",
+        "musique": "MuSiQue",
+    }
     dataset_marker = (benchmark_data[0].get("dataset", "") if benchmark_data else "").strip().lower()
-    if dataset_marker == "multihoprag":
-        dataset_kind = "multihoprag"
-        dataset_name = "MultiHop-RAG"
-    else:
-        # Default to FinanceBench (legacy datasets without a marker).
-        dataset_kind = "financebench"
-        dataset_name = "FinanceBench"
-    is_financebench = dataset_kind == "financebench"
-    is_multihoprag = dataset_kind == "multihoprag"
+    if dataset_marker not in _MULTIHOP_DATASET_NAMES:
+        raise ValueError(
+            f"Unrecognized dataset marker {dataset_marker!r} — queries must carry "
+            f"a 'dataset' field set to one of {sorted(_MULTIHOP_DATASET_NAMES)}."
+        )
+    dataset_name = _MULTIHOP_DATASET_NAMES[dataset_marker]
     results = []
     category_results = {}
 
@@ -392,12 +388,19 @@ async def run_benchmark(
             },
             "ablation": {
                 "table_to_text": RAGConfig.ABLATION_TABLE_TO_TEXT,
-                "adaptive_chunking": RAGConfig.ABLATION_ADAPTIVE_CHUNKING,
-                "rolling_summary": RAGConfig.ABLATION_ROLLING_SUMMARY,
+                "q_minus": RAGConfig.ABLATION_Q_MINUS,
+                "q_plus": RAGConfig.ABLATION_Q_PLUS,
+                "chunk_sentences": RAGConfig.CHUNK_SENTENCES,
+                "hop_mode": RAGConfig.HOP_MODE,
+                "hop_threshold": RAGConfig.HOP_THRESHOLD,
+                "reranker_threshold": RAGConfig.RERANKER_THRESHOLD,
+                "hypo_channel_variant": RAGConfig.HYPO_CHANNEL_VARIANT,
+                "company_anchoring": RAGConfig.COMPANY_ANCHORING,
+                "domain": RAGConfig.DOMAIN,
             },
         }
         s["details"] = results
-        _recompute_aggregates(s, is_financebench, is_multihoprag)
+        _recompute_aggregates(s)
         # Report artifacts first (writes full traces), then a slim main JSON
         # (no interaction_trace, no internal _-prefixed keys e.g. _deferred_judge).
         try:
@@ -420,40 +423,22 @@ async def run_benchmark(
             response, retrieved_sources, trace = await engine.run_workflow(query, [])
             latency = time.time() - started
 
-            if is_multihoprag:
-                metrics = await evaluate_multihoprag_response(
-                    query=original_query,
-                    response=response,
-                    ground_truth=ground_truth,
-                    retrieved_sources=retrieved_sources,
-                    evidence_facts=item.get("evidence_facts", []),
-                    evidence_docs=item.get("evidence_docs", []),
-                    question_type=item.get("question_type", ""),
-                    vllm_client=vllm,
-                    batch_collector=batch_collector,
-                    custom_id=str(idx),
-                )
-                expected_sources = {
-                    "docs": item.get("evidence_docs", []),
-                    "facts": item.get("evidence_facts", []),
-                }
-            else:
-                metrics = await evaluate_financebench_response(
-                    query=original_query,
-                    response=response,
-                    ground_truth=ground_truth,
-                    retrieved_sources=retrieved_sources,
-                    expected_doc=item.get("evidence_doc", ""),
-                    expected_page=item.get("evidence_page"),
-                    vllm_client=vllm,
-                    batch_collector=batch_collector,
-                    custom_id=str(idx),
-                )
-                expected_sources = {
-                    "doc": item.get("evidence_doc", ""),
-                    "page": item.get("evidence_page"),
-                    "text": item.get("evidence_text", ""),
-                }
+            metrics = await evaluate_multihoprag_response(
+                query=original_query,
+                response=response,
+                ground_truth=ground_truth,
+                retrieved_sources=retrieved_sources,
+                evidence_facts=item.get("evidence_facts", []),
+                evidence_docs=item.get("evidence_docs", []),
+                question_type=item.get("question_type", ""),
+                vllm_client=vllm,
+                batch_collector=batch_collector,
+                custom_id=str(idx),
+            )
+            expected_sources = {
+                "docs": item.get("evidence_docs", []),
+                "facts": item.get("evidence_facts", []),
+            }
             result_item = {
                 "query": original_query,
                 "category": category,
@@ -481,25 +466,15 @@ async def run_benchmark(
                 "hallucination_source": "runtime_error",
                 "hallucination_model": str(RAGConfig.EVAL_MODEL or ""),
                 "doc_match": 0.0,
-                "page_match": 0.0,
-            }
-            if is_multihoprag:
                 # Keep the same numeric keys the success path emits so the
                 # summary auto-averaging stays consistent across queries.
-                metrics.update({
-                    "mrr@10": 0.0, "map@10": 0.0, "hits@4": 0.0, "hits@10": 0.0,
-                    "evidence_doc_recall": 0.0,
-                })
-                expected_sources = {
-                    "docs": item.get("evidence_docs", []),
-                    "facts": item.get("evidence_facts", []),
-                }
-            else:
-                expected_sources = {
-                    "doc": item.get("evidence_doc", ""),
-                    "page": item.get("evidence_page"),
-                    "text": item.get("evidence_text", ""),
-                }
+                "mrr@10": 0.0, "map@10": 0.0, "hits@4": 0.0, "hits@10": 0.0,
+                "evidence_doc_recall": 0.0,
+            }
+            expected_sources = {
+                "docs": item.get("evidence_docs", []),
+                "facts": item.get("evidence_facts", []),
+            }
             result_item = {
                 "query": original_query,
                 "category": category,
@@ -516,11 +491,11 @@ async def run_benchmark(
         if query != original_query:
             result_item["benchmark_query"] = query
 
-        # Both FinanceBench and MultiHop-RAG are LLM-judge scored, so the
-        # 3-way label / answer_attempted / abstain post-processing is shared.
+        # Every dataset is LLM-judge scored, so the 3-way label /
+        # answer_attempted / abstain post-processing is shared.
         # In batch-judge mode the score here is the tentative heuristic; phase 2
         # re-runs this after the real batch score lands.
-        _apply_judge_label(result_item, is_financebench, is_multihoprag)
+        _apply_judge_label(result_item)
 
         async with write_lock:
             results.append(result_item)
@@ -563,7 +538,7 @@ async def run_benchmark(
                     continue
                 _, payload = await _call_judge_llm(deferred["prompt"], vllm)
                 r.update(_resolve_judge_fields(payload, deferred["response"], deferred["judge_model"]))
-                _apply_judge_label(r, is_financebench, is_multihoprag)
+                _apply_judge_label(r)
 
         if RAGConfig.JUDGE_BATCH_ASYNC:
             batch_id: Optional[str] = None
@@ -587,8 +562,6 @@ async def run_benchmark(
                     "strategy": strategy,
                     "corpus_tag": corpus_tag,
                     "dataset": dataset_name,
-                    "is_financebench": is_financebench,
-                    "is_multihoprag": is_multihoprag,
                     "submitted": batch_collector.count,
                 }
                 with open(pending_path, "w", encoding="utf-8") as f:
@@ -616,7 +589,7 @@ async def run_benchmark(
                         continue
                     payload = payloads.get(deferred["custom_id"])
                     r.update(_resolve_judge_fields(payload, deferred["response"], deferred["judge_model"]))
-                    _apply_judge_label(r, is_financebench, is_multihoprag)
+                    _apply_judge_label(r)
             summary = _recompute_and_persist()
 
     def _make_gate_check(actual: float, target: float, mode: str) -> dict[str, Any]:

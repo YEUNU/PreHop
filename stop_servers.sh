@@ -6,7 +6,7 @@ if [ -n "${JAVA_HOME:-}" ]; then
 fi
 
 SERVICE="${1:-all}"
-NEO4J_CONTAINER_NAME="${NEO4J_CONTAINER_NAME:-prehypo-neo4j}"
+NEO4J_CONTAINER_NAME="${NEO4J_CONTAINER_NAME:-prehop-neo4j}"
 
 resolve_neo4j_cmd() {
     if [ -n "${NEO4J_BIN:-}" ] && [ -x "${NEO4J_BIN}" ]; then
@@ -88,20 +88,7 @@ stop_neo4j() {
 stop_gen() {
     echo "[Generation] Stopping (port 28000)..."
     kill_port 28000
-    # Limit to the gen-on-28000 process so stop_gen does not kill gen2 (28010).
     kill_matching_processes "vllm serve.*--port 28000"
-}
-
-stop_gen2() {
-    echo "[Generation #2] Stopping (port 28010)..."
-    kill_port 28010
-    kill_matching_processes "vllm serve.*--port 28010"
-}
-
-stop_ocr() {
-    echo "[OCR] Stopping (port 28001)..."
-    kill_port 28001
-    kill_matching_processes "served-model-name ocr-model"
 }
 
 stop_embed() {
@@ -135,14 +122,6 @@ case "${SERVICE}" in
         stop_gen
         show_port_status 28000
         ;;
-    gen2)
-        stop_gen2
-        show_port_status 28010
-        ;;
-    ocr)
-        stop_ocr
-        show_port_status 28001
-        ;;
     embed)
         stop_embed
         show_port_status 18082
@@ -154,15 +133,13 @@ case "${SERVICE}" in
     all)
         stop_neo4j
         stop_gen
-        stop_gen2
-        stop_ocr
         stop_embed
         stop_rerank
         stop_cleanup
-        show_port_status 28000 28010 28001 18082 18083 7474 7687
+        show_port_status 28000 18082 18083 7474 7687
         ;;
     *)
-        echo "Usage: $0 {neo4j|gen|gen2|ocr|embed|rerank|all}"
+        echo "Usage: $0 {neo4j|gen|embed|rerank|all}"
         exit 1
         ;;
 esac

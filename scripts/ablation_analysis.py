@@ -27,7 +27,6 @@ import random
 import statistics
 import sys
 from pathlib import Path
-from typing import Optional
 
 METRIC_KEYS = [
     ("J", "llm_judge_score"),
@@ -41,7 +40,7 @@ METRIC_KEYS = [
 VARIANTS = ["full", "qminus_only", "qplus_only", "single_combined"]
 
 DISPLAY_NAME = {
-    "full": "PreHypo (Full)",
+    "full": "Prehop (Full)",
     "qminus_only": r"$-$Q$^+$ direction (Q$^-$-only)",
     "qplus_only": r"$-$Q$^-$ direction (Q$^+$-only)",
     "single_combined": r"$-$Direction split (Combined)",
@@ -341,7 +340,7 @@ def main():
     md_lines.append(_ascii_table(cond_rows, ["variant", "J|Att", "Jaccard(Att)", "∩/∪", "full-only", "var-only"]))
     md_lines.append("```")
     md_lines.append("")
-    md_lines.append("## 4. Table 2 rows (paste into prehypo.tex around l.393–409)")
+    md_lines.append("## 4. Table 2 rows (paste into prehop.tex around l.393–409)")
     md_lines.append("")
     md_lines.append("```latex")
     for v in VARIANTS:

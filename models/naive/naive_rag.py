@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import logging
-import os
 import re
 from typing import List, Dict, Optional
 
@@ -39,11 +38,7 @@ class NaiveRAG:
 
     @staticmethod
     def _build_ablation_profile() -> str:
-        return (
-            f"T{int(RAGConfig.ABLATION_TABLE_TO_TEXT)}"
-            f"C{int(RAGConfig.ABLATION_ADAPTIVE_CHUNKING)}"
-            f"S{int(RAGConfig.ABLATION_ROLLING_SUMMARY)}"
-        )
+        return f"T{int(RAGConfig.ABLATION_TABLE_TO_TEXT)}"
 
     async def setup_index(self):
         try:

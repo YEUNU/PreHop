@@ -1,9 +1,9 @@
-"""Query-level paired bootstrap: PreHypo vs each baseline (MultiHop-RAG sample200).
+"""Query-level paired bootstrap: Prehop vs each baseline (MultiHop-RAG sample200).
 
 The 5-fold CIs (fold n=40) overlap across strategies, so they cannot establish
-whether PreHypo's headline lead is real. This script pairs the per-query scores
+whether Prehop's headline lead is real. This script pairs the per-query scores
 by query string (all 4 strategies ran the identical sample200 file), computes the
-paired difference (prehypo - baseline) per query, and bootstraps the mean diff to
+paired difference (prehop - baseline) per query, and bootstraps the mean diff to
 a 95% CI. A diff whose CI excludes 0 is a statistically separated win/loss.
 
 - Judge / hallucination: computed over judged rows (sentinel -1 dropped); both
@@ -12,12 +12,12 @@ a 95% CI. A diff whose CI excludes 0 is a statistically separated win/loss.
   queries carry no gold (all-zero for every strategy), so they are excluded — the
   diff is over gold-bearing queries only.
 
-Outputs: a stats JSON + tidy CSV next to the prehypo run, and a forest-plot PNG
+Outputs: a stats JSON + tidy CSV next to the prehop run, and a forest-plot PNG
 into fig/.
 
 Usage:
   python scripts/mhr_paired_bootstrap.py \
-    --prehypo data/results/<new>/prehypo/multihoprag/prehypo_multihoprag.json \
+    --prehop data/results/<new>/prehop/multihoprag/prehop_multihoprag.json \
     --baselines data/results/<base>/{naive,hoprag,ms_graphrag}/multihoprag/*.json \
     --out-dir data/results/<new> --fig fig/mhr_bootstrap_forest.png
 """
@@ -44,10 +44,10 @@ def _load(path: str) -> tuple[str, dict[str, dict]]:
     return strat, by_query
 
 
-def _paired(prehypo: dict[str, dict], base: dict[str, dict], metric: str) -> np.ndarray:
+def _paired(prehop: dict[str, dict], base: dict[str, dict], metric: str) -> np.ndarray:
     diffs = []
     retrieval = metric in RETRIEVAL_METRICS
-    for q, pr in prehypo.items():
+    for q, pr in prehop.items():
         ba = base.get(q)
         if ba is None:
             continue
@@ -80,21 +80,21 @@ def _bootstrap(diffs: np.ndarray, rng: np.random.Generator) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--prehypo", required=True)
+    ap.add_argument("--prehop", required=True)
     ap.add_argument("--baselines", nargs="+", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--fig", default="fig/mhr_bootstrap_forest.png")
     args = ap.parse_args()
 
     rng = np.random.default_rng(SEED)
-    _, prehypo = _load(args.prehypo)
+    _, prehop = _load(args.prehop)
     baselines = dict(_load(p) for p in args.baselines)
 
     metrics = JUDGE_METRICS + RETRIEVAL_METRICS
     results: dict[str, dict[str, dict]] = {m: {} for m in metrics}
     for m in metrics:
         for strat, base in baselines.items():
-            results[m][strat] = _bootstrap(_paired(prehypo, base, m), rng)
+            results[m][strat] = _bootstrap(_paired(prehop, base, m), rng)
 
     out_dir = Path(args.out_dir)
     (out_dir / "mhr_paired_bootstrap.json").write_text(
@@ -113,8 +113,8 @@ def main() -> None:
     _plot(results, metrics, Path(args.fig))
 
     # console
-    print(f"PreHypo vs baselines — paired bootstrap (N={N_BOOT}, seed={SEED})")
-    print("  diff = prehypo - baseline; * = 95% CI excludes 0 (significant)")
+    print(f"Prehop vs baselines — paired bootstrap (N={N_BOOT}, seed={SEED})")
+    print("  diff = prehop - baseline; * = 95% CI excludes 0 (significant)")
     for m in metrics:
         arrow = " (lower better)" if m in LOWER_IS_BETTER else ""
         print(f"\n{m}{arrow}:")
@@ -159,7 +159,7 @@ def _plot(results: dict, metrics: list[str], fig_path: Path) -> None:
         ax.tick_params(axis="x", labelsize=8)
         ax.margins(y=0.25)
 
-    fig.suptitle("PreHypo − baseline (query-level paired bootstrap, 95% CI)  •  solid = CI excludes 0",
+    fig.suptitle("Prehop − baseline (query-level paired bootstrap, 95% CI)  •  solid = CI excludes 0",
                  fontsize=11, y=1.02)
     fig.tight_layout()
     fig_path.parent.mkdir(parents=True, exist_ok=True)

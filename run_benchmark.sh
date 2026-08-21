@@ -24,13 +24,10 @@ cd "$SCRIPT_DIR"
 PYTHON_BIN="$(resolve_python "$SCRIPT_DIR")" || exit 1
 
 # Default values
-QUERIES_FILE="data/financebench_queries.json"
-MODEL="prehypo"
+QUERIES_FILE="data/multihoprag_sample200_queries.json"
+MODEL="prehop"
 LLM="local"
-N_COMPANIES=""
 RUN_ALL=false
-SAMPLE=""
-OCR=""
 CORPUS_TAG=""
 
 # Parse arguments
@@ -39,10 +36,7 @@ while [ $# -gt 0 ]; do
         --queries) QUERIES_FILE="$2"; shift 2 ;;
         --model) MODEL="$2"; shift 2 ;;
         --llm) LLM="$2"; shift 2 ;;
-        --n) N_COMPANIES="--n $2"; shift 2 ;;
         --all) RUN_ALL=true; shift ;;
-        --sample) SAMPLE="--sample"; shift 1 ;;
-        --ocr) OCR="--ocr"; shift 1 ;;
         --corpus-tag) CORPUS_TAG="--corpus-tag $2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -87,7 +81,8 @@ if ! wait_for_server "http://localhost:28000/v1/models" "Generation Model"; then
 ./run_servers.sh embed
 if ! wait_for_server "http://localhost:18082/v1/models" "Embedding Model"; then exit 1; fi
 
-# Start Reranker Service
+# Start Reranker Service (needed by the hoprag/ms_graphrag baselines at
+# retrieval time; Prehop's own retrieval uses embedding similarity instead)
 ./run_servers.sh rerank
 if ! wait_for_server "http://localhost:18083/health" "Reranker Model"; then exit 1; fi
 
@@ -95,9 +90,9 @@ if ! wait_for_server "http://localhost:18083/health" "Reranker Model"; then exit
 echo ""
 echo "[Step] Running benchmark..."
 if [ "$RUN_ALL" = true ]; then
-    "$PYTHON_BIN" main.py --mode benchmark_all --queries_file "$QUERIES_FILE" --model "$LLM" $N_COMPANIES $SAMPLE $OCR $CORPUS_TAG
+    "$PYTHON_BIN" main.py --mode benchmark_all --queries_file "$QUERIES_FILE" --model "$LLM" $CORPUS_TAG
 else
-    "$PYTHON_BIN" main.py --mode benchmark --queries_file "$QUERIES_FILE" --strategy "$MODEL" --model "$LLM" $N_COMPANIES $SAMPLE $OCR $CORPUS_TAG
+    "$PYTHON_BIN" main.py --mode benchmark --queries_file "$QUERIES_FILE" --strategy "$MODEL" --model "$LLM" $CORPUS_TAG
 fi
 
 # [3] Generate human-readable run reports

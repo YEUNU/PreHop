@@ -15,17 +15,17 @@
 #   ./run_multihoprag.sh all                          # index all 4 + benchmark (sample100)
 #   ./run_multihoprag.sh index                        # index all 4 strategies
 #   ./run_multihoprag.sh benchmark --queries full     # benchmark all on full 2556
-#   ./run_multihoprag.sh index --model prehypo         # one strategy only
+#   ./run_multihoprag.sh index --model prehop         # one strategy only
 #
 # Options:
-#   --model   {all|prehypo|naive|hoprag|ms_graphrag}   default: all
+#   --model   {all|prehop|naive|hoprag|ms_graphrag}   default: all
 #   --queries {smoke|sample100|full}                   default: sample100
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"; cd "$SCRIPT_DIR"
 
-STRATEGIES=(prehypo naive hoprag ms_graphrag)
+STRATEGIES=(prehop naive hoprag ms_graphrag)
 
 STAGE="${1:-all}"; shift || true
 MODEL="all"

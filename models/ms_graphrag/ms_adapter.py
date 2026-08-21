@@ -10,7 +10,6 @@ as built by official_indexer.py. No re-indexing needed.
 """
 
 import logging
-import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 

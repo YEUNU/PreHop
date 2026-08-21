@@ -4,7 +4,7 @@ import string
 from difflib import SequenceMatcher
 from typing import List, Any, Optional
 from core.config import RAGConfig
-from utils.prompts import FINANCEBENCH_JUDGE_PROMPT, MULTIHOPRAG_JUDGE_PROMPT
+from utils.prompts import MULTIHOPRAG_JUDGE_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -28,76 +28,14 @@ def normalize_answer(s):
 
     return white_space_fix(remove_articles(remove_punc(lower(s))))
 
-# --- FinanceBench Specific Metrics ---
-
-def extract_numeric_value(s: str) -> float | None:
-    """
-    금융 값에서 숫자 추출.
-    "$1,577.00" → 1577.0
-    "8.70 billion" → 8.7 (단위 변환은 별도 처리 필요)
-    """
-    if not s:
-        return None
-    
-    # 통화 기호 및 쉼표 제거
-    cleaned = re.sub(r'[$€£¥,]', '', s.strip())
-    
-    # 숫자 패턴 매칭 (음수 포함)
-    match = re.search(r'-?\d+\.?\d*', cleaned)
-    if match:
-        try:
-            return float(match.group())
-        except ValueError:
-            return None
-    return None
-
-
-def calculate_financebench_accuracy(prediction: str, ground_truth: str) -> dict:
-    """
-    FinanceBench 금융 값 정확도 계산.
-    
-    Returns:
-        dict with 'exact_match', 'numeric_match', 'contains_match'
-    """
-    if not prediction or not ground_truth:
-        return {"exact_match": 0.0, "numeric_match": 0.0, "contains_match": 0.0}
-    
-    pred_norm = normalize_answer(prediction)
-    gt_norm = normalize_answer(ground_truth)
-    
-    # 1. Exact Match (정규화 후)
-    exact_match = 1.0 if pred_norm == gt_norm else 0.0
-    
-    # 2. Numeric Match (숫자 추출 후 비교)
-    pred_num = extract_numeric_value(prediction)
-    gt_num = extract_numeric_value(ground_truth)
-    
-    numeric_match = 0.0
-    if pred_num is not None and gt_num is not None:
-        # 상대 오차 5% 이내면 매칭
-        if gt_num != 0:
-            rel_error = abs(pred_num - gt_num) / abs(gt_num)
-            numeric_match = 1.0 if rel_error < 0.05 else 0.0
-        else:
-            numeric_match = 1.0 if pred_num == 0 else 0.0
-    
-    # 3. Contains Match (ground truth가 prediction에 포함)
-    contains_match = 1.0 if gt_norm in pred_norm else 0.0
-    
-    return {
-        "exact_match": exact_match,
-        "numeric_match": numeric_match,
-        "contains_match": contains_match
-    }
-
-
 def calculate_evidence_match(
-    retrieved_sources: List[Any], 
-    expected_doc: str, 
+    retrieved_sources: List[Any],
+    expected_doc: str,
     expected_page: int | None = None
 ) -> dict:
     """
-    FinanceBench 증거 매칭 - 문서/페이지 레벨.
+    증거 매칭 - 문서/페이지 레벨. `calculate_multihop_doc_recall`이
+    (page 없이) 재사용한다.
     Supports both string filenames and structured [title, page, ...] lists.
     
     Args:
@@ -216,8 +154,7 @@ async def _run_combined_judge(
 ) -> dict:
     """Run the shared single-call LLM judge and resolve (score, hallucination).
 
-    Both FinanceBench and MultiHop-RAG use the SAME judging machinery — one
-    LLM call returns `{score, hallucination, reason}` so the two judgements
+    One LLM call returns `{score, hallucination, reason}` so the two judgements
     stay internally consistent (score=1.0 ⇒ hallucination=0.0; honest abstain
     ⇒ both 0). When the judge produces no usable score the row is marked
     UNJUDGED_SCORE (-1), never silently 0. Returns the dataset-agnostic judge
@@ -341,42 +278,7 @@ async def _judge_or_defer(
     return await _run_combined_judge(judge_prompt, response, vllm_client)
 
 
-async def evaluate_financebench_response(
-    query: str,
-    response: str,
-    ground_truth: str,
-    retrieved_sources: List[Any],
-    expected_doc: str,
-    expected_page: Optional[int] = None,
-    vllm_client = None,
-    batch_collector = None,
-    custom_id = None,
-) -> dict:
-    """
-    FinanceBench 통합 평가 인터페이스 (LLM-as-a-judge + Evidence Match).
-    Score and hallucination come from a SINGLE LLM call (see
-    `_run_combined_judge`); evidence match is doc/page level.
-    """
-    judge_prompt = FINANCEBENCH_JUDGE_PROMPT.format(
-        query=query,
-        ground_truth=ground_truth,
-        response=response,
-    )
-    judge = await _judge_or_defer(
-        judge_prompt, response, vllm_client, batch_collector, custom_id
-    )
-
-    # Evidence Match (Doc & Page). Supports dict/list/str source types.
-    evidence_metrics = calculate_evidence_match(retrieved_sources, expected_doc, expected_page)
-
-    return {
-        **judge,
-        "doc_match": evidence_metrics["doc_match"],
-        "page_match": evidence_metrics["page_match"],
-    }
-
-
-# --- MultiHop-RAG Specific Metrics ---
+# --- Multi-hop dataset metrics (MultiHop-RAG, HotpotQA, MuSiQue) ---
 
 def _fact_matches_chunk(fact_norm: str, chunk_norm: str) -> bool:
     """True if a gold evidence fact is contained in / overlaps a retrieved
@@ -497,10 +399,12 @@ async def evaluate_multihoprag_response(
     batch_collector = None,
     custom_id = None,
 ) -> dict:
-    """MultiHop-RAG evaluation: type-aware LLM judge + fact-level retrieval
-    ranking metrics (MRR/MAP/Hits@K), per Tang & Yang (2024). Judging shares
-    `_run_combined_judge` with FinanceBench but uses MULTIHOPRAG_JUDGE_PROMPT
-    (news multi-hop framing, no numeric-unit reconciliation). Unscored rows are
+    """Shared evaluator for every multi-hop-shaped dataset (MultiHop-RAG,
+    HotpotQA, MuSiQue — any dataset whose queries carry evidence_docs +
+    evidence_facts + a category/question_type): type-aware LLM judge +
+    fact-level retrieval ranking metrics (MRR/MAP/Hits@K). Ranking-metric
+    methodology follows Tang & Yang (2024) (MultiHop-RAG). Judging uses
+    `_run_combined_judge` with MULTIHOPRAG_JUDGE_PROMPT. Unscored rows are
     marked UNJUDGED (-1), not 0.
     """
     judge_prompt = MULTIHOPRAG_JUDGE_PROMPT.format(
@@ -520,8 +424,6 @@ async def evaluate_multihoprag_response(
         **judge,
         **ranking,
         "evidence_doc_recall": doc_recall,
-        # doc_match kept for cross-dataset reporting parity (1.0 if any gold
-        # article surfaced); page_match is N/A for the news corpus.
+        # Coarse view of doc_recall (1.0 if any gold article surfaced).
         "doc_match": 1.0 if doc_recall > 0.0 else 0.0,
-        "page_match": 0.0,
     }

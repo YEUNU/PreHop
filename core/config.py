@@ -1,19 +1,16 @@
 import os
 
 class RAGConfig:
-    DATASET = os.environ.get("RAG_DATASET", "financebench").strip().lower() or "financebench"
-
     # Prompt domain: selects which framing the MODEL-SIDE prompts use
-    # (financial-filing vs. general/news multi-hop) for hypothetical-query
-    # generation, query rewrite, reranking, search-continuation, and answer
-    # synthesis. Explicit RAG_DOMAIN wins; otherwise derived from the dataset
-    # marker. main.py auto-detects from --dataset/--queries_file and exports
-    # RAG_DOMAIN before the prompt modules import.
-    _DOMAIN_BY_DATASET = {"multihoprag": "news", "financebench": "financial"}
-    DOMAIN = (
-        os.environ.get("RAG_DOMAIN", "").strip().lower()
-        or _DOMAIN_BY_DATASET.get(DATASET, "financial")
-    )
+    # (general/news multi-hop vs. financial-filing, the latter unreachable by
+    # default now that FinanceBench has been removed — manual override only)
+    # for hypothetical-query generation, query rewrite, reranking,
+    # search-continuation, and answer synthesis. Explicit RAG_DOMAIN wins;
+    # main.py auto-detects "news" from --dataset/--queries_file for every
+    # currently supported dataset (multihoprag/hotpotqa/musique) and exports
+    # RAG_DOMAIN before the prompt modules import. Defaults to "news" here as
+    # the safety net for any invocation path that skips that auto-detect.
+    DOMAIN = os.environ.get("RAG_DOMAIN", "").strip().lower() or "news"
 
     # Company-anchoring: FinanceBench queries are anchored to a single company,
     # so cross-company chunks and HOP edges are pure retrieval noise — the
@@ -32,20 +29,12 @@ class RAGConfig:
 
     # --- Infrastructure (Actual ports identified) ---
     VLLM_URL = os.environ.get("VLLM_URL", "http://localhost:28000/v1")
-    # Optional second generation endpoint for round-robin load balancing.
-    # When set (single URL or comma-separated list), the VLLMClient.client
-    # property picks the next URL on every access. Useful when running a
-    # second vllm serve process on a separate GPU.
-    VLLM_URL_2 = os.environ.get("VLLM_URL_2", "").strip()
-    VLLM_URLS = [u.strip() for u in (VLLM_URL + ("," + VLLM_URL_2 if VLLM_URL_2 else "")).split(",") if u.strip()]
     VLLM_EMBED_URL = os.environ.get("VLLM_EMBED_URL", "http://localhost:18082/v1")
-    VLLM_OCR_URL = os.environ.get("VLLM_OCR_URL", "http://localhost:28001/v1")
     VLLM_RERANK_URL = os.environ.get("VLLM_RERANK_URL", "http://localhost:18083/v1")
-    
+
     # --- LLM Settings ---
     DEFAULT_MODEL = os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
     EMBEDDING_MODEL = os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
-    OCR_MODEL = os.environ.get("VLLM_SERVED_OCR_MODEL_NAME", "ocr-model")
     
     # --- Evaluation (LLM-as-a-judge) ---
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -105,30 +94,19 @@ class RAGConfig:
     
     # --- Thresholds & Traversal ---
     HOP_THRESHOLD = float(os.environ.get("RAG_HOP_THRESHOLD", "0.82"))
-    SIMILARITY_THRESHOLD = float(os.environ.get("RAG_SIMILARITY_THRESHOLD", "0.65"))
-    HOP_DECAY = float(os.environ.get("RAG_HOP_DECAY", "0.85"))
     RERANKER_THRESHOLD = float(os.environ.get("RERANKER_THRESHOLD", "0.4"))
     RERANK_BATCH_SIZE = int(os.environ.get("RERANK_BATCH_SIZE", "32"))
     RERANK_QUERY_MAX_TOKENS = int(os.environ.get("RERANK_QUERY_MAX_TOKENS", "256"))
     RERANK_DOC_MAX_TOKENS = int(os.environ.get("RERANK_DOC_MAX_TOKENS", "2800"))
     RERANK_OVERFLOW_DOC_MAX_TOKENS = int(os.environ.get("RERANK_OVERFLOW_DOC_MAX_TOKENS", "1800"))
     
-    # --- OCR & PDF Processing Settings ---
-    OCR_TEMPERATURE = float(os.environ.get("VLLM_OCR_TEMPERATURE", "0.2"))
-    OCR_TOP_P = float(os.environ.get("VLLM_OCR_TOP_P", "0.9"))
-    PDF_DPI = int(os.environ.get("RAG_PDF_DPI", "200"))
-    PDF_MAX_DIM = int(os.environ.get("RAG_PDF_MAX_DIM", "1540"))
-    PDF_BATCH_SIZE = int(os.environ.get("RAG_PDF_BATCH_SIZE", "5"))
-    PDF_CONVERT_THREADS = int(os.environ.get("RAG_PDF_THREADS", "4"))
-    MAX_PARALLEL_PAGES = int(os.environ.get("RAG_MAX_PARALLEL_PAGES", "4"))
-    MAX_PARALLEL_PDFS = int(os.environ.get("RAG_MAX_PARALLEL_PDFS", "4"))
-    STREAMING_WINDOW_SIZE = int(os.environ.get("RAG_STREAMING_WINDOW_SIZE", "10"))
-    
     # --- Indexing Pipeline Settings ---
-    PAGE_SIMILARITY_THRESHOLD = float(os.environ.get("RAG_PAGE_SIMILARITY_THRESHOLD", "0.5"))
-    SENTENCE_COHESION_THRESHOLD = float(os.environ.get("RAG_SENTENCE_COHESION_THRESHOLD", "0.65"))
-    MILESTONE_INTERVAL = int(os.environ.get("RAG_MILESTONE_INTERVAL", "5"))
-    INDEXING_TEMPERATURE = float(os.environ.get("RAG_INDEXING_TEMPERATURE", "0.1"))
+    # Fixed-size chunking (core-only rewrite — replaces adaptive/embedding-
+    # similarity chunk splitting). Each page is windowed into chunks of
+    # CHUNK_SENTENCES sentences; a trailing window shorter than
+    # MIN_CHUNK_SENTENCES merges into the previous chunk instead of standing
+    # alone.
+    CHUNK_SENTENCES = int(os.environ.get("RAG_CHUNK_SENTENCES", "6"))
     MIN_CHUNK_SENTENCES = int(os.environ.get("RAG_MIN_CHUNK_SENTENCES", "2"))
     HOP_LINK_LIMIT = int(os.environ.get("RAG_HOP_LINK_LIMIT", "5"))
     CONTEXT_FETCH_LIMIT = int(os.environ.get("RAG_CONTEXT_FETCH_LIMIT", "10"))
@@ -170,13 +148,9 @@ class RAGConfig:
     BENCHMARK_MAX_AVG_LATENCY = float(os.environ.get("RAG_GATE_MAX_LATENCY", "45.0"))
     BENCHMARK_MIN_LLM_JUDGE = float(os.environ.get("RAG_GATE_MIN_LLM_JUDGE", "0.55"))
     BENCHMARK_MIN_DOC_MATCH = float(os.environ.get("RAG_GATE_MIN_DOC_MATCH", "0.60"))
-    BENCHMARK_MIN_F1 = float(os.environ.get("RAG_GATE_MIN_F1", "0.35"))
-    BENCHMARK_MIN_SP_F1 = float(os.environ.get("RAG_GATE_MIN_SP_F1", "0.25"))
 
     # --- Ablation & Experimental Toggles ---
     ABLATION_TABLE_TO_TEXT = os.environ.get("RAG_ABLATION_TABLE", "True").lower() == "true"
-    ABLATION_ADAPTIVE_CHUNKING = os.environ.get("RAG_ABLATION_CHUNKING", "True").lower() == "true"
-    ABLATION_ROLLING_SUMMARY = os.environ.get("RAG_ABLATION_SUMMARY", "True").lower() == "true"
 
     # Predictive Knowledge Mapping channel ablations.
     # ABLATION_Q_MINUS / ABLATION_Q_PLUS gate whether the Q-/Q+ channels
@@ -202,8 +176,5 @@ class RAGConfig:
 
     # HOP construction mode: "offline" pre-builds edges at indexing time
     # (default, paper config). "runtime" skips offline HOP construction and
-    # expands the frontier via Q+ ANN + cross-encoder rerank at query time.
+    # expands the frontier via Q+ ANN + embedding-similarity rerank at query time.
     HOP_MODE = os.environ.get("RAG_HOP_MODE", "offline").strip().lower() or "offline"
-
-    # --- Project Metadata ---
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

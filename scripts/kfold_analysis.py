@@ -24,7 +24,7 @@ import random
 from pathlib import Path
 from typing import Any, Optional
 
-# financebench_label is a string; we fold its three rates instead.
+# answer_label is a string; we fold its three rates instead.
 _LABELS = ("Correct Answer", "Incorrect Answer", "Refusal")
 
 
@@ -85,14 +85,14 @@ def _fold_stats(rows: list[dict], k: int, seed: int) -> dict[str, Any]:
             for f in folds
         ]
         out[m] = {**_agg(fold_means), "fold_means": fold_means}
-    # 3-way label rates per fold (FinanceBench taxonomy; applies to MultiHop too).
+    # 3-way label rates per fold (shared taxonomy across all datasets).
     # Denominator = judged rows in the fold (label in _LABELS); "Unjudged" excluded.
-    if any("financebench_label" in r for r in rows):
+    if any("answer_label" in r for r in rows):
         for label in _LABELS:
             fold_rates = []
             for f in folds:
-                judged = [i for i in f if rows[i].get("financebench_label") in _LABELS]
-                hits = sum(1 for i in judged if rows[i].get("financebench_label") == label)
+                judged = [i for i in f if rows[i].get("answer_label") in _LABELS]
+                hits = sum(1 for i in judged if rows[i].get("answer_label") == label)
                 fold_rates.append(hits / len(judged) if judged else 0.0)
             key = "rate_" + label.lower().replace(" ", "_")
             out[key] = {**_agg(fold_rates), "fold_means": fold_rates}

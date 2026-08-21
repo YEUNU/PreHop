@@ -1,13 +1,13 @@
 """Cross-strategy headline bars for MultiHop-RAG sample200, in the house style of
-fig/fig_direction_split.png (5-fold mean ± std, value labels, PreHypo highlighted).
+fig/fig_direction_split.png (5-fold mean ± std, value labels, Prehop highlighted).
 
 One panel per headline metric; bars = the 4 strategies. Error bars are the 5-fold
-(seed 42) std, matching the direction-split ablation figure. PreHypo is rendered
+(seed 42) std, matching the direction-split ablation figure. Prehop is rendered
 dark + black-edged (like "Full" in that figure); baselines are light green.
 
 Usage:
   python scripts/mhr_strategy_bars.py \
-    --prehypo data/results/<new>/prehypo/multihoprag/prehypo_multihoprag.json \
+    --prehop data/results/<new>/prehop/multihoprag/prehop_multihoprag.json \
     --baselines <base>/{naive,hoprag,ms_graphrag}/multihoprag/*.json \
     --fig fig/mhr_strategy_bars.png
 """
@@ -27,9 +27,9 @@ METRICS = [
     ("hits@4", r"Hits@4", False, True),
     ("evidence_doc_recall", "Evidence Doc Recall", False, True),
 ]
-# display order: PreHypo first (highlighted), then baselines
-ORDER = ["prehypo", "ms_graphrag", "hoprag", "naive"]
-LABELS = {"prehypo": "PreHypo", "ms_graphrag": "MS-GraphRAG", "hoprag": "HopRAG", "naive": "Naive"}
+# display order: Prehop first (highlighted), then baselines
+ORDER = ["prehop", "ms_graphrag", "hoprag", "naive"]
+LABELS = {"prehop": "Prehop", "ms_graphrag": "MS-GraphRAG", "hoprag": "HopRAG", "naive": "Naive"}
 SEED = 42
 K = 5
 
@@ -67,13 +67,13 @@ def _fold_mean_std(rows: list[dict], metric: str, gold_only: bool) -> tuple[floa
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--prehypo", required=True)
+    ap.add_argument("--prehop", required=True)
     ap.add_argument("--baselines", nargs="+", required=True)
     ap.add_argument("--fig", default="fig/mhr_strategy_bars.png")
     args = ap.parse_args()
 
     rows_by_strat = {}
-    s, r = _load(args.prehypo)
+    s, r = _load(args.prehop)
     rows_by_strat[s] = r
     for p in args.baselines:
         s, r = _load(p)
@@ -93,7 +93,7 @@ def main() -> None:
         "axes.edgecolor": "#333333",
     })
 
-    DARK = "#2E8B6F"     # PreHypo (highlight)
+    DARK = "#2E8B6F"     # Prehop (highlight)
     LIGHT = "#9ED4BF"    # baselines
     ncol = len(METRICS)
     fig, axes = plt.subplots(1, ncol, figsize=(3.4 * ncol, 4.2))
@@ -108,7 +108,7 @@ def main() -> None:
             stds.append(sd)
         x = np.arange(len(strategies))
         for i, st in enumerate(strategies):
-            highlight = (st == "prehypo")
+            highlight = (st == "prehop")
             ax.bar(x[i], means[i], width=0.72,
                    color=DARK if highlight else LIGHT,
                    edgecolor="black", linewidth=1.8 if highlight else 0.8,

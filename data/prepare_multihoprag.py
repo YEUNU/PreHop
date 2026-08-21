@@ -1,13 +1,12 @@
 """MultiHop-RAG 데이터셋 준비 (Tang & Yang, 2024).
 
-FinanceBench(`prepare_financebench.py`)와 동일한 산출물 규약을 따른다:
+`prepare_hotpotqa.py`/`prepare_musique.py`와 동일한 산출물 규약을 따른다:
   1. data/multihoprag_corpus/*.txt  — 뉴스 기사 1개 = 문서 1개 (인덱싱 입력)
   2. data/multihoprag_queries.json  — 벤치마크가 읽는 쿼리 포맷
      (dataset 마커 "multihoprag", question_type별 category, multi-hop 증거)
 
-회사/페이지 개념이 없으므로 --sample/--n, OCR, page_match는 사용하지 않는다.
-인덱싱·벤치마크 시 `--corpus-tag multihoprag`로 FinanceBench와 Neo4j 라벨을
-분리한다.
+회사/페이지 개념이 없으므로 OCR, page_match는 사용하지 않는다. 인덱싱·벤치마크
+시 `--corpus-tag multihoprag`로 다른 데이터셋과 Neo4j 라벨을 분리한다.
 """
 import argparse
 import html
@@ -24,11 +23,12 @@ def _clean(text) -> str:
     return html.unescape((text or "").strip())
 
 
-# MultiHop-RAG 공식 GitHub URLs (yixuantt/MultiHop-RAG). 데이터 파일은 Git
-# LFS로 관리되므로 raw.githubusercontent.com은 LFS 포인터 텍스트만 반환한다.
-# 실제 콘텐츠는 media.githubusercontent.com/media/ 엔드포인트에서 받는다.
-CORPUS_URL = "https://media.githubusercontent.com/media/yixuantt/MultiHop-RAG/main/dataset/corpus.json"
-QUERIES_URL = "https://media.githubusercontent.com/media/yixuantt/MultiHop-RAG/main/dataset/MultiHopRAG.json"
+# 공식 GitHub 저장소(yixuantt/MultiHop-RAG)의 dataset/ 디렉토리는 더 이상
+# 존재하지 않는다 (2026-08 기준 404) — 저장소 README가 안내하는 대로 데이터는
+# HuggingFace 데이터셋(yixuantt/MultiHopRAG)에서 받는다. 파일명(corpus.json,
+# MultiHopRAG.json)은 동일하게 유지된다.
+CORPUS_URL = "https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/main/corpus.json"
+QUERIES_URL = "https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/main/MultiHopRAG.json"
 
 DATA_DIR = Path("data")
 CORPUS_DIR = DATA_DIR / "multihoprag_corpus"
