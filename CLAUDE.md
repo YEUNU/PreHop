@@ -91,6 +91,10 @@ debug/index jobs.
 At most one of Prehop/HopRAG/MS GraphRAG runs at once by default; these are all
 generation-heavy. The scheduler scans ahead for Naive targets to fill the
 second slot, preserving parallel embedding work without generation contention.
+Naive batches 32 source documents per embedding/write transaction. Prehop's
+outer in-flight file cap defaults to 16; its generation semaphore remains 30,
+so short one-chunk corpora can use the endpoint without making long-document
+fan-out unbounded.
 
 A measured cold run must:
 

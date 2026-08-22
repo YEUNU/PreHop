@@ -267,6 +267,12 @@ The scheduler additionally caps generation-heavy targets at one in flight
 target to occupy the remaining width. This policy was selected after a cold
 run showed Prehop throughput fall from roughly 7 to 2–3 documents/minute when
 official HopRAG began generating concurrently on the shared endpoint.
+Naive uses document batches of 32: it parses every source, flattens all chunks
+into one external embedding request stream, validates every vector, and
+atomically replaces the batch's source nodes in one Neo4j transaction. This
+turns short-document datasets into real embedding batches instead of thousands
+of one-item requests. The measured 64-document HotpotQA probe processed 47.1
+documents/s and returned the exact 64-source/72-chunk topology.
 
 The measurement set directly addresses the indexing-time tradeoff: overall
 and Prehop phase latency, logical storage, document/chunk/question/edge counts,

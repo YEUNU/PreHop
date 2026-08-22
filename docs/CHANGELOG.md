@@ -30,6 +30,11 @@ After observing Prehop throughput drop from about 7 to 2–3 documents/minute
 when HopRAG joined the same generation endpoint, the matrix scheduler now caps
 generation-heavy targets at one and fills spare width with Naive targets from
 later datasets.
+Naive now embeds and writes 32 documents at once. A live 64-document HotpotQA
+probe improved throughput from roughly 3 to 47.1 documents/s with exact source,
+chunk, and embedding-dimension integrity. The Prehop file in-flight default is
+16 (still bounded by the 30-request generation semaphore) to avoid
+under-utilizing the endpoint on one-chunk corpora.
 
 Judge hallucination is no longer inferred from an incorrect-answer score.
 OpenAI Batch reconciliation requires both explicit fields for every row and

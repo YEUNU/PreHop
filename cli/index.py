@@ -291,7 +291,7 @@ async def _run_indexing_unlocked(
     # simultaneously. Each file can fan out one generation task per chunk;
     # VLLMClient applies one process-wide-per-event-loop request semaphore,
     # while this outer gate bounds resident document/chunk state.
-    file_concurrency = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "4")))
+    file_concurrency = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "16")))
     file_semaphore = asyncio.Semaphore(file_concurrency)
     progress = {"started": 0, "completed": 0, "lock": asyncio.Lock()}
     failed_files = []
@@ -337,8 +337,6 @@ async def _run_indexing_unlocked(
                 if is_graph:
                     knowledge = await engine.extract_knowledge(content, source=filename, prepared_pages=prepared_pages)
                     await engine.build_graph(knowledge, source=filename, document_filename=filename)
-                else:
-                    await engine.index_document(filename, content)
                 async with progress["lock"]:
                     stats["succeeded"] += 1
                     progress["completed"] += 1
@@ -353,9 +351,10 @@ async def _run_indexing_unlocked(
     # implementation loaded and scheduled every file at once (66k+ for
     # HotpotQA), which inflated memory and event-loop overhead before useful
     # work started.
+    default_schedule_batch = 32 if not is_graph else file_concurrency * 2
     schedule_batch = max(
         file_concurrency,
-        int(os.environ.get("RAG_FILE_SCHEDULE_BATCH", str(file_concurrency * 2))),
+        int(os.environ.get("RAG_FILE_SCHEDULE_BATCH", str(default_schedule_batch))),
     )
     parse_worker_cap = max(1, int(os.environ.get("RAG_PARSE_WORKERS", str(min(8, os.cpu_count() or 4)))))
     parse_pool = ProcessPoolExecutor(max_workers=parse_worker_cap, mp_context=_PARSE_MP_CTX) if is_graph else None
@@ -387,6 +386,37 @@ async def _run_indexing_unlocked(
                 file_contents.append((filename, result))
 
             prepared_lookup: dict[str, dict] = {}
+            if not is_graph and file_contents:
+                batch_label = f"{file_contents[0][0]}..{file_contents[-1][0]}"
+                async with progress["lock"]:
+                    progress["started"] += len(file_contents)
+                try:
+                    indexed = await engine.index_documents(file_contents)
+                    if indexed != len(file_contents):
+                        raise RuntimeError(
+                            f"Naive batch reported {indexed} documents, expected {len(file_contents)}"
+                        )
+                    async with progress["lock"]:
+                        stats["succeeded"] += indexed
+                        progress["completed"] += indexed
+                    logger.info(
+                        "Indexing progress | completed=%d/%d failed=%d remaining=%d | batch: %s",
+                        progress["completed"],
+                        len(files),
+                        len(failed_files),
+                        len(files) - progress["completed"],
+                        batch_label,
+                    )
+                except Exception as exc:  # noqa: BLE001 - one atomic batch has one failure boundary
+                    logger.error("Failed to index Naive document batch %s: %s", batch_label, exc)
+                    async with progress["lock"]:
+                        failed_files.extend(
+                            {"item": filename, "stage": "index_batch", "error": str(exc)}
+                            for filename, _content in file_contents
+                        )
+                        progress["completed"] += len(file_contents)
+                continue
+
             if parse_pool is not None and file_contents:
                 parse_tasks = [
                     loop.run_in_executor(parse_pool, parse_pages_offline, filename, content)

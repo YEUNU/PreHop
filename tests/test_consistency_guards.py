@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -268,6 +268,35 @@ def test_naive_uses_shared_page_scoped_fixed_windows(monkeypatch):
         {"text": "One. Two. Three.", "page": 1, "sent_id": 0},
         {"text": "Four. Five.", "page": 2, "sent_id": 1},
     ]
+
+
+@pytest.mark.asyncio
+async def test_naive_batches_embeddings_across_source_documents(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "EMBEDDING_DIMENSIONS", 2)
+    rag = NaiveRAG(strategy="naive", corpus_tag="batch_test")
+    rag.vllm.get_embeddings = AsyncMock(return_value=[[1.0, 0.0], [0.0, 1.0]])
+    rag._ensure_index_ready = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    result = AsyncMock()
+    session = AsyncMock()
+    session.run.return_value = result
+    context = AsyncMock()
+    context.__aenter__.return_value = session
+    context.__aexit__.return_value = False
+    rag.neo4j.driver.session = MagicMock(return_value=context)
+
+    indexed = await rag.index_documents(
+        [
+            ("first.txt", "Title: First\nOne sentence."),
+            ("second.txt", "Title: Second\nAnother sentence."),
+        ]
+    )
+
+    assert indexed == 2
+    rag.vllm.get_embeddings.assert_awaited_once()
+    assert len(rag.vllm.get_embeddings.await_args.args[0]) == 2
+    assert session.run.await_args.kwargs["sources"] == ["first.txt", "second.txt"]
 
 
 def test_debug_output_is_namespaced_by_run_strategy_and_corpus(monkeypatch):

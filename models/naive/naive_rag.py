@@ -106,22 +106,31 @@ class NaiveRAG:
                 sent_id += 1
         return parsed["title"], chunks
 
-    async def index_document(self, filename: str, content: str):
-        title, chunks = self._parse_document(filename, content)
-        if not chunks:
-            raise ValueError(f"No indexable chunks found for {filename!r}")
+    async def index_documents(self, documents: list[tuple[str, str]]) -> int:
+        """Embed and atomically replace a batch of source documents."""
+        if not documents:
+            return 0
+        prepared: list[tuple[str, str, list[dict]]] = []
+        texts: list[str] = []
+        for filename, content in documents:
+            title, chunks = self._parse_document(filename, content)
+            if not chunks:
+                raise ValueError(f"No indexable chunks found for {filename!r}")
+            prepared.append((filename, title, chunks))
+            # Keep document/version scope in the vector representation.
+            texts.extend(f"Document title: {title}\n{chunk['text']}" for chunk in chunks)
 
-        # Keep document/version scope in the vector representation. Prehop's
-        # body channel uses the identical representation so retrieval-only
-        # comparisons do not gain an asymmetric title signal.
-        texts = [f"Document title: {title}\n{chunk['text']}" for chunk in chunks]
+        # Flattening across source files is essential for short-document
+        # corpora: HotpotQA usually has one chunk per file, so per-document
+        # calls silently turned a configured batch size of 32 into 66k
+        # one-item requests.
         embeddings = await self.vllm.get_embeddings(texts)
-        if len(embeddings) != len(chunks) or any(
+        if len(embeddings) != len(texts) or any(
             len(embedding) != RAGConfig.EMBEDDING_DIMENSIONS for embedding in embeddings
         ):
             raise ValueError(
-                f"NaiveRAG embedding failure for {title!r}: "
-                f"expected {len(chunks)} vectors of dimension {RAGConfig.EMBEDDING_DIMENSIONS}, "
+                "NaiveRAG batch embedding failure: "
+                f"expected {len(texts)} vectors of dimension {RAGConfig.EMBEDDING_DIMENSIONS}, "
                 f"got {len(embeddings)}"
             )
 
@@ -130,25 +139,31 @@ class NaiveRAG:
         await self._ensure_index_ready()
 
         batch_data = []
-        for chunk, emb in zip(chunks, embeddings):
-            i = chunk["sent_id"]
-            # Namespace by corpus + ablation profile to avoid cross-branch collisions in Neo4j.
-            chunk_id = hashlib.md5(f"naive|{self.branch_namespace}|{filename}|{title}|{i}".encode()).hexdigest()
-            batch_data.append(
-                {
-                    "id": chunk_id,
-                    "text": chunk["text"],
-                    "source": filename,
-                    "title": title,
-                    "sent_id": i,
-                    "page": chunk["page"],
-                    "embedding": emb,
-                }
-            )
+        embedding_index = 0
+        for filename, title, chunks in prepared:
+            for chunk in chunks:
+                embedding = embeddings[embedding_index]
+                embedding_index += 1
+                sent_id = chunk["sent_id"]
+                chunk_id = hashlib.md5(
+                    f"naive|{self.branch_namespace}|{filename}|{title}|{sent_id}".encode()
+                ).hexdigest()
+                batch_data.append(
+                    {
+                        "id": chunk_id,
+                        "text": chunk["text"],
+                        "source": filename,
+                        "title": title,
+                        "sent_id": sent_id,
+                        "page": chunk["page"],
+                        "embedding": embedding,
+                    }
+                )
 
         async with self._lock, self.neo4j.driver.session() as session:
             query = f"""
-                    OPTIONAL MATCH (old:{self.chunk_label} {{source: $source}})
+                    OPTIONAL MATCH (old:{self.chunk_label})
+                    WHERE old.source IN $sources
                     WITH collect(old) AS old_chunks, $batch AS replacement
                     FOREACH (old IN old_chunks | DETACH DELETE old)
                     WITH replacement
@@ -161,10 +176,23 @@ class NaiveRAG:
                         c.page = item.page,
                         c.embedding = item.embedding
                 """
-            result = await session.run(query, batch=batch_data, source=filename)  # type: ignore
+            result = await session.run(  # type: ignore
+                query,
+                batch=batch_data,
+                sources=[filename for filename, _title, _chunks in prepared],
+            )
             await result.consume()
 
-        self.logger.info("NaiveRAG: indexed %d fixed-window chunks for %s", len(batch_data), title)
+        self.logger.info(
+            "NaiveRAG: indexed %d fixed-window chunks for %d documents in one embedding/write batch",
+            len(batch_data),
+            len(prepared),
+        )
+        return len(prepared)
+
+    async def index_document(self, filename: str, content: str):
+        """Compatibility wrapper for one-document callers and live smoke tests."""
+        await self.index_documents([(filename, content)])
 
     async def retrieve(self, query: str, top_k: int = RAGConfig.DEFAULT_TOP_K) -> tuple:
         query_embedding = await self.vllm.get_embedding(query)
