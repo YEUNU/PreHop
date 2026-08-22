@@ -28,6 +28,40 @@ async def test_empty_dataset_fails_instead_of_reporting_zero_success(tmp_path):
         await run_indexing(str(tmp_path), "prehop", "default")
 
 
+@pytest.mark.asyncio
+async def test_graph_clear_uses_bounded_delete_transactions(monkeypatch):
+    from main import _clear_graph_and_schema
+
+    monkeypatch.setenv("RAG_NEO4J_CLEAR_BATCH_SIZE", "17")
+    delete_counts = iter((17, 3, 0))
+    calls = []
+
+    async def execute(query, parameters=None):
+        calls.append((query, parameters))
+        if query.startswith("SHOW CONSTRAINTS"):
+            return []
+        if query.startswith("SHOW INDEXES") and "count(*)" not in query:
+            return []
+        if "DETACH DELETE" in query:
+            return [{"deleted": next(delete_counts)}]
+        if query.startswith("MATCH (n) RETURN"):
+            return [{"node_count": 0}]
+        if query.startswith("SHOW INDEXES"):
+            return [{"index_count": 0}]
+        raise AssertionError(query)
+
+    neo4j = MagicMock()
+    neo4j.execute_query = AsyncMock(side_effect=execute)
+
+    await _clear_graph_and_schema(neo4j)
+
+    delete_calls = [(query, params) for query, params in calls if "DETACH DELETE" in query]
+    assert len(delete_calls) == 3
+    assert all(params == {"batch": 17} for _query, params in delete_calls)
+    first_delete_index = next(index for index, (query, _params) in enumerate(calls) if "DETACH DELETE" in query)
+    assert all("SHOW" in query for query, _params in calls[:first_delete_index])
+
+
 def test_benchmark_schema_rejects_missing_query():
     with pytest.raises(ValueError, match="non-empty 'query'"):
         _validate_benchmark_data([{"dataset": "hotpotqa"}], "queries.json")

@@ -10,7 +10,9 @@ the generation-heavy width rather than all matrix slots. Resource retries also
 halve the target's global LLM semaphore in addition to Prehop file, HopRAG
 adapter, and MS GraphRAG adapter concurrency. The 128-sequence full-run profile
 therefore starts at 120 generation calls with eight sequences of headroom; no
-official baseline implementation is changed.
+official baseline implementation is changed. Cold graph reset now drops stale
+application schema first and deletes nodes in bounded transactions, halving
+the batch on Neo4j transaction-memory exhaustion.
 
 ## 2026-08-22 — Individual question graph and evidence-directed HOP/NEXT
 

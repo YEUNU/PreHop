@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from dotenv import load_dotenv
+from neo4j.exceptions import TransientError
 
 load_dotenv()
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -42,8 +43,8 @@ logger = logging.getLogger("Prehop")
 
 async def _clear_graph_and_schema(neo4j: Neo4jService) -> None:
     """Remove graph data and stale application schema from the selected DB."""
-    await neo4j.execute_query("MATCH (n) DETACH DELETE n")
-
+    # Drop application schema first. Besides ensuring a cold rebuild, this
+    # releases vector/full-text maintenance state before large node deletes.
     constraints = await neo4j.execute_query("SHOW CONSTRAINTS YIELD name RETURN name")
     for row in constraints:
         name = str(row.get("name", ""))
@@ -60,6 +61,32 @@ async def _clear_graph_and_schema(neo4j: Neo4jService) -> None:
         if name:
             escaped = name.replace("`", "``")
             await neo4j.execute_query(f"DROP INDEX `{escaped}` IF EXISTS")
+
+    # One DETACH DELETE transaction can exceed Neo4j's transaction-memory cap
+    # on a full experiment matrix. Delete in committed batches and reduce the
+    # batch on the specific transient memory error. A failed transaction is
+    # rolled back, so retrying the same batch cannot partially overlap data.
+    clear_batch = int(os.environ.get("RAG_NEO4J_CLEAR_BATCH_SIZE", "1000"))
+    if clear_batch < 1:
+        raise ValueError("RAG_NEO4J_CLEAR_BATCH_SIZE must be positive")
+    deleted_total = 0
+    while True:
+        try:
+            rows = await neo4j.execute_query(
+                "MATCH (n) WITH n LIMIT $batch DETACH DELETE n RETURN count(*) AS deleted",
+                {"batch": clear_batch},
+            )
+        except TransientError as exc:
+            if "MemoryPoolOutOfMemoryError" not in str(exc) or clear_batch == 1:
+                raise
+            clear_batch = max(1, clear_batch // 2)
+            logger.warning("Neo4j clear hit transaction memory limit; retrying with batch=%d", clear_batch)
+            continue
+        deleted = int(rows[0].get("deleted", 0)) if rows else 0
+        deleted_total += deleted
+        if deleted == 0:
+            break
+    logger.info("Neo4j clear removed %d nodes in bounded transactions", deleted_total)
 
     verification = await neo4j.execute_query("MATCH (n) RETURN count(n) AS node_count")
     remaining = await neo4j.execute_query(
