@@ -63,27 +63,7 @@ class HopEdgeMixin:
             "src_source": hop_src["source"],
             "src_company": src_company,
         }
-        results = await self.retry_query(query, params)
-        if results:
-            return results
-
-        fallback_query = """
-            CALL db.index.vector.queryNodes($index, 15, $embed)
-            YIELD node, score
-            WHERE node.id <> $src_id
-              AND node.source <> $src_source
-              AND ($src_company = '' OR node.company = $src_company)
-              AND node.q_minus_embedding IS NOT NULL
-            RETURN node.id as id, node.text as text, score
-        """
-        fallback_params = {
-            "index": self.q_minus_vector_index,
-            "embed": hop_src["q_plus_embed"],
-            "src_id": hop_src["id"],
-            "src_source": hop_src["source"],
-            "src_company": src_company,
-        }
-        return await self.retry_query(fallback_query, fallback_params)
+        return await self.retry_query(query, params)
 
     async def _process_hop_wave(
         self,

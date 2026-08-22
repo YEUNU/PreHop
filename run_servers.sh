@@ -29,6 +29,11 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Ensure the venv's own bin/ (ninja, etc.) is on PATH — FlashInfer's JIT
+# compilation shells out to a bare `ninja`, and pip-installed ninja only
+# provides a console-script entry point under .venv/bin, not a system binary.
+export PATH="$SCRIPT_DIR/.venv/bin:$PATH"
+
 # Load .env so GPU placement (and any other vars) can be configured there.
 # `set -a` exports every assignment; existing shell env still wins via :- below.
 if [ -f "$SCRIPT_DIR/.env" ]; then

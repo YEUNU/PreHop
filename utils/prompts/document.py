@@ -1,18 +1,3 @@
-GLOBAL_SUMMARY_PROMPT = """
-Analyze the provided page summaries to generate document-level metadata.
-Rules:
-1. Summary: Provide 3-5 concise sentences covering the entire document.
-2. Keywords: Extract 5-7 specific technical terms.
-
-PAGES:
-{text}
-"""
-
-GLOBAL_SUMMARY_FORMAT_INSTRUCTION = """
-Output ONLY JSON:
-{{"title": "String", "summary": "String", "keywords": []}}
-"""
-
 TABLE_TO_TEXT_PROMPT = """
 Convert this table into plain text sentences.
 Rules:

@@ -1,8 +1,10 @@
-"""Official MS GraphRAG indexing wired to local vLLM.
+"""Official MS GraphRAG indexing wired to our vLLM/LiteLLM endpoints.
 
-Builds a GraphRagConfig that points LiteLLM at our local vLLM endpoints
-(:28000 generation, :18082 embedding) and runs the standard pipeline
-(extract_graph → Leiden communities → community reports → embeddings).
+Builds a GraphRagConfig that points LiteLLM at VLLM_URL/VLLM_EMBED_URL (the
+LiteLLM proxy by default — see CLAUDE.md "Model / inference infra"; override
+with RAG_MS_GEN_API_BASE(S)/RAG_MS_EMBED_API_BASE for a different endpoint)
+and runs the standard pipeline (extract_graph → Leiden communities →
+community reports → embeddings).
 
 Outputs parquet under data/ms_graphrag_output/<corpus_tag>/. The query-time
 adapter reads these parquet files instead of expecting Neo4j Community nodes.
@@ -18,20 +20,28 @@ from typing import Optional
 logger = logging.getLogger("Prehop")
 
 
-# vLLM endpoints — fixed by run_servers.sh. gen=28000 (GPU 1), gen2=28010 (GPU 0).
-# Default round-robins across both so MS uses both GPUs; primary base (passed
-# as ModelConfig.api_base) is the first entry, but the LiteLLM Router monkey-
+# Defaults to VLLM_URL (the LiteLLM proxy by default). RAG_MS_GEN_API_BASES
+# can still list multiple comma-separated endpoints for local multi-GPU
+# round-robin (e.g. two local vLLM servers) — primary base (passed as
+# ModelConfig.api_base) is the first entry, but the LiteLLM Router monkey-
 # patch below intercepts and shuffles across all bases per call.
 _GEN_API_BASES = [
     s.strip() for s in os.environ.get(
         "RAG_MS_GEN_API_BASES",
-        "http://localhost:28000/v1,http://localhost:28010/v1",
+        os.environ.get("VLLM_URL", "http://localhost:28000/v1"),
     ).split(",") if s.strip()
 ]
 _GEN_API_BASE = _GEN_API_BASES[0]
 _GEN_MODEL_NAME = os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
-_EMBED_API_BASE = os.environ.get("RAG_MS_EMBED_API_BASE", "http://localhost:18082/v1")
-_EMBED_MODEL_NAME = os.environ.get("RAG_MS_EMBED_MODEL_NAME", "embedding-model")
+_EMBED_API_BASE = os.environ.get("RAG_MS_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", "http://localhost:18082/v1"))
+_EMBED_MODEL_NAME = os.environ.get("RAG_MS_EMBED_MODEL_NAME", os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model"))
+_GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
+# Must match the configured embedding model's real output dimension or
+# LanceDB rejects the embedding parquet on a FixedSizeList shape mismatch —
+# same constraint as NEO4J_VECTOR_DIMENSIONS for prehop/naive/hoprag's Neo4j
+# vector indexes (see CLAUDE.md "Model / inference infra"), reused here since
+# it's the same one embedding model across every strategy.
+_EMBED_DIM = int(os.environ.get("RAG_MS_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")))
 
 # Where parquet artifacts land. corpus_tag-scoped so different runs don't clobber.
 _OUTPUT_ROOT = Path(os.environ.get("RAG_MS_OUTPUT_ROOT", "data/ms_graphrag_output"))
@@ -128,7 +138,7 @@ def _register_local_models_with_litellm() -> None:
     litellm.register_model({
         f"openai/{_GEN_MODEL_NAME}": {**base_meta, "mode": "chat"},
         f"openai/{_EMBED_MODEL_NAME}": {**base_meta, "mode": "embedding",
-                                        "max_input_tokens": 8192, "output_vector_size": 1024},
+                                        "max_input_tokens": 8192, "output_vector_size": _EMBED_DIM},
     })
 
 
@@ -136,8 +146,9 @@ _ROUTER_INSTALLED = False
 
 
 def _install_litellm_router_for_gen() -> None:
-    """Monkey-patch litellm.acompletion to round-robin gen-chat across multiple
-    vLLM endpoints (28000/GPU1 + 28010/GPU0). graphrag-llm calls bare
+    """Monkey-patch litellm.acompletion to round-robin gen-chat across
+    multiple endpoints when RAG_MS_GEN_API_BASES lists more than one (a no-op
+    with the default single LiteLLM-proxy endpoint). graphrag-llm calls bare
     `litellm.acompletion(**args)`; we intercept only when model matches our
     local gen model and delegate to a Router with simple-shuffle. Embedding +
     any other model passes through unchanged.
@@ -174,7 +185,7 @@ def _install_litellm_router_for_gen() -> None:
             "litellm_params": {
                 "model": target,
                 "api_base": ab,
-                "api_key": "EMPTY",
+                "api_key": _GEN_API_KEY,
             },
         }
         for ab in live_bases
@@ -255,7 +266,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
                 model_provider="openai",
                 model=_GEN_MODEL_NAME,
                 api_base=_GEN_API_BASE,
-                api_key="EMPTY",
+                api_key=_GEN_API_KEY,
                 call_args=completion_call_args,
             ),
             "report_completion_model": ModelConfig(
@@ -263,7 +274,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
                 model_provider="openai",
                 model=_GEN_MODEL_NAME,
                 api_base=_GEN_API_BASE,
-                api_key="EMPTY",
+                api_key=_GEN_API_KEY,
                 call_args=report_call_args,
             ),
         },
@@ -273,7 +284,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
                 model_provider="openai",
                 model=_EMBED_MODEL_NAME,
                 api_base=_EMBED_API_BASE,
-                api_key="EMPTY",
+                api_key=_GEN_API_KEY,
                 call_args={"encoding_format": "float"},
             ),
         },
@@ -289,16 +300,17 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
         cache=CacheConfig(
             storage=StorageConfig(type=StorageType.File, base_dir=str(cache_dir)),
         ),
-        # Qwen3-Embedding-0.6B emits 1024-dim vectors; default IndexSchema
-        # assumes 3072 (text-embedding-3-large). Without the override, lancedb
-        # rejects the embedding parquet on a FixedSizeList shape mismatch.
-        # Keys MUST match generate_text_embeddings.py's embedded_fields:
-        # entity_description / community_full_content / text_unit_text
-        # (graphrag.config.embeddings constants), not arbitrary names.
+        # Must match the configured embedding model's real dim (_EMBED_DIM
+        # above); default IndexSchema assumes 3072 (text-embedding-3-large).
+        # Without the override, lancedb rejects the embedding parquet on a
+        # FixedSizeList shape mismatch. Keys MUST match
+        # generate_text_embeddings.py's embedded_fields: entity_description /
+        # community_full_content / text_unit_text (graphrag.config.embeddings
+        # constants), not arbitrary names.
         vector_store=VectorStoreConfig(
             db_uri=str(out_dir / "lancedb"),
             index_schema={
-                name: IndexSchema(index_name=name, vector_size=1024)
+                name: IndexSchema(index_name=name, vector_size=_EMBED_DIM)
                 for name in (
                     "entity_description",
                     "community_full_content",

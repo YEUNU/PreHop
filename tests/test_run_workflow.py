@@ -93,7 +93,7 @@ def _make_rag_with_mocks(
     rag = GraphRAG(strategy="prehop")
     rag.llm = MagicMock()
     rag.llm.generate_response = AsyncMock(return_value=llm_answer)
-    rag.graph_search = AsyncMock(return_value=(context, nodes or []))
+    rag.graph_search = AsyncMock(return_value=(context, nodes or [], {"retrieve_ms": 0.0, "traversal_ms": 0.0}))
     rag.retrieve = AsyncMock(return_value=(context, nodes or []))
     # Pin graph_depth at the config layer so we test both branches.
     rag_patch = patch("core.config.RAGConfig.GRAPH_HOP_DEPTH", graph_depth)

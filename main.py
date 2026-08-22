@@ -57,7 +57,7 @@ def _preset_rag_domain() -> None:
 _preset_rag_domain()
 
 from cli.benchmark import run_benchmark_multi_seed, reconcile_pending_judges
-from cli.index import run_indexing
+from cli.index import run_indexing, rebuild_hop_edges
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient
 
@@ -68,7 +68,7 @@ logger = logging.getLogger("Prehop")
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["index", "benchmark", "benchmark_all"], required=True)
+    parser.add_argument("--mode", choices=["index", "benchmark", "benchmark_all", "hop_rebuild"], required=True)
     parser.add_argument("--strategy", choices=["naive", "prehop", "hoprag", "ms_graphrag"], default="prehop")
     parser.add_argument("--domain", choices=["financial", "news"], default=None,
                         help="Prompt domain for model-side prompts. Default: auto-detected as 'news' for "
@@ -95,6 +95,8 @@ async def main():
                 await neo4j.execute_query("MATCH (n) DETACH DELETE n")
                 logger.info("Neo4j graph cleared successfully.")
             await run_indexing(args.dataset, args.strategy, args.model, args.corpus_tag, args.save_intermediate)
+        elif args.mode == "hop_rebuild":
+            await rebuild_hop_edges(args.corpus_tag or "default", args.strategy)
         elif args.mode == "benchmark":
             corpus_tag = args.corpus_tag or "default"
             # Pin the run dir so async judge batches can be reconciled afterwards.

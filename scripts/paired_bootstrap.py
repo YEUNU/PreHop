@@ -1,25 +1,39 @@
-"""Query-level paired bootstrap: Prehop vs each baseline (MultiHop-RAG sample200).
+"""Query-level paired bootstrap: prehop vs each baseline, any of the three
+multi-hop datasets (MultiHop-RAG / HotpotQA / MuSiQue).
 
-The 5-fold CIs (fold n=40) overlap across strategies, so they cannot establish
-whether Prehop's headline lead is real. This script pairs the per-query scores
-by query string (all 4 strategies ran the identical sample200 file), computes the
-paired difference (prehop - baseline) per query, and bootstraps the mean diff to
-a 95% CI. A diff whose CI excludes 0 is a statistically separated win/loss.
+Per-fold CIs from a single run (see kfold_analysis.py) overlap across
+strategies, so they cannot establish whether prehop's lead over a given
+baseline is real. This script pairs the per-query scores by query string (all
+strategies ran the identical sample file for a dataset), computes the paired
+difference (prehop - baseline) per query, and bootstraps the mean diff to a
+95% CI. A diff whose CI excludes 0 is a statistically separated win/loss.
 
 - Judge / hallucination: computed over judged rows (sentinel -1 dropped); both
   sides of a pair must be valid. hallucination is lower-is-better.
-- Retrieval metrics (mrr@10/map@10/hits@4/hits@10/evidence_doc_recall): null
-  queries carry no gold (all-zero for every strategy), so they are excluded — the
-  diff is over gold-bearing queries only.
+- Retrieval metrics (mrr@10/map@10/hits@4/hits@10/evidence_doc_recall): a
+  query with no gold evidence (e.g. MultiHop-RAG's null_query category, where
+  every strategy scores 0 by construction) is excluded — the diff is over
+  gold-bearing queries only. Gold-lessness is detected from the row's
+  `expected_sources` (docs/facts) rather than a dataset-specific category
+  name, so this works unmodified for HotpotQA/MuSiQue too (every query in
+  those two datasets carries gold evidence, so the exclusion never fires).
 
-Outputs: a stats JSON + tidy CSV next to the prehop run, and a forest-plot PNG
-into fig/.
+The dataset name/tag is read from each result file's own `dataset`/
+`corpus_tag` fields — nothing dataset-specific needs to be passed in.
+
+Outputs: a stats JSON + tidy CSV next to the prehop run, and a forest-plot
+PNG into fig/ — all named after the dataset's corpus tag.
 
 Usage:
-  python scripts/mhr_paired_bootstrap.py \
+  python scripts/paired_bootstrap.py \
     --prehop data/results/<new>/prehop/multihoprag/prehop_multihoprag.json \
     --baselines data/results/<base>/{naive,hoprag,ms_graphrag}/multihoprag/*.json \
-    --out-dir data/results/<new> --fig fig/mhr_bootstrap_forest.png
+    --out-dir data/results/<new>
+
+  python scripts/paired_bootstrap.py \
+    --prehop data/results/<new>/prehop/hotpotqa/prehop_hotpotqa.json \
+    --baselines data/results/<base>/{naive,hoprag,ms_graphrag}/hotpotqa/*.json \
+    --out-dir data/results/<new>
 """
 from __future__ import annotations
 
@@ -37,11 +51,17 @@ N_BOOT = 10000
 SEED = 42
 
 
-def _load(path: str) -> tuple[str, dict[str, dict]]:
+def _load(path: str) -> tuple[str, str, dict[str, dict]]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     strat = data["strategy"]
+    corpus_tag = data.get("corpus_tag") or "unknown"
     by_query = {r["query"]: r for r in data["details"] if isinstance(r, dict)}
-    return strat, by_query
+    return strat, corpus_tag, by_query
+
+
+def _has_gold(row: dict) -> bool:
+    expected = row.get("expected_sources") or {}
+    return bool(expected.get("docs")) or bool(expected.get("facts"))
 
 
 def _paired(prehop: dict[str, dict], base: dict[str, dict], metric: str) -> np.ndarray:
@@ -51,8 +71,8 @@ def _paired(prehop: dict[str, dict], base: dict[str, dict], metric: str) -> np.n
         ba = base.get(q)
         if ba is None:
             continue
-        if retrieval and (pr.get("category") == "null_query"):
-            continue  # gold-less
+        if retrieval and not _has_gold(pr):
+            continue  # gold-less (e.g. MultiHop-RAG null_query)
         pv, bv = pr.get(metric), ba.get(metric)
         if pv is None or bv is None:
             continue
@@ -83,12 +103,17 @@ def main() -> None:
     ap.add_argument("--prehop", required=True)
     ap.add_argument("--baselines", nargs="+", required=True)
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--fig", default="fig/mhr_bootstrap_forest.png")
+    ap.add_argument("--fig", default=None, help="default: fig/<corpus_tag>_bootstrap_forest.png")
     args = ap.parse_args()
 
     rng = np.random.default_rng(SEED)
-    _, prehop = _load(args.prehop)
-    baselines = dict(_load(p) for p in args.baselines)
+    treatment_strat, corpus_tag, prehop = _load(args.prehop)
+    baselines = {}
+    for p in args.baselines:
+        strat, _, rows = _load(p)
+        baselines[strat] = rows
+
+    fig_path = Path(args.fig) if args.fig else Path(f"fig/{corpus_tag}_bootstrap_forest.png")
 
     metrics = JUDGE_METRICS + RETRIEVAL_METRICS
     results: dict[str, dict[str, dict]] = {m: {} for m in metrics}
@@ -97,11 +122,14 @@ def main() -> None:
             results[m][strat] = _bootstrap(_paired(prehop, base, m), rng)
 
     out_dir = Path(args.out_dir)
-    (out_dir / "mhr_paired_bootstrap.json").write_text(
-        json.dumps({"n_boot": N_BOOT, "seed": SEED, "results": results}, indent=2),
+    (out_dir / f"{corpus_tag}_paired_bootstrap.json").write_text(
+        json.dumps(
+            {"dataset": corpus_tag, "treatment": treatment_strat, "n_boot": N_BOOT, "seed": SEED, "results": results},
+            indent=2,
+        ),
         encoding="utf-8",
     )
-    with (out_dir / "mhr_paired_bootstrap.csv").open("w", newline="") as fh:
+    with (out_dir / f"{corpus_tag}_paired_bootstrap.csv").open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["metric", "baseline", "n", "mean_diff", "ci95_low", "ci95_high", "significant"])
         for m in metrics:
@@ -110,11 +138,11 @@ def main() -> None:
                     w.writerow([m, strat, st["n"], f"{st['mean_diff']:.4f}",
                                 f"{st['ci95_low']:.4f}", f"{st['ci95_high']:.4f}", st["significant"]])
 
-    _plot(results, metrics, Path(args.fig))
+    _plot(results, metrics, fig_path, treatment_strat, corpus_tag)
 
     # console
-    print(f"Prehop vs baselines — paired bootstrap (N={N_BOOT}, seed={SEED})")
-    print("  diff = prehop - baseline; * = 95% CI excludes 0 (significant)")
+    print(f"{treatment_strat} vs baselines on {corpus_tag} — paired bootstrap (N={N_BOOT}, seed={SEED})")
+    print(f"  diff = {treatment_strat} - baseline; * = 95% CI excludes 0 (significant)")
     for m in metrics:
         arrow = " (lower better)" if m in LOWER_IS_BETTER else ""
         print(f"\n{m}{arrow}:")
@@ -125,7 +153,7 @@ def main() -> None:
             print(f"  vs {strat:12s} Δ={st['mean_diff']:+.4f}  [{st['ci95_low']:+.4f}, {st['ci95_high']:+.4f}]{star} (n={st['n']})")
 
 
-def _plot(results: dict, metrics: list[str], fig_path: Path) -> None:
+def _plot(results: dict, metrics: list[str], fig_path: Path, treatment_strat: str, corpus_tag: str) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -159,7 +187,7 @@ def _plot(results: dict, metrics: list[str], fig_path: Path) -> None:
         ax.tick_params(axis="x", labelsize=8)
         ax.margins(y=0.25)
 
-    fig.suptitle("Prehop − baseline (query-level paired bootstrap, 95% CI)  •  solid = CI excludes 0",
+    fig.suptitle(f"{treatment_strat} − baseline on {corpus_tag} (query-level paired bootstrap, 95% CI)  •  solid = CI excludes 0",
                  fontsize=11, y=1.02)
     fig.tight_layout()
     fig_path.parent.mkdir(parents=True, exist_ok=True)

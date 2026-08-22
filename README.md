@@ -24,7 +24,7 @@ Core indexing-time design, currently evaluated on MultiHop-RAG, HotpotQA, and Mu
 
 Chunking is fixed-size (page-scoped sentence windows) — see `CLAUDE.md` "Architecture notes" for details.
 
-The query path is deliberately thin: two-stage hybrid retrieve (Q⁻/body, then Q⁺ expansion), embedding-similarity rerank with top-up, deterministic 1-hop traversal over the pre-built NEXT/HOP edges, and a single LLM synthesis call with inline citations.
+The query path is deliberately thin: two-stage hybrid retrieve (Q⁻/body, then Q⁺ expansion), embedding-similarity rerank, deterministic 1-hop traversal over the pre-built NEXT/HOP edges, and a single LLM synthesis call with inline citations.
 
 ---
 
@@ -40,7 +40,7 @@ dataset suite" for how to run one.
 
 ```
 prehop/
-├── main.py                          # single CLI entry point (--mode index|benchmark|ocr)
+├── main.py                          # single CLI entry point (--mode index|benchmark|benchmark_all)
 ├── cli/
 │   ├── index.py                     # indexing runner
 │   └── benchmark.py                 # benchmark runner (single + multi-seed)
@@ -52,8 +52,8 @@ prehop/
 ├── models/
 │   ├── prehop/                     # the paper's system
 │   │   ├── graphrag.py              # GraphRAG facade; run_workflow() is the query entry point
-│   │   ├── indexing/                # §3.1 — ocr, chunking, knowledge_mapping (Q-/Q+), hop_edges, graph_writer
-│   │   ├── retrieval/               # §3.2 — hybrid (RRF), rerank, traversal, retrieve, rewrite, text_utils
+│   │   ├── indexing/                 # chunking (fixed-size), knowledge_mapping (Q-/Q+), hop_edges, graph_writer
+│   │   ├── retrieval/                # hybrid (RRF), rerank (embedding similarity), traversal, retrieve, rewrite, text_utils
 │   │   └── schemas.py / state.py / trace.py
 │   ├── naive/                       # baseline (sentence chunking + vector search)
 │   ├── hoprag/                      # baseline (runtime hop traversal via official HopRAG)
@@ -157,9 +157,15 @@ Indexing-time ablations are driven by environment toggles read in `core/config.p
 
 | Variable | Default | Effect when set to `false` |
 |---|---|---|
-| `RAG_ABLATION_TABLE` | `true` | Markdown tables left as raw pipe-delimited text instead of converted to prose |
 | `RAG_ABLATION_Q_PLUS` | `true` | Stage 2 Q⁺ expansion disabled (also disables offline HOP-edge construction) |
 | `RAG_ABLATION_Q_MINUS` | `true` | Stage 1 Q⁻ channel disabled |
+
+`{full, Q⁻-only, Q⁺-only}` is the paper's reported ablation matrix — it
+isolates the combined-channel retrieval-quality claim (contribution #3),
+run across all three datasets. `RAG_ABLATION_TABLE` (markdown-table-to-prose
+conversion) also exists as a toggle but isn't part of the reported ablation
+set: none of the three datasets meaningfully exercise markdown tables, so it
+has no core-claim payoff.
 
 Each ablation lives under its own corpus tag so indexed graphs never collide.
 
@@ -180,7 +186,7 @@ Full list in the paper appendix; the most important:
 | Stage 1 weights | 0.7 / 0.3 | $Q^-$ / body |
 | Stage 2 weights | 0.6 / 0.4 | $Q^+$ / $Q^-$ support |
 | RRF `k` | 60 | $w_v=1.3$, $w_t=1.0$ |
-| Embedding dim | 1024 | Qwen3-Embedding-0.6B (local) — verify if switched to a remote embedding model |
+| Embedding dim | `NEO4J_VECTOR_DIMENSIONS` | must match the configured embedding model's actual output dim (see `CLAUDE.md` "Model / inference infra") |
 
 `τ_hop`/`τ_r` were calibrated for the old cross-encoder reranker's classifier
 scores and now gate raw cosine similarity instead — likely need empirical

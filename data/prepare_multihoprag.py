@@ -5,7 +5,7 @@
   2. data/multihoprag_queries.json  — 벤치마크가 읽는 쿼리 포맷
      (dataset 마커 "multihoprag", question_type별 category, multi-hop 증거)
 
-회사/페이지 개념이 없으므로 OCR, page_match는 사용하지 않는다. 인덱싱·벤치마크
+회사/페이지 개념이 없으므로 page_match는 사용하지 않는다. 인덱싱·벤치마크
 시 `--corpus-tag multihoprag`로 다른 데이터셋과 Neo4j 라벨을 분리한다.
 """
 import argparse
@@ -21,6 +21,49 @@ def _clean(text) -> str:
     """HTML 엔티티 디코딩(제목 등에 &#039; 류가 섞여 있음). 코퍼스와 쿼리
     양쪽을 동일하게 정규화해 doc-title 매칭이 어긋나지 않게 한다."""
     return html.unescape((text or "").strip())
+
+
+# 원본 corpus.json의 article body 자체에 스크래핑 과정에서 딸려온 뉴스레터
+# 구독 UI 텍스트가 섞여 있다 (found live during a full reindex, sample-based
+# Neo4j quality check — ~9% of articles). 매체별로 두 가지 고정 패턴:
+#   - Independent 계열: 기사 맨 앞에 섹션별로 다른 문구("Sign up to Simon
+#     Calder's...", "Stay ahead of the trend..." 등)로 시작해 항상
+#     "{{ #verifyErrors }} ... {{ /verifyErrors }} ... {{ /verifyErrors }}"
+#     Mustache 템플릿(닫는 태그 정확히 2회)으로 끝나는 블록이 본문 맨 앞에
+#     옴 — 여는 문구를 특정하지 않고 본문 시작~두 번째 `{{ /verifyErrors }}`
+#     까지를 통째로 제거(제목별 문구 변형에 안 흔들림).
+#   - Guardian 계열: "skip past newsletter promotion" ~ "after newsletter
+#     promotion" 사이(접근성 스킵링크로 감싼 뉴스레터 위젯 텍스트) — 기사
+#     중간에도 등장할 수 있어 위치 무관, 전체 매치 제거.
+_INDEPENDENT_BOILERPLATE_RE = re.compile(
+    r"^.*?\{\{ /verifyErrors \}\}.*?\{\{ /verifyErrors \}\}\s*", re.DOTALL
+)
+_GUARDIAN_BOILERPLATE_RE = re.compile(r"skip past newsletter promotion.*?after newsletter promotion\s*", re.DOTALL)
+
+# Second audit pass (real content read of indexed Q-/Q+/chunks, not just
+# pattern regression checks) found two more outlet-specific boilerplate
+# families, both embedded mid-article rather than as one leading block:
+#   - Fox News: standalone imperative CTA lines ("CLICK HERE TO SIGN UP FOR
+#     OUR ... NEWSLETTER", "CLICK HERE TO GET THE FOX NEWS APP").
+#   - Sporting News: a nav-widget header ("WEEK N PPR RANKINGS:" /
+#     STANDARD RANKINGS / FANTASY ADVICE / DFS, or "MORE <TOPIC>:") followed
+#     by a pipe-delimited link row ("QBs | RBs | WRs | TEs | D/STs |
+#     Kickers") pointing at unrelated pages — both lines stripped together.
+#     "APP USERS CLICK HERE" is the same family's single-line CTA variant.
+_CLICK_HERE_RE = re.compile(r"(?m)^CLICK HERE TO .*\n?")
+_APP_USERS_RE = re.compile(r"(?m)^APP USERS CLICK HERE\s*\n?")
+_NAV_WIDGET_RE = re.compile(
+    r"(?m)^(?:WEEK \d+ [A-Z ]+|MORE [A-Z0-9 '/.-]+):.*\n(?:[^\n]*\|[^\n]*\n)?"
+)
+
+
+def _strip_scraper_boilerplate(body: str) -> str:
+    body = _INDEPENDENT_BOILERPLATE_RE.sub("", body, count=1)
+    body = _GUARDIAN_BOILERPLATE_RE.sub("", body)
+    body = _CLICK_HERE_RE.sub("", body)
+    body = _APP_USERS_RE.sub("", body)
+    body = _NAV_WIDGET_RE.sub("", body)
+    return body.strip()
 
 
 # 공식 GitHub 저장소(yixuantt/MultiHop-RAG)의 dataset/ 디렉토리는 더 이상
@@ -89,7 +132,7 @@ def build_corpus(corpus: list[dict]) -> dict[str, str]:
     title_to_file: dict[str, str] = {}
     for article in corpus:
         title = _clean(article.get("title"))
-        body = _clean(article.get("body"))
+        body = _strip_scraper_boilerplate(_clean(article.get("body")))
         if not body:
             continue
 
@@ -101,12 +144,7 @@ def build_corpus(corpus: list[dict]) -> dict[str, str]:
             counter += 1
         used_names.add(name)
 
-        header = (
-            f"Title: {title}\n"
-            f"Source: {article.get('source', '')}\n"
-            f"Category: {article.get('category', '')}\n"
-            f"Published: {article.get('published_at', '')}\n"
-        )
+        header = f"Title: {title}\n"
         (CORPUS_DIR / f"{name}.txt").write_text(f"{header}\n{body}", encoding="utf-8")
         if title:
             title_to_file[title] = name

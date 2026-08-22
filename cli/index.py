@@ -24,25 +24,81 @@ _PARSE_MP_CTX = _mp.get_context("spawn")
 logger = logging.getLogger("Prehop")
 
 
-def _parse_news_header(content: str) -> tuple[Optional[str], Optional[str]]:
-    """Extract `Published:`/`Source:` from a MultiHop-RAG corpus txt header.
+async def _collect_graph_stats(engine, strategy: str) -> Optional[dict]:
+    """Query the live graph for structural statistics after indexing.
 
-    `data/prepare_multihoprag.py` writes a `Title:/Source:/Category:/Published:`
-    block at the top of each article. The publication date and publisher are
-    doc-level metadata that temporal/comparison questions hinge on, so they are
-    surfaced into the retrieval context (see graph_writer / text_utils). Returns
-    (None, None) when the header is absent (e.g., financial filings).
+    Queries the graph directly (not counters threaded through indexing)
+    so this is always consistent with what actually landed in Neo4j, the
+    same way CLAUDE.md's "Neo4j data layout" integrity probes work. Only
+    meaningful for `prehop` (Q-/Q+/HOP structure); other strategies don't
+    have this graph shape.
     """
-    published_at: Optional[str] = None
-    pub_source: Optional[str] = None
-    for line in content.split("\n", 8)[:8]:
-        if line.startswith("Published: "):
-            published_at = line[len("Published: "):].strip() or None
-        elif line.startswith("Source: "):
-            pub_source = line[len("Source: "):].strip() or None
-        elif line and not line[0].isupper() and ":" not in line[:12]:
-            break
-    return published_at, pub_source
+    if strategy != "prehop" or not hasattr(engine, "chunk_label"):
+        return None
+    chunk_label = engine.chunk_label
+    doc_label = engine.doc_label
+
+    chunk_rows = await engine.neo4j.execute_query(f"""
+        MATCH (c:{chunk_label})
+        RETURN count(c) AS total_chunks,
+               count(c.q_minus_embedding) AS q_minus_chunks,
+               count(c.q_plus_embedding) AS q_plus_chunks
+    """)
+    chunk_stats = chunk_rows[0] if chunk_rows else {}
+
+    doc_rows = await engine.neo4j.execute_query(f"MATCH (d:{doc_label}) RETURN count(d) AS total_docs")
+    doc_stats = doc_rows[0] if doc_rows else {}
+
+    hop_rows = await engine.neo4j.execute_query(f"""
+        MATCH (:{chunk_label})-[r:HOP]->(:{chunk_label})
+        RETURN count(r) AS total_hop_edges
+    """)
+    hop_stats = hop_rows[0] if hop_rows else {}
+
+    total_chunks = chunk_stats.get("total_chunks", 0) or 0
+    total_docs = doc_stats.get("total_docs", 0) or 0
+    q_minus_chunks = chunk_stats.get("q_minus_chunks", 0) or 0
+    q_plus_chunks = chunk_stats.get("q_plus_chunks", 0) or 0
+    total_hop_edges = hop_stats.get("total_hop_edges", 0) or 0
+
+    return {
+        "total_documents": total_docs,
+        "total_chunks": total_chunks,
+        "avg_chunks_per_doc": (total_chunks / total_docs) if total_docs else 0.0,
+        "q_minus_coverage": (q_minus_chunks / total_chunks) if total_chunks else 0.0,
+        "q_plus_coverage": (q_plus_chunks / total_chunks) if total_chunks else 0.0,
+        "total_hop_edges": total_hop_edges,
+        # Out-degree among HOP-eligible (Q+-surviving) source chunks only —
+        # matches the "wrote N HOP edges over M Q+ chunks" indexing log line.
+        "avg_hop_out_degree_per_eligible_chunk": (total_hop_edges / q_plus_chunks) if q_plus_chunks else 0.0,
+        # Out-degree across the whole chunk population (most chunks have none
+        # since only Q+-surviving chunks can be a HOP source) — overall graph
+        # density.
+        "avg_hop_out_degree_per_chunk": (total_hop_edges / total_chunks) if total_chunks else 0.0,
+    }
+
+
+async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> Optional[dict]:
+    """Delete existing HOP edges for a corpus tag and rebuild them under the
+    current `RAGConfig.HOP_THRESHOLD` (env `RAG_HOP_THRESHOLD`).
+
+    Chunks/Q-/Q+/embeddings are untouched — HOP-edge construction is a
+    post-processing step over already-embedded chunks (see CLAUDE.md
+    "Re-index note"), so this is far cheaper than a full reindex. Used by
+    `--mode hop_rebuild` and `scripts/threshold_sweep.py` for τ_hop
+    sensitivity sweeps, where each threshold value only needs its edges
+    rebuilt, not the whole corpus re-chunked/re-embedded.
+    """
+    if strategy != "prehop":
+        logger.error("rebuild_hop_edges only supports strategy=prehop (got %s)", strategy)
+        return None
+    engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
+    chunk_label = engine.chunk_label
+    await engine.neo4j.execute_query(f"MATCH (:{chunk_label})-[r:HOP]->(:{chunk_label}) DELETE r")
+    await engine.build_all_hop_edges()
+    stats = await _collect_graph_stats(engine, strategy)
+    logger.info("HOP rebuild complete for corpus_tag=%s (threshold=%s): %s", corpus_tag, RAGConfig.HOP_THRESHOLD, stats)
+    return stats
 
 
 async def run_indexing(
@@ -115,12 +171,7 @@ async def run_indexing(
     # the outer file_semaphore is now the only file-level gate.
     file_concurrency = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "4")))
     file_semaphore = asyncio.Semaphore(file_concurrency)
-    # `summarize_semaphore` is used at the end of indexing for doc-level
-    # global summaries — kept tied to MAX_CONCURRENT_LLM_CALLS because
-    # those calls don't fan out further inside.
-    summarize_semaphore = asyncio.Semaphore(RAGConfig.MAX_CONCURRENT_LLM_CALLS)
     progress = {"started": 0, "completed": 0, "lock": asyncio.Lock()}
-    processed_docs = []
     failed_files = []
     stats = {"succeeded": 0}
     progress_step = max(1, int(os.environ.get("RAG_PROGRESS_LOG_STEP", "1")))
@@ -157,16 +208,8 @@ async def run_indexing(
                         content, prepared_pages=prepared_pages
                     )
                     doc_meta = {"title": knowledge["title"]}
-                    if RAGConfig.DOMAIN == "news":
-                        published_at, pub_source = _parse_news_header(content)
-                        knowledge["published_at"] = published_at
-                        knowledge["pub_source"] = pub_source
-                        doc_meta["published_at"] = published_at
-                        doc_meta["pub_source"] = pub_source
                     doc_id = await engine.create_document_node(filename, doc_meta)
                     await engine.build_graph(knowledge, source=filename, document_filename=doc_id)
-                    async with progress["lock"]:
-                        processed_docs.append(doc_id)
                 else:
                     await engine.index_document(filename, content)
                 async with progress["lock"]:
@@ -235,18 +278,6 @@ async def run_indexing(
                 logger.error("HOP edge construction failed: %s", exc)
                 failed_files.append({"item": "__hop_edges__", "stage": "hop_edges", "error": str(exc)})
 
-        logger.info("Summarizing %d documents...", len(processed_docs))
-
-        async def summarize_with_semaphore(doc_id):
-            async with summarize_semaphore:
-                try:
-                    await engine.summarize_document(doc_id)
-                except Exception as exc:
-                    logger.error("Failed to summarize document %s: %s", doc_id, exc)
-                    failed_files.append({"item": doc_id, "stage": "summarize", "error": str(exc)})
-
-        await asyncio.gather(*[summarize_with_semaphore(doc_id) for doc_id in processed_docs])
-
     logger.info(
         "Indexing complete for %d files. Success: %d | Failed: %d",
         len(files),
@@ -277,3 +308,30 @@ async def run_indexing(
             logger.warning("Full failure list written to %s", failures_path)
         except Exception as exc:
             logger.error("Could not write failure log to %s: %s", failures_path, exc)
+
+    # Structured graph/corpus statistics for the paper's dataset/graph
+    # tables (chunk/HOP-edge counts, Q-/Q+ coverage) — queried from the live
+    # graph so it's always consistent with what actually landed in Neo4j.
+    # Best-effort: a stats-collection failure shouldn't fail an otherwise
+    # successful indexing run.
+    graph_stats = None
+    try:
+        graph_stats = await _collect_graph_stats(engine, strategy)
+    except Exception as exc:
+        logger.error("Graph stats collection failed: %s", exc)
+    if graph_stats is not None:
+        logger.info("Graph stats: %s", graph_stats)
+        stats_dir = Path("data/index_stats")
+        stats_dir.mkdir(parents=True, exist_ok=True)
+        stats_path = stats_dir / f"{strategy}_{corpus_tag or 'default'}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        try:
+            with open(stats_path, "w", encoding="utf-8") as fh:
+                json.dump({
+                    "strategy": strategy,
+                    "corpus_tag": corpus_tag or "default",
+                    "dataset_path": dataset_path,
+                    **graph_stats,
+                }, fh, indent=2, ensure_ascii=False)
+            logger.info("Graph stats written to %s", stats_path)
+        except Exception as exc:
+            logger.error("Could not write graph stats to %s: %s", stats_path, exc)

@@ -4,17 +4,13 @@ N_r = 2 rewrites with weight w_r = 0.85 (RAGConfig.QUERY_REWRITE_COUNT,
 RAGConfig.QUERY_REWRITE_WEIGHT). The rewrite is invoked before graph search
 when slot fills are insufficient.
 """
-import logging
-
 from core.config import RAGConfig
+from models.prehop.llm_json import generate_json_or_raise
 from utils.prompts import (
     QUERY_REWRITE_FORMAT_INSTRUCTION,
     QUERY_REWRITE_PROMPT,
     SEARCH_CONTINUATION_PROMPT,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 class QueryRewriteMixin:
@@ -33,7 +29,10 @@ class QueryRewriteMixin:
             {"role": "user", "content": self._query_rewrite_prompt().format(query=query)},
             {"role": "user", "content": QUERY_REWRITE_FORMAT_INSTRUCTION},
         ]
-        data = await self.llm.generate_json(messages, apply_default_sampling=False)
+        data = await generate_json_or_raise(
+            self.llm, messages, "Query rewrite", f"query={query!r}",
+            apply_default_sampling=False,
+        )
         rewrites = data.get("positive_queries", []) if isinstance(data, dict) else []
         if not isinstance(rewrites, list):
             return []

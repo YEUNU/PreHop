@@ -59,7 +59,7 @@ class NaiveRAG:
             if "EquivalentSchemaRuleAlreadyExists" in str(e) or "equivalent index already exists" in str(e).lower():
                 self.logger.debug(f"Index already exists (race condition, ignored): {self.vector_index}")
             else:
-                self.logger.error(f"Naive Index creation error: {e}")
+                raise
 
     def _parse_document(self, content: str) -> tuple:
         lines = content.split("\n")
@@ -69,15 +69,6 @@ class NaiveRAG:
         if lines and lines[0].startswith("Title: "):
             title = lines[0].replace("Title: ", "").strip()
             start_idx = 1
-        elif lines and lines[0].startswith("Document: "):
-            title = lines[0].replace("Document: ", "").strip()
-            # Skip OCR header (Document, Pages, separator)
-            for i, line in enumerate(lines):
-                if "--- Page 1 ---" in line or "=====" in line:
-                    start_idx = i + 1
-                    break
-            if start_idx == 0:
-                start_idx = 1
 
         sentences = lines[start_idx:]
         return title, [s for s in sentences if s.strip()]
@@ -108,21 +99,17 @@ class NaiveRAG:
                 "title": title,
                 "sent_id": i,
                 "embedding": emb,
-                "corpus": self.corpus_tag,
-                "branch": self.ablation_profile,
             })
 
         async with self._lock:
             async with self.neo4j.driver.session() as session:
                 query = f"""
                     UNWIND $batch AS item
-                    MERGE (c:{self.chunk_label} {{id: item.id, corpus: item.corpus}})
+                    MERGE (c:{self.chunk_label} {{id: item.id}})
                     SET c.text = item.text,
                         c.source = item.source,
                         c.title = item.title,
                         c.sent_id = item.sent_id,
-                        c.corpus = item.corpus,
-                        c.branch = item.branch,
                         c.embedding = item.embedding
                 """
                 await session.run(query, batch=batch_data)  # type: ignore

@@ -2,7 +2,7 @@
 
 Owns the graph-write side: index lifecycle (vector + fulltext), document and
 chunk MERGE, NEXT edge creation, and batched writes. HOP edges are delegated
-to HopEdgeMixin (paper §3.1.4); document-level summaries use indexing_llm.
+to HopEdgeMixin (paper §3.1.4).
 
 Three node types per (strategy, corpus_tag) namespace:
 - Body / Q- / Q+ vector indices, plus matching BM25-style fulltext indices.
@@ -16,10 +16,6 @@ from typing import Any, Optional
 from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
 
 from core.config import RAGConfig
-from utils.prompts import (
-    GLOBAL_SUMMARY_FORMAT_INSTRUCTION,
-    GLOBAL_SUMMARY_PROMPT,
-)
 
 from .chunking import _make_semantic_chunk_id
 
@@ -160,46 +156,15 @@ class GraphWriterMixin:
     async def create_document_node(self, filename: str, metadata: dict[str, Any]) -> str:
         query = f"""
             MERGE (d:{self.doc_label} {{filename: $filename}})
-            SET d.corpus = $corpus, d.title = $title, d.updated_at = timestamp(),
-                d.published_at = $published_at, d.pub_source = $pub_source
+            SET d.title = $title, d.updated_at = timestamp()
             RETURN d.filename as id
         """
         async with self._batch_lock:
             results = await self.retry_query(query, {
                 "filename": filename,
                 "title": metadata.get("title", filename),
-                "published_at": metadata.get("published_at") or None,
-                "pub_source": metadata.get("pub_source") or None,
-                "corpus": self.corpus_tag
             })
         return results[0]["id"] if results else filename
-
-    async def summarize_document(self, filename: str):
-        async def _get_chunks():
-            async with self.neo4j.driver.session() as session:
-                query = f"""
-                    MATCH (d:{self.doc_label} {{filename: $filename}})-[:CONTAINS]->(c:{self.chunk_label})
-                    RETURN c.text as text ORDER BY c.sent_id ASC LIMIT $limit
-                """
-                result = await session.run(query, {  # type: ignore
-                    "filename": filename,
-                    "limit": RAGConfig.CONTEXT_FETCH_LIMIT
-                })
-                return [record["text"] async for record in result]
-
-        chunks = await _get_chunks()
-        if not chunks:
-            return
-        context_text = "\n\n".join(chunks)
-        prompt = GLOBAL_SUMMARY_PROMPT.format(text=context_text)
-        messages = [{"role": "user", "content": prompt}, {"role": "user", "content": GLOBAL_SUMMARY_FORMAT_INSTRUCTION}]
-
-        summary_data = await self.indexing_llm.generate_json(messages, apply_default_sampling=False)
-        summary_text = summary_data.get("summary", "No summary.")
-        await self.retry_query(
-            f"MATCH (d:{self.doc_label} {{filename: $filename}}) SET d.summary = $summary",
-            {"filename": filename, "summary": summary_text}
-        )
 
     async def build_graph(self, knowledge: dict[str, Any], source: str, document_filename: str):
         await self._ensure_index_ready()
@@ -207,12 +172,6 @@ class GraphWriterMixin:
         chunks = knowledge.get("chunks", [])
         if not chunks:
             return
-
-        # Doc-level news metadata (published_at/source) is denormalized onto each
-        # chunk so the retrieval RETURN clauses can surface it in the synthesis
-        # context (temporal/comparison reasoning). Empty for financial filings.
-        doc_published_at = knowledge.get("published_at") or None
-        doc_pub_source = knowledge.get("pub_source") or None
 
         body_texts = [str(chunk.get("text", "") or "") for chunk in chunks]
         q_minus_texts = [
@@ -262,8 +221,7 @@ class GraphWriterMixin:
                 else []
             )
 
-            primary_embedding = q_minus_embedding if q_minus_embedding else body_embedding
-            if not primary_embedding:
+            if not body_embedding:
                 raise ValueError(
                     f"Missing embedding for chunk: source={source} "
                     f"title={chunk.get('title', '')} sent_id={chunk.get('sent_id', -1)}"
@@ -275,12 +233,9 @@ class GraphWriterMixin:
                 "source": source,
                 "company": _company_from_source(source),
                 "title": chunk["title"],
-                "published_at": doc_published_at,
-                "pub_source": doc_pub_source,
                 "sent_id": chunk["sent_id"],
                 "page": chunk.get("page", 0),
-                "embedding": primary_embedding,
-                "body_embedding": body_embedding if body_embedding else None,
+                "embedding": body_embedding,
                 "q_minus_embedding": q_minus_embedding if q_minus_embedding else None,
                 "q_plus_embedding": q_plus_embedding if q_plus_embedding and q_plus_items else None,
                 "q_minus_text": (
@@ -289,8 +244,6 @@ class GraphWriterMixin:
                 "q_plus_text": (
                     q_plus_texts[index] if RAGConfig.ABLATION_Q_PLUS and index < len(q_plus_texts) else ""
                 ),
-                "q_plus": q_plus_items,
-                "q_plus_embed": q_plus_embedding if q_plus_embedding and q_plus_items else None,
                 "chunk_summary": chunk["summary"],
             })
 
@@ -318,14 +271,13 @@ class GraphWriterMixin:
                 MERGE (c:{self.chunk_label} {{id: item.id}})
                 SET c.text = item.text, c.source = item.source, c.company = item.company,
                     c.title = item.title,
-                    c.published_at = item.published_at, c.pub_source = item.pub_source,
-                    c.sent_id = item.sent_id, c.page = item.page, c.corpus = $corpus,
+                    c.sent_id = item.sent_id, c.page = item.page,
                     c.embedding = item.embedding,
-                    c.body_embedding = item.body_embedding, c.q_minus_embedding = item.q_minus_embedding,
+                    c.q_minus_embedding = item.q_minus_embedding,
                     c.q_plus_embedding = item.q_plus_embedding, c.q_minus_text = item.q_minus_text,
                     c.q_plus_text = item.q_plus_text, c.chunk_summary = item.chunk_summary
                 MERGE (d)-[:CONTAINS]->(c)
-            """, {"batch": item["data"], "doc_id": item["doc_id"], "corpus": self.corpus_tag})
+            """, {"batch": item["data"], "doc_id": item["doc_id"]})
 
             await self.retry_query(f"""
                 UNWIND range(0, size($batch)-2) AS i

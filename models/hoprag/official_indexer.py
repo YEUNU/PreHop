@@ -40,15 +40,16 @@ _GEN_API_BASES: list[str] = [
     s.strip()
     for s in os.environ.get(
         "RAG_HOP_GEN_API_BASES",
-        os.environ.get("RAG_HOP_GEN_API_BASE", "http://localhost:28000/v1,http://localhost:28010/v1"),
+        os.environ.get("RAG_HOP_GEN_API_BASE", os.environ.get("VLLM_URL", "http://localhost:28000/v1")),
     ).split(",")
     if s.strip()
 ]
 _GEN_API_BASE = _GEN_API_BASES[0]
 _GEN_MODEL_NAME = os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
-_EMBED_API_BASE = os.environ.get("RAG_HOP_EMBED_API_BASE", "http://localhost:18082/v1")
-_EMBED_MODEL_NAME = os.environ.get("RAG_HOP_EMBED_MODEL_NAME", "embedding-model")
-_EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", "1024"))
+_EMBED_API_BASE = os.environ.get("RAG_HOP_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", "http://localhost:18082/v1"))
+_EMBED_MODEL_NAME = os.environ.get("RAG_HOP_EMBED_MODEL_NAME", os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model"))
+_EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")))
+_GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
 _DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")))
 _NODE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_NODE_BATCH", "200")))
 _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
@@ -185,7 +186,7 @@ class _VLLMEmbedClient:
                     "input": batch,
                     "encoding_format": "float",
                 },
-                headers={"Authorization": "Bearer EMPTY"},
+                headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
                 timeout=180,
             )
             r.raise_for_status()
@@ -346,7 +347,7 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
     import config
 
     config.local_base = _GEN_API_BASE
-    config.local_key = "EMPTY"
+    config.local_key = _GEN_API_KEY
     config.local_model_name = _GEN_MODEL_NAME
     config.query_generator_model = _GEN_MODEL_NAME
     config.traversal_model = _GEN_MODEL_NAME

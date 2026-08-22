@@ -11,9 +11,11 @@ Two HOP modes:
   expand the frontier at query time via Q+ ANN + embedding-similarity rerank.
 """
 import logging
+import time
 from typing import Any, Optional
 
 from core.config import RAGConfig
+from models.prehop.llm_json import generate_json_or_raise
 from utils.prompts import SEARCH_CONTINUATION_FORMAT_INSTRUCTION
 
 
@@ -30,7 +32,14 @@ class TraversalMixin:
         no agentic decision-making (the only LLM call left is the query
         simplification grader; reranking itself is now embedding
         cosine-similarity, not an LLM call).
+
+        Returns (context, nodes, timing) where timing = {"retrieve_ms":
+        <initial hybrid retrieve>, "traversal_ms": <everything after that —
+        seed gating + NEXT/HOP frontier expansion>}. Split out so the paper's
+        headline latency claim (deterministic traversal, no per-hop LLM
+        reasoning) can be reported as a stage breakdown, not just one total.
         """
+        t0 = time.perf_counter()
         normalized_entities: list[str] = []
         for entity in entities:
             normalized = self._normalize_entity_term(entity)
@@ -38,14 +47,20 @@ class TraversalMixin:
                 normalized_entities.append(normalized)
         seed_query = " ".join(normalized_entities).strip() or " ".join(entities).strip()
         if not seed_query:
-            return "", []
+            return "", [], {"retrieve_ms": 0.0, "traversal_ms": 0.0}
 
         depth = max(1, min(int(depth), 4))
 
         excluded_ids: set[str] = {str(eid).strip() for eid in (excluded_chunk_ids or set()) if str(eid).strip()}
 
         seed_top_k = max(1, min(max(1, top_k - 1), RAGConfig.GRAPH_SEARCH_LIMIT))
+        t_retrieve0 = time.perf_counter()
         _, seed_nodes = await self.retrieve(seed_query, top_k=seed_top_k, user_query=user_query)
+        retrieve_ms = (time.perf_counter() - t_retrieve0) * 1000
+
+        def _timing() -> dict[str, float]:
+            total_ms = (time.perf_counter() - t0) * 1000
+            return {"retrieve_ms": retrieve_ms, "traversal_ms": max(0.0, total_ms - retrieve_ms)}
         # Filter out chunks already retrieved on prior turns of this query so
         # NEXT/HOP graph traversal explores fresh territory rather than
         # re-surfacing the same hub chunks via different seed paths.
@@ -58,7 +73,7 @@ class TraversalMixin:
         ]
 
         if not seed_ids:
-            return "", []
+            return "", [], _timing()
         search_query = " ".join(entities).strip() or " ".join(normalized_entities)
         # Company-key extraction must come from the human-written query when
         # available — joining LLM-generated `entities` produces synthetic
@@ -78,29 +93,6 @@ class TraversalMixin:
         visited_ids = set(frontier_ids) | excluded_ids
         collected: dict[str, dict[str, Any]] = {}
 
-        async def _rerank_and_gate(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            if not candidates:
-                return []
-            texts = [candidate.get("text", "") for candidate in candidates]
-            scores = await self._embedding_rerank_scores(search_query, texts)
-
-            self._apply_retrieval_calibration(candidates, search_query_meta)
-            for index, score in enumerate(scores):
-                candidates[index]["rerank_score"] = score
-                candidates[index]["final_score"] = (
-                    score
-                    + (RAGConfig.META_BOOST_WEIGHT * candidates[index].get("meta_boost", 0.0))
-                    - (RAGConfig.BOILERPLATE_PENALTY_WEIGHT * candidates[index].get("boilerplate_penalty", 0.0))
-                )
-
-            reranked = sorted(candidates, key=lambda item: item.get("final_score", 0.0), reverse=True)
-            if any((search_query_meta.get("company_keys") or [])):
-                # Strict filter when the query is company-anchored: drop
-                # cross-company chunks rather than just demoting them.
-                reranked = [node for node in reranked if self._node_matches_company(node, search_query_meta)]
-
-            return [node for node in reranked if node.get("rerank_score", 0.0) >= RAGConfig.RERANKER_THRESHOLD][:top_k]
-
         async def _need_more_for_next_depth(nodes_for_judge: list[dict[str, Any]]) -> bool:
             if not nodes_for_judge:
                 return True
@@ -118,13 +110,16 @@ class TraversalMixin:
                 {"role": "user", "content": self._search_continuation_prompt().format(query=search_query, context=context_preview)},
                 {"role": "user", "content": SEARCH_CONTINUATION_FORMAT_INSTRUCTION},
             ]
-            decision_data = await self.llm.generate_json(messages, apply_default_sampling=False)
-            decision = str((decision_data or {}).get("decision", "INSUFFICIENT")).strip().upper()
+            decision_data = await generate_json_or_raise(
+                self.llm, messages, "Search-continuation decision", f"query={search_query!r}",
+                apply_default_sampling=False,
+            )
+            decision = str(decision_data.get("decision", "INSUFFICIENT")).strip().upper()
             need_more = decision != "SUFFICIENT"
             logger.info("Graph depth continuation decision=%s (need_more=%s)", decision, need_more)
             return need_more
 
-        seed_gated = await _rerank_and_gate(seed_nodes)
+        seed_gated, _ = await self._rerank_and_select(search_query, seed_nodes, top_k, search_query_meta)
         frontier_ids = []
         for node in seed_gated:
             node_id = str(node.get("id", "")).strip()
@@ -146,7 +141,7 @@ class TraversalMixin:
                     key=lambda item: item.get("final_score", item.get("rerank_score", 0.0)),
                     reverse=True,
                 )[:top_k]
-                return self._build_context_from_nodes(nodes), nodes
+                return self._build_context_from_nodes(nodes), nodes, _timing()
 
         for hop_index in range(depth):
             if not frontier_ids:
@@ -159,8 +154,7 @@ class TraversalMixin:
                     MATCH (src:{self.chunk_label} {{id: src_id}})-{edge_pattern}->(related:{self.chunk_label})
                     WHERE NOT related.id IN $visited_ids
                     RETURN DISTINCT related.id as id, related.title as title, related.sent_id as sent_id,
-                                    related.page as page, related.text as text, related.source as source,
-                                    related.published_at as published_at, related.pub_source as pub_source
+                                    related.page as page, related.text as text, related.source as source
                     LIMIT $limit
                 """
                 result = await session.run(query, {  # type: ignore
@@ -194,7 +188,7 @@ class TraversalMixin:
             if not candidates:
                 break
 
-            gated_nodes = await _rerank_and_gate(candidates)
+            gated_nodes, _ = await self._rerank_and_select(search_query, candidates, top_k, search_query_meta)
             if not gated_nodes:
                 break
 
@@ -224,8 +218,8 @@ class TraversalMixin:
             reverse=True,
         )[:top_k]
         if not nodes:
-            return "", []
-        return self._build_context_from_nodes(nodes), nodes
+            return "", [], _timing()
+        return self._build_context_from_nodes(nodes), nodes, _timing()
 
     async def _runtime_hop_candidates(
         self,
@@ -266,8 +260,7 @@ class TraversalMixin:
                   AND node.source <> $src_source
                   AND NOT node.id IN $visited
                 RETURN node.id as id, node.title as title, node.sent_id as sent_id,
-                       node.page as page, node.text as text, node.source as source,
-                       node.published_at as published_at, node.pub_source as pub_source, score
+                       node.page as page, node.text as text, node.source as source, score
             """
             rows = await self.retry_query(
                 ann_query,

@@ -4,7 +4,7 @@ Each page is split into sentences and grouped into fixed-size windows of
 `RAGConfig.CHUNK_SENTENCES` sentences (a trailing window shorter than
 `RAGConfig.MIN_CHUNK_SENTENCES` is merged into the preceding chunk instead of
 being emitted on its own). No embedding-similarity decisions and no
-cross-page grouping — chunk boundaries never cross a page. The non-OCR
+cross-page grouping — chunk boundaries never cross a page. The
 table-to-text fallback also lives here because it operates inside the
 per-page sentence iteration.
 """
@@ -36,13 +36,14 @@ def _make_semantic_chunk_id(source, title, sent_id):
 #
 # After a successful `extract_knowledge` we persist the resulting chunks
 # (Q-/Q+, chunk_summary, text/page/sent_id metadata) to
-# `data/index_cache/<corpus_tag>/<source>__<sha8>.json`. Rerunning indexing
-# on the same file under the same paper-relevant ablation flags loads the
-# cache and returns the prior knowledge dict — embeddings are still
-# regenerated downstream, since they're cheap (vLLM batch) and the embedding
-# model can change independently of LLM-generated text.
+# `data/index_cache/<version>/<corpus_tag>/<source>__<sha8>__<ablation_sig>.json`.
+# Rerunning indexing on the same file under the same paper-relevant ablation
+# flags and prompt text loads the cache and returns the prior knowledge dict
+# — embeddings are still regenerated downstream, since they're cheap (vLLM
+# batch) and the embedding model can change independently of LLM-generated
+# text.
 
-_CHUNK_CACHE_VERSION = "v4"  # v4: fixed-size chunking replaces adaptive chunking + rolling summary (core-only rewrite)
+_CHUNK_CACHE_VERSION = "v0"  # bump to invalidate all prior cache entries at once (path segment, see _chunk_cache_path)
 
 
 def _chunk_cache_root() -> str:

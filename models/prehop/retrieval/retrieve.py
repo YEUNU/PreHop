@@ -23,6 +23,7 @@ class RetrieveMixin:
 
         stage1_merged: dict[str, dict[str, Any]] = {}
         candidate_limit_per_query = max(20, top_k * 8)
+        rrf_score_keys = ("stage1_rrf_score", "stage2_rrf_score", "stage2_support_score")
 
         def _accumulate(
             merged: dict[str, dict[str, Any]],
@@ -30,15 +31,7 @@ class RetrieveMixin:
             score_key: str,
             weight: float,
         ) -> None:
-            for rank, node in enumerate(nodes):
-                node_id = self._node_identity(node)
-                if node_id not in merged:
-                    item = dict(node)
-                    item.setdefault("stage1_rrf_score", 0.0)
-                    item.setdefault("stage2_rrf_score", 0.0)
-                    item.setdefault("stage2_support_score", 0.0)
-                    merged[node_id] = item
-                merged[node_id][score_key] += weight * (1.0 / (RAGConfig.RRF_K_CONSTANT + rank))
+            self._rrf_accumulate(merged, nodes, score_key, weight, default_keys=rrf_score_keys)
 
         variant = RAGConfig.HYPO_CHANNEL_VARIANT
         # --- Stage 1: grounded retrieval (Q- 0.7 + body 0.3) per paper §3.2.3 ---
@@ -132,8 +125,6 @@ class RetrieveMixin:
         )[: max(24, top_k * 8)]
 
         final_nodes, _ = await self._rerank_and_select(query, expanded_candidates, top_k, query_meta)
-        if not final_nodes:
-            final_nodes = stage1_nodes or stage1_reranked[:top_k]
         if not final_nodes:
             return "", []
 

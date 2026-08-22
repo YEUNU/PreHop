@@ -4,7 +4,7 @@ on (a) correctness vs Ground Truth and (b) hallucination — in a SINGLE LLM
 call so the two judgements stay internally consistent.
 
 Answers are short, factual spans (an entity/person/organization name, a
-publisher, a date or time period, or a yes/no comparison result), NOT
+source, a date or time period, or a yes/no comparison result), NOT
 financial figures. There is no unit scaling or currency formatting to
 reconcile here — judge on factual identity, not numeric tolerance.
 

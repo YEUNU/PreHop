@@ -13,10 +13,11 @@ HotpotQA와 달리 gold 증거가 문장이 아니라 문단(paragraph) 단위�
 (question_decomposition에 서브질문/서브답은 있지만 문장 인덱스는 없음) —
 evidence_facts는 문단 전체 텍스트를 그대로 쓴다. dev split(JSONL, Git LFS)을
 HuggingFace 미러(dgslibisey/MuSiQue)에서 직접 받는다. 회사/페이지 개념이
-없으므로 --sample/--n, OCR, page_match는 사용하지 않는다. 인덱싱·벤치마크 시
+없으므로 page_match는 사용하지 않는다. 인덱싱·벤치마크 시
 `--corpus-tag musique`로 다른 데이터셋과 Neo4j 라벨을 분리한다.
 """
 import argparse
+import html
 import json
 import re
 from pathlib import Path
@@ -39,6 +40,30 @@ def sanitize_filename(name: str) -> str:
     cleaned = re.sub(r'[\\/*?:"<>|]', "_", name).strip()
     cleaned = re.sub(r"\s+", "_", cleaned)
     return cleaned[:150] or "untitled"
+
+
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+
+
+def clean_wiki_markup(text: str) -> str:
+    """Strip leftover MediaWiki markup and unescape HTML entities that can
+    survive in Wikipedia-derived source text (found via a code-intent audit
+    of hotpotqa_corpus, which shares the same underlying Wikipedia source as
+    musique — see prepare_hotpotqa.py's identical helper for the full
+    rationale, including the follow-up full-corpus scan that generalized
+    tag-stripping beyond just <nowiki>/<br> and added citation-marker /
+    malformed-wikilink-bracket cleanup)."""
+    if not text:
+        return text
+    text = html.unescape(text)
+    text = re.sub(r"<br\s*/?>", " ", text)
+    text = _WIKILINK_RE.sub(lambda m: m.group(2) or m.group(1), text)
+    text = re.sub(r"\{\{[^{}]*\}\}", "", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\[\d+\]", "", text)
+    text = re.sub(r"\[\[|\]\]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def _download_jsonl(url: str, dest: Path, limit: int) -> list[dict]:
@@ -77,8 +102,8 @@ def build_corpus(rows: list[dict]) -> dict[str, str]:
     title_to_file: dict[str, str] = {}
     for row in rows:
         for para in row.get("paragraphs") or []:
-            title = (para.get("title") or "").strip()
-            body = (para.get("paragraph_text") or "").strip()
+            title = clean_wiki_markup((para.get("title") or "").strip())
+            body = clean_wiki_markup((para.get("paragraph_text") or "").strip())
             if not title or not body or title in title_to_file:
                 continue
 
@@ -122,8 +147,8 @@ def build_queries(rows: list[dict]) -> list[dict]:
         for para in row.get("paragraphs") or []:
             if not para.get("is_supporting"):
                 continue
-            title = (para.get("title") or "").strip()
-            body = (para.get("paragraph_text") or "").strip()
+            title = clean_wiki_markup((para.get("title") or "").strip())
+            body = clean_wiki_markup((para.get("paragraph_text") or "").strip())
             if title and title not in evidence_docs:
                 evidence_docs.append(title)
             if body:

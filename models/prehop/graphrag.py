@@ -8,6 +8,7 @@ collision.
 import asyncio
 import logging
 import re
+import time
 from typing import Any, Optional
 
 from core.config import RAGConfig
@@ -137,7 +138,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         graph_depth = RAGConfig.GRAPH_HOP_DEPTH
 
         if graph_depth > 0:
-            context, nodes = await self.graph_search(
+            context, nodes, timing = await self.graph_search(
                 entities=[retrieval_query],
                 depth=graph_depth,
                 top_k=RAGConfig.DEFAULT_TOP_K,
@@ -145,7 +146,9 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 force_expand=True,
             )
         else:
+            t_retrieve0 = time.perf_counter()
             context, nodes = await self.retrieve(retrieval_query, top_k=RAGConfig.DEFAULT_TOP_K)
+            timing = {"retrieve_ms": (time.perf_counter() - t_retrieve0) * 1000, "traversal_ms": 0.0}
 
         retrieved_nodes = nodes if isinstance(nodes, list) else []
         sources = self._build_unique_sources(retrieved_nodes)
@@ -154,6 +157,8 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             "step": "retrieve",
             "input": {"query": user_query, "top_k": RAGConfig.DEFAULT_TOP_K, "graph_depth": graph_depth},
             "output": {"retrieved_sources": len(sources)},
+            "retrieve_ms": timing.get("retrieve_ms", 0.0),
+            "traversal_ms": timing.get("traversal_ms", 0.0),
         }]
 
         if not context:
@@ -161,15 +166,19 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             trace.append({
                 "step": "synthesis",
                 "output": {"answer": answer, "reason": "empty_context"},
+                "synthesis_ms": 0.0,
             })
             return answer, sources, trace
 
         prompt = self._build_answer_prompt(context, user_query)
         messages = [{"role": "user", "content": prompt}]
+        t_synthesis0 = time.perf_counter()
         raw = await self.llm.generate_response(messages)
+        synthesis_ms = (time.perf_counter() - t_synthesis0) * 1000
         answer = self._ensure_answer_prefix(str(raw or ""))
         trace.append({
             "step": "synthesis",
             "output": {"answer": answer},
+            "synthesis_ms": synthesis_ms,
         })
         return answer, sources, trace

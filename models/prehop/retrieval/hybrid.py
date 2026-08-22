@@ -11,13 +11,9 @@ Channel routing:
 - "q_plus"   -> Q+ (outgoing) indices, used as expansion channel when Stage 1
                 returns insufficient evidence (paper §3.2.3).
 """
-import logging
 from typing import Any
 
 from core.config import RAGConfig
-
-
-logger = logging.getLogger(__name__)
 
 
 class HybridSearchMixin:
@@ -39,8 +35,7 @@ class HybridSearchMixin:
     async def _hybrid_rrf_candidates(self, query: str, limit: int, channel: str = "body") -> list[dict[str, Any]]:
         embed = await self.llm.get_embedding(query)
         if not embed:
-            logger.warning("Hybrid candidate collection aborted: empty query embedding.")
-            return []
+            raise ValueError(f"Hybrid candidate collection: empty query embedding for query={query!r}")
 
         vector_index, text_index = self._channel_index_names(channel)
         vector_filter, text_filter = self._channel_filter_clauses(channel)
@@ -51,7 +46,7 @@ class HybridSearchMixin:
                 YIELD node, score
                 {('WHERE ' + vector_filter.strip()) if vector_filter.strip() else ''}
                 RETURN node.id as id, node.title as title, node.sent_id as sent_id, node.page as page,
-                       node.text as text, node.published_at as published_at, node.pub_source as pub_source,
+                       node.text as text,
                        score, 'vector' as type, $channel as channel
             """
             vec_res = await session.run(query_vec, {  # type: ignore
@@ -68,7 +63,7 @@ class HybridSearchMixin:
                 YIELD node, score
                 {('WHERE ' + text_filter.strip()) if text_filter.strip() else ''}
                 RETURN node.id as id, node.title as title, node.sent_id as sent_id, node.page as page,
-                       node.text as text, node.published_at as published_at, node.pub_source as pub_source,
+                       node.text as text,
                        score, 'text' as type, $channel as channel
             """
             ft_res = await session.run(query_ft, {  # type: ignore
@@ -79,17 +74,8 @@ class HybridSearchMixin:
             text_nodes = [dict(record) async for record in ft_res]
 
         all_nodes: dict[str, dict[str, Any]] = {}
-
-        def update_rrf(nodes: list[dict[str, Any]], weight: float = 1.0):
-            for rank, node in enumerate(nodes):
-                node_id = self._node_identity(node)
-                if node_id not in all_nodes:
-                    all_nodes[node_id] = dict(node)
-                    all_nodes[node_id]["rrf_score"] = 0.0
-                all_nodes[node_id]["rrf_score"] += weight * (1.0 / (RAGConfig.RRF_K_CONSTANT + rank))
-
-        update_rrf(vector_nodes, weight=RAGConfig.RRF_VECTOR_WEIGHT)
-        update_rrf(text_nodes, weight=RAGConfig.RRF_TEXT_WEIGHT)
+        self._rrf_accumulate(all_nodes, vector_nodes, "rrf_score", RAGConfig.RRF_VECTOR_WEIGHT)
+        self._rrf_accumulate(all_nodes, text_nodes, "rrf_score", RAGConfig.RRF_TEXT_WEIGHT)
 
         nodes = sorted(
             all_nodes.values(),

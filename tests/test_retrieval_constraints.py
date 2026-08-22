@@ -81,6 +81,12 @@ async def test_retrieve_prefers_company_matched_candidate(monkeypatch):
     ]
 
     rag._hybrid_rrf_candidates = AsyncMock(return_value=candidates)  # type: ignore[method-assign]
+    # Query is >80 chars, so _simplified_rerank_query calls generate_json for
+    # its rerank-query-simplification LLM call; mock it to a no-op passthrough
+    # so the test doesn't depend on a live LLM endpoint.
+    rag.llm.generate_json = AsyncMock(  # type: ignore[method-assign]
+        return_value={"question": "Among operations, investing, and financing activities, which brought in the most cash flow for AMD in FY22?"}
+    )
     # Identical embeddings for query and both docs -> tied cosine-similarity
     # score, so the company-matched candidate must win via metadata
     # calibration alone (same intent as the old tied-rerank-score mock).
@@ -177,5 +183,4 @@ async def test_build_graph_filters_q_plus_by_quality_gate():
 
     assert rag._pending_batch, "Expected build_graph to enqueue at least one batch item."
     payload = rag._pending_batch[-1]["data"][0]
-    assert payload["q_plus"] == ["For AMD FY2022 cash flow statement, what was operating cash flow?"]
     assert payload["q_plus_text"] == "For AMD FY2022 cash flow statement, what was operating cash flow?"

@@ -10,18 +10,15 @@ calibrated for cross-encoder classifier scores (roughly a 0-1 probability);
 now that it gates raw bi-encoder cosine similarity, it likely needs
 re-tuning empirically.
 """
-import logging
 from typing import Any
 
 from core.config import RAGConfig
+from models.prehop.llm_json import generate_json_or_raise
 from utils.prompts import (
     RERANK_QUERY_SIMPLIFY_FORMAT_INSTRUCTION,
     RERANK_QUERY_SIMPLIFY_PROMPT,
 )
 from utils.similarity import cosine_similarity
-
-
-logger = logging.getLogger(__name__)
 
 
 class RerankMixin:
@@ -59,13 +56,16 @@ class RerankMixin:
             self._simplified_rerank_query_cache = cache
         if original in cache:
             return cache[original]
-        response = await self.llm.generate_json(
+        response = await generate_json_or_raise(
+            self.llm,
             [
                 {"role": "user", "content": RERANK_QUERY_SIMPLIFY_PROMPT.format(query=original)},
                 {"role": "user", "content": RERANK_QUERY_SIMPLIFY_FORMAT_INSTRUCTION},
-            ]
+            ],
+            "Rerank query simplification",
+            f"query={original!r}",
         )
-        simplified = str((response or {}).get("question", "") or "").strip() or original
+        simplified = str(response.get("question", "") or "").strip() or original
         cache[original] = simplified
         return simplified
 
@@ -107,27 +107,3 @@ class RerankMixin:
             if node.get("rerank_score", 0.0) >= RAGConfig.RERANKER_THRESHOLD
         ][:top_k]
         return final_nodes, reranked_nodes
-
-    async def hybrid_search(self, query: str, top_k: int = 5) -> tuple:
-        nodes = await self._hybrid_rrf_candidates(query, limit=max(20, top_k * 4), channel="body")
-        if not nodes:
-            return "", []
-
-        doc_texts = [node["text"] for node in nodes]
-        rerank_query = await self._simplified_rerank_query(query)
-        scores = await self._embedding_rerank_scores(rerank_query, doc_texts)
-
-        for index, score in enumerate(scores):
-            nodes[index]["rerank_score"] = score
-            nodes[index]["final_score"] = (
-                score
-                + (RAGConfig.META_BOOST_WEIGHT * nodes[index].get("meta_boost", 0.0))
-                - (RAGConfig.BOILERPLATE_PENALTY_WEIGHT * nodes[index].get("boilerplate_penalty", 0.0))
-            )
-
-        reranked_nodes = sorted(nodes, key=lambda item: item.get("final_score", 0.0), reverse=True)
-        gated_nodes = [node for node in reranked_nodes if node.get("rerank_score", 0.0) >= RAGConfig.RERANKER_THRESHOLD][:top_k]
-        if not gated_nodes:
-            return "", []
-        context = self._build_context_from_nodes(gated_nodes)
-        return context, gated_nodes

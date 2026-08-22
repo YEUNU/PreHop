@@ -55,6 +55,36 @@ def _build_benchmark_query(query: str, item: dict[str, Any]) -> str:
     return query
 
 
+def _extract_stage_timing(trace: Any) -> dict[str, float]:
+    """Pull retrieve_ms/traversal_ms/synthesis_ms out of a prehop-style
+    `interaction_trace` (see models/prehop/graphrag.py's `run_workflow`),
+    if present, so they land as top-level numeric fields on `result_item`
+    and get auto-averaged into `avg_retrieve_ms`/`avg_traversal_ms`/
+    `avg_synthesis_ms` by `_recompute_aggregates` — the paper's headline
+    latency-breakdown claim (no per-hop LLM reasoning) needs this split out,
+    not just the single aggregate `latency`.
+
+    Other strategies' traces don't carry these keys, so this returns {} for
+    them — deliberately not defaulting to 0.0, which would misreport "zero
+    latency" instead of "not measured" once averaged.
+    """
+    if not isinstance(trace, list):
+        return {}
+    timing: dict[str, float] = {}
+    for step in trace:
+        if not isinstance(step, dict):
+            continue
+        if step.get("step") == "retrieve":
+            if "retrieve_ms" in step:
+                timing["retrieve_ms"] = float(step.get("retrieve_ms") or 0.0)
+            if "traversal_ms" in step:
+                timing["traversal_ms"] = float(step.get("traversal_ms") or 0.0)
+        elif step.get("step") == "synthesis":
+            if "synthesis_ms" in step:
+                timing["synthesis_ms"] = float(step.get("synthesis_ms") or 0.0)
+    return timing
+
+
 def _apply_judge_label(result_item: dict[str, Any]) -> None:
     """Derive answer_attempted / answer_label (+ hallucination fallback)
     from the (possibly just-patched) llm_judge_score. Idempotent, so it can be
@@ -419,9 +449,11 @@ async def run_benchmark(
         category = item.get("category", "Uncategorized")
 
         started = time.time()
+        stage_timing: dict[str, float] = {}
         try:
             response, retrieved_sources, trace = await engine.run_workflow(query, [])
             latency = time.time() - started
+            stage_timing = _extract_stage_timing(trace)
 
             metrics = await evaluate_multihoprag_response(
                 query=original_query,
@@ -448,6 +480,7 @@ async def run_benchmark(
                 "retrieved_sources": retrieved_sources,
                 "interaction_trace": trace,
                 "latency": latency,
+                **stage_timing,
                 **metrics,
             }
         except Exception as exc:
@@ -485,6 +518,7 @@ async def run_benchmark(
                 "interaction_trace": [{"step": "error", "output": error_text}],
                 "latency": latency,
                 "error": error_text,
+                **stage_timing,
                 **metrics,
             }
 

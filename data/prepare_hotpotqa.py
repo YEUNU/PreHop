@@ -13,11 +13,12 @@ distractor 설정을 쓰는 이유: 각 질문마다 ~10개의 후보 문단(gol
 위키피디아 검색을 전제해서 이 프로젝트의 코퍼스 규모에 맞지 않는다.
 
 HuggingFace parquet export에서 직접 받는다(파이썬 `datasets` 라이브러리 의존
-없이 pyarrow만 사용). 회사/페이지 개념이 없으므로 --sample/--n, OCR,
-page_match는 사용하지 않는다. 인덱싱·벤치마크 시 `--corpus-tag hotpotqa`로
-다른 데이터셋과 Neo4j 라벨을 분리한다.
+없이 pyarrow만 사용). 회사/페이지 개념이 없으므로 page_match는 사용하지
+않는다. 인덱싱·벤치마크 시 `--corpus-tag hotpotqa`로 다른 데이터셋과 Neo4j
+라벨을 분리한다.
 """
 import argparse
+import html
 import json
 import re
 from pathlib import Path
@@ -41,6 +42,45 @@ def sanitize_filename(name: str) -> str:
     cleaned = re.sub(r'[\\/*?:"<>|]', "_", name).strip()
     cleaned = re.sub(r"\s+", "_", cleaned)
     return cleaned[:150] or "untitled"
+
+
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+
+
+def clean_wiki_markup(text: str) -> str:
+    """Strip leftover MediaWiki markup and unescape HTML entities that survive
+    in a fraction of HotpotQA's source text (the HF parquet export isn't
+    fully plain-text — found via a code-intent audit of indexed chunks:
+    ~0.24% of hotpotqa chunks carried <nowiki>/<br>/[[wikilink]]/{{template}}
+    tokens into the Q-/Q+ LLM prompt and embeddings; separately, article
+    titles containing quotes/ampersands come HTML-escaped, e.g. `&quot;J&quot;
+    Is for Judgment`). Applied to corpus body text, titles, and
+    evidence_facts so gold facts/doc names stay consistent with what's
+    actually indexed.
+
+    A follow-up full-corpus scan (not just a chunk sample — see
+    docs/CHANGELOG.md) found more residual markup the original narrow
+    <nowiki>/<br> patterns missed: ruby-annotation tags (<ruby>/<rb>/<rt>/
+    <rp>), <ref>/<a href>/<onlyinclude>/<section>/<small> etc. Rather than
+    keep enumerating specific tags, any remaining HTML/wiki tag is now
+    stripped generically (content between the angle brackets is dropped,
+    text inside/around the tag is kept) after <br> is handled specially
+    (needs a space, not nothing, so words don't get joined). Also strips
+    bare Wikipedia citation markers ([12]) and any malformed [[/]] left
+    over from a wikilink whose bracket count didn't match (both distinct
+    from the well-formed-wikilink case _WIKILINK_RE already handles).
+    """
+    if not text:
+        return text
+    text = html.unescape(text)
+    text = re.sub(r"<br\s*/?>", " ", text)
+    text = _WIKILINK_RE.sub(lambda m: m.group(2) or m.group(1), text)
+    text = re.sub(r"\{\{[^{}]*\}\}", "", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\[\d+\]", "", text)
+    text = re.sub(r"\[\[|\]\]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def _download_parquet(url: str, dest: Path) -> "pq.Table":
@@ -83,10 +123,10 @@ def build_corpus(rows: list[dict]) -> dict[str, str]:
         titles = context.get("title") or []
         sentences_lists = context.get("sentences") or []
         for title, sentences in zip(titles, sentences_lists):
-            title = (title or "").strip()
+            title = clean_wiki_markup((title or "").strip())
             if not title or title in title_to_file:
                 continue
-            body = " ".join(s.strip() for s in (sentences or []) if s and s.strip())
+            body = " ".join(clean_wiki_markup(s.strip()) for s in (sentences or []) if s and s.strip())
             if not body:
                 continue
 
@@ -123,18 +163,18 @@ def build_queries(rows: list[dict]) -> list[dict]:
         ctx_titles = context.get("title") or []
         ctx_sentences = context.get("sentences") or []
         sentences_by_title = {
-            (t or "").strip(): s for t, s in zip(ctx_titles, ctx_sentences)
+            clean_wiki_markup((t or "").strip()): s for t, s in zip(ctx_titles, ctx_sentences)
         }
 
         evidence_docs: list[str] = []
         evidence_facts: list[str] = []
         for title, sent_id in zip(sup_titles, sup_sent_ids):
-            title = (title or "").strip()
+            title = clean_wiki_markup((title or "").strip())
             if title and title not in evidence_docs:
                 evidence_docs.append(title)
             sentences = sentences_by_title.get(title) or []
             if 0 <= sent_id < len(sentences):
-                fact = (sentences[sent_id] or "").strip()
+                fact = clean_wiki_markup((sentences[sent_id] or "").strip())
                 if fact:
                     evidence_facts.append(fact)
 

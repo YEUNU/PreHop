@@ -323,28 +323,36 @@ class TextUtilsMixin:
 
     @staticmethod
     def _build_context_from_nodes(nodes: list[dict[str, Any]]) -> str:
-        # News corpora (MultiHop-RAG) carry per-article publication date + source
-        # that temporal/comparison questions hinge on; the financial path keeps
-        # the original `[[title, Page, Chunk]]` header byte-for-byte.
-        if RAGConfig.DOMAIN == "news":
-            blocks = []
-            for node in nodes:
-                meta = []
-                src = str(node.get("pub_source") or "").strip()
-                pub = str(node.get("published_at") or "").strip()
-                if src:
-                    meta.append(f"Source: {src}")
-                if pub:
-                    meta.append(f"Published: {pub}")
-                meta_str = (", " + ", ".join(meta)) if meta else ""
-                blocks.append(
-                    f"[[{node['title']}{meta_str}, Chunk {node['sent_id']}]]\n{node['text']}"
-                )
-            return "\n\n".join(blocks)
         return "\n\n".join([
             f"[[{node['title']}, Page {node.get('page', 0)}, Chunk {node['sent_id']}]]\n{node['text']}"
             for node in nodes
         ])
+
+    def _rrf_accumulate(
+        self,
+        merged: dict[str, dict[str, Any]],
+        nodes: list[dict[str, Any]],
+        score_key: str,
+        weight: float,
+        default_keys: tuple[str, ...] = (),
+    ) -> None:
+        """Reciprocal-rank-fusion accumulation, shared by hybrid.py's
+        vector/fulltext channel fusion and retrieve.py's stage1/stage2
+        candidate merging: rrf_score += weight * (1 / (k + rank)) into
+        `merged`, keyed by node identity. `default_keys` seeds every score
+        field a caller's later accumulation passes might target (e.g.
+        retrieve.py's stage1/stage2/stage2_support scores) so a
+        first-seen-in-a-later-pass node still has all fields present;
+        callers with a single fixed score key can omit it.
+        """
+        for rank, node in enumerate(nodes):
+            node_id = self._node_identity(node)
+            if node_id not in merged:
+                item = dict(node)
+                for key in default_keys or (score_key,):
+                    item.setdefault(key, 0.0)
+                merged[node_id] = item
+            merged[node_id][score_key] += weight * (1.0 / (RAGConfig.RRF_K_CONSTANT + rank))
 
     @staticmethod
     def _node_identity(node: dict[str, Any]) -> str:

@@ -1,6 +1,6 @@
 [project]
-name = "hypohop"
-version = "0.1.0"
+name = "prehop"
+version = "0.0.0"
 description = "Offline HOP-edge pre-scoring for deterministic multi-hop retrieval"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,6 +22,19 @@ dependencies = [
     "tqdm",
     "requests",
     "pyarrow",  # parses HuggingFace parquet dataset exports (data/prepare_*.py)
+    "spacy",  # sentence/entity splitting for the hoprag baseline's official indexer
+    "pandas",  # third_party/HopRAG/HopBuilder.py (official hoprag baseline);
+               # also a dep of the ms_graphrag baseline
+    "graphrag",  # official ms_graphrag baseline (models/ms_graphrag/official_indexer.py,
+                 # ms_adapter.py) — pulls the graphrag_cache/input/llm/storage/vectors
+                 # submodules those files import
+    "litellm",  # ms_graphrag baseline routes generation through a LiteLLM Router
+                # (models/ms_graphrag/official_indexer.py, ms_adapter.py)
+    # paddlenlp/modelscope are NOT needed: third_party/HopRAG/tool.py imports them
+    # at module level, but models/hoprag/official_indexer.py's
+    # _install_optional_stubs() injects fake sys.modules entries for both BEFORE
+    # that import ever runs, so the real packages are never touched on the actual
+    # indexing/benchmark code path (only pandas above is a genuine, unstubbed dep).
     # FlashInfer attention backend for vLLM. Without it, vLLM falls back to
     # FLASH_ATTN (works, but FlashInfer enables the faster attn path + autotune
     # on this CUDA 13 / torch cu130 box). Wheels are CUDA-version specific.

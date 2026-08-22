@@ -109,13 +109,11 @@ class RAGConfig:
     CHUNK_SENTENCES = int(os.environ.get("RAG_CHUNK_SENTENCES", "6"))
     MIN_CHUNK_SENTENCES = int(os.environ.get("RAG_MIN_CHUNK_SENTENCES", "2"))
     HOP_LINK_LIMIT = int(os.environ.get("RAG_HOP_LINK_LIMIT", "5"))
-    CONTEXT_FETCH_LIMIT = int(os.environ.get("RAG_CONTEXT_FETCH_LIMIT", "10"))
     GRAPH_SEARCH_LIMIT = int(os.environ.get("RAG_GRAPH_SEARCH_LIMIT", "10"))
-    # Retrieval/synthesis depth. News/multi-hop (MultiHop-RAG) needs more chunks
-    # in the returned top-k so all 2-4 evidence pieces land inside the @10 metric
-    # window and the synthesis context (validated A/B: top_k 8->12 lifted Hits@10
-    # +4.7pp and Judge +5pp). FinanceBench stays at 8 (paper baseline). Env
-    # RAG_DEFAULT_TOP_K overrides either.
+    # Retrieval/synthesis depth. News/multi-hop datasets need more chunks in
+    # the returned top-k so all 2-4 evidence pieces land inside the @10 metric
+    # window and the synthesis context; the financial path (no current
+    # dataset selects it) stays at 8. Env RAG_DEFAULT_TOP_K overrides either.
     DEFAULT_TOP_K = int(os.environ.get("RAG_DEFAULT_TOP_K", "12" if DOMAIN == "news" else "8"))
     FULLTEXT_ANALYZER = os.environ.get("NEO4J_FULLTEXT_ANALYZER", "english")
     RECREATE_TEXT_INDEX = os.environ.get("RAG_RECREATE_TEXT_INDEX", "False").lower() == "true"
