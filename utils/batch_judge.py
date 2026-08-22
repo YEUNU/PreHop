@@ -1,15 +1,15 @@
 """OpenAI Batch API collector for the benchmark LLM-as-a-judge call.
 
-Opt-in via ``RAG_JUDGE_BATCH=true`` (and an OpenAI ``EVAL_MODEL``). The
+Enabled by default with an OpenAI ``EVAL_MODEL`` and ``OPENAI_API_KEY``. The
 benchmark registers every judge prompt during its first pass, then submits a
-single batch to the ``/v1/chat/completions`` endpoint (50% cheaper than
-synchronous calls), polls to completion, and returns
-``{custom_id: parsed_payload}``. The caller falls back to the synchronous
-per-query judge if anything here raises.
+single batch to the ``/v1/chat/completions`` endpoint. Batch creation or
+resolution failures propagate; the benchmark never silently switches to the
+more expensive synchronous path.
 
 The OpenAI SDK calls are synchronous, so they run in worker threads via
 ``asyncio.to_thread`` to avoid blocking the event loop.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +17,7 @@ import io
 import json
 import logging
 import time
-from typing import Optional
+from collections.abc import Callable
 
 from utils.parsers import clean_and_unwrap_json
 
@@ -64,7 +64,7 @@ class OpenAIBatchJudge:
             buf.write((json.dumps(line, ensure_ascii=False) + "\n").encode("utf-8"))
         return buf.getvalue()
 
-    def _submit_sync(self) -> Optional[str]:
+    def _submit_sync(self, on_submitted: Callable[[str], None] | None = None) -> str | None:
         """Upload the JSONL and create the batch. Returns the batch id (no poll)."""
         from openai import OpenAI  # local import so the dep is only needed when used
 
@@ -78,32 +78,23 @@ class OpenAIBatchJudge:
             endpoint="/v1/chat/completions",
             completion_window="24h",
         )
+        if on_submitted is not None:
+            on_submitted(batch.id)
         logger.info("Judge batch submitted: id=%s, %d requests", batch.id, self.count)
         return batch.id
 
-    async def submit(self) -> Optional[str]:
+    async def submit(self, on_submitted: Callable[[str], None] | None = None) -> str | None:
         """Submit the batch without waiting. Returns the batch id (or None when
         there is nothing to judge). Use `resolve_batches`/`poll_and_fetch` later
         to retrieve the results — the work runs asynchronously on OpenAI's side."""
         if not self._requests:
             return None
-        return await asyncio.to_thread(self._submit_sync)
-
-    def _run_sync(self) -> dict[str, Optional[dict]]:
-        """Blocking: submit, poll, download, parse. Runs in a thread."""
-        batch_id = self._submit_sync()
-        return poll_and_fetch(self.api_key, batch_id, self.poll_seconds)
-
-    async def run(self) -> dict[str, Optional[dict]]:
-        """Submit + await the batch. Returns {custom_id: payload or None}."""
-        if not self._requests:
-            return {}
-        return await asyncio.to_thread(self._run_sync)
+        return await asyncio.to_thread(self._submit_sync, on_submitted)
 
 
-def _parse_batch_output(out_text: str, total: Optional[int] = None) -> dict[str, Optional[dict]]:
+def _parse_batch_output(out_text: str, total: int | None = None) -> dict[str, dict | None]:
     """Parse a batch output JSONL into {custom_id: parsed_payload}."""
-    results: dict[str, Optional[dict]] = {}
+    results: dict[str, dict | None] = {}
     for raw in out_text.splitlines():
         raw = raw.strip()
         if not raw:
@@ -113,7 +104,7 @@ def _parse_batch_output(out_text: str, total: Optional[int] = None) -> dict[str,
             custom_id = row.get("custom_id")
             content = row["response"]["body"]["choices"][0]["message"]["content"]
             results[custom_id] = json.loads(clean_and_unwrap_json(content))
-        except Exception as exc:  # one bad line shouldn't sink the batch
+        except (AttributeError, IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
             logger.warning("Batch judge: could not parse output line: %s", exc)
     logger.info("Judge batch parsed: %d%s payloads", len(results), f"/{total}" if total else "")
     return results
@@ -124,7 +115,7 @@ def poll_and_fetch(
     batch_id: str,
     poll_seconds: int = 15,
     client=None,
-) -> dict[str, Optional[dict]]:
+) -> dict[str, dict | None]:
     """Block until `batch_id` reaches a terminal state, then download + parse.
 
     No client-side timeout — the OpenAI batch SLA is up to 24h. Raises if the
@@ -143,7 +134,9 @@ def poll_and_fetch(
         counts = getattr(batch, "request_counts", None)
         logger.info(
             "Judge batch %s: status=%s, %ss elapsed%s",
-            batch.id, batch.status, waited,
+            batch.id,
+            batch.status,
+            waited,
             f", {counts.completed}/{counts.total} done" if counts else "",
         )
     if batch.status != "completed":
@@ -156,25 +149,21 @@ def resolve_batches(
     api_key: str,
     batch_ids: list[str],
     poll_seconds: int = 15,
-) -> dict[str, dict[str, Optional[dict]]]:
+) -> dict[str, dict[str, dict | None]]:
     """Poll several batches concurrently. Returns {batch_id: {custom_id: payload}}.
 
-    A batch that fails/expires (or whose download errors) maps to an empty dict
-    and is logged — the caller decides how to treat the unresolved rows.
+    Any failed/expired batch or download error propagates so the benchmark is
+    visibly incomplete; the pending manifest remains available for diagnosis.
     """
     from concurrent.futures import ThreadPoolExecutor
 
     ids = [b for b in dict.fromkeys(batch_ids) if b]
-    out: dict[str, dict[str, Optional[dict]]] = {}
+    out: dict[str, dict[str, dict | None]] = {}
     if not ids:
         return out
 
-    def _one(bid: str) -> tuple[str, dict[str, Optional[dict]]]:
-        try:
-            return bid, poll_and_fetch(api_key, bid, poll_seconds)
-        except Exception as exc:
-            logger.error("Judge batch %s did not resolve: %s", bid, exc)
-            return bid, {}
+    def _one(bid: str) -> tuple[str, dict[str, dict | None]]:
+        return bid, poll_and_fetch(api_key, bid, poll_seconds)
 
     with ThreadPoolExecutor(max_workers=max(1, len(ids))) as pool:
         for bid, res in pool.map(_one, ids):

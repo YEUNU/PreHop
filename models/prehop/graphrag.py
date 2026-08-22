@@ -5,19 +5,20 @@ All Neo4j labels and index names are derived from (strategy, corpus_tag) so
 multiple corpora and strategies coexist in the same database without
 collision.
 """
+
 import asyncio
 import logging
+import os
 import re
 import time
-from typing import Any, Optional
+from typing import Any
 
 from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
 from models.prehop.retrieval import RetrievalPipeline
-from utils.prompts.shared import answer_role
-
+from utils.prompts.shared import build_answer_prompt as build_shared_answer_prompt
 
 _ANSWER_PREFIX = "@@ANSWER:"
 
@@ -29,8 +30,8 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
     def __init__(
         self,
         strategy: str = "prehop",
-        indexing_model_id: Optional[str] = None,
-        corpus_tag: Optional[str] = None,
+        indexing_model_id: str | None = None,
+        corpus_tag: str | None = None,
         save_intermediate: bool = False,
     ):
         self.strategy = strategy.lower()
@@ -62,7 +63,11 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         self._pending_batch = []
         self._batch_lock = asyncio.Lock()
         self._index_setup_lock = asyncio.Lock()
-        self.debug_output_dir = f"data/debug/{self.corpus_tag}"
+        raw_run_id = os.environ.get("RAG_RUN_ID") or (
+            f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000_000:09d}_{os.getpid()}"
+        )
+        safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_run_id).strip("._-") or f"run_{os.getpid()}"
+        self.debug_output_dir = os.path.join("data", "debug", safe_run_id, self.strategy, self._safe_corpus)
         self.save_intermediate = save_intermediate
 
     # ---------- helpers ----------
@@ -91,12 +96,14 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             key = (doc, page, sent_id)
             if key in seen:
                 continue
-            unique.append({
-                "doc": doc,
-                "page": page,
-                "text": row.get("text", ""),
-                "sent_id": sent_id,
-            })
+            unique.append(
+                {
+                    "doc": doc,
+                    "page": page,
+                    "text": row.get("text", ""),
+                    "sent_id": sent_id,
+                }
+            )
             seen.add(key)
         return unique
 
@@ -104,31 +111,22 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
     def _build_answer_prompt(context: str, user_query: str) -> str:
         # Single-pass synthesis prompt (paper §3.2.6). Structurally identical
         # to the HopRAG / naive baseline prompts so any score gap traces back
-        # to retrieval, not synthesis-prompt asymmetry. The analyst role is
-        # domain-aware (RAGConfig.DOMAIN) so news/multi-hop corpora aren't
-        # framed as financial filings; all baselines use the same role helper.
-        return (
-            f"You are {answer_role()}. Answer the question using only the provided context.\n"
-            "If the context is insufficient, say you do not know.\n"
-            "\n"
-            f"Context:\n{context}\n"
-            "\n"
-            f"Question: {user_query}\n"
-            "\n"
-            "Answer:"
-        )
+        # to retrieval, not synthesis-prompt asymmetry. The role is
+        # dataset-neutral. MS GraphRAG owns synthesis inside its
+        # official local/global search API and is the documented exception.
+        return build_shared_answer_prompt(context, user_query)
 
     # ---------- main entry ----------
     async def run_workflow(
         self,
         user_query: str,
-        history: Optional[list[dict[str, Any]]] = None,
+        history: list[dict[str, Any]] | None = None,
     ) -> tuple:
         """Retrieve-only query path (paper §3.2). Returns (answer, sources, trace).
 
         No agent loop, no reflection, no refinement. The path is:
-          1. Two-stage hybrid retrieve (Q-/body, then Q+ expansion if needed).
-          2. Embedding-similarity rerank with top-up.
+          1. Two-stage hybrid retrieve (Q-/body, then Q+ expansion).
+          2. External-embedding cosine top-k ordering.
           3. Deterministic 1-hop NEXT/HOP traversal over pre-built edges
              (when RAG_GRAPH_HOP_DEPTH > 0, default).
           4. Single LLM synthesis call.
@@ -142,8 +140,6 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 entities=[retrieval_query],
                 depth=graph_depth,
                 top_k=RAGConfig.DEFAULT_TOP_K,
-                user_query=retrieval_query,
-                force_expand=True,
             )
         else:
             t_retrieve0 = time.perf_counter()
@@ -153,21 +149,25 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         retrieved_nodes = nodes if isinstance(nodes, list) else []
         sources = self._build_unique_sources(retrieved_nodes)
 
-        trace: list[dict[str, Any]] = [{
-            "step": "retrieve",
-            "input": {"query": user_query, "top_k": RAGConfig.DEFAULT_TOP_K, "graph_depth": graph_depth},
-            "output": {"retrieved_sources": len(sources)},
-            "retrieve_ms": timing.get("retrieve_ms", 0.0),
-            "traversal_ms": timing.get("traversal_ms", 0.0),
-        }]
+        trace: list[dict[str, Any]] = [
+            {
+                "step": "retrieve",
+                "input": {"query": user_query, "top_k": RAGConfig.DEFAULT_TOP_K, "graph_depth": graph_depth},
+                "output": {"retrieved_sources": len(sources)},
+                "retrieve_ms": timing.get("retrieve_ms", 0.0),
+                "traversal_ms": timing.get("traversal_ms", 0.0),
+            }
+        ]
 
         if not context:
             answer = self._ensure_answer_prefix("Insufficient evidence.")
-            trace.append({
-                "step": "synthesis",
-                "output": {"answer": answer, "reason": "empty_context"},
-                "synthesis_ms": 0.0,
-            })
+            trace.append(
+                {
+                    "step": "synthesis",
+                    "output": {"answer": answer, "reason": "empty_context"},
+                    "synthesis_ms": 0.0,
+                }
+            )
             return answer, sources, trace
 
         prompt = self._build_answer_prompt(context, user_query)
@@ -175,10 +175,14 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         t_synthesis0 = time.perf_counter()
         raw = await self.llm.generate_response(messages)
         synthesis_ms = (time.perf_counter() - t_synthesis0) * 1000
-        answer = self._ensure_answer_prefix(str(raw or ""))
-        trace.append({
-            "step": "synthesis",
-            "output": {"answer": answer},
-            "synthesis_ms": synthesis_ms,
-        })
+        if not str(raw or "").strip():
+            raise ValueError("Answer synthesis returned an empty response")
+        answer = self._ensure_answer_prefix(str(raw))
+        trace.append(
+            {
+                "step": "synthesis",
+                "output": {"answer": answer},
+                "synthesis_ms": synthesis_ms,
+            }
+        )
         return answer, sources, trace

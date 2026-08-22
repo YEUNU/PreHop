@@ -144,28 +144,37 @@ def _build_failure_records(details: list[dict[str, Any]], top_k: int = 30) -> li
             is_failure = is_failure or (_safe_float(score, 0.0) < 1.0)
         if not is_failure:
             continue
-        failures.append({
-            "rank_hint": idx,
-            "query": item.get("query", ""),
-            "category": item.get("category", ""),
-            "llm_judge_score": _safe_float(score, 0.0),
-            "hallucination": _safe_float(item.get("hallucination", 0.0)),
-            "hallucination_reason": item.get("hallucination_reason", ""),
-            "hallucination_model": item.get("hallucination_model", ""),
-            "llm_judge_reason": item.get("llm_judge_reason", ""),
-            "doc_match": _safe_float(item.get("doc_match", 0.0)),
-            "page_match": _safe_float(item.get("page_match", 0.0)),
-            "latency": _safe_float(item.get("latency", 0.0)),
-            "answer": item.get("answer", ""),
-            "ground_truth": item.get("ground_truth", ""),
-            "error": item.get("error", ""),
-            "trace_steps": _collect_trace_steps(item.get("interaction_trace", [])),
-        })
-    failures.sort(key=lambda item: (item.get("llm_judge_score", 0.0), -item.get("doc_match", 0.0), -item.get("latency", 0.0)))
+        failures.append(
+            {
+                "rank_hint": idx,
+                "query": item.get("query", ""),
+                "category": item.get("category", ""),
+                "llm_judge_score": _safe_float(score, 0.0),
+                "hallucination": _safe_float(item.get("hallucination", 0.0)),
+                "hallucination_reason": item.get("hallucination_reason", ""),
+                "hallucination_model": item.get("hallucination_model", ""),
+                "llm_judge_reason": item.get("llm_judge_reason", ""),
+                "doc_match": _safe_float(item.get("doc_match", 0.0)),
+                "page_match": _safe_float(item.get("page_match", 0.0)),
+                "latency": _safe_float(item.get("latency", 0.0)),
+                "answer": item.get("answer", ""),
+                "ground_truth": item.get("ground_truth", ""),
+                "error": item.get("error", ""),
+                "trace_steps": _collect_trace_steps(item.get("interaction_trace", [])),
+            }
+        )
+    failures.sort(
+        key=lambda item: (item.get("llm_judge_score", 0.0), -item.get("doc_match", 0.0), -item.get("latency", 0.0))
+    )
     return failures[: max(1, top_k)]
 
 
-def _write_model_report_artifacts(summary: dict[str, Any], result_file: Path) -> None:
+def _write_model_report_artifacts(
+    summary: dict[str, Any],
+    result_file: Path,
+    *,
+    preserve_trace_artifacts: bool = False,
+) -> None:
     """Write secondary report artifacts alongside the main result JSON.
 
     Layout (2026-05 cleanup — markdown renderings removed, traces split):
@@ -201,35 +210,41 @@ def _write_model_report_artifacts(summary: dict[str, Any], result_file: Path) ->
     trace_rows: list[dict[str, Any]] = []
     for idx, item in enumerate(details, start=1):
         trace = item.get("interaction_trace", [])
-        detail_rows.append({
-            "idx": idx,
-            "query": item.get("query", ""),
-            "category": item.get("category", ""),
-            "answer": item.get("answer", ""),
-            "ground_truth": item.get("ground_truth", ""),
-            "llm_judge_score": _safe_float(item.get("llm_judge_score", 0.0)),
-            "answer_attempted": _safe_float(item.get("answer_attempted", 0.0)),
-            "hallucination": _safe_float(item.get("hallucination", 0.0)),
-            "hallucination_reason": item.get("hallucination_reason", ""),
-            "hallucination_source": item.get("hallucination_source", ""),
-            "hallucination_model": item.get("hallucination_model", ""),
-            "llm_judge_reason": item.get("llm_judge_reason", ""),
-            "doc_match": _safe_float(item.get("doc_match", 0.0)),
-            "page_match": _safe_float(item.get("page_match", 0.0)),
-            "latency": _safe_float(item.get("latency", 0.0)),
-            "error": item.get("error", ""),
-            "trace_steps": _collect_trace_steps(trace),
-        })
-        trace_rows.append({
-            "idx": idx,
-            "query": item.get("query", ""),
-            "interaction_trace": trace,
-        })
+        detail_rows.append(
+            {
+                "idx": idx,
+                "query": item.get("query", ""),
+                "category": item.get("category", ""),
+                "answer": item.get("answer", ""),
+                "ground_truth": item.get("ground_truth", ""),
+                "llm_judge_score": _safe_float(item.get("llm_judge_score", 0.0)),
+                "answer_attempted": _safe_float(item.get("answer_attempted", 0.0)),
+                "hallucination": _safe_float(item.get("hallucination", 0.0)),
+                "hallucination_reason": item.get("hallucination_reason", ""),
+                "hallucination_source": item.get("hallucination_source", ""),
+                "hallucination_model": item.get("hallucination_model", ""),
+                "llm_judge_reason": item.get("llm_judge_reason", ""),
+                "doc_match": _safe_float(item.get("doc_match", 0.0)),
+                "page_match": _safe_float(item.get("page_match", 0.0)),
+                "latency": _safe_float(item.get("latency", 0.0)),
+                "error": item.get("error", ""),
+                "trace_steps": _collect_trace_steps(trace),
+            }
+        )
+        trace_rows.append(
+            {
+                "idx": idx,
+                "query": item.get("query", ""),
+                "interaction_trace": trace,
+            }
+        )
     _write_jsonl(details_jsonl_file, detail_rows)
-    _write_jsonl(traces_jsonl_file, trace_rows)
+    if not preserve_trace_artifacts:
+        _write_jsonl(traces_jsonl_file, trace_rows)
 
     failures = _build_failure_records(details, top_k=30)
     _write_jsonl(failures_jsonl_file, failures)
 
-    diagnostics = _compute_stage_diagnostics(details)
-    _write_json(stage_diag_json_file, diagnostics)
+    if not preserve_trace_artifacts:
+        diagnostics = _compute_stage_diagnostics(details)
+        _write_json(stage_diag_json_file, diagnostics)

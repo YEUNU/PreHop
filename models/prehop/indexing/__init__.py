@@ -3,10 +3,13 @@
 Layer order:
 - Fixed-size chunking — chunking.py
 - Predictive Knowledge Mapping (Q-/Q+) — knowledge_mapping.py
+- Strict sparse-text embedding — embedding.py
 - Rank-Based HOP Edge Pre-Construction — hop_edges.py
 - Neo4j storage (chunks + NEXT edges + index lifecycle) — graph_writer.py
 """
+
 from .chunking import ChunkingMixin
+from .embedding import SparseEmbeddingMixin
 from .graph_writer import GraphWriterMixin
 from .hop_edges import HopEdgeMixin
 from .knowledge_mapping import KnowledgeMappingMixin
@@ -15,6 +18,7 @@ from .knowledge_mapping import KnowledgeMappingMixin
 class IndexingPipeline(
     ChunkingMixin,
     KnowledgeMappingMixin,
+    SparseEmbeddingMixin,
     HopEdgeMixin,
     GraphWriterMixin,
 ):
@@ -23,8 +27,9 @@ class IndexingPipeline(
 
 __all__ = [
     "ChunkingMixin",
-    "KnowledgeMappingMixin",
-    "HopEdgeMixin",
     "GraphWriterMixin",
+    "HopEdgeMixin",
     "IndexingPipeline",
+    "KnowledgeMappingMixin",
+    "SparseEmbeddingMixin",
 ]

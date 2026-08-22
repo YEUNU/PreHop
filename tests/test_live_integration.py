@@ -1,20 +1,19 @@
 import asyncio
-from typing import Dict, Iterable, Tuple
+from collections.abc import Iterable
 
 import httpx
 import pytest
 
+from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient
-from models.prehop.graphrag import GraphRAG
 from models.naive.naive_rag import NaiveRAG
+from models.prehop.graphrag import GraphRAG
 
-
-HEALTH_CHECKS: Dict[str, Tuple[str, set[int]]] = {
+HEALTH_CHECKS: dict[str, tuple[str, set[int]]] = {
     "neo4j_http": ("http://localhost:7474", {200, 401, 403, 405}),
-    "generation": ("http://localhost:28000/v1/models", {200, 401}),
-    "embedding": ("http://localhost:18082/v1/models", {200, 401}),
-    "reranker": ("http://localhost:18083/health", {200}),
+    "generation": (f"{RAGConfig.VLLM_URL.rstrip('/')}/models", {200, 401}),
+    "embedding": (f"{RAGConfig.VLLM_EMBED_URL.rstrip('/')}/models", {200, 401}),
 }
 
 
@@ -23,14 +22,12 @@ async def _endpoint_ready(url: str, ok_codes: Iterable[int]) -> bool:
         async with httpx.AsyncClient(timeout=2.0) as client:
             res = await client.get(url)
         return res.status_code in set(ok_codes)
-    except Exception:
+    except Exception:  # noqa: BLE001 - optional live-service probe
         return False
 
 
 async def _require_live_services() -> None:
-    checks = await asyncio.gather(
-        *[_endpoint_ready(url, codes) for url, codes in HEALTH_CHECKS.values()]
-    )
+    checks = await asyncio.gather(*[_endpoint_ready(url, codes) for url, codes in HEALTH_CHECKS.values()])
     missing = [name for name, is_ok in zip(HEALTH_CHECKS.keys(), checks) if not is_ok]
     if missing:
         pytest.skip(f"Live integration services not ready: {', '.join(missing)}")
@@ -38,7 +35,7 @@ async def _require_live_services() -> None:
     neo4j = Neo4jService()
     try:
         rows = await asyncio.wait_for(neo4j.execute_query("RETURN 1 AS ok"), timeout=10.0)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional live-service probe
         await Neo4jService.global_close()
         pytest.skip(f"Live integration Neo4j bolt not ready: {exc}")
     await Neo4jService.global_close()
@@ -49,7 +46,7 @@ async def _require_live_services() -> None:
 async def _run_live_step(name: str, coro, timeout_seconds: float):
     try:
         return await asyncio.wait_for(coro, timeout=timeout_seconds)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional live-service probe
         pytest.skip(f"Live integration step '{name}' not ready: {exc}")
 
 
@@ -81,17 +78,6 @@ async def test_live_vllm_client_minimal_calls():
         timeout_seconds=60.0,
     )
     assert isinstance(embedding, list) and len(embedding) > 0
-
-    scores = await _run_live_step(
-        "rerank",
-        client.rerank(
-            "integration",
-            ["integration token appears here", "this is unrelated"],
-        ),
-        timeout_seconds=60.0,
-    )
-    assert len(scores) == 2
-    assert all(isinstance(s, (int, float)) for s in scores)
 
 
 @pytest.mark.asyncio
@@ -132,9 +118,7 @@ async def test_live_naive_index_retrieve_roundtrip():
 
         node_count = await _run_live_step(
             "node_count",
-            rag.neo4j.execute_query(
-                f"MATCH (n:{rag.chunk_label}) RETURN count(n) AS c"
-            ),
+            rag.neo4j.execute_query(f"MATCH (n:{rag.chunk_label}) RETURN count(n) AS c"),
             timeout_seconds=20.0,
         )
         assert node_count and node_count[0].get("c", 0) > 0, "No indexed nodes were created."
@@ -169,9 +153,9 @@ async def test_live_graphrag_index_retrieve_roundtrip():
     ChunkingMixin (page parse + fixed-size sentence windows) ->
     KnowledgeMappingMixin (Q-/Q+ generation via indexing_llm) ->
     GraphWriterMixin (Neo4j MERGE + NEXT edges + index lifecycle) ->
-    HopEdgeMixin (offline HOP rerank if Q+ items pass quality gate) ->
+    HopEdgeMixin (offline HOP scoring for generated non-empty Q+ items) ->
     RetrieveMixin (two-stage Q-/Q+ entry) -> HybridSearchMixin (RRF) ->
-    RerankMixin (cross-encoder + tau_r). The unique token must survive
+    SimilarityScoringMixin (external embedding cosine ordering). The unique token must survive
     indexing and resurface through retrieval.
     """
     await _require_live_services()
@@ -181,12 +165,8 @@ async def test_live_graphrag_index_retrieve_roundtrip():
     rag = GraphRAG(strategy="prehop", corpus_tag=corpus_tag)
 
     async def cleanup() -> None:
-        await rag.neo4j.execute_query(
-            f"MATCH (n:{rag.chunk_label}) DETACH DELETE n"
-        )
-        await rag.neo4j.execute_query(
-            f"MATCH (d:{rag.doc_label}) DETACH DELETE d"
-        )
+        await rag.neo4j.execute_query(f"MATCH (n:{rag.chunk_label}) DETACH DELETE n")
+        await rag.neo4j.execute_query(f"MATCH (d:{rag.doc_label}) DETACH DELETE d")
 
     async def wait_for_index_online() -> None:
         for _ in range(20):
@@ -201,7 +181,7 @@ async def test_live_graphrag_index_retrieve_roundtrip():
     await _run_live_step("cleanup_before", cleanup(), timeout_seconds=20.0)
     try:
         content = (
-            "Document: GraphRAG Live Smoke 10K\n"
+            "Title: GraphRAG Live Smoke 10K\n"
             "----- Page 1 -----\n"
             f"In FY2022 the {unique_token} program produced disclosed metrics. "
             f"Revenue attributable to {unique_token} was reported on the income statement. "
@@ -236,9 +216,7 @@ async def test_live_graphrag_index_retrieve_roundtrip():
 
         node_count = await _run_live_step(
             "node_count",
-            rag.neo4j.execute_query(
-                f"MATCH (n:{rag.chunk_label}) RETURN count(n) AS c"
-            ),
+            rag.neo4j.execute_query(f"MATCH (n:{rag.chunk_label}) RETURN count(n) AS c"),
             timeout_seconds=20.0,
         )
         assert node_count and node_count[0].get("c", 0) > 0, "No GraphRAG nodes indexed."
@@ -257,9 +235,7 @@ async def test_live_graphrag_index_retrieve_roundtrip():
 
         assert nodes, "GraphRAG retrieve returned no nodes."
         retrieved_blob = (context + "\n" + "\n".join(n.get("text", "") for n in nodes)).lower()
-        assert unique_token.lower() in retrieved_blob, (
-            "Unique token not present in retrieved context."
-        )
+        assert unique_token.lower() in retrieved_blob, "Unique token not present in retrieved context."
     finally:
         await _run_live_step("cleanup_after", cleanup(), timeout_seconds=20.0)
         await Neo4jService.global_close()

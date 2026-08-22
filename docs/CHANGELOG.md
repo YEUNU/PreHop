@@ -1,10 +1,64 @@
 # Changelog
 
+## 2026-08-22 — Dataset-neutral Q⁺ storage
+
+Removed the post-generation Q⁺ heuristic gate entirely. All benchmark
+datasets now store the non-empty, deduplicated Q⁺ strings produced by the
+same shared prompt and validated JSON schema; no domain-specific metric,
+period, statement, or keyword rule affects graph construction.
+
 What was tried, what changed, and why — kept separate from `CLAUDE.md` so
 that file can stay pure current-state reference. Newest first. Entries
 reconstructed from earlier (compacted) session history are ordered as named
 milestones rather than forced into exact dates; entries from directly
 observed recent work carry dates.
+
+## End-to-end consistency and fail-loud completion (2026-08-22)
+
+Completed the repository-wide audit beyond Prehop's mixins. Missing dataset
+or query inputs now raise and exit non-zero; the MultiHop-RAG wrapper now
+points at the real sample200 file; the deleted report-tool invocation and
+unneeded reranker/Neo4j server startups were removed. Indexing restores a
+failed Neo4j batch for idempotent replay, persists its failure artifact, and
+then exits non-zero on any file/flush/HOP failure. HopRAG no longer substitutes
+plain vector retrieval when official traversal fails, and shared embedding /
+reranker paths reject missing vectors or malformed score responses instead of
+producing zero scores. The same validation now covers Prehop's sparse Q-/Q+
+embedding batches, HopRAG's required JSON keys, and the optional MS GraphRAG
+dense-retrieval helper.
+
+The unused MS GraphRAG dense-retrieval helper was subsequently removed: the
+benchmark adapter now exposes only the official local/global GraphRAG search
+APIs, preventing its old `top_k=5` auxiliary default from being mistaken for
+an experimental retrieval setting.
+
+LLM JSON handling now distinguishes transport failures from parse failures and
+validates required keys/types at every Prehop call site. Prehop, Naive, and
+HopRAG share one synthesis prompt and one empty-context abstain policy; MS
+GraphRAG retains synthesis inside its official API. The configured judge model
+is now fixed for a run (no per-row fallback model), partial Batch API outputs
+retain their reconciliation manifest, benchmark aggregates use the union of
+numeric fields across rows, and any per-query runtime error marks the artifact
+`completed_with_errors` and makes the command exit non-zero. `benchmark_all`
+still attempts every strategy before reporting their combined failure, and the
+main result JSON remains slim while full traces stay in the dedicated report
+artifacts. Optional debug output now respects `--save-intermediate`, and
+source-sweep smoke tests exclude the local virtualenv/third-party/data trees.
+Dataset wrappers validate query files only for stages that actually benchmark,
+so an index-only run is not coupled to preparation of an unused query sample.
+
+Run diagnostics are now isolated by `RAG_RUN_ID`: intermediate JSON uses
+`data/debug/<run>/<strategy>/<corpus>/<source>/`, index logs use
+`logs/index/<run>/<strategy>.log`, and failure/stat filenames carry the same
+run ID. `--clear-graph` executes once rather than racing in every parallel
+strategy or wiping a strategy indexed earlier by a dataset wrapper. Removed
+the old shared-layout debug files, logs, obsolete source-less chunk cache,
+Python/test/linter caches, stale exception log, and generated egg metadata
+(about 309 MB total); the removal was moved to the desktop trash for recovery.
+Also deleted unreferenced remnants of the previous agent/OCR architecture
+(`core/schemas.py`, Prehop schemas/trace helpers, tool definitions), the old
+HypoReflect migration cleanup script, and the duplicate dedicated MultiHop
+sampler now covered by `data/make_sample.py`.
 
 ## Full-corpus exhaustive scan (not sampling) after a deep content audit (2026-08-22)
 
@@ -106,6 +160,18 @@ run starting, minimal cost sunk.
   completely different field) and removed the header line entirely rather
   than teaching the chunker about a second header line, so MultiHop-RAG's
   corpus header format now matches HotpotQA/MuSiQue's (`Title:` only).
+
+## Baseline top-k provenance and alignment (2026-08-22)
+
+Audited the unequal synthesis-context counts across strategies against their
+upstream implementations. HopRAG now keeps the official repository's
+end-to-end `--topk 20` setting (the local adapter previously returned 10 after
+reranking). Naive RAG has no upstream fixed value, so its prior local default
+of 5 was removed and it now shares Prehop's domain-aware
+`RAGConfig.DEFAULT_TOP_K` (news=12, financial=8). MS GraphRAG was left alone:
+the benchmark uses its official `local_search` / `global_search` APIs and does
+not call the adapter's separate dense `retrieve(top_k=5)` helper. This is a
+benchmark-only change and requires no reindexing.
 
 ## Fail-loud sweep across indexing/retrieval (2026-08-22)
 

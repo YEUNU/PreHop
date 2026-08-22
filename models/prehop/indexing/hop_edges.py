@@ -8,19 +8,16 @@ For each source chunk c_i with Q+ embedding q+_i:
 
 Multi-hop discovery happens once, at indexing time, entirely from embeddings
 already computed for Q+ indexing — no extra scoring model or LLM call is
-needed. (Earlier iteration used a cross-encoder reranker for step 2; that
-model is no longer part of the served model set, so edge scoring now reuses
-the ANN similarity score directly.) The same tau_hop is used at retrieval
-(§3.2.3 graph traversal, runtime HOP mode) so HOP edges follow the same
-scoring criterion the system applies when reading them.
+needed. Retrieval walks the resulting pre-filtered HOP edges without applying
+another edge-score gate.
 """
+
 import asyncio
 import logging
 import os
 from typing import Any
 
 from core.config import RAGConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -30,29 +27,11 @@ class HopEdgeMixin:
         if not hop_src.get("q_plus_embed"):
             return []
 
-        # Same-company filter: in v14 we observed 18% of HOP edges crossed
-        # company boundaries (e.g., AES → AMAZON, ADOBE → ACTIVISIONBLIZZARD)
-        # because the cross-encoder reranker confused structurally similar
-        # finance tables across unrelated tickers. FinanceBench queries are
-        # company-anchored, so cross-company HOPs add retrieval noise without
-        # answering the actual question. We restrict candidates to the same
-        # company prefix; same-source is still excluded to keep edges
-        # cross-document (paper §3.1.4 multi-hop discovery).
-        #
-        # For news/multi-hop corpora (RAGConfig.COMPANY_ANCHORING == False) the
-        # "company" derived from a news filename is just its leading token
-        # (e.g. "THE", "2023", "NFL"), so this filter would confine HOP edges to
-        # articles that coincidentally share a first token — collapsing the
-        # multi-hop graph. Disable it there; same-source exclusion still keeps
-        # edges cross-document.
-        src_company = (hop_src.get("company") or "") if RAGConfig.COMPANY_ANCHORING else ""
-
         query = """
             CALL db.index.vector.queryNodes($index, 15, $embed)
             YIELD node, score
             WHERE node.id <> $src_id
               AND node.source <> $src_source
-              AND ($src_company = '' OR node.company = $src_company)
               AND node.q_plus_embedding IS NOT NULL
             RETURN node.id as id, node.text as text, score
         """
@@ -61,7 +40,6 @@ class HopEdgeMixin:
             "embed": hop_src["q_plus_embed"],
             "src_id": hop_src["id"],
             "src_source": hop_src["source"],
-            "src_company": src_company,
         }
         return await self.retry_query(query, params)
 
@@ -75,6 +53,7 @@ class HopEdgeMixin:
         Edge score is the ANN cosine-similarity score Neo4j's vector index
         already returns for each candidate — no extra model call needed.
         """
+
         async def _process_hop_src(hop_src: dict[str, Any]) -> list[dict[str, Any]]:
             async with hop_sem:
                 candidates = await self._find_hop_candidates(hop_src)
@@ -103,13 +82,16 @@ class HopEdgeMixin:
     async def _flush_hop_edges(self, edges: list[dict[str, Any]]) -> None:
         if not edges:
             return
-        await self.retry_query(f"""
+        await self.retry_query(
+            f"""
             UNWIND $edges AS edge
             MATCH (src:{self.chunk_label} {{id: edge.src_id}})
             MATCH (tgt:{self.chunk_label} {{id: edge.tgt_id}})
             MERGE (src)-[r:HOP]->(tgt)
             SET r.score = edge.score, r.type = 'pruned'
-        """, {"edges": edges})
+        """,
+            {"edges": edges},
+        )
 
     async def build_all_hop_edges(self) -> None:
         """One-shot HOP edge pre-construction over the COMPLETE graph
@@ -126,33 +108,30 @@ class HopEdgeMixin:
         candidates because the Q+ vector index covers the whole label, not
         just the current page.
         """
-        if (RAGConfig.HOP_MODE != "offline") or (not RAGConfig.ABLATION_Q_PLUS):
-            logger.info(
-                "Skipping offline HOP edge construction (HOP_MODE=%s, ABLATION_Q_PLUS=%s).",
-                RAGConfig.HOP_MODE,
-                RAGConfig.ABLATION_Q_PLUS,
-            )
+        if not RAGConfig.ABLATION_Q_PLUS:
+            logger.info("Skipping HOP edge construction because Q+ is disabled.")
             return
 
         page_size = max(100, int(os.environ.get("RAG_HOP_PAGE_SIZE", "5000")))
         wave_size = max(1, int(os.environ.get("RAG_HOP_GATHER_WAVE", "1000")))
-        hop_sem = asyncio.Semaphore(
-            max(1, int(os.environ.get("RAG_HOP_RERANK_CONCURRENCY", "64")))
-        )
+        hop_sem = asyncio.Semaphore(max(1, int(os.environ.get("RAG_HOP_EDGE_CONCURRENCY", "64"))))
 
         total_proc = 0
         total_edges = 0
         skip = 0
         while True:
-            rows = await self.retry_query(f"""
+            rows = await self.retry_query(
+                f"""
                 MATCH (c:{self.chunk_label})
                 WHERE c.q_plus_embedding IS NOT NULL
                   AND c.q_plus_text IS NOT NULL AND c.q_plus_text <> ''
-                RETURN c.id AS id, c.source AS source, c.company AS company,
+                RETURN c.id AS id, c.source AS source,
                        c.q_plus_embedding AS q_plus_embed, c.q_plus_text AS q_plus_text
                 ORDER BY c.id
                 SKIP $skip LIMIT $limit
-            """, {"skip": skip, "limit": page_size})
+            """,
+                {"skip": skip, "limit": page_size},
+            )
             if not rows:
                 break
 
@@ -160,7 +139,6 @@ class HopEdgeMixin:
                 {
                     "id": r["id"],
                     "source": r["source"],
-                    "company": r.get("company") or "",
                     "q_plus_embed": r["q_plus_embed"],
                     "q_plus": [r["q_plus_text"]],
                 }
@@ -172,8 +150,9 @@ class HopEdgeMixin:
             if total_proc == 0:
                 logger.info(
                     "build_all_hop_edges: streaming HOP scoring (page_size=%d, wave=%d, sem=%d).",
-                    page_size, wave_size,
-                    int(os.environ.get("RAG_HOP_RERANK_CONCURRENCY", "64")),
+                    page_size,
+                    wave_size,
+                    int(os.environ.get("RAG_HOP_EDGE_CONCURRENCY", "64")),
                 )
 
             for wave_start in range(0, page_n, wave_size):
@@ -187,7 +166,8 @@ class HopEdgeMixin:
             skip += page_size
             logger.info(
                 "build_all_hop_edges: progress %d processed / %d edges so far.",
-                total_proc, total_edges,
+                total_proc,
+                total_edges,
             )
 
             if page_n < page_size:

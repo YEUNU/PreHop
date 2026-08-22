@@ -4,30 +4,29 @@
 #
 
 set -e
-
-# [환경 설정]
-export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"
-export NEO4J_VECTOR_DIMENSIONS="${NEO4J_VECTOR_DIMENSIONS:-1024}"
-export MAX_EMBEDDING_LENGTH="${MAX_EMBEDDING_LENGTH:-16384}"
-export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
-export RAG_RECREATE_TEXT_INDEX="${RAG_RECREATE_TEXT_INDEX:-False}"
-export RAG_ENABLE_QUERY_REWRITE="${RAG_ENABLE_QUERY_REWRITE:-True}"
-export RAG_QUERY_REWRITE_COUNT="${RAG_QUERY_REWRITE_COUNT:-2}"
-export RAG_QUERY_REWRITE_WEIGHT="${RAG_QUERY_REWRITE_WEIGHT:-0.85}"
-export RAG_META_BOOST_WEIGHT="${RAG_META_BOOST_WEIGHT:-0.35}"
-export RAG_BOILERPLATE_PENALTY_WEIGHT="${RAG_BOILERPLATE_PENALTY_WEIGHT:-0.25}"
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 . "$SCRIPT_DIR/scripts/lib.sh"
+load_project_env "$SCRIPT_DIR/.env"
+
+# [환경 설정] (.env values win over defaults; explicit shell exports win over .env)
+export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
+export NEO4J_VECTOR_DIMENSIONS="${NEO4J_VECTOR_DIMENSIONS:-1024}"
+export MAX_EMBEDDING_LENGTH="${MAX_EMBEDDING_LENGTH:-16384}"
+export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
+export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 
 PYTHON_BIN="$(resolve_python "$SCRIPT_DIR")" || exit 1
+SAFE_RUN_ID="${RAG_RUN_ID//[^A-Za-z0-9_.-]/_}"
+INDEX_LOG_DIR="logs/index/${SAFE_RUN_ID}"
+mkdir -p "$INDEX_LOG_DIR"
 
 # Default values
 MODEL="prehop"
-LLM="local"
+LLM="default"
 DATASET=""
 CLEAR_GRAPH=""
 CORPUS_TAG=""
@@ -52,10 +51,14 @@ done
 echo "========================================="
 echo "     Indexing Pre-flight Check           "
 echo "========================================="
-echo "Retrieval Tune: analyzer=${NEO4J_FULLTEXT_ANALYZER}, recreate_text_index=${RAG_RECREATE_TEXT_INDEX}, rewrite=${RAG_ENABLE_QUERY_REWRITE} (count=${RAG_QUERY_REWRITE_COUNT})"
+echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, chunk_sentences=${RAG_CHUNK_SENTENCES:-6}"
 
 # [0] Check Arch (skip if running all models)
-if [ "$MODEL" != "all" ] && [ ! -d "models/$MODEL" ]; then
+if [ "$MODEL" = "all" ]; then
+    echo "Use scripts/run_index_matrix.py for bounded multi-strategy indexing; run_index.sh accepts one strategy." >&2
+    exit 1
+fi
+if [ ! -d "models/$MODEL" ]; then
     echo "❌ Arch model '$MODEL' not found in models/ folder."
     exit 1
 fi
@@ -72,21 +75,19 @@ if [ "$SKIP_SERVER" != "true" ]; then
 
     # Start Generation Server
     ./run_servers.sh gen
-    if ! wait_for_server "http://localhost:28000/v1/models" "Generation Model"; then
+    if ! wait_for_server "${VLLM_URL%/}/models" "Generation Model" "200"; then
         echo "Fatal: Generation model failed." >&2
         exit 1
     fi
 
     # Start Embedding Service
     ./run_servers.sh embed
-    if ! wait_for_server "http://localhost:18082/v1/models" "Embedding Model"; then
+    if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then
         echo "Fatal: Embedding service failed." >&2
         exit 1
     fi
 
-    # No reranker server needed for indexing: HOP-edge pre-scoring uses the
-    # Neo4j ANN vector-index score directly (no cross-encoder model), and
-    # none of the baseline indexers call a reranker either.
+    # HOP-edge pre-scoring uses the Neo4j ANN vector-index score directly.
 else
     echo "Step 1: Skipping server startup (Requested by caller)"
 fi
@@ -95,33 +96,6 @@ fi
 echo ""
 echo "[Step] Running indexing..."
 
-if [ "$MODEL" = "all" ]; then
-    echo "🚀 Running ALL models in parallel..."
-    MODELS=("prehop" "hoprag" "naive" "ms_graphrag")
-    PIDS=()
-    
-    for m in "${MODELS[@]}"; do
-        echo "  Starting $m..."
-        "$PYTHON_BIN" main.py --mode index $DATASET --strategy "$m" --model "$LLM" $CLEAR_GRAPH $CORPUS_TAG $SAVE_INTERMEDIATE > "logs/index_${m}.log" 2>&1 &
-        PIDS+=($!)
-    done
-    
-    echo "  Waiting for all models to complete..."
-    FAILED=0
-    for i in "${!PIDS[@]}"; do
-        if wait ${PIDS[$i]}; then
-            echo "  ✅ ${MODELS[$i]} completed successfully"
-        else
-            echo "  ❌ ${MODELS[$i]} failed"
-            FAILED=1
-        fi
-    done
-    
-    if [ $FAILED -eq 1 ]; then
-        echo "Some models failed. Check logs/index_*.log for details."
-        exit 1
-    fi
-    echo "✅ All models indexed successfully!"
-else
-    "$PYTHON_BIN" main.py --mode index $DATASET --strategy "$MODEL" --model "$LLM" $CLEAR_GRAPH $CORPUS_TAG $SAVE_INTERMEDIATE
-fi
+"$PYTHON_BIN" main.py --mode index $DATASET --strategy "$MODEL" --model "$LLM" $CLEAR_GRAPH $CORPUS_TAG $SAVE_INTERMEDIATE 2>&1 \
+    | tee "$INDEX_LOG_DIR/${MODEL}.log"
+echo "Log: $INDEX_LOG_DIR/${MODEL}.log"

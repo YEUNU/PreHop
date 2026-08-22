@@ -5,35 +5,41 @@ precedence over abstain detection: if the ground truth itself is a
 non-answer, an abstention IS the Correct Answer (judge score 1.0), and the
 3-way label must not downgrade it to Refusal.
 """
+
 import pytest
 
-from utils.abstain import is_abstain, answer_label, ABSTAIN_PHRASES
-
+from utils.abstain import ABSTAIN_PHRASES, answer_label, is_abstain
 
 # ---------------------------------------------------------------------------
 # is_abstain
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("text", [
-    "Insufficient evidence to determine the answer.",
-    "I do not know based on the provided context.",
-    "I don't know.",
-    "The answer cannot be determined from the filing.",
-    "The context does not contain the requested figure.",
-    "The context does not mention 2022 CAPEX.",
-    "No information about FY2023 revenue is provided.",
-    "Unable to find relevant information in the filing.",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Insufficient evidence to determine the answer.",
+        "I do not know based on the provided context.",
+        "I don't know.",
+        "The answer cannot be determined from the filing.",
+        "The context does not contain the requested figure.",
+        "The context does not mention 2022 CAPEX.",
+        "No information about FY2023 revenue is provided.",
+        "Unable to find relevant information in the filing.",
+    ],
+)
 def test_is_abstain_recognizes_phrase(text):
     assert is_abstain(text), f"expected abstain detection on: {text!r}"
 
 
-@pytest.mark.parametrize("text", [
-    "Apple's FY2022 revenue was $394 billion.",
-    "Net income totaled $99.8B according to the income statement.",
-    "The CAPEX increased by 12% year over year.",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Apple's FY2022 revenue was $394 billion.",
+        "Net income totaled $99.8B according to the income statement.",
+        "The CAPEX increased by 12% year over year.",
+    ],
+)
 def test_is_abstain_rejects_substantive_answer(text):
     assert not is_abstain(text)
 

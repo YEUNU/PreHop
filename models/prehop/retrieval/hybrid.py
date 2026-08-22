@@ -11,6 +11,7 @@ Channel routing:
 - "q_plus"   -> Q+ (outgoing) indices, used as expansion channel when Stage 1
                 returns insufficient evidence (paper §3.2.3).
 """
+
 from typing import Any
 
 from core.config import RAGConfig
@@ -44,16 +45,19 @@ class HybridSearchMixin:
             query_vec = f"""
                 CALL db.index.vector.queryNodes('{vector_index}', $limit, $embedding)
                 YIELD node, score
-                {('WHERE ' + vector_filter.strip()) if vector_filter.strip() else ''}
+                {("WHERE " + vector_filter.strip()) if vector_filter.strip() else ""}
                 RETURN node.id as id, node.title as title, node.sent_id as sent_id, node.page as page,
                        node.text as text,
                        score, 'vector' as type, $channel as channel
             """
-            vec_res = await session.run(query_vec, {  # type: ignore
-                "limit": RAGConfig.VECTOR_SEARCH_LIMIT,
-                "embedding": embed,
-                "channel": channel,
-            })
+            vec_res = await session.run(
+                query_vec,
+                {  # type: ignore
+                    "limit": RAGConfig.VECTOR_SEARCH_LIMIT,
+                    "embedding": embed,
+                    "channel": channel,
+                },
+            )
             vector_nodes = [dict(record) async for record in vec_res]
 
             safe_query = self._sanitize_fulltext_query(query)
@@ -61,16 +65,19 @@ class HybridSearchMixin:
             query_ft = f"""
                 CALL db.index.fulltext.queryNodes('{text_index}', $query, {{limit: $limit}})
                 YIELD node, score
-                {('WHERE ' + text_filter.strip()) if text_filter.strip() else ''}
+                {("WHERE " + text_filter.strip()) if text_filter.strip() else ""}
                 RETURN node.id as id, node.title as title, node.sent_id as sent_id, node.page as page,
                        node.text as text,
                        score, 'text' as type, $channel as channel
             """
-            ft_res = await session.run(query_ft, {  # type: ignore
-                "query": fulltext_query,
-                "limit": RAGConfig.TEXT_SEARCH_LIMIT,
-                "channel": channel,
-            })
+            ft_res = await session.run(
+                query_ft,
+                {  # type: ignore
+                    "query": fulltext_query,
+                    "limit": RAGConfig.TEXT_SEARCH_LIMIT,
+                    "channel": channel,
+                },
+            )
             text_nodes = [dict(record) async for record in ft_res]
 
         all_nodes: dict[str, dict[str, Any]] = {}
@@ -82,6 +89,4 @@ class HybridSearchMixin:
             key=lambda item: item.get("rrf_score", 0.0),
             reverse=True,
         )
-        query_meta = self._extract_query_metadata(query)
-        self._apply_retrieval_calibration(nodes, query_meta)
         return nodes[:limit]

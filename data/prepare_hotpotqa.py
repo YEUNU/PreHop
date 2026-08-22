@@ -17,6 +17,7 @@ HuggingFace parquet export에서 직접 받는다(파이썬 `datasets` 라이브
 않는다. 인덱싱·벤치마크 시 `--corpus-tag hotpotqa`로 다른 데이터셋과 Neo4j
 라벨을 분리한다.
 """
+
 import argparse
 import html
 import json
@@ -26,11 +27,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import requests
 
-
-PARQUET_URL = (
-    "https://huggingface.co/api/datasets/hotpotqa/hotpot_qa/parquet/"
-    "distractor/validation/0.parquet"
-)
+PARQUET_URL = "https://huggingface.co/api/datasets/hotpotqa/hotpot_qa/parquet/distractor/validation/0.parquet"
 
 DATA_DIR = Path("data")
 CORPUS_DIR = DATA_DIR / "hotpotqa_corpus"
@@ -113,6 +110,7 @@ def build_corpus(rows: list[dict]) -> dict[str, str]:
     """
     if CORPUS_DIR.exists():
         import shutil
+
         shutil.rmtree(CORPUS_DIR)
     CORPUS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -162,9 +160,7 @@ def build_queries(rows: list[dict]) -> list[dict]:
         context = row.get("context") or {}
         ctx_titles = context.get("title") or []
         ctx_sentences = context.get("sentences") or []
-        sentences_by_title = {
-            clean_wiki_markup((t or "").strip()): s for t, s in zip(ctx_titles, ctx_sentences)
-        }
+        sentences_by_title = {clean_wiki_markup((t or "").strip()): s for t, s in zip(ctx_titles, ctx_sentences)}
 
         evidence_docs: list[str] = []
         evidence_facts: list[str] = []
@@ -179,20 +175,22 @@ def build_queries(rows: list[dict]) -> list[dict]:
                     evidence_facts.append(fact)
 
         qtype = row.get("type", "unknown")  # "bridge" | "comparison"
-        out.append({
-            "_id": f"hotpotqa_{row.get('id', '')}",
-            "query": (row.get("question") or "").strip(),
-            "ground_truth": (row.get("answer") or "").strip(),
-            "evidence_docs": evidence_docs,
-            "evidence_facts": evidence_facts,
-            "evidence_doc": evidence_docs[0] if evidence_docs else "",
-            "evidence_page": None,
-            "evidence_text": evidence_facts[0] if evidence_facts else "",
-            "category": qtype,
-            "question_type": qtype,
-            "level": row.get("level", ""),
-            "dataset": "hotpotqa",
-        })
+        out.append(
+            {
+                "_id": f"hotpotqa_{row.get('id', '')}",
+                "query": (row.get("question") or "").strip(),
+                "ground_truth": (row.get("answer") or "").strip(),
+                "evidence_docs": evidence_docs,
+                "evidence_facts": evidence_facts,
+                "evidence_doc": evidence_docs[0] if evidence_docs else "",
+                "evidence_page": None,
+                "evidence_text": evidence_facts[0] if evidence_facts else "",
+                "category": qtype,
+                "question_type": qtype,
+                "level": row.get("level", ""),
+                "dataset": "hotpotqa",
+            }
+        )
 
     with open(QUERIES_PATH, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2, ensure_ascii=False)
@@ -213,10 +211,8 @@ def print_stats(queries: list[dict]):
 
 def main():
     parser = argparse.ArgumentParser(description="HotpotQA(distractor) 데이터셋 준비")
-    parser.add_argument("--skip-corpus", action="store_true",
-                        help="코퍼스 디렉토리 생성 건너뛰기 (쿼리만 갱신)")
-    parser.add_argument("--limit", type=int, default=2000,
-                        help="가져올 validation row 수 (기본 2000; 0=전체 7405개)")
+    parser.add_argument("--skip-corpus", action="store_true", help="코퍼스 디렉토리 생성 건너뛰기 (쿼리만 갱신)")
+    parser.add_argument("--limit", type=int, default=2000, help="가져올 validation row 수 (기본 2000; 0=전체 7405개)")
     args = parser.parse_args()
 
     DATA_DIR.mkdir(exist_ok=True)

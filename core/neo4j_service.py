@@ -1,21 +1,25 @@
-import os
-from neo4j import AsyncGraphDatabase
-from typing import List, Dict, Any, Optional
 import logging
+import os
+from typing import Any
+
+from neo4j import AsyncGraphDatabase
+
 
 class Neo4jService:
     _driver = None
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        # Local connection info
+        # Neo4j is the only supported local service. Credentials must come
+        # from the environment; there is no baked-in password fallback.
         self.uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
         self.user = os.environ.get("NEO4J_USER", "neo4j")
-        self.password = os.environ.get("NEO4J_PASSWORD", "1q2w3e4r")
-        
+        self.password = os.environ.get("NEO4J_PASSWORD", "")
+        self.database = os.environ.get("NEO4J_DATABASE", "neo4j")
+
         if Neo4jService._driver is None:
             # Pool sized for parallel indexing: 16 files × concurrent ops
-            # (HOP ANN reads + doc creation + batch flush + reranker caller)
+            # (HOP ANN reads + doc creation + batch flush + retrieval scoring)
             # easily exceeds the prior default of 50, manifesting as
             # "30s timeout obtaining connection" failures and silently
             # dropped HOP MERGE writes. Server-side CPU stays ~0.5% so
@@ -29,8 +33,8 @@ class Neo4jService:
             )
         self.driver = Neo4jService._driver
 
-    async def execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        async with self.driver.session() as session:
+    async def execute_query(self, query: str, parameters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        async with self.driver.session(database=self.database) as session:
             result = await session.run(query, parameters or {})  # type: ignore
             return [dict(record) async for record in result]
 

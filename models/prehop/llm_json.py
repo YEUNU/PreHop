@@ -1,20 +1,33 @@
-"""Shared fail-loud wrapper around VLLMClient.generate_json for prehop's
-own indexing/retrieval call sites (paper's own pipeline only).
+"""Stage-aware JSON schema guard for Prehop indexing/retrieval LLM calls.
 
-core.vllm_client.generate_json swallows a persistent JSON-parse failure
-after exhausting its own retries, returning {} rather than raising — that
-file is shared by every strategy, so its own retry-exhaustion behavior is
-intentionally left permissive (out of this fail-loud scope). Every
-prehop-specific call site that depends on generate_json succeeding wraps it
-with this helper instead, so a genuine failure surfaces as an exception
-rather than silently degrading to empty/default content.
+The shared VLLM client raises after JSON parse retries and propagates transport
+errors. This wrapper adds the required-key/type checks specific to each Prehop
+stage so a syntactically valid but structurally wrong object cannot silently
+turn into empty Q-/Q+, rewrites, or decisions.
 """
+
 from typing import Any
 
 
-async def generate_json_or_raise(llm_client, messages, stage: str, context: str = "", **kwargs) -> dict[str, Any]:
+async def generate_json_or_raise(
+    llm_client,
+    messages,
+    stage: str,
+    context: str = "",
+    required_fields: dict[str, type] | None = None,
+    **kwargs,
+) -> dict[str, Any]:
+    kwargs.setdefault("json_debug_label", stage)
     data = await llm_client.generate_json(messages, **kwargs)
-    if not data:
+    if not isinstance(data, dict) or not data:
         suffix = f": {context}" if context else ""
         raise ValueError(f"{stage} returned no valid JSON after retries{suffix}")
+    for field, expected_type in (required_fields or {}).items():
+        if field not in data:
+            suffix = f": {context}" if context else ""
+            raise ValueError(f"{stage} JSON missing required field {field!r}{suffix}")
+        if not isinstance(data[field], expected_type):
+            suffix = f": {context}" if context else ""
+            actual = type(data[field]).__name__
+            raise TypeError(f"{stage} JSON field {field!r} must be {expected_type.__name__}, got {actual}{suffix}")
     return data

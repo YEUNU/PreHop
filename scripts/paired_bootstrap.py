@@ -35,6 +35,7 @@ Usage:
     --baselines data/results/<base>/{naive,hoprag,ms_graphrag}/hotpotqa/*.json \
     --out-dir data/results/<new>
 """
+
 from __future__ import annotations
 
 import argparse
@@ -135,8 +136,17 @@ def main() -> None:
         for m in metrics:
             for strat, st in results[m].items():
                 if st.get("n", 0):
-                    w.writerow([m, strat, st["n"], f"{st['mean_diff']:.4f}",
-                                f"{st['ci95_low']:.4f}", f"{st['ci95_high']:.4f}", st["significant"]])
+                    w.writerow(
+                        [
+                            m,
+                            strat,
+                            st["n"],
+                            f"{st['mean_diff']:.4f}",
+                            f"{st['ci95_low']:.4f}",
+                            f"{st['ci95_high']:.4f}",
+                            st["significant"],
+                        ]
+                    )
 
     _plot(results, metrics, fig_path, treatment_strat, corpus_tag)
 
@@ -150,11 +160,14 @@ def main() -> None:
             if not st.get("n"):
                 continue
             star = " *" if st["significant"] else "  "
-            print(f"  vs {strat:12s} Δ={st['mean_diff']:+.4f}  [{st['ci95_low']:+.4f}, {st['ci95_high']:+.4f}]{star} (n={st['n']})")
+            print(
+                f"  vs {strat:12s} Δ={st['mean_diff']:+.4f}  [{st['ci95_low']:+.4f}, {st['ci95_high']:+.4f}]{star} (n={st['n']})"
+            )
 
 
 def _plot(results: dict, metrics: list[str], fig_path: Path, treatment_strat: str, corpus_tag: str) -> None:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -175,10 +188,17 @@ def _plot(results: dict, metrics: list[str], fig_path: Path, treatment_strat: st
             md, lo, hi = st["mean_diff"], st["ci95_low"], st["ci95_high"]
             sig = st["significant"]
             c = colors.get(strat, "#333333")
-            ax.plot([lo, hi], [y, y], color=c, lw=2.2, solid_capstyle="round",
-                    alpha=1.0 if sig else 0.45)
-            ax.plot([md], [y], "o", color=c, ms=7, alpha=1.0 if sig else 0.45,
-                    markeredgecolor="black" if sig else "none", markeredgewidth=0.8)
+            ax.plot([lo, hi], [y, y], color=c, lw=2.2, solid_capstyle="round", alpha=1.0 if sig else 0.45)
+            ax.plot(
+                [md],
+                [y],
+                "o",
+                color=c,
+                ms=7,
+                alpha=1.0 if sig else 0.45,
+                markeredgecolor="black" if sig else "none",
+                markeredgewidth=0.8,
+            )
         ax.axvline(0, color="black", lw=0.8, ls="--", alpha=0.6)
         title = m + ("\n(lower better)" if lower else "")
         ax.set_title(title, fontsize=10)
@@ -187,8 +207,11 @@ def _plot(results: dict, metrics: list[str], fig_path: Path, treatment_strat: st
         ax.tick_params(axis="x", labelsize=8)
         ax.margins(y=0.25)
 
-    fig.suptitle(f"{treatment_strat} − baseline on {corpus_tag} (query-level paired bootstrap, 95% CI)  •  solid = CI excludes 0",
-                 fontsize=11, y=1.02)
+    fig.suptitle(
+        f"{treatment_strat} − baseline on {corpus_tag} (query-level paired bootstrap, 95% CI)  •  solid = CI excludes 0",
+        fontsize=11,
+        y=1.02,
+    )
     fig.tight_layout()
     fig_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")

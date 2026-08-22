@@ -16,6 +16,7 @@ HuggingFace 미러(dgslibisey/MuSiQue)에서 직접 받는다. 회사/페이지 
 없으므로 page_match는 사용하지 않는다. 인덱싱·벤치마크 시
 `--corpus-tag musique`로 다른 데이터셋과 Neo4j 라벨을 분리한다.
 """
+
 import argparse
 import html
 import json
@@ -24,11 +25,7 @@ from pathlib import Path
 
 import requests
 
-
-QUERIES_URL = (
-    "https://huggingface.co/datasets/dgslibisey/MuSiQue/resolve/main/"
-    "musique_ans_v1.0_dev.jsonl"
-)
+QUERIES_URL = "https://huggingface.co/datasets/dgslibisey/MuSiQue/resolve/main/musique_ans_v1.0_dev.jsonl"
 
 DATA_DIR = Path("data")
 CORPUS_DIR = DATA_DIR / "musique_corpus"
@@ -95,6 +92,7 @@ def build_corpus(rows: list[dict]) -> dict[str, str]:
     """
     if CORPUS_DIR.exists():
         import shutil
+
         shutil.rmtree(CORPUS_DIR)
     CORPUS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -156,20 +154,22 @@ def build_queries(rows: list[dict]) -> list[dict]:
 
         answer = (row.get("answer") or "").strip()
         qtype = _hop_category(row.get("id", ""))
-        out.append({
-            "_id": f"musique_{row.get('id', '')}",
-            "query": (row.get("question") or "").strip(),
-            "ground_truth": answer,
-            "answer_aliases": row.get("answer_aliases") or [],
-            "evidence_docs": evidence_docs,
-            "evidence_facts": evidence_facts,
-            "evidence_doc": evidence_docs[0] if evidence_docs else "",
-            "evidence_page": None,
-            "evidence_text": evidence_facts[0] if evidence_facts else "",
-            "category": qtype,
-            "question_type": qtype,
-            "dataset": "musique",
-        })
+        out.append(
+            {
+                "_id": f"musique_{row.get('id', '')}",
+                "query": (row.get("question") or "").strip(),
+                "ground_truth": answer,
+                "answer_aliases": row.get("answer_aliases") or [],
+                "evidence_docs": evidence_docs,
+                "evidence_facts": evidence_facts,
+                "evidence_doc": evidence_docs[0] if evidence_docs else "",
+                "evidence_page": None,
+                "evidence_text": evidence_facts[0] if evidence_facts else "",
+                "category": qtype,
+                "question_type": qtype,
+                "dataset": "musique",
+            }
+        )
 
     with open(QUERIES_PATH, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2, ensure_ascii=False)
@@ -190,10 +190,8 @@ def print_stats(queries: list[dict]):
 
 def main():
     parser = argparse.ArgumentParser(description="MuSiQue(answerable, dev) 데이터셋 준비")
-    parser.add_argument("--skip-corpus", action="store_true",
-                        help="코퍼스 디렉토리 생성 건너뛰기 (쿼리만 갱신)")
-    parser.add_argument("--limit", type=int, default=2000,
-                        help="가져올 dev row 수 (기본 2000; 0=전체 ~2400개)")
+    parser.add_argument("--skip-corpus", action="store_true", help="코퍼스 디렉토리 생성 건너뛰기 (쿼리만 갱신)")
+    parser.add_argument("--limit", type=int, default=2000, help="가져올 dev row 수 (기본 2000; 0=전체 ~2400개)")
     args = parser.parse_args()
 
     DATA_DIR.mkdir(exist_ok=True)

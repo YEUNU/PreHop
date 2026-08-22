@@ -1,18 +1,19 @@
 import asyncio
-import json
+import fcntl
 import logging
 import multiprocessing as _mp
 import os
+import re
 import time
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
 
 from core.config import RAGConfig
+from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing.chunking import parse_pages_offline
-from models.naive.naive_rag import NaiveRAG
-
+from utils.io import _write_json
 
 # Spawn-based context for the parsing worker pool. Using the default `fork`
 # context corrupts the parent process's httpx/openai async clients (vLLM
@@ -24,7 +25,12 @@ _PARSE_MP_CTX = _mp.get_context("spawn")
 logger = logging.getLogger("Prehop")
 
 
-async def _collect_graph_stats(engine, strategy: str) -> Optional[dict]:
+def _artifact_run_id() -> str:
+    raw = os.environ.get("RAG_RUN_ID") or time.strftime("%Y%m%d_%H%M%S")
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._-") or "run"
+
+
+async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     """Query the live graph for structural statistics after indexing.
 
     Queries the graph directly (not counters threaded through indexing)
@@ -78,7 +84,7 @@ async def _collect_graph_stats(engine, strategy: str) -> Optional[dict]:
     }
 
 
-async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> Optional[dict]:
+async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> dict | None:
     """Delete existing HOP edges for a corpus tag and rebuild them under the
     current `RAGConfig.HOP_THRESHOLD` (env `RAG_HOP_THRESHOLD`).
 
@@ -90,8 +96,7 @@ async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> Option
     rebuilt, not the whole corpus re-chunked/re-embedded.
     """
     if strategy != "prehop":
-        logger.error("rebuild_hop_edges only supports strategy=prehop (got %s)", strategy)
-        return None
+        raise ValueError(f"rebuild_hop_edges only supports strategy=prehop (got {strategy})")
     engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
     chunk_label = engine.chunk_label
     await engine.neo4j.execute_query(f"MATCH (:{chunk_label})-[r:HOP]->(:{chunk_label}) DELETE r")
@@ -101,27 +106,77 @@ async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> Option
     return stats
 
 
+@asynccontextmanager
+async def _index_run_lock(strategy: str, corpus_tag: str):
+    lock_dir = Path("data/index_locks")
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{strategy}_{corpus_tag}")
+    lock_path = lock_dir / f"{safe_key}.lock"
+    handle = await asyncio.to_thread(lock_path.open, "a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"Indexing is already running for strategy={strategy}, corpus={corpus_tag}") from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()} run_id={_artifact_run_id()}\n")
+        handle.flush()
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
 async def run_indexing(
     dataset_path: str,
     strategy: str,
     model_id: str,
-    corpus_tag: Optional[str] = None,
+    corpus_tag: str | None = None,
+    save_intermediate: bool = False,
+):
+    """Serialize duplicate strategy/corpus runs while allowing all distinct targets in parallel."""
+    async with _index_run_lock(strategy, corpus_tag or "default"):
+        return await _run_indexing_unlocked(
+            dataset_path,
+            strategy,
+            model_id,
+            corpus_tag,
+            save_intermediate,
+        )
+
+
+async def _run_indexing_unlocked(
+    dataset_path: str,
+    strategy: str,
+    model_id: str,
+    corpus_tag: str | None = None,
     save_intermediate: bool = False,
 ):
     """Index files using selected strategy with parallel processing."""
+    started_at = time.perf_counter()
     logger.info(
         "Indexing strategy: %s | Dataset: %s | Corpus: %s",
         strategy,
         dataset_path,
         corpus_tag or "default",
     )
+    if not os.path.isdir(dataset_path):
+        raise FileNotFoundError(f"Dataset directory not found: {dataset_path}")
+
+    files = sorted(file for file in os.listdir(dataset_path) if file.endswith((".txt", ".md")))
+    if not files:
+        raise ValueError(f"Dataset contains no supported .txt/.md files: {dataset_path}")
 
     if strategy == "ms_graphrag":
         # Official MS GraphRAG pipeline (extract_graph + Leiden + community
-        # reports), routed through LiteLLM → local vLLM. Outputs parquet
+        # reports), routed through the configured external endpoint. Outputs parquet
         # under data/ms_graphrag_output/<corpus_tag>/. Skips our chunking/
         # HOP/summary stages — MS does its own.
         from models.ms_graphrag.official_indexer import run_official_index as run_ms_index
+
         await run_ms_index(
             dataset_path=dataset_path,
             corpus_tag=corpus_tag or "default",
@@ -130,10 +185,11 @@ async def run_indexing(
 
     if strategy == "hoprag":
         # Official HopRAG indexing (QABuilder.create_nodes + grouped
-        # create_edge + create_index). Routed through OpenAI client → local
-        # vLLM, embeddings via vLLM HTTP. Writes nodes/edges directly to
+        # create_edge + create_index). Generation and embeddings use the
+        # configured external OpenAI-compatible endpoints. Writes directly to
         # Neo4j under HO_<corpus_tag>_* labels.
         from models.hoprag.official_indexer import run_official_index as run_hop_index
+
         await run_hop_index(
             dataset_path=dataset_path,
             corpus_tag=corpus_tag or "default",
@@ -152,14 +208,7 @@ async def run_indexing(
         engine = NaiveRAG(strategy=strategy, corpus_tag=corpus_tag)
         is_graph = False
     else:
-        logger.error("Unknown strategy: %s", strategy)
-        return
-
-    if not os.path.exists(dataset_path):
-        logger.error("Path %s not found.", dataset_path)
-        return
-
-    files = sorted([file for file in os.listdir(dataset_path) if file.endswith((".txt", ".md"))])
+        raise ValueError(f"Unknown strategy: {strategy}")
 
     # Cap how many files can sit in the post-parse chunking+LLM pipeline
     # simultaneously. Each file's chunker fans out one LLM task per page
@@ -187,16 +236,25 @@ async def run_indexing(
                 if started % progress_step == 0 or started == total:
                     logger.info(
                         "Indexing progress | started=%d/%d completed=%d failed=%d remaining=%d | now: %s",
-                        started, total, done, failed, remaining, filename,
+                        started,
+                        total,
+                        done,
+                        failed,
+                        remaining,
+                        filename,
                     )
             else:
                 if done % progress_step == 0 or done == total:
                     logger.info(
                         "Indexing progress | completed=%d/%d failed=%d remaining=%d | finished: %s",
-                        done, total, failed, remaining, filename,
+                        done,
+                        total,
+                        failed,
+                        remaining,
+                        filename,
                     )
 
-    async def process_file(filename: str, content: str, prepared_pages: Optional[dict] = None):
+    async def process_file(filename: str, content: str, prepared_pages: dict | None = None):
         async with file_semaphore:
             async with progress["lock"]:
                 progress["started"] += 1
@@ -204,9 +262,7 @@ async def run_indexing(
 
             try:
                 if is_graph:
-                    knowledge = await engine.extract_knowledge(
-                        content, prepared_pages=prepared_pages
-                    )
+                    knowledge = await engine.extract_knowledge(content, source=filename, prepared_pages=prepared_pages)
                     doc_meta = {"title": knowledge["title"]}
                     doc_id = await engine.create_document_node(filename, doc_meta)
                     await engine.build_graph(knowledge, source=filename, document_filename=doc_id)
@@ -215,73 +271,107 @@ async def run_indexing(
                 async with progress["lock"]:
                     stats["succeeded"] += 1
                     progress["completed"] += 1
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - isolate and report each document failure
                 logger.error("Failed to index file %s: %s", filename, exc)
                 async with progress["lock"]:
                     failed_files.append({"item": filename, "stage": "index", "error": str(exc)})
                     progress["completed"] += 1
             await _log_progress("done", filename)
 
-    file_contents = []
-    for filename in files:
-        try:
-            with open(os.path.join(dataset_path, filename), "r", encoding="utf-8") as file:
-                file_contents.append((filename, file.read()))
-        except Exception as exc:
-            logger.error("Failed to read file %s: %s", filename, exc)
-            failed_files.append({"item": filename, "stage": "read", "error": str(exc)})
-
-    # Page parsing is pure-CPU regex/string work — offload to a process pool
-    # so it runs in parallel with the GPU pipeline rather than serializing on
-    # the GIL. Only used for graph strategies (naive doesn't need pages).
-    prepared_lookup: dict[str, dict] = {}
-    if is_graph and file_contents:
-        worker_count = max(1, min(len(file_contents), os.cpu_count() or 4))
-        loop = asyncio.get_event_loop()
-        with ProcessPoolExecutor(max_workers=worker_count, mp_context=_PARSE_MP_CTX) as parse_pool:
-            parse_tasks = [
-                loop.run_in_executor(parse_pool, parse_pages_offline, fn, ct)
-                for fn, ct in file_contents
-            ]
-            parsed_results = await asyncio.gather(*parse_tasks, return_exceptions=True)
-        for (fn, _ct), result in zip(file_contents, parsed_results):
-            if isinstance(result, Exception):
-                logger.warning("Page parsing failed for %s; will re-parse in main process: %s", fn, result)
-                continue
-            prepared_lookup[fn] = result
-        logger.info(
-            "Parallel page parsing complete: %d/%d files prepared (workers=%d).",
-            len(prepared_lookup), len(file_contents), worker_count,
-        )
-
-    gather_results = await asyncio.gather(
-        *[process_file(fn, ct, prepared_lookup.get(fn)) for fn, ct in file_contents],
-        return_exceptions=True,
+    # Bound both resident file contents and scheduled coroutines. The old
+    # implementation loaded and scheduled every file at once (66k+ for
+    # HotpotQA), which inflated memory and event-loop overhead before useful
+    # work started.
+    schedule_batch = max(
+        file_concurrency,
+        int(os.environ.get("RAG_FILE_SCHEDULE_BATCH", str(file_concurrency * 2))),
     )
-    for idx, result in enumerate(gather_results):
-        if isinstance(result, Exception):
-            filename = file_contents[idx][0]
-            logger.error("Unhandled indexing task error in %s: %s", filename, result)
-            failed_files.append({"item": filename, "stage": "task", "error": str(result)})
+    parse_worker_cap = max(1, int(os.environ.get("RAG_PARSE_WORKERS", str(min(8, os.cpu_count() or 4)))))
+    parse_pool = ProcessPoolExecutor(max_workers=parse_worker_cap, mp_context=_PARSE_MP_CTX) if is_graph else None
+    loop = asyncio.get_running_loop()
+    try:
+        for offset in range(0, len(files), schedule_batch):
+            batch_names = files[offset : offset + schedule_batch]
+            read_results = await asyncio.gather(
+                *[
+                    asyncio.to_thread(
+                        (Path(dataset_path) / filename).read_text,
+                        encoding="utf-8",
+                    )
+                    for filename in batch_names
+                ],
+                return_exceptions=True,
+            )
+            file_contents: list[tuple[str, str]] = []
+            for filename, result in zip(batch_names, read_results):
+                if isinstance(result, (OSError, UnicodeError)):
+                    logger.error("Failed to read file %s: %s", filename, result)
+                    failed_files.append({"item": filename, "stage": "read", "error": str(result)})
+                    async with progress["lock"]:
+                        progress["completed"] += 1
+                    await _log_progress("done", filename)
+                    continue
+                if isinstance(result, BaseException):
+                    raise result
+                file_contents.append((filename, result))
+
+            prepared_lookup: dict[str, dict] = {}
+            if parse_pool is not None and file_contents:
+                parse_tasks = [
+                    loop.run_in_executor(parse_pool, parse_pages_offline, filename, content)
+                    for filename, content in file_contents
+                ]
+                parsed_results = await asyncio.gather(*parse_tasks, return_exceptions=True)
+                for (filename, _content), result in zip(file_contents, parsed_results):
+                    if isinstance(result, Exception):
+                        logger.warning(
+                            "Page parsing failed for %s; will re-parse in main process: %s",
+                            filename,
+                            result,
+                        )
+                        continue
+                    prepared_lookup[filename] = result
+
+            gather_results = await asyncio.gather(
+                *[
+                    process_file(filename, content, prepared_lookup.get(filename))
+                    for filename, content in file_contents
+                ],
+                return_exceptions=True,
+            )
+            for (filename, _content), result in zip(file_contents, gather_results):
+                if isinstance(result, Exception):
+                    logger.error("Unhandled indexing task error in %s: %s", filename, result)
+                    failed_files.append({"item": filename, "stage": "task", "error": str(result)})
+    finally:
+        if parse_pool is not None:
+            await asyncio.to_thread(parse_pool.shutdown, wait=True, cancel_futures=True)
 
     if is_graph:
-        await engine.flush_graph_batch()
+        try:
+            await engine.flush_graph_batch()
+        except Exception as exc:  # noqa: BLE001 - aggregate graph finalization failure
+            logger.error("Final graph batch flush failed: %s", exc)
+            failed_files.append({"item": "__graph_flush__", "stage": "graph_flush", "error": str(exc)})
 
         # One-shot HOP edge construction over the complete graph (paper
         # §3.1.4). Done after all chunks/embeddings are written so every
         # source chunk has the same candidate pool. Strategies that don't
         # use HOP (e.g., naive_rag) won't have this method.
-        if hasattr(engine, "build_all_hop_edges"):
+        if not any(item["stage"] == "graph_flush" for item in failed_files) and hasattr(engine, "build_all_hop_edges"):
             try:
                 await engine.build_all_hop_edges()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - aggregate post-index HOP failure
                 logger.error("HOP edge construction failed: %s", exc)
                 failed_files.append({"item": "__hop_edges__", "stage": "hop_edges", "error": str(exc)})
+
+    global_failure = any(item["stage"] in {"graph_flush", "hop_edges"} for item in failed_files)
+    finalized_successes = 0 if global_failure else stats["succeeded"]
 
     logger.info(
         "Indexing complete for %d files. Success: %d | Failed: %d",
         len(files),
-        stats["succeeded"],
+        finalized_successes,
         len(failed_files),
     )
     if failed_files:
@@ -293,45 +383,63 @@ async def run_indexing(
         # only living in scrollback. One JSON per (strategy, corpus_tag, run).
         failures_dir = Path("data/index_failures")
         failures_dir.mkdir(parents=True, exist_ok=True)
-        failures_path = failures_dir / f"{strategy}_{corpus_tag or 'default'}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        failures_path = failures_dir / f"{strategy}_{corpus_tag or 'default'}_{_artifact_run_id()}.json"
         try:
-            with open(failures_path, "w", encoding="utf-8") as fh:
-                json.dump({
+            _write_json(
+                failures_path,
+                {
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
                     "total_files": len(files),
-                    "succeeded": stats["succeeded"],
+                    "succeeded": finalized_successes,
+                    "processed_before_finalization": stats["succeeded"],
                     "failed": len(failed_files),
                     "failures": failed_files,
-                }, fh, indent=2, ensure_ascii=False)
+                },
+            )
             logger.warning("Full failure list written to %s", failures_path)
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.error("Could not write failure log to %s: %s", failures_path, exc)
 
     # Structured graph/corpus statistics for the paper's dataset/graph
     # tables (chunk/HOP-edge counts, Q-/Q+ coverage) — queried from the live
     # graph so it's always consistent with what actually landed in Neo4j.
-    # Best-effort: a stats-collection failure shouldn't fail an otherwise
-    # successful indexing run.
+    # Measurement failures make the run incomplete: paper tables must not
+    # silently report an index whose structural statistics were never read.
     graph_stats = None
     try:
         graph_stats = await _collect_graph_stats(engine, strategy)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Neo4j driver exposes heterogeneous errors
         logger.error("Graph stats collection failed: %s", exc)
+        failed_files.append({"item": "__graph_stats__", "stage": "graph_stats", "error": str(exc)})
     if graph_stats is not None:
         logger.info("Graph stats: %s", graph_stats)
         stats_dir = Path("data/index_stats")
         stats_dir.mkdir(parents=True, exist_ok=True)
-        stats_path = stats_dir / f"{strategy}_{corpus_tag or 'default'}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        stats_path = stats_dir / f"{strategy}_{corpus_tag or 'default'}_{_artifact_run_id()}.json"
         try:
-            with open(stats_path, "w", encoding="utf-8") as fh:
-                json.dump({
+            _write_json(
+                stats_path,
+                {
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
                     **graph_stats,
-                }, fh, indent=2, ensure_ascii=False)
+                },
+            )
             logger.info("Graph stats written to %s", stats_path)
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.error("Could not write graph stats to %s: %s", stats_path, exc)
+
+    elapsed_seconds = time.perf_counter() - started_at
+    logger.info(
+        "Indexing timing | elapsed_seconds=%.3f files_per_second=%.3f",
+        elapsed_seconds,
+        len(files) / elapsed_seconds if elapsed_seconds else 0.0,
+    )
+
+    if failed_files:
+        raise RuntimeError(
+            f"Indexing completed with {len(failed_files)} failure(s); see data/index_failures for details"
+        )

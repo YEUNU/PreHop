@@ -16,8 +16,9 @@ natural-language abstains ("I do not know", "the context does not contain
 `answer_attempted = 1`).
 
 This module centralizes the abstain phrase list so `utils/metrics.py`,
-`tools/benchmark_report.py`, and `cli/benchmark.py` apply the same rule.
+`utils/reporting.py` and `cli/benchmark.py` apply the same rule.
 """
+
 from __future__ import annotations
 
 # Lowercased substring patterns. Substring match — no regex, no token-level
@@ -85,7 +86,7 @@ def answer_label(judge_score, response: str) -> str:
     """
     try:
         score = float(judge_score)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         score = 0.0
     if score >= 0.5:
         return "Correct Answer"

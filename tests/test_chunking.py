@@ -1,5 +1,7 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from core.config import RAGConfig
 from models.prehop.graphrag import GraphRAG
 
@@ -24,14 +26,16 @@ async def test_fixed_size_chunking_windows(monkeypatch):
     rag = GraphRAG(strategy="prehop")
     rag.vllm = MagicMock()
     rag.indexing_llm = AsyncMock()
-    rag.indexing_llm.generate_json = AsyncMock(return_value={
-        "summary": "Mock summary",
-        "q_minus": ["q1"],
-        "q_plus": ["q2"],
-    })
+    rag.indexing_llm.generate_json = AsyncMock(
+        return_value={
+            "summary": "Mock summary",
+            "q_minus": ["q1"],
+            "q_plus": ["q2"],
+        }
+    )
 
     sentences = [f"Sentence {i}." for i in range(1, 9)]  # 8 sentences
-    test_content = "Document: Test Document\n--- Page 1 ---\n" + " ".join(sentences)
+    test_content = "Title: Test Document\n--- Page 1 ---\n" + " ".join(sentences)
 
     knowledge = await rag.extract_knowledge(test_content, source="test")
     chunks = knowledge["chunks"]
@@ -56,14 +60,16 @@ async def test_trailing_window_merges_below_minimum(monkeypatch):
     rag = GraphRAG(strategy="prehop")
     rag.vllm = MagicMock()
     rag.indexing_llm = AsyncMock()
-    rag.indexing_llm.generate_json = AsyncMock(return_value={
-        "summary": "Mock summary",
-        "q_minus": [],
-        "q_plus": [],
-    })
+    rag.indexing_llm.generate_json = AsyncMock(
+        return_value={
+            "summary": "Mock summary",
+            "q_minus": [],
+            "q_plus": [],
+        }
+    )
 
     sentences = [f"Sentence {i}." for i in range(1, 8)]  # 7 sentences
-    test_content = "Document: Test Document\n--- Page 1 ---\n" + " ".join(sentences)
+    test_content = "Title: Test Document\n--- Page 1 ---\n" + " ".join(sentences)
 
     knowledge = await rag.extract_knowledge(test_content, source="test")
     chunks = knowledge["chunks"]
@@ -76,28 +82,26 @@ async def test_trailing_window_merges_below_minimum(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_table_lines_still_routed_through_table_to_text(monkeypatch):
+async def test_pipe_delimited_text_is_preserved_without_conversion(monkeypatch):
     monkeypatch.setattr(RAGConfig, "CHUNK_SENTENCES", 6)
     monkeypatch.setattr(RAGConfig, "MIN_CHUNK_SENTENCES", 2)
 
     rag = GraphRAG(strategy="prehop")
     rag.vllm = MagicMock()
-    rag.llm = MagicMock()
-    rag.llm.generate_response = AsyncMock(
-        return_value="Year 2020: Pandemic.\nYear 2021: Vaccine."
-    )
     rag.indexing_llm = AsyncMock()
-    rag.indexing_llm.generate_json = AsyncMock(return_value={
-        "summary": "Mock summary",
-        "q_minus": ["q1"],
-        "q_plus": ["q2"],
-    })
+    rag.indexing_llm.generate_json = AsyncMock(
+        return_value={
+            "summary": "Mock summary",
+            "q_minus": ["q1"],
+            "q_plus": ["q2"],
+        }
+    )
 
     # The intro sentence ends in "." before the table so the sentence
     # splitter treats it as a separate unit from the pipe-delimited table
     # blob (table lines carry no terminal punctuation of their own).
     test_content = (
-        "Document: Test Document\n--- Page 1 ---\n"
+        "Title: Test Document\n--- Page 1 ---\n"
         "Here is a summary table. "
         "| Year | Event |\n| 2020 | Pandemic |\n| 2021 | Vaccine |"
     )
@@ -105,7 +109,7 @@ async def test_table_lines_still_routed_through_table_to_text(monkeypatch):
     knowledge = await rag.extract_knowledge(test_content, source="test")
     chunks = knowledge["chunks"]
 
-    rag.llm.generate_response.assert_awaited()
     all_text = " ".join(c["text"] for c in chunks)
     assert "Here is a summary table." in all_text
-    assert "Year 2020: Pandemic." in all_text
+    assert "| Year | Event |" in all_text
+    assert "| 2020 | Pandemic |" in all_text

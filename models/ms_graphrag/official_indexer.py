@@ -1,4 +1,4 @@
-"""Official MS GraphRAG indexing wired to our vLLM/LiteLLM endpoints.
+"""Official MS GraphRAG indexing wired to external OpenAI-compatible endpoints.
 
 Builds a GraphRagConfig that points LiteLLM at VLLM_URL/VLLM_EMBED_URL (the
 LiteLLM proxy by default — see CLAUDE.md "Model / inference infra"; override
@@ -9,32 +9,37 @@ community reports → embeddings).
 Outputs parquet under data/ms_graphrag_output/<corpus_tag>/. The query-time
 adapter reads these parquet files instead of expecting Neo4j Community nodes.
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger("Prehop")
 
 
 # Defaults to VLLM_URL (the LiteLLM proxy by default). RAG_MS_GEN_API_BASES
-# can still list multiple comma-separated endpoints for local multi-GPU
-# round-robin (e.g. two local vLLM servers) — primary base (passed as
+# can still list multiple comma-separated external endpoints for
+# round-robin — the primary base (passed as
 # ModelConfig.api_base) is the first entry, but the LiteLLM Router monkey-
 # patch below intercepts and shuffles across all bases per call.
 _GEN_API_BASES = [
-    s.strip() for s in os.environ.get(
+    s.strip()
+    for s in os.environ.get(
         "RAG_MS_GEN_API_BASES",
-        os.environ.get("VLLM_URL", "http://localhost:28000/v1"),
-    ).split(",") if s.strip()
+        os.environ.get("VLLM_URL", ""),
+    ).split(",")
+    if s.strip()
 ]
-_GEN_API_BASE = _GEN_API_BASES[0]
+_GEN_API_BASE = _GEN_API_BASES[0] if _GEN_API_BASES else ""
 _GEN_MODEL_NAME = os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
-_EMBED_API_BASE = os.environ.get("RAG_MS_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", "http://localhost:18082/v1"))
-_EMBED_MODEL_NAME = os.environ.get("RAG_MS_EMBED_MODEL_NAME", os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model"))
+_EMBED_API_BASE = os.environ.get("RAG_MS_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", ""))
+_EMBED_MODEL_NAME = os.environ.get(
+    "RAG_MS_EMBED_MODEL_NAME", os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
+)
 _GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
 # Must match the configured embedding model's real output dimension or
 # LanceDB rejects the embedding parquet on a FixedSizeList shape mismatch —
@@ -62,43 +67,22 @@ def input_dir_for(corpus_tag: str) -> Path:
 def _stage_input_files(
     dataset_path: str,
     corpus_tag: str,
-    sample_companies: Optional[list[str]],
 ) -> Path:
-    """Copy/link selected files into a tag-scoped input dir.
+    """Copy/link every corpus file into a tag-scoped input dir.
 
     MS pipeline reads from one directory via input_storage.base_dir. We can't
     pass a file list, so we materialize a filtered staging dir under the
     output tree (hardlinks to avoid disk waste; falls back to copy on FS that
     rejects hardlinks).
     """
-    import json
-
     src_root = Path(dataset_path)
-    if not src_root.exists():
-        raise FileNotFoundError(f"dataset_path not found: {dataset_path}")
+    if not src_root.is_dir():
+        raise FileNotFoundError(f"dataset directory not found: {dataset_path}")
 
     files = sorted(p for p in src_root.iterdir() if p.suffix in (".txt", ".md"))
 
-    if sample_companies:
-        doc_info_path = Path("data/financebench_document_information.jsonl")
-        if doc_info_path.exists():
-            with doc_info_path.open() as fh:
-                doc_data = [json.loads(line) for line in fh]
-            valid = {item["doc_name"] for item in doc_data if item.get("company") in sample_companies}
-            kept = []
-            for fp in files:
-                stem = fp.stem
-                if stem in valid:
-                    kept.append(fp)
-                else:
-                    parts = stem.rsplit("_page_", 1)
-                    if len(parts) == 2 and parts[0] in valid:
-                        kept.append(fp)
-            logger.info(
-                "MS staging: filtering by %d sample companies -> %d/%d files",
-                len(sample_companies), len(kept), len(files),
-            )
-            files = kept
+    if not files:
+        raise ValueError(f"MS GraphRAG staging selected no .txt/.md files from {dataset_path}")
 
     staged = input_dir_for(corpus_tag)
     if staged.exists():
@@ -116,30 +100,36 @@ def _stage_input_files(
     return staged
 
 
-def _register_local_models_with_litellm() -> None:
+def _register_external_models_with_litellm() -> None:
     """LiteLLM rejects response_format/JSON-schema requests for unknown models.
 
     vLLM with Qwen3 actually supports structured output via guided_json, so
-    we register our local model names with supports_response_schema=True.
+    we register the externally served model names with supports_response_schema=True.
     Without this, create_community_reports raises 'Model does not support
     response schemas' on every Leiden cluster.
     """
     import litellm
 
     base_meta = {
-        "max_tokens": 16384,
-        "max_input_tokens": 16384,
+        "max_tokens": int(os.environ.get("RAG_MAX_CONTEXT_LENGTH", "16384")),
+        "max_input_tokens": int(os.environ.get("RAG_MAX_CONTEXT_LENGTH", "16384")),
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.0,
         "output_cost_per_token": 0.0,
         "litellm_provider": "openai",
         "supports_response_schema": True,
     }
-    litellm.register_model({
-        f"openai/{_GEN_MODEL_NAME}": {**base_meta, "mode": "chat"},
-        f"openai/{_EMBED_MODEL_NAME}": {**base_meta, "mode": "embedding",
-                                        "max_input_tokens": 8192, "output_vector_size": _EMBED_DIM},
-    })
+    litellm.register_model(
+        {
+            f"openai/{_GEN_MODEL_NAME}": {**base_meta, "mode": "chat"},
+            f"openai/{_EMBED_MODEL_NAME}": {
+                **base_meta,
+                "mode": "embedding",
+                "max_input_tokens": int(os.environ.get("MAX_EMBEDDING_LENGTH", "16384")),
+                "output_vector_size": _EMBED_DIM,
+            },
+        }
+    )
 
 
 _ROUTER_INSTALLED = False
@@ -150,29 +140,51 @@ def _install_litellm_router_for_gen() -> None:
     multiple endpoints when RAG_MS_GEN_API_BASES lists more than one (a no-op
     with the default single LiteLLM-proxy endpoint). graphrag-llm calls bare
     `litellm.acompletion(**args)`; we intercept only when model matches our
-    local gen model and delegate to a Router with simple-shuffle. Embedding +
+    configured generation model and delegate to a Router with simple-shuffle. Embedding +
     any other model passes through unchanged.
     """
     global _ROUTER_INSTALLED
     if _ROUTER_INSTALLED:
         return
     import contextvars
+    import json
+    import urllib.error
     import urllib.request
+
     import litellm
     from litellm import Router
 
-    # Only route to servers that are actually UP right now.
+    # Validate the OpenAI-compatible model registry rather than a proxy-specific
+    # /health route. Busy external servers can legitimately queue a health
+    # response near max_num_seqs, so retry with a realistic timeout.
     live_bases = []
     for base in _GEN_API_BASES:
-        health_url = base.rstrip("/").removesuffix("v1").rstrip("/") + "/health"
-        try:
-            urllib.request.urlopen(health_url, timeout=2)
-            live_bases.append(base)
-        except Exception:
-            logger.warning("MS GraphRAG: gen endpoint unreachable, skipping: %s", base)
+        models_url = base.rstrip("/") + "/models"
+        for attempt in range(1, 4):
+            try:
+                request = urllib.request.Request(
+                    models_url,
+                    headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
+                )
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    payload = json.load(response)
+                model_ids = {item.get("id") for item in payload.get("data", [])}
+                if _GEN_MODEL_NAME not in model_ids:
+                    raise RuntimeError(
+                        f"configured model {_GEN_MODEL_NAME!r} not advertised by {models_url}: "
+                        f"{sorted(model_id for model_id in model_ids if model_id)}"
+                    )
+                live_bases.append(base)
+                break
+            except (OSError, urllib.error.URLError, ValueError, RuntimeError) as exc:
+                if attempt == 3:
+                    logger.warning("MS GraphRAG: generation endpoint rejected after retries: %s (%s)", base, exc)
+                else:
+                    time.sleep(attempt)
     if not live_bases:
-        logger.warning("MS GraphRAG: no live gen endpoints; falling back to all configured")
-        live_bases = list(_GEN_API_BASES)
+        raise ConnectionError(
+            f"MS GraphRAG: no configured generation endpoint passed its health check: {_GEN_API_BASES}"
+        )
     logger.info("MS GraphRAG: live gen endpoints for router: %s", live_bases)
 
     if len(live_bases) <= 1:
@@ -199,7 +211,8 @@ def _install_litellm_router_for_gen() -> None:
     # original function — which is what Router actually expects to call.
     orig_acompletion = litellm.acompletion
     _in_router: contextvars.ContextVar[bool] = contextvars.ContextVar(
-        "_ms_router_reentry", default=False,
+        "_ms_router_reentry",
+        default=False,
     )
 
     async def _routed_acompletion(**kwargs):
@@ -218,13 +231,15 @@ def _install_litellm_router_for_gen() -> None:
     _ROUTER_INSTALLED = True
     logger.info(
         "MS LiteLLM router installed for %s across %d endpoints: %s",
-        target, len(_GEN_API_BASES), _GEN_API_BASES,
+        target,
+        len(_GEN_API_BASES),
+        _GEN_API_BASES,
     )
 
 
 def build_config(corpus_tag: str, staged_input_dir: Path):
-    """Construct a GraphRagConfig pointing LiteLLM at our local vLLM."""
-    _register_local_models_with_litellm()
+    """Construct a GraphRagConfig pointing LiteLLM at external inference."""
+    _register_external_models_with_litellm()
     _install_litellm_router_for_gen()
 
     from graphrag.config.models.graph_rag_config import GraphRagConfig
@@ -326,29 +341,30 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     # MS pipeline gates extract_graph + summarize via asyncio.Semaphore(num_threads=concurrent_requests).
     # vLLM 4B handles 30+ parallel reqs comfortably (peak observed: 14 running + 7 waiting at limit 16
     # → fully saturated). Bump to 48 to drive the queue and shave wall-clock on the 33k-text_unit corpus.
-    cfg.concurrent_requests = int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "48"))
+    cfg.concurrent_requests = max(1, int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "48")))
     return cfg
 
 
 async def run_official_index(
     dataset_path: str,
     corpus_tag: str,
-    sample_companies: Optional[list[str]] = None,
 ) -> None:
     """Stage inputs, build config, run the standard MS pipeline."""
     from graphrag.api.index import build_index
     from graphrag.config.enums import IndexingMethod
 
-    staged_input = _stage_input_files(dataset_path, corpus_tag, sample_companies)
+    staged_input = _stage_input_files(dataset_path, corpus_tag)
 
     config = build_config(corpus_tag, staged_input)
     out_dir = output_dir_for(corpus_tag)
 
     logger.info(
-        "MS official indexing: corpus_tag=%s, %d input files, output=%s, "
-        "gen=%s embed=%s",
-        corpus_tag, len(list(staged_input.iterdir())), out_dir,
-        _GEN_API_BASE, _EMBED_API_BASE,
+        "MS official indexing: corpus_tag=%s, %d input files, output=%s, gen=%s embed=%s",
+        corpus_tag,
+        len(list(staged_input.iterdir())),
+        out_dir,
+        _GEN_API_BASE,
+        _EMBED_API_BASE,
     )
 
     results = await build_index(
@@ -359,15 +375,25 @@ async def run_official_index(
 
     failures = [r for r in results if getattr(r, "errors", None)]
     if failures:
-        logger.warning("MS pipeline produced %d workflow(s) with errors", len(failures))
+        logger.error("MS pipeline produced %d workflow(s) with errors", len(failures))
         for r in failures:
-            logger.warning("  workflow=%s errors=%s", getattr(r, "workflow", "?"), r.errors)
+            logger.error("  workflow=%s errors=%s", getattr(r, "workflow", "?"), r.errors)
 
     # Sanity: verify expected parquet artifacts.
-    expected = ["entities.parquet", "relationships.parquet", "communities.parquet",
-                "community_reports.parquet", "text_units.parquet", "documents.parquet"]
+    expected = [
+        "entities.parquet",
+        "relationships.parquet",
+        "communities.parquet",
+        "community_reports.parquet",
+        "text_units.parquet",
+        "documents.parquet",
+    ]
     missing = [name for name in expected if not (out_dir / name).exists()]
-    if missing:
-        logger.warning("MS pipeline missing expected artifacts: %s", missing)
-    else:
-        logger.info("MS pipeline produced all expected parquet files at %s", out_dir)
+    if failures or missing:
+        parts = []
+        if failures:
+            parts.append(f"{len(failures)} failed workflow(s)")
+        if missing:
+            parts.append(f"missing artifacts: {missing}")
+        raise RuntimeError("MS GraphRAG indexing incomplete: " + "; ".join(parts))
+    logger.info("MS pipeline produced all expected parquet files at %s", out_dir)

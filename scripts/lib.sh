@@ -1,6 +1,21 @@
 #!/bin/bash
 
-# Shared shell helpers for local service orchestration.
+# Shared shell helpers for service validation and Neo4j orchestration.
+
+# Load a dotenv file while preserving variables explicitly exported by the
+# caller. Plain `. .env` silently overwrites shell overrides; python-dotenv in
+# main.py does the opposite, so the two launch paths previously disagreed.
+load_project_env() {
+    local env_file="$1"
+    local exported_snapshot
+    [ -f "$env_file" ] || return 0
+    exported_snapshot="$(export -p)"
+    set -a
+    # shellcheck disable=SC1090
+    . "$env_file"
+    set +a
+    eval "$exported_snapshot"
+}
 
 # Resolve the Python interpreter. Prefers the project-local .venv (created with
 # `uv venv --python 3.12 .venv`), so the run scripts work for a fresh clone
@@ -31,10 +46,7 @@ wait_for_server() {
     local check_url="$url"
     local curl_args=(-s -o /dev/null -w "%{http_code}" --max-time 2)
 
-    if [[ "$url" == */v1/models ]]; then
-        # For local model readiness checks, prefer the lightweight health endpoint.
-        check_url="${url%/v1/models}/health"
-    elif [ -n "${VLLM_API_KEY:-}" ] && [ "${VLLM_API_KEY}" != "EMPTY" ]; then
+    if [ -n "${VLLM_API_KEY:-}" ] && [ "${VLLM_API_KEY}" != "EMPTY" ] && [ "$check_url" = "$url" ]; then
         curl_args+=(-H "Authorization: Bearer ${VLLM_API_KEY}")
     fi
 

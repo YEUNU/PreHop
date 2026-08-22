@@ -1,4 +1,3 @@
-from .document import *
 from .evaluation import *
 from .indexing import *
 

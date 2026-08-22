@@ -2,25 +2,31 @@
 [HopRAG] adapter wired to the official HopRetriever implementation.
 
 This keeps the benchmark interface while delegating traversal logic to
-`third_party/HopRAG/HopRetriever.py` and preserving the current generation and
-rerank models used in this repository.
+`third_party/HopRAG/HopRetriever.py` and preserving its published top-k/order.
 """
 
 import asyncio
 import importlib
 import logging
 import os
-from pathlib import Path
 import sys
 import threading
 import types
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any
 
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient, get_llm_client
 from utils.formatters import format_context_from_nodes
+from utils.prompts.shared import build_answer_prompt
 
 logger = logging.getLogger(__name__)
+
+
+# The official HopRAG repository's end-to-end HopGenerator example uses
+# `--topk 20`. Keep that published baseline setting instead of forcing the
+# in-repo Prehop/Naive context budget onto the external method.
+OFFICIAL_HOPRAG_TOP_K = 20
 
 
 def _run_coro_sync(coro):
@@ -44,13 +50,13 @@ def _run_coro_sync(coro):
     except RuntimeError:
         return asyncio.run(_guarded())
 
-    holder: Dict[str, Any] = {}
-    errors: Dict[str, BaseException] = {}
+    holder: dict[str, Any] = {}
+    errors: dict[str, BaseException] = {}
 
     def _runner():
         try:
             holder["value"] = asyncio.run(_guarded())
-        except BaseException as e:  # pragma: no cover - defensive fallback
+        except BaseException as e:  # noqa: BLE001  # pragma: no cover - propagate thread cancellation/system exits
             errors["error"] = e
 
     t = threading.Thread(target=_runner, daemon=True)
@@ -63,16 +69,18 @@ def _run_coro_sync(coro):
 
 def _install_missing_hoprag_stubs() -> None:
     """Install tiny import-time stubs for optional upstream dependencies."""
+
+    def _unavailable(name: str):
+        def _raise(*_args, **_kwargs):
+            raise RuntimeError(
+                f"HopRAG optional dependency '{name}' was unexpectedly used; the local runtime hook was not installed"
+            )
+
+        return _raise
+
     if "paddlenlp" not in sys.modules:
         paddlenlp = types.ModuleType("paddlenlp")
-
-        def _taskflow(*_args, **_kwargs):
-            def _run(_text):
-                return []
-
-            return _run
-
-        paddlenlp.Taskflow = _taskflow  # type: ignore[attr-defined]
+        paddlenlp.Taskflow = _unavailable("paddlenlp")  # type: ignore[attr-defined]
         sys.modules["paddlenlp"] = paddlenlp
 
     if "sentence_transformers" not in sys.modules:
@@ -80,12 +88,7 @@ def _install_missing_hoprag_stubs() -> None:
 
         class _SentenceTransformer:
             def __init__(self, *_args, **_kwargs):
-                pass
-
-            def encode(self, documents, **_kwargs):
-                if isinstance(documents, str):
-                    return [0.0] * 768
-                return [[0.0] * 768 for _ in documents]
+                _unavailable("sentence_transformers")()
 
         sentence_transformers.SentenceTransformer = _SentenceTransformer  # type: ignore[attr-defined]
         sys.modules["sentence_transformers"] = sentence_transformers
@@ -96,34 +99,12 @@ def _install_missing_hoprag_stubs() -> None:
         class _DummyModel:
             @classmethod
             def from_pretrained(cls, *_args, **_kwargs):
-                return cls()
-
-            def eval(self):
-                return self
-
-            def to(self, *_args, **_kwargs):
-                return self
-
-            @property
-            def device(self):
-                return "cpu"
-
-            def __call__(self, *_args, **_kwargs):  # pragma: no cover - fallback
-                return types.SimpleNamespace(logits=[0.0])
+                _unavailable("modelscope")()
 
         class _DummyTokenizer:
             @classmethod
             def from_pretrained(cls, *_args, **_kwargs):
-                return cls()
-
-            def __call__(self, *_args, **_kwargs):
-                return {}
-
-            def apply_chat_template(self, *_args, **_kwargs):
-                return ""
-
-            def batch_decode(self, *_args, **_kwargs):
-                return [""]
+                _unavailable("modelscope")()
 
         modelscope.AutoModelForCausalLM = _DummyModel  # type: ignore[attr-defined]
         modelscope.AutoTokenizer = _DummyTokenizer  # type: ignore[attr-defined]
@@ -138,9 +119,9 @@ class HopRAGAdapter:
 
     def __init__(
         self,
-        model_id: str = "local",
+        model_id: str = "default",
         max_hop: int = 4,
-        top_k: int = 10,
+        top_k: int = OFFICIAL_HOPRAG_TOP_K,
         corpus_tag: str = "default",
     ):
         self.model_id = model_id
@@ -158,6 +139,7 @@ class HopRAGAdapter:
         # GraphRAG-engine schema (HO_<safe>_Chunk + hoprag_<safe>_vector_idx
         # + NEXT/HOP edges); that's gone now.
         import re as _re
+
         _safe_corpus = _re.sub(r"[^A-Za-z0-9_]", "_", self.corpus_tag)
         self.prefix = "HO_"
         self.chunk_label = f"{self.prefix}{_safe_corpus}"
@@ -188,8 +170,8 @@ class HopRAGAdapter:
 
         neo4j_url = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
         neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
-        neo4j_password = os.environ.get("NEO4J_PASSWORD", "1q2w3e4r")
-        neo4j_dbname = os.environ.get("NEO4J_DB", "neo4j")
+        neo4j_password = os.environ.get("NEO4J_PASSWORD", "")
+        neo4j_dbname = os.environ.get("NEO4J_DATABASE", "neo4j")
 
         # We DELIBERATELY do NOT override retrieve_node_dense_query or its
         # sparse/edge variants — config.py's templates already match the
@@ -203,23 +185,29 @@ class HopRAGAdapter:
         # corpus-tagged label + relationship type. Use string concat (not
         # f-string with `{{ }}`) to avoid format-spec collisions.
         expand_logic_query = (
-            "MATCH (dense_node:" + self.chunk_label
-            + ")-[r:" + self.edge_type
-            + "]-(logic_node:" + self.chunk_label + ") "
+            "MATCH (dense_node:"
+            + self.chunk_label
+            + ")-[r:"
+            + self.edge_type
+            + "]-(logic_node:"
+            + self.chunk_label
+            + ") "
             "WHERE dense_node.text=$text "
             "RETURN logic_node"
         )
         expand_node_edge_query = (
-            "MATCH (dense_node:" + self.chunk_label
-            + ")-[out_edge:" + self.edge_type
-            + "]-(out_node:" + self.chunk_label + ") "
+            "MATCH (dense_node:"
+            + self.chunk_label
+            + ")-[out_edge:"
+            + self.edge_type
+            + "]-(out_node:"
+            + self.chunk_label
+            + ") "
             "WHERE dense_node.text=$text "
             "RETURN out_node, out_edge"
         )
         get_out_edge_query = (
-            "MATCH (n:" + self.chunk_label
-            + ")-[r:" + self.edge_type
-            + "]->(m:" + self.chunk_label + ") "
+            "MATCH (n:" + self.chunk_label + ")-[r:" + self.edge_type + "]->(m:" + self.chunk_label + ") "
             "WHERE n.embed=$embed AND n.text=$text "
             "RETURN r as out_edge, m as out_node"
         )
@@ -231,10 +219,14 @@ class HopRAGAdapter:
         def _get_doc_embeds(documents, _model):
             if isinstance(documents, str):
                 emb = _run_coro_sync(self.vllm.get_embedding(documents))
-                return emb or []
+                if not emb:
+                    raise ValueError("HopRAG query embedding is missing")
+                return emb
             docs = [str(d) for d in documents]
             embs = _run_coro_sync(self.vllm.get_embeddings(docs))
-            return embs or [[] for _ in docs]
+            if len(embs) != len(docs) or any(not emb for emb in embs):
+                raise ValueError(f"HopRAG embedding count mismatch: expected {len(docs)}, got {len(embs)}")
+            return embs
 
         def _load_language_model(model_name):
             # Use model id as opaque identifier; chat completion is patched below.
@@ -244,21 +236,22 @@ class HopRAGAdapter:
             messages = chat if isinstance(chat, list) else [{"role": "user", "content": str(chat)}]
             _ = model, max_tokens  # keep official signature compatibility
             if not return_json:
-                try:
-                    response = _run_coro_sync(self.llm.generate_response(messages, temperature=0.0))
-                except Exception as e:  # incl. TimeoutError from the sync-bridge guard
-                    logger.warning("hoprag _get_chat_completion (text) failed: %s", e)
-                    response = ""
+                response = _run_coro_sync(self.llm.generate_response(messages, temperature=0.0))
+                if not str(response or "").strip():
+                    raise ValueError("HopRAG LLM hook returned an empty response")
                 return response, messages
 
-            try:
-                generated = _run_coro_sync(self.llm.generate_json(messages, temperature=0.0))
-            except Exception as e:  # incl. TimeoutError from the sync-bridge guard
-                logger.warning("hoprag _get_chat_completion (json) failed: %s", e)
-                generated = None
-            payload = generated if isinstance(generated, dict) else {}
+            generated = _run_coro_sync(self.llm.generate_json(messages, temperature=0.0))
+            if not isinstance(generated, dict):
+                raise TypeError(f"HopRAG LLM hook expected dict, got {type(generated).__name__}")
+            payload = generated
 
-            values = [payload.get(k, "") for k in (keys or [])]
+            missing_keys = [key for key in (keys or []) if key not in payload]
+            if missing_keys:
+                raise ValueError(f"HopRAG LLM hook missing required keys: {missing_keys}")
+            values = [payload[key] for key in (keys or [])]
+            if any(value is None or (isinstance(value, str) and not value.strip()) for value in values):
+                raise ValueError("HopRAG LLM hook returned an empty required value")
             return (*values, messages)
 
         # All schema-tagged Neo4j index names (sparse + dense, node + edge)
@@ -286,7 +279,7 @@ class HopRAGAdapter:
             target.get_chat_completion = _get_chat_completion
 
     def _build_official_retriever(self):
-        hop_cls = getattr(self._hop_module, "HopRetriever")
+        hop_cls = self._hop_module.HopRetriever
         return hop_cls(
             llm=self.model_id,
             max_hop=self.max_hop,
@@ -294,28 +287,24 @@ class HopRAGAdapter:
             if_hybrid=False,
             if_trim=False,
             tol=2,
-            topk=max(self.top_k * 2, self.top_k),
+            topk=self.top_k,
             traversal="bfs_node",
             mock_dense=False,
             mock_sparse=False,
             reranker=None,
         )
 
-    async def _run_official_retrieval(self, query: str) -> List[str]:
-        try:
-            context_texts, _ = await asyncio.to_thread(self._retriever.search_docs, query)
-            if not isinstance(context_texts, list):
-                return []
-            return [str(t) for t in context_texts if isinstance(t, str) and t.strip()]
-        except Exception as e:
-            logger.warning("Official HopRetriever traversal failed, fallback enabled: %s", e)
-            return []
+    async def _run_official_retrieval(self, query: str) -> list[str]:
+        context_texts, _ = await asyncio.to_thread(self._retriever.search_docs, query)
+        if not isinstance(context_texts, list):
+            raise TypeError(f"Official HopRetriever returned {type(context_texts).__name__}, expected list")
+        return [str(t) for t in context_texts if isinstance(t, str) and t.strip()]
 
-    async def _lookup_nodes_by_text(self, texts: List[str]) -> List[Dict[str, Any]]:
+    async def _lookup_nodes_by_text(self, texts: list[str]) -> list[dict[str, Any]]:
         if not texts:
             return []
-        # Treat the indexer-backfilled `source` (financebench doc stem) as
-        # the title for inline citations. HopRAG-native nodes have no page
+        # Treat the indexer-backfilled `source` (corpus document stem) as the
+        # title for inline citations. HopRAG-native nodes have no page
         # or chunk index, so those stay 0.
         query = f"""
             UNWIND range(0, size($texts) - 1) AS idx
@@ -332,14 +321,14 @@ class HopRAGAdapter:
             result = await session.run(query, {"texts": texts})  # type: ignore
             rows = [dict(r) async for r in result]
 
-        by_idx: Dict[int, Dict[str, Any]] = {}
+        by_idx: dict[int, dict[str, Any]] = {}
         for row in rows:
             idx = int(row.get("idx", -1))
             if idx < 0 or idx in by_idx:
                 continue
             by_idx[idx] = row
 
-        ordered: List[Dict[str, Any]] = []
+        ordered: list[dict[str, Any]] = []
         for idx in range(len(texts)):
             if idx in by_idx:
                 node = by_idx[idx]
@@ -347,64 +336,34 @@ class HopRAGAdapter:
                 ordered.append(node)
         return ordered
 
-    async def _vector_fallback(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        query_embed = await self.vllm.get_embedding(query)
-        if not query_embed:
-            return []
-        query_cypher = f"""
-            CALL db.index.vector.queryNodes('{self.vector_index}', $k, $embedding)
-            YIELD node, score
-            RETURN id(node) as id, coalesce(node.source, '') as title,
-                   0 as sent_id, 0 as page,
-                   node.text as text, node.embed as embedding,
-                   coalesce(node.source, '') as source, score
-        """
-        async with self.neo4j.driver.session() as session:
-            result = await session.run(  # type: ignore
-                query_cypher,
-                {"k": max(top_k * 2, 10), "embedding": query_embed},
-            )
-            return [dict(rec) async for rec in result]
-
-    async def retrieve(self, query: str, top_k: int = 5) -> Tuple[str, List[Dict[str, Any]]]:
+    async def retrieve(self, query: str, top_k: int | None = None) -> tuple[str, list[dict[str, Any]]]:
+        top_k = self.top_k if top_k is None else top_k
         context_texts = await self._run_official_retrieval(query)
         candidates = await self._lookup_nodes_by_text(context_texts)
         if not candidates:
-            candidates = await self._vector_fallback(query, top_k=top_k)
-        if not candidates:
             return "", []
 
-        texts = [str(n.get("text", "")) for n in candidates]
-        rerank_scores = await self.vllm.rerank(query, texts)
-        for idx, score in enumerate(rerank_scores):
-            if idx < len(candidates):
-                candidates[idx]["rerank_score"] = score
-        candidates = sorted(
-            candidates,
-            key=lambda x: float(x.get("rerank_score", x.get("score", 0.0))),
-            reverse=True,
-        )
+        # Preserve the official HopRetriever ordering and published top-k.
+        # Do not add adapter-only candidate widening or extra scoring.
         nodes = candidates[:top_k]
         context = format_context_from_nodes(nodes)
         return context, nodes
 
-    async def run_workflow(self, query: str, history: Optional[List[Dict]] = None) -> Tuple[str, List, List]:
+    async def run_workflow(self, query: str, history: list[dict] | None = None) -> tuple[str, list, list]:
         _ = history
         context, nodes = await self.retrieve(query, top_k=self.top_k)
         if not context:
-            return "Unable to find relevant information.", [], []
+            return (
+                "Insufficient evidence.",
+                [],
+                [{"step": "hoprag_official_hopretriever_qa", "output": "empty_context"}],
+            )
 
-        prompt = f"""You are a helpful assistant. Answer the question using only the provided context.
-If the context is insufficient, say you do not know.
-
-Context:
-{context}
-
-Question: {query}
-
-Answer:"""
+        prompt = build_answer_prompt(context, query)
         messages = [{"role": "user", "content": prompt}]
         answer = await self.llm.generate_response(messages)
+        if not str(answer or "").strip():
+            raise ValueError("Answer synthesis returned an empty response")
         trace = [{"step": "hoprag_official_hopretriever_qa", "input": messages, "output": answer}]
         sources = [
             {

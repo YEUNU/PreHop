@@ -8,6 +8,7 @@
 회사/페이지 개념이 없으므로 page_match는 사용하지 않는다. 인덱싱·벤치마크
 시 `--corpus-tag multihoprag`로 다른 데이터셋과 Neo4j 라벨을 분리한다.
 """
+
 import argparse
 import html
 import json
@@ -35,9 +36,7 @@ def _clean(text) -> str:
 #   - Guardian 계열: "skip past newsletter promotion" ~ "after newsletter
 #     promotion" 사이(접근성 스킵링크로 감싼 뉴스레터 위젯 텍스트) — 기사
 #     중간에도 등장할 수 있어 위치 무관, 전체 매치 제거.
-_INDEPENDENT_BOILERPLATE_RE = re.compile(
-    r"^.*?\{\{ /verifyErrors \}\}.*?\{\{ /verifyErrors \}\}\s*", re.DOTALL
-)
+_INDEPENDENT_BOILERPLATE_RE = re.compile(r"^.*?\{\{ /verifyErrors \}\}.*?\{\{ /verifyErrors \}\}\s*", re.DOTALL)
 _GUARDIAN_BOILERPLATE_RE = re.compile(r"skip past newsletter promotion.*?after newsletter promotion\s*", re.DOTALL)
 
 # Second audit pass (real content read of indexed Q-/Q+/chunks, not just
@@ -52,9 +51,7 @@ _GUARDIAN_BOILERPLATE_RE = re.compile(r"skip past newsletter promotion.*?after n
 #     "APP USERS CLICK HERE" is the same family's single-line CTA variant.
 _CLICK_HERE_RE = re.compile(r"(?m)^CLICK HERE TO .*\n?")
 _APP_USERS_RE = re.compile(r"(?m)^APP USERS CLICK HERE\s*\n?")
-_NAV_WIDGET_RE = re.compile(
-    r"(?m)^(?:WEEK \d+ [A-Z ]+|MORE [A-Z0-9 '/.-]+):.*\n(?:[^\n]*\|[^\n]*\n)?"
-)
+_NAV_WIDGET_RE = re.compile(r"(?m)^(?:WEEK \d+ [A-Z ]+|MORE [A-Z0-9 '/.-]+):.*\n(?:[^\n]*\|[^\n]*\n)?")
 
 
 def _strip_scraper_boilerplate(body: str) -> str:
@@ -90,10 +87,8 @@ def sanitize_filename(name: str) -> str:
 def _is_lfs_pointer(path: Path) -> bool:
     """캐시된 파일이 Git LFS 포인터 텍스트인지 판별."""
     try:
-        return path.read_text(encoding="utf-8", errors="ignore").startswith(
-            "version https://git-lfs"
-        )
-    except Exception:
+        return path.read_text(encoding="utf-8", errors="ignore").startswith("version https://git-lfs")
+    except OSError:
         return False
 
 
@@ -125,6 +120,7 @@ def build_corpus(corpus: list[dict]) -> dict[str, str]:
     """
     if CORPUS_DIR.exists():
         import shutil
+
         shutil.rmtree(CORPUS_DIR)
     CORPUS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -168,24 +164,26 @@ def build_queries(queries: list[dict]) -> list[dict]:
                 evidence_facts.append(fact)
 
         qtype = q.get("question_type", "unknown")
-        out.append({
-            "_id": f"multihoprag_{idx:05d}",
-            "query": _clean(q.get("query")),
-            "ground_truth": _clean(q.get("answer")),
-            # 다중 증거 (multi-hop). 검색 랭킹 지표는 evidence_facts로,
-            # doc recall은 evidence_docs로 계산된다 (utils/metrics.py).
-            "evidence_docs": evidence_docs,
-            "evidence_facts": evidence_facts,
-            # 단일 필드 호환 (리포트 표시용)
-            "evidence_doc": evidence_docs[0] if evidence_docs else "",
-            "evidence_page": None,
-            "evidence_text": evidence_facts[0] if evidence_facts else "",
-            # category=question_type → 벤치마크 category_summaries가
-            # inference/comparison/temporal/null 4종별로 자동 집계.
-            "category": qtype,
-            "question_type": qtype,
-            "dataset": "multihoprag",
-        })
+        out.append(
+            {
+                "_id": f"multihoprag_{idx:05d}",
+                "query": _clean(q.get("query")),
+                "ground_truth": _clean(q.get("answer")),
+                # 다중 증거 (multi-hop). 검색 랭킹 지표는 evidence_facts로,
+                # doc recall은 evidence_docs로 계산된다 (utils/metrics.py).
+                "evidence_docs": evidence_docs,
+                "evidence_facts": evidence_facts,
+                # 단일 필드 호환 (리포트 표시용)
+                "evidence_doc": evidence_docs[0] if evidence_docs else "",
+                "evidence_page": None,
+                "evidence_text": evidence_facts[0] if evidence_facts else "",
+                # category=question_type → 벤치마크 category_summaries가
+                # inference/comparison/temporal/null 4종별로 자동 집계.
+                "category": qtype,
+                "question_type": qtype,
+                "dataset": "multihoprag",
+            }
+        )
 
     with open(QUERIES_PATH, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2, ensure_ascii=False)
@@ -205,15 +203,16 @@ def print_stats(queries: list[dict]):
     for qt, count in sorted(type_counts.items()):
         print(f"  - {qt}: {count}")
     if hop_counts:
-        print(f"\nEvidence articles per query: "
-              f"min={min(hop_counts)} max={max(hop_counts)} "
-              f"avg={sum(hop_counts) / len(hop_counts):.1f}")
+        print(
+            f"\nEvidence articles per query: "
+            f"min={min(hop_counts)} max={max(hop_counts)} "
+            f"avg={sum(hop_counts) / len(hop_counts):.1f}"
+        )
 
 
 def main():
     parser = argparse.ArgumentParser(description="MultiHop-RAG 데이터셋 준비")
-    parser.add_argument("--skip-corpus", action="store_true",
-                        help="코퍼스 디렉토리 생성 건너뛰기 (쿼리만 갱신)")
+    parser.add_argument("--skip-corpus", action="store_true", help="코퍼스 디렉토리 생성 건너뛰기 (쿼리만 갱신)")
     args = parser.parse_args()
 
     DATA_DIR.mkdir(exist_ok=True)

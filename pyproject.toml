@@ -5,11 +5,6 @@ description = "Offline HOP-edge pre-scoring for deterministic multi-hop retrieva
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "vllm>=0.15.0",
-    "sentence-transformers",
-    "torch",
-    "transformers",
-    "accelerate",
     "neo4j",
     "openai",
     "numpy",
@@ -21,6 +16,7 @@ dependencies = [
     "matplotlib",
     "tqdm",
     "requests",
+    "tiktoken",
     "pyarrow",  # parses HuggingFace parquet dataset exports (data/prepare_*.py)
     "spacy",  # sentence/entity splitting for the hoprag baseline's official indexer
     "pandas",  # third_party/HopRAG/HopBuilder.py (official hoprag baseline);
@@ -30,15 +26,11 @@ dependencies = [
                  # submodules those files import
     "litellm",  # ms_graphrag baseline routes generation through a LiteLLM Router
                 # (models/ms_graphrag/official_indexer.py, ms_adapter.py)
-    # paddlenlp/modelscope are NOT needed: third_party/HopRAG/tool.py imports them
-    # at module level, but models/hoprag/official_indexer.py's
-    # _install_optional_stubs() injects fake sys.modules entries for both BEFORE
-    # that import ever runs, so the real packages are never touched on the actual
-    # indexing/benchmark code path (only pandas above is a genuine, unstubbed dep).
-    # FlashInfer attention backend for vLLM. Without it, vLLM falls back to
-    # FLASH_ATTN (works, but FlashInfer enables the faster attn path + autotune
-    # on this CUDA 13 / torch cu130 box). Wheels are CUDA-version specific.
-    "flashinfer-python",
+    # paddlenlp/modelscope/sentence-transformers are NOT needed:
+    # third_party/HopRAG/tool.py imports them
+    # at module level, but models/hoprag/official_indexer.py installs import-only
+    # sentinels before that import. Any accidental runtime use raises loudly;
+    # the real packages are not part of the supported indexing/benchmark path.
 ]
 
 [project.optional-dependencies]
@@ -46,6 +38,7 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-asyncio",
+    "ruff",
 ]
 
 # The repo is a flat-layout collection of top-level dirs (cli/core/models/
@@ -58,6 +51,7 @@ py-modules = []
 
 [tool.ruff]
 line-length = 120
+extend-exclude = ["third_party"]
 
 [tool.ruff.lint]
 # E402: main.py needs sys.path.append before local imports

@@ -14,15 +14,17 @@ Outputs (next to the run dir, or CWD when --results is used):
     kfold_aggregate.json   full per-strategy / per-category stats
     kfold_figure.csv       tidy rows (strategy, scope, metric, mean, std, ci95_low, ci95_high, k)
 """
+
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import logging
 import math
 import random
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # answer_label is a string; we fold its three rates instead.
 _LABELS = ("Correct Answer", "Incorrect Answer", "Refusal")
@@ -62,7 +64,7 @@ def _fold_indices(n: int, k: int, seed: int) -> list[list[int]]:
     start = 0
     for i in range(k):
         size = base + (1 if i < rem else 0)
-        folds.append(idx[start:start + size])
+        folds.append(idx[start : start + size])
         start += size
     return [f for f in folds if f]
 
@@ -80,8 +82,15 @@ def _fold_stats(rows: list[dict], k: int, seed: int) -> dict[str, Any]:
         # (-1) for llm_judge_score / hallucination / answer_attempted. Every
         # real metric is >= 0, so `>= 0` drops only sentinels.
         fold_means = [
-            _mean([float(rows[i][m]) for i in f
-                   if isinstance(rows[i].get(m), (int, float)) and not isinstance(rows[i].get(m), bool) and rows[i][m] >= 0])
+            _mean(
+                [
+                    float(rows[i][m])
+                    for i in f
+                    if isinstance(rows[i].get(m), (int, float))
+                    and not isinstance(rows[i].get(m), bool)
+                    and rows[i][m] >= 0
+                ]
+            )
             for f in folds
         ]
         out[m] = {**_agg(fold_means), "fold_means": fold_means}
@@ -111,11 +120,11 @@ def _analyze_strategy(summary: dict, k: int, seed: int) -> dict[str, Any]:
         cats.setdefault(str(r.get("category", "Uncategorized")), []).append(r)
     for cat, cat_rows in sorted(cats.items()):
         if len(cat_rows) >= k:  # need at least one row per fold to be meaningful
-            result["by_category"][cat] = {"n": len(cat_rows), **{"metrics": _fold_stats(cat_rows, k, seed)}}
+            result["by_category"][cat] = {"n": len(cat_rows), "metrics": _fold_stats(cat_rows, k, seed)}
     return result
 
 
-def _load_result_files(run_dir: Optional[Path], explicit: list[str]) -> dict[str, dict]:
+def _load_result_files(run_dir: Path | None, explicit: list[str]) -> dict[str, dict]:
     """Return {strategy: summary_dict}. Auto-discovers main result JSONs under
     a run dir (the ones carrying a `details` list), or loads explicit files."""
     paths: list[Path] = [Path(p) for p in explicit]
@@ -128,7 +137,8 @@ def _load_result_files(run_dir: Optional[Path], explicit: list[str]) -> dict[str
     for p in paths:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            logging.getLogger(__name__).warning("Skipping invalid result file %s: %s", p, exc)
             continue
         if isinstance(data, dict) and isinstance(data.get("details"), list) and data.get("strategy"):
             out[str(data["strategy"])] = data
@@ -164,12 +174,32 @@ def main() -> None:
         w.writerow(["strategy", "scope", "metric", "mean", "std", "ci95_low", "ci95_high", "k"])
         for strat, sa in agg.items():
             for metric, st in sa["overall"].items():
-                w.writerow([strat, "overall", metric, f"{st['mean']:.6f}", f"{st['std']:.6f}",
-                            f"{st['ci95_low']:.6f}", f"{st['ci95_high']:.6f}", st["k"]])
+                w.writerow(
+                    [
+                        strat,
+                        "overall",
+                        metric,
+                        f"{st['mean']:.6f}",
+                        f"{st['std']:.6f}",
+                        f"{st['ci95_low']:.6f}",
+                        f"{st['ci95_high']:.6f}",
+                        st["k"],
+                    ]
+                )
             for cat, cd in sa["by_category"].items():
                 for metric, st in cd["metrics"].items():
-                    w.writerow([strat, f"cat:{cat}", metric, f"{st['mean']:.6f}", f"{st['std']:.6f}",
-                                f"{st['ci95_low']:.6f}", f"{st['ci95_high']:.6f}", st["k"]])
+                    w.writerow(
+                        [
+                            strat,
+                            f"cat:{cat}",
+                            metric,
+                            f"{st['mean']:.6f}",
+                            f"{st['std']:.6f}",
+                            f"{st['ci95_low']:.6f}",
+                            f"{st['ci95_high']:.6f}",
+                            st["k"],
+                        ]
+                    )
 
     # console summary of the headline metrics
     print(f"\n{args.k}-fold (seed={args.seed}) over {meta['strategies']}\n")
@@ -179,8 +209,10 @@ def main() -> None:
         for m in headline:
             if m in sa["overall"]:
                 st = sa["overall"][m]
-                print(f"  {m:18s} {st['mean']:.4f} ± {st['std']:.4f}  (95% CI {st['ci95_low']:.4f}..{st['ci95_high']:.4f})")
-    print(f"\nWrote {out_dir/'kfold_aggregate.json'} and {out_dir/'kfold_figure.csv'}")
+                print(
+                    f"  {m:18s} {st['mean']:.4f} ± {st['std']:.4f}  (95% CI {st['ci95_low']:.4f}..{st['ci95_high']:.4f})"
+                )
+    print(f"\nWrote {out_dir / 'kfold_aggregate.json'} and {out_dir / 'kfold_figure.csv'}")
 
 
 if __name__ == "__main__":

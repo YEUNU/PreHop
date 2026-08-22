@@ -6,12 +6,12 @@ contract of run_workflow() and the small helpers it composes
 (_ensure_answer_prefix, _strip_format_instruction, _build_unique_sources,
 _build_answer_prompt).
 """
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from models.prehop.graphrag import GraphRAG
-
 
 # ---------------------------------------------------------------------------
 # Helpers (no mocking needed — pure functions / classmethods)
@@ -20,7 +20,7 @@ from models.prehop.graphrag import GraphRAG
 
 def test_ensure_answer_prefix_adds_marker_when_missing():
     rag = GraphRAG(strategy="prehop")
-    out = rag._ensure_answer_prefix("Revenue was $394B in FY2022.")  # noqa: SLF001
+    out = rag._ensure_answer_prefix("Revenue was $394B in FY2022.")
     assert out.startswith("@@ANSWER:")
     assert "Revenue was $394B" in out
 
@@ -28,25 +28,25 @@ def test_ensure_answer_prefix_adds_marker_when_missing():
 def test_ensure_answer_prefix_is_noop_when_marker_present():
     rag = GraphRAG(strategy="prehop")
     raw = "@@ANSWER: Revenue was $394B in FY2022."
-    assert rag._ensure_answer_prefix(raw) == raw  # noqa: SLF001
+    assert rag._ensure_answer_prefix(raw) == raw
 
 
 def test_ensure_answer_prefix_handles_empty_and_none():
     rag = GraphRAG(strategy="prehop")
-    assert rag._ensure_answer_prefix(None).startswith("@@ANSWER:")  # noqa: SLF001
-    assert rag._ensure_answer_prefix("").startswith("@@ANSWER:")  # noqa: SLF001
+    assert rag._ensure_answer_prefix(None).startswith("@@ANSWER:")
+    assert rag._ensure_answer_prefix("").startswith("@@ANSWER:")
 
 
 def test_strip_format_instruction_drops_benchmark_suffix():
     rag = GraphRAG(strategy="prehop")
     q = "What was Apple's FY2022 revenue? [Benchmark Output Format] respond with..."
-    assert rag._strip_format_instruction(q) == "What was Apple's FY2022 revenue?"  # noqa: SLF001
+    assert rag._strip_format_instruction(q) == "What was Apple's FY2022 revenue?"
 
 
 def test_strip_format_instruction_passthrough_without_marker():
     rag = GraphRAG(strategy="prehop")
     q = "What was Apple's FY2022 revenue?"
-    assert rag._strip_format_instruction(q) == q  # noqa: SLF001
+    assert rag._strip_format_instruction(q) == q
 
 
 def test_build_unique_sources_dedups_by_doc_page_sent():
@@ -54,10 +54,10 @@ def test_build_unique_sources_dedups_by_doc_page_sent():
     rows = [
         {"title": "AAPL_10K", "page": 41, "sent_id": 3, "text": "..."},
         {"title": "AAPL_10K", "page": 41, "sent_id": 3, "text": "..."},  # dup
-        {"doc": "AAPL_10K", "page": 41, "sent_id": 4, "text": "..."},   # different sent
+        {"doc": "AAPL_10K", "page": 41, "sent_id": 4, "text": "..."},  # different sent
         {"title": "AAPL_10K", "page": 42, "sent_id": 3, "text": "..."},  # different page
     ]
-    out = rag._build_unique_sources(rows)  # noqa: SLF001
+    out = rag._build_unique_sources(rows)
     assert len(out) == 3
     keys = {(s["doc"], s["page"], s["sent_id"]) for s in out}
     assert keys == {("AAPL_10K", 41, 3), ("AAPL_10K", 41, 4), ("AAPL_10K", 42, 3)}
@@ -65,7 +65,7 @@ def test_build_unique_sources_dedups_by_doc_page_sent():
 
 def test_build_unique_sources_uses_unknown_when_doc_missing():
     rag = GraphRAG(strategy="prehop")
-    out = rag._build_unique_sources([{"page": 1, "sent_id": 0, "text": "x"}])  # noqa: SLF001
+    out = rag._build_unique_sources([{"page": 1, "sent_id": 0, "text": "x"}])
     assert out[0]["doc"] == "Unknown"
 
 
@@ -167,3 +167,25 @@ async def test_run_workflow_strips_benchmark_format_marker_before_retrieving():
         assert "[Benchmark Output Format]" not in (call_kwargs.get("entities") or [""])[0]
     finally:
         p.stop()
+
+
+@pytest.mark.asyncio
+async def test_naive_run_workflow_uses_shared_default_top_k():
+    from core.config import RAGConfig
+    from models.naive.naive_rag import NaiveRAG
+
+    rag = NaiveRAG(strategy="naive")
+    rag.retrieve = AsyncMock(return_value=("context", []))
+    rag.vllm = MagicMock()
+    rag.vllm.generate_response = AsyncMock(return_value="answer")
+
+    await rag.run_workflow("question")
+
+    rag.retrieve.assert_awaited_once_with("question", top_k=RAGConfig.DEFAULT_TOP_K)
+
+
+def test_hoprag_adapter_keeps_official_top_k():
+    from models.hoprag.hoprag_adapter import OFFICIAL_HOPRAG_TOP_K, HopRAGAdapter
+
+    assert OFFICIAL_HOPRAG_TOP_K == 20
+    assert HopRAGAdapter.__init__.__defaults__[2] == OFFICIAL_HOPRAG_TOP_K

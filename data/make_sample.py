@@ -2,9 +2,8 @@
 """Build a stratified query sample (balanced by category/question_type) for
 any multi-hop-shaped dataset (multihoprag, hotpotqa, musique).
 
-Generalizes `make_multihoprag_sample.py` (kept as-is for backward
-compatibility with existing docs/scripts) so HotpotQA/MuSiQue don't need
-their own near-duplicate sampling scripts. Graph baselines are slow
+Uses one implementation for MultiHop-RAG, HotpotQA, and MuSiQue so the
+datasets do not need near-duplicate sampling scripts. Graph baselines are slow
 (hoprag ~160s/query), so k-fold figures run on a balanced sample instead of
 the full query set. Equal count per category with a fixed seed keeps the
 sample reproducible and each fold/category balanced.
@@ -15,6 +14,7 @@ sample reproducible and each fold/category balanced.
 
 Output: data/<dataset>_sample<N>_queries.json (N = per_type * num_categories).
 """
+
 import argparse
 import json
 import random
@@ -26,8 +26,12 @@ DATA_DIR = Path(__file__).resolve().parent
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dataset", required=True, choices=["multihoprag", "hotpotqa", "musique"],
-                     help="which dataset's full query file to sample from")
+    ap.add_argument(
+        "--dataset",
+        required=True,
+        choices=["multihoprag", "hotpotqa", "musique"],
+        help="which dataset's full query file to sample from",
+    )
     ap.add_argument("--per-type", type=int, default=50, help="queries sampled per category")
     ap.add_argument("--seed", type=int, default=42, help="RNG seed (reproducible)")
     ap.add_argument("--out", default=None, help="output path (default derives from total n)")

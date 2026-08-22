@@ -41,13 +41,32 @@ kill_matching_processes() {
         [ -z "${pid}" ] && continue
         [ "${pid}" = "$$" ] && continue
         [ "${pid}" = "${PPID}" ] && continue
-        kill -9 "${pid}" 2>/dev/null || true
+        kill_process_tree "${pid}"
     done < <(pgrep -f -- "${pattern}" 2>/dev/null || true)
+}
+
+kill_process_tree() {
+    local parent_pid="$1"
+    local child_pid
+
+    # vLLM starts an EngineCore child. Killing only the listening API parent
+    # reparents EngineCore to PID 1 and leaves its CUDA allocation alive.
+    while read -r child_pid; do
+        [ -z "${child_pid}" ] && continue
+        kill_process_tree "${child_pid}"
+    done < <(pgrep -P "${parent_pid}" 2>/dev/null || true)
+    kill -TERM "${parent_pid}" 2>/dev/null || true
+    sleep 0.2
+    kill -KILL "${parent_pid}" 2>/dev/null || true
 }
 
 kill_port() {
     local port="$1"
-    fuser -k -9 "${port}/tcp" >/dev/null 2>&1 || true
+    local pid
+    while read -r pid; do
+        [ -z "${pid}" ] && continue
+        kill_process_tree "${pid}"
+    done < <(fuser "${port}/tcp" 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+$' || true)
 }
 
 show_port_status() {
@@ -85,24 +104,6 @@ stop_neo4j() {
     kill_matching_processes "neo4j console"
 }
 
-stop_gen() {
-    echo "[Generation] Stopping (port 28000)..."
-    kill_port 28000
-    kill_matching_processes "vllm serve.*--port 28000"
-}
-
-stop_embed() {
-    echo "[Embedding] Stopping (port 18082)..."
-    kill_port 18082
-    kill_matching_processes "served-model-name embedding-model"
-}
-
-stop_rerank() {
-    echo "[Reranker] Stopping (port 18083)..."
-    kill_port 18083
-    kill_matching_processes "served-model-name reranker-model"
-}
-
 stop_cleanup() {
     echo "[Cleanup] Stopping remaining indexing/uvicorn processes..."
     kill_matching_processes "main\\.py --mode index"
@@ -118,28 +119,13 @@ case "${SERVICE}" in
         stop_neo4j
         show_port_status 7474 7687
         ;;
-    gen)
-        stop_gen
-        show_port_status 28000
-        ;;
-    embed)
-        stop_embed
-        show_port_status 18082
-        ;;
-    rerank)
-        stop_rerank
-        show_port_status 18083
-        ;;
     all)
         stop_neo4j
-        stop_gen
-        stop_embed
-        stop_rerank
         stop_cleanup
-        show_port_status 28000 18082 18083 7474 7687
+        show_port_status 7474 7687
         ;;
     *)
-        echo "Usage: $0 {neo4j|gen|embed|rerank|all}"
+        echo "Usage: $0 {neo4j|all}"
         exit 1
         ;;
 esac

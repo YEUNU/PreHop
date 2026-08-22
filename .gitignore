@@ -136,6 +136,8 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -206,18 +208,15 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-benchmarks/
 *.out
 
-paper.md
-logs
+logs/
 data/debug
 data/results
 data/tmp
-tools/
+artifacts/indexing/
+fig/
 neo4j_data/
-data/hotpotqa_corpus
-*.txt
 data/enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2
 
 .claude/
@@ -235,7 +234,6 @@ output/
 
 # Local debug / one-off probe scripts under scripts/_test_*.py
 scripts/_test_*.py
-.env
 
 # Downloadable / regenerable dataset files — recreate with data/prepare_*.py.
 # The prep scripts and the small curated query subsets stay tracked; these

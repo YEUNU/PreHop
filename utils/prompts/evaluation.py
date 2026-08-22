@@ -3,10 +3,9 @@ MULTIHOPRAG_JUDGE_PROMPT = """
 on (a) correctness vs Ground Truth and (b) hallucination — in a SINGLE LLM
 call so the two judgements stay internally consistent.
 
-Answers are short, factual spans (an entity/person/organization name, a
-source, a date or time period, or a yes/no comparison result), NOT
-financial figures. There is no unit scaling or currency formatting to
-reconcile here — judge on factual identity, not numeric tolerance.
+Answers are short factual spans such as an entity, person, organization,
+source, date, number, or yes/no comparison result. Judge factual equivalence
+and accept harmless formatting differences that do not change the answer.
 
 **Question Type:** {question_type}
 **Question:** {query}

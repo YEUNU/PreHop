@@ -1,116 +1,37 @@
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from core.config import RAGConfig
 from models.prehop.graphrag import GraphRAG
 
 
-def test_extract_query_metadata_captures_company_and_year(monkeypatch):
-    # Company-key extraction is gated on COMPANY_ANCHORING, which now
-    # defaults to off (DOMAIN defaults to "news" — FinanceBench, the only
-    # dataset that set DOMAIN="financial" by default, has been removed).
-    # Enable it explicitly since this test targets that mechanism directly.
-    monkeypatch.setattr(RAGConfig, "COMPANY_ANCHORING", True)
+def test_retrieval_has_no_dataset_specific_metadata_gate():
     rag = GraphRAG(strategy="prehop")
-    meta = rag._extract_query_metadata(  # noqa: SLF001 - unit test for internal helper
-        "Among operations, investing, and financing activities, which brought in the most cash flow for AMD in FY22?"
-    )
-
-    assert "amd" in (meta.get("company_keys") or set())
-    assert meta.get("financial_intent") is True
-
-
-def test_q_plus_quality_gate_accepts_at_least_two_signals():
-    """Q+ quality gate requires >=2 of the 4 signals (entity, period, metric,
-    source anchor). The original 4/4 strict gate was relaxed because it
-    accepted only ~2.8% of generated Q+ in practice and starved the HOP
-    graph; bridge questions about a metric across periods or about a
-    related metric in the same period naturally drop one signal.
-    """
-    rag = GraphRAG(strategy="prehop")
-    ok = rag._is_high_quality_q_plus(  # noqa: SLF001 - unit test for internal helper
-        "For AMD FY2022 cash flow statement, what was operating cash flow?",
-        title="AMD_2022_10K",
-        chunk_text="Consolidated Statements of Cash Flows",
-    )
-    # 3-signal: missing source anchor in chunk, but entity+period+metric all present.
-    three_signals = rag._is_high_quality_q_plus(  # noqa: SLF001
-        "For AMD FY2022 what was operating cash flow?",
-        title="AMD_2022_10K",
-        chunk_text="Narrative risk factors section only.",
-    )
-    # 1-signal: only the period token; chunk text lacks the anchor, the
-    # question lacks both entity and metric tokens.
-    one_signal = rag._is_high_quality_q_plus(  # noqa: SLF001
-        "For FY2022, what changed?",
-        title="AMD_2022_10K",
-        chunk_text="Narrative risk factors section only.",
-    )
-
-    assert ok is True
-    assert three_signals is True
-    assert one_signal is False
+    assert not hasattr(rag, "_extract_query_metadata")
+    assert not hasattr(rag, "_apply_retrieval_calibration")
+    assert not hasattr(RAGConfig, "COMPANY_ANCHORING")
+    assert not hasattr(RAGConfig, "RERANKER_THRESHOLD")
 
 
 @pytest.mark.asyncio
-async def test_retrieve_prefers_company_matched_candidate(monkeypatch):
-    # Company-key extraction/filtering is gated on COMPANY_ANCHORING, off by
-    # default now (see test_extract_query_metadata_captures_company_and_year).
-    monkeypatch.setattr(RAGConfig, "COMPANY_ANCHORING", True)
+async def test_similarity_ordering_has_no_score_gate():
     rag = GraphRAG(strategy="prehop")
+    rag._embedding_similarity_scores = AsyncMock(return_value=[-0.8, -0.2])  # type: ignore[method-assign]
 
-    # Two candidates with identical rerank score; AMD document should win —
-    # the strict company filter drops the non-AMD candidate outright.
-    candidates = [
-        {
-            "id": "1",
-            "title": "AMCOR_2022_10K",
-            "sent_id": 10,
-            "page": 38,
-            "text": "Net cash provided by operating activities was ...",
-            "rrf_score": 1.0,
-        },
-        {
-            "id": "2",
-            "title": "AMD_2022_10K",
-            "sent_id": 267,
-            "page": 52,
-            "text": "Net cash provided by operating activities was $3.6 billion.",
-            "rrf_score": 0.99,
-        },
-    ]
-
-    rag._hybrid_rrf_candidates = AsyncMock(return_value=candidates)  # type: ignore[method-assign]
-    # Query is >80 chars, so _simplified_rerank_query calls generate_json for
-    # its rerank-query-simplification LLM call; mock it to a no-op passthrough
-    # so the test doesn't depend on a live LLM endpoint.
-    rag.llm.generate_json = AsyncMock(  # type: ignore[method-assign]
-        return_value={"question": "Among operations, investing, and financing activities, which brought in the most cash flow for AMD in FY22?"}
-    )
-    # Identical embeddings for query and both docs -> tied cosine-similarity
-    # score, so the company-matched candidate must win via metadata
-    # calibration alone (same intent as the old tied-rerank-score mock).
-    rag.llm.get_embeddings = AsyncMock(
-        side_effect=lambda texts, encoding_type="document": [[1.0, 0.0] for _ in texts]
+    selected, ordered = await rag._score_and_select(
+        "query",
+        [{"id": "low", "text": "a"}, {"id": "high", "text": "b"}],
+        top_k=2,
     )
 
-    monkeypatch.setattr(RAGConfig, "ENABLE_QUERY_REWRITE", False)
-    monkeypatch.setattr(RAGConfig, "RERANKER_THRESHOLD", 0.0)
-
-    _, nodes = await rag.retrieve(
-        "Among operations, investing, and financing activities, which brought in the most cash flow for AMD in FY22?",
-        top_k=1,
-    )
-
-    assert nodes
-    assert "AMD_2022_10K" in nodes[0]["title"]
+    assert [node["id"] for node in selected] == ["high", "low"]
+    assert selected == ordered
 
 
 @pytest.mark.asyncio
-async def test_retrieve_expands_with_q_plus_when_stage1_is_insufficient(monkeypatch):
+async def test_retrieve_always_runs_q_plus_stage_in_full_mode():
     rag = GraphRAG(strategy="prehop")
-    monkeypatch.setattr(RAGConfig, "ENABLE_QUERY_REWRITE", False)
-    monkeypatch.setattr(RAGConfig, "RERANKER_THRESHOLD", 0.0)
 
     stage1_node = {
         "id": "n1",
@@ -137,12 +58,9 @@ async def test_retrieve_expands_with_q_plus_when_stage1_is_insufficient(monkeypa
         return []
 
     rag._hybrid_rrf_candidates = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
-    # Uniform embeddings -> uniform cosine-similarity score (>= the
-    # monkeypatched 0.0 threshold below) for every candidate, same intent as
-    # the old uniform-rerank-score mock.
-    rag.llm.get_embeddings = AsyncMock(
-        side_effect=lambda texts, encoding_type="document": [[1.0, 0.0] for _ in texts]
-    )
+    # Uniform embeddings give both candidates the same cosine score; Q+ is
+    # still included because the full method always executes both stages.
+    rag.llm.get_embeddings = AsyncMock(side_effect=lambda texts, encoding_type="document": [[1.0, 0.0] for _ in texts])
 
     _, nodes = await rag.retrieve(
         "What was AMD FY2022 free cash flow?",
@@ -155,13 +73,13 @@ async def test_retrieve_expands_with_q_plus_when_stage1_is_insufficient(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_build_graph_filters_q_plus_by_quality_gate():
+async def test_build_graph_stores_generated_q_plus_without_heuristic_filter():
     rag = GraphRAG(strategy="prehop")
     rag._ensure_index_ready = AsyncMock(return_value=None)  # type: ignore[method-assign]
     rag.llm.get_embeddings = AsyncMock(side_effect=lambda texts: [[0.1] for _ in texts])
 
-    # Two Q+ candidates: one has all 4 signals (passes), one has 1 signal
-    # (period only — under the relaxed 2-of-4 gate this is still rejected).
+    # Storage keeps generated non-empty Q+ values without applying a
+    # domain/keyword heuristic after the model's schema-validated response.
     knowledge = {
         "chunks": [
             {
@@ -171,8 +89,10 @@ async def test_build_graph_filters_q_plus_by_quality_gate():
                 "page": 1,
                 "q_minus": ["For AMD FY2022, what was operating cash flow?"],
                 "q_plus": [
-                    "For FY2022, what happened?",  # 1 signal (period only)
+                    "For FY2022, what happened?",
                     "For AMD FY2022 cash flow statement, what was operating cash flow?",
+                    "For FY2022, what happened?",
+                    "",
                 ],
                 "summary": "Cash flow statement summary.",
             }
@@ -183,4 +103,6 @@ async def test_build_graph_filters_q_plus_by_quality_gate():
 
     assert rag._pending_batch, "Expected build_graph to enqueue at least one batch item."
     payload = rag._pending_batch[-1]["data"][0]
-    assert payload["q_plus_text"] == "For AMD FY2022 cash flow statement, what was operating cash flow?"
+    assert payload["q_plus_text"] == (
+        "For FY2022, what happened? For AMD FY2022 cash flow statement, what was operating cash flow?"
+    )

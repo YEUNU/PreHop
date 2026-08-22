@@ -2,7 +2,8 @@ import logging
 import re
 import string
 from difflib import SequenceMatcher
-from typing import List, Any, Optional
+from typing import Any
+
 from core.config import RAGConfig
 from utils.prompts import MULTIHOPRAG_JUDGE_PROMPT
 
@@ -13,42 +14,40 @@ def normalize_answer(s):
     """Normalize answer text for comparison."""
     if not s:
         return ""
+
     def remove_articles(text):
-        return re.sub(r'\b(a|an|the)\b', ' ', text)
+        return re.sub(r"\b(a|an|the)\b", " ", text)
 
     def white_space_fix(text):
-        return ' '.join(text.split())
+        return " ".join(text.split())
 
     def remove_punc(text):
         exclude = set(string.punctuation)
-        return ''.join(ch for ch in text if ch not in exclude)
+        return "".join(ch for ch in text if ch not in exclude)
 
     def lower(text):
         return text.lower()
 
     return white_space_fix(remove_articles(remove_punc(lower(s))))
 
-def calculate_evidence_match(
-    retrieved_sources: List[Any],
-    expected_doc: str,
-    expected_page: int | None = None
-) -> dict:
+
+def calculate_evidence_match(retrieved_sources: list[Any], expected_doc: str, expected_page: int | None = None) -> dict:
     """
     증거 매칭 - 문서/페이지 레벨. `calculate_multihop_doc_recall`이
     (page 없이) 재사용한다.
     Supports both string filenames and structured [title, page, ...] lists.
-    
+
     Args:
         retrieved_sources: List of strings or lists [title, page, sent_id]
         expected_doc: 예상 문서명 (e.g., "3M_2018_10K")
         expected_page: 예상 페이지 번호 (optional)
-    
+
     Returns:
         dict with 'doc_match', 'page_match'
     """
     if not retrieved_sources or not expected_doc:
         return {"doc_match": 0.0, "page_match": 0.0}
-    
+
     doc_match = 0.0
     page_match = 0.0
 
@@ -80,12 +79,12 @@ def calculate_evidence_match(
         if isinstance(source, dict):
             src_title = str(source.get("doc", "")).lower()
             src_page = source.get("page")
-        
+
         # Structured Source: [title, page, sent_id]
         elif isinstance(source, (list, tuple)) and len(source) >= 2:
             src_title = str(source[0]).lower()
             src_page = source[1]
-            
+
         # String Source: "Title" or "Title_page_5"
         elif isinstance(source, str):
             src_title = source
@@ -116,20 +115,23 @@ def calculate_evidence_match(
                     break
                 if isinstance(source, str):
                     source_lower = source.lower()
-                    page_pattern = f"page_{expected_page:03d}" if isinstance(expected_page, int) else f"page_{expected_page}"
+                    page_pattern = (
+                        f"page_{expected_page:03d}" if isinstance(expected_page, int) else f"page_{expected_page}"
+                    )
                     if page_pattern in source_lower or f"_page_{expected_page}" in source_lower:
                         page_match = 1.0
                         break
 
     return {"doc_match": doc_match, "page_match": page_match}
 
-def _parse_unit_score(raw: Any) -> Optional[float]:
+
+def _parse_unit_score(raw: Any) -> float | None:
     try:
         if raw is None:
             return None
         value = float(raw)
         return max(0.0, min(1.0, value))
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -138,6 +140,7 @@ def _is_insufficient_text(text: Any) -> bool:
     # "insufficient evidence", HopRAG's "I do not know", or natural-language
     # refusals) → not a hallucination.
     from utils.abstain import is_abstain
+
     return is_abstain(text)
 
 
@@ -164,47 +167,36 @@ async def _run_combined_judge(
     return _resolve_judge_fields(judge_payload, response, judge_model)
 
 
-async def _call_judge_llm(judge_prompt: str, vllm_client) -> tuple[str, Optional[dict]]:
-    """The synchronous LLM judge call (with one fallback-model retry).
+async def _call_judge_llm(judge_prompt: str, vllm_client) -> tuple[str, dict | None]:
+    """The synchronous LLM judge call using the configured evaluation model.
 
     Returns (judge_model, judge_payload). Factored out so the batch path can
-    reuse `_resolve_judge_fields` on payloads it fetched elsewhere.
+    reuse `_resolve_judge_fields` on payloads it fetched elsewhere. A failed or
+    malformed judge stays unjudged; it is never silently scored by a different
+    model, which would mix evaluator policies within one benchmark run.
     """
     judge_model = RAGConfig.EVAL_MODEL
-    judge_payload: Optional[dict] = None
+    judge_payload: dict | None = None
     if vllm_client:
         try:
             judge_payload = await vllm_client.generate_json(
                 [{"role": "user", "content": judge_prompt}],
                 model=RAGConfig.EVAL_MODEL,
             )
-            if _parse_unit_score((judge_payload or {}).get("score")) is None:
-                fallback_model = RAGConfig.DEFAULT_MODEL
-                if fallback_model and fallback_model != RAGConfig.EVAL_MODEL:
-                    logger.warning(
-                        "Judge response missing score with model '%s'. Retrying with fallback model '%s'.",
-                        RAGConfig.EVAL_MODEL,
-                        fallback_model,
-                    )
-                    judge_payload = await vllm_client.generate_json(
-                        [{"role": "user", "content": judge_prompt}],
-                        model=fallback_model,
-                    )
-                    judge_model = fallback_model
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - evaluator providers use heterogeneous exceptions
             logger.error(f"LLM Judge failed: {e}")
             judge_payload = None
     return judge_model, judge_payload
 
 
 def _resolve_judge_fields(
-    judge_payload: Optional[dict],
+    judge_payload: dict | None,
     response: str,
     judge_model: str,
 ) -> dict:
     """Turn a judge payload (sync or batch) into the judge/hallucination fields.
 
-    Pure / no I/O so the synchronous and OpenAI-Batch paths resolve identically.
+    Pure / no I/O so judge responses are resolved deterministically.
     When the payload carries no usable score (judge failed, or batch not yet
     resolved) the row is marked UNJUDGED_SCORE (-1) — never silently 0 — so
     aggregation excludes it rather than counting it as a wrong answer.
@@ -258,27 +250,22 @@ async def _judge_or_defer(
     response: str,
     vllm_client,
     batch_collector=None,
-    custom_id=None,
+    custom_id: str | None = None,
 ) -> dict:
-    """Run the judge synchronously, or — when a batch collector is supplied —
-    register the prompt and return an UNJUDGED (-1) placeholder tagged with
-    `_deferred_judge` so the benchmark can patch in the real score after the
-    OpenAI batch completes.
-    """
-    if batch_collector is not None and custom_id is not None:
-        batch_collector.register(str(custom_id), judge_prompt)
-        judge = _resolve_judge_fields(None, response, RAGConfig.EVAL_MODEL)  # tentative: unjudged
-        judge["_deferred_judge"] = {
-            "custom_id": str(custom_id),
-            "prompt": judge_prompt,
-            "response": response,
-            "judge_model": RAGConfig.EVAL_MODEL,
-        }
+    """Register the default Batch request or run the explicit sync debug path."""
+    if batch_collector is not None:
+        if custom_id is None:
+            raise ValueError("Batch judge requires a stable custom_id")
+        batch_collector.register(custom_id, judge_prompt)
+        judge = _resolve_judge_fields(None, response, RAGConfig.EVAL_MODEL)
+        judge["_deferred_judge"] = True
+        judge["judge_custom_id"] = custom_id
         return judge
     return await _run_combined_judge(judge_prompt, response, vllm_client)
 
 
 # --- Multi-hop dataset metrics (MultiHop-RAG, HotpotQA, MuSiQue) ---
+
 
 def _fact_matches_chunk(fact_norm: str, chunk_norm: str) -> bool:
     """True if a gold evidence fact is contained in / overlaps a retrieved
@@ -313,8 +300,8 @@ def _source_chunk_text(source: Any) -> str:
 
 
 def calculate_retrieval_ranking_metrics(
-    retrieved_sources: List[Any],
-    gold_facts: List[str],
+    retrieved_sources: list[Any],
+    gold_facts: list[str],
     ks: tuple[int, ...] = (4, 10),
 ) -> dict:
     """MultiHop-RAG retrieval metrics (Tang & Yang, 2024): fact-level
@@ -340,14 +327,11 @@ def calculate_retrieval_ranking_metrics(
 
     # MRR / MAP over the ranked list (count a gold fact once, at first cover).
     covered: set[int] = set()
-    first_hit_rank: Optional[int] = None
+    first_hit_rank: int | None = None
     relevant_count = 0
     ap_sum = 0.0
     for rank, cn in enumerate(chunk_norms, start=1):
-        newly = {
-            gi for gi, g in enumerate(gold_norm)
-            if gi not in covered and _fact_matches_chunk(g, cn)
-        }
+        newly = {gi for gi, g in enumerate(gold_norm) if gi not in covered and _fact_matches_chunk(g, cn)}
         if not newly:
             continue
         covered |= newly
@@ -363,16 +347,13 @@ def calculate_retrieval_ranking_metrics(
     # Hits@k: distinct gold facts recalled within the top-k chunks.
     for k in ks:
         top_k = chunk_norms[:k]
-        hit = sum(
-            1 for g in gold_norm
-            if any(_fact_matches_chunk(g, cn) for cn in top_k)
-        )
+        hit = sum(1 for g in gold_norm if any(_fact_matches_chunk(g, cn) for cn in top_k))
         result[f"hits@{k}"] = hit / total_gold
 
     return result
 
 
-def calculate_multihop_doc_recall(retrieved_sources: List[Any], gold_docs: List[str]) -> float:
+def calculate_multihop_doc_recall(retrieved_sources: list[Any], gold_docs: list[str]) -> float:
     """Coarse doc-level recall: fraction of gold articles (by title) that
     appear among the retrieved sources. Complements the fact-level ranking
     metrics with a title-match view robust to chunk reflow."""
@@ -391,13 +372,13 @@ async def evaluate_multihoprag_response(
     query: str,
     response: str,
     ground_truth: str,
-    retrieved_sources: List[Any],
-    evidence_facts: Optional[List[str]] = None,
-    evidence_docs: Optional[List[str]] = None,
+    retrieved_sources: list[Any],
+    evidence_facts: list[str] | None = None,
+    evidence_docs: list[str] | None = None,
     question_type: str = "",
-    vllm_client = None,
-    batch_collector = None,
-    custom_id = None,
+    vllm_client=None,
+    batch_collector=None,
+    custom_id: str | None = None,
 ) -> dict:
     """Shared evaluator for every multi-hop-shaped dataset (MultiHop-RAG,
     HotpotQA, MuSiQue — any dataset whose queries carry evidence_docs +
@@ -413,9 +394,7 @@ async def evaluate_multihoprag_response(
         ground_truth=ground_truth,
         response=response,
     )
-    judge = await _judge_or_defer(
-        judge_prompt, response, vllm_client, batch_collector, custom_id
-    )
+    judge = await _judge_or_defer(judge_prompt, response, vllm_client, batch_collector, custom_id)
 
     ranking = calculate_retrieval_ranking_metrics(retrieved_sources, evidence_facts or [])
     doc_recall = calculate_multihop_doc_recall(retrieved_sources, evidence_docs or [])

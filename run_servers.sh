@@ -1,58 +1,21 @@
 #!/bin/bash
 #
 # run_servers.sh - Centralized service manager for Prehop
-# Usage: ./run_servers.sh {neo4j|gen|embed|rerank|all}
+# Usage: ./run_servers.sh {neo4j|gen|embed|all}
 #
-# GPU placement is configurable via env vars (defaults below target a 2-GPU
-# box). On a single-GPU machine, put everything on GPU 0:
-#   GEN_GPU=0 EMBED_GPU=0 RERANK_GPU=0 ./run_servers.sh all
-# (Mind total --gpu-memory-utilization when co-locating; lower it if needed.)
+# Model inference is external. This script validates configured endpoints and
+# never launches local model processes.
 
 set -e
 
 # [환경 설정]
 export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
-# Ensure nvcc is on PATH for FlashInfer JIT compilation. Honor $CUDA_HOME, else
-# fall back to the active /usr/local/cuda symlink or any versioned install.
-# (Don't hardcode a CUDA version — boxes differ; this one is CUDA 13.x.)
-if [ -n "${CUDA_HOME:-}" ] && [ -x "${CUDA_HOME}/bin/nvcc" ]; then
-    export PATH="${CUDA_HOME}/bin:$PATH"
-elif ! command -v nvcc >/dev/null 2>&1; then
-    for _cuda_dir in /usr/local/cuda /usr/local/cuda-*; do
-        if [ -x "${_cuda_dir}/bin/nvcc" ]; then
-            export PATH="${_cuda_dir}/bin:$PATH"
-            break
-        fi
-    done
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Ensure the venv's own bin/ (ninja, etc.) is on PATH — FlashInfer's JIT
-# compilation shells out to a bare `ninja`, and pip-installed ninja only
-# provides a console-script entry point under .venv/bin, not a system binary.
-export PATH="$SCRIPT_DIR/.venv/bin:$PATH"
-
-# Load .env so GPU placement (and any other vars) can be configured there.
-# `set -a` exports every assignment; existing shell env still wins via :- below.
-if [ -f "$SCRIPT_DIR/.env" ]; then
-    set -a
-    # shellcheck disable=SC1091
-    . "$SCRIPT_DIR/.env"
-    set +a
-fi
-
-# GPU assignment per service. Configure in .env or the shell; defaults target a
-# 2-GPU box. Single GPU: set all to 0 (mind total --gpu-memory-utilization).
-GEN_GPU="${GEN_GPU:-1}"
-EMBED_GPU="${EMBED_GPU:-0}"
-RERANK_GPU="${RERANK_GPU:-1}"
-
-# Centralize all server stdout/stderr under logs/ instead of dropping files at
-# the repo root. The directory is gitignored; ensure it exists at runtime so
-# fresh clones don't fail the redirects below.
-mkdir -p logs
+. "$SCRIPT_DIR/scripts/lib.sh"
+load_project_env "$SCRIPT_DIR/.env"
+: "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}"
 
 SERVICE=$1
 
@@ -80,28 +43,24 @@ resolve_neo4j_cmd() {
 curl_with_auth() {
     local url="$1"
     if [ -n "$VLLM_API_KEY" ] && [ "$VLLM_API_KEY" != "EMPTY" ]; then
-        curl -s --max-time 1 -H "Authorization: Bearer ${VLLM_API_KEY}" "$url"
+        curl -fsS --max-time 5 -H "Authorization: Bearer ${VLLM_API_KEY}" "$url"
     else
-        curl -s --max-time 1 "$url"
+        curl -fsS --max-time 5 "$url"
     fi
 }
 
-is_vllm_server_up() {
-    local port="$1"
-    # Prefer lightweight unauthenticated probe to avoid auth noise.
-    curl -s --max-time 1 "http://localhost:${port}/health" > /dev/null 2>&1 && return 0
-
-    # Fallback: authenticated model listing when API key is configured.
-    if [ -n "$VLLM_API_KEY" ] && [ "$VLLM_API_KEY" != "EMPTY" ]; then
-        curl_with_auth "http://localhost:${port}/v1/models" > /dev/null 2>&1 && return 0
+endpoint_has_model() {
+    local base_url="${1%/}"
+    local model_id="$2"
+    local payload
+    if ! payload="$(curl_with_auth "${base_url}/models")"; then
+        return 1
     fi
-
-    is_port_in_use "$port"
-}
-
-is_port_in_use() {
-    local port="$1"
-    fuser "${port}/tcp" > /dev/null 2>&1
+    MODEL_ID="$model_id" PAYLOAD="$payload" "$SCRIPT_DIR/.venv/bin/python" -c '
+import json, os
+payload = json.loads(os.environ["PAYLOAD"])
+raise SystemExit(0 if os.environ["MODEL_ID"] in {str(row.get("id", "")) for row in payload.get("data", [])} else 1)
+' >/dev/null 2>&1
 }
 
 apply_neo4j_docker_limits() {
@@ -138,7 +97,7 @@ start_neo4j_docker() {
 
     local container_name="${NEO4J_CONTAINER_NAME:-prehop-neo4j}"
     local neo4j_user="${NEO4J_USER:-neo4j}"
-    local neo4j_password="${NEO4J_PASSWORD:-1q2w3e4r}"
+    local neo4j_password="${NEO4J_PASSWORD}"
     local neo4j_docker_cpus="${NEO4J_DOCKER_CPUS:-12}"
     local neo4j_docker_cpuset="${NEO4J_DOCKER_CPUSET:-}"
     local docker_args=()
@@ -193,6 +152,7 @@ start_neo4j() {
             return 1
         fi
         echo "Starting Neo4j..."
+        mkdir -p logs
         nohup "${neo4j_cmd}" start > logs/neo4j.log 2>&1 &
     else
         echo "✅ Neo4j is already UP"
@@ -200,95 +160,46 @@ start_neo4j() {
 }
 
 start_gen() {
-    if is_vllm_server_up 28000; then
-        echo "✅ Generation Server is already UP"
+    local configured_url="${VLLM_URL:-}"
+    local configured_model="${VLLM_SERVED_MODEL_NAME:-generation-model}"
+    if [ -z "$configured_url" ]; then
+        echo "❌ VLLM_URL must point to an external inference endpoint." >&2
+        return 1
+    fi
+    if endpoint_has_model "$configured_url" "$configured_model"; then
+        echo "✅ Generation endpoint/model is available (${configured_url}, ${configured_model})"
         return 0
     fi
-
-    if is_port_in_use 28000; then
-        echo "✅ Generation Server is already running (port 28000 in use)"
-        return 0
-    fi
-
-    echo "Starting Generation Server (Port 28000)..."
-    # GPU 1 layout: gen 0.46 + rerank 0.30 = 0.76 (~24.9 GiB / 32 GiB target).
-    # max-len 32768: HopRAG indexing sends 12K+ input tokens + 4096 output;
-    # 16384 limit (12288 usable input) caused 400 errors on most documents.
-    CUDA_VISIBLE_DEVICES="${GEN_GPU}" nohup .venv/bin/vllm serve Qwen/Qwen3-4B-Instruct-2507 \
-        --served-model-name generation-model \
-        --host 0.0.0.0 \
-        --port 28000 \
-        --gpu-memory-utilization 0.46 \
-        --max-model-len 32768 \
-        --enable-auto-tool-choice \
-        --tool-call-parser qwen3_xml \
-        --attention-backend FLASHINFER \
-        --trust-remote-code > logs/vllm_gen.log 2>&1 &
+    echo "❌ Generation endpoint is unreachable or missing model '${configured_model}': ${configured_url}" >&2
+    return 1
 }
 
 start_embed() {
-    if is_vllm_server_up 18082; then
-        echo "✅ Embedding Server is already UP"
+    local configured_url="${VLLM_EMBED_URL:-}"
+    local configured_model="${VLLM_SERVED_EMBED_MODEL_NAME:-embedding-model}"
+    if [ -z "$configured_url" ]; then
+        echo "❌ VLLM_EMBED_URL must point to an external inference endpoint." >&2
+        return 1
+    fi
+    if endpoint_has_model "$configured_url" "$configured_model"; then
+        echo "✅ Embedding endpoint/model is available (${configured_url}, ${configured_model})"
         return 0
     fi
-
-    if is_port_in_use 18082; then
-        echo "✅ Embedding Server is already running (port 18082 in use)"
-        return 0
-    fi
-
-    echo "Starting Embedding Server (Port 18082)..."
-    CUDA_VISIBLE_DEVICES="${EMBED_GPU}" nohup .venv/bin/vllm serve Qwen/Qwen3-Embedding-0.6B \
-        --served-model-name embedding-model \
-        --host 0.0.0.0 \
-        --port 18082 \
-        --gpu-memory-utilization 0.40 \
-        --max-model-len 8192 \
-        --no-enable-prefix-caching \
-        --enforce-eager \
-        --trust-remote-code > logs/embedding.log 2>&1 &
-}
-
-start_rerank() {
-    if is_vllm_server_up 18083; then
-        echo "✅ Reranker Service is already UP"
-        return 0
-    fi
-
-    if is_port_in_use 18083; then
-        echo "✅ Reranker Service is already running (port 18083 in use)"
-        return 0
-    fi
-
-    echo "Starting Reranker Service (Port 18083, vllm serve)..."
-    # GPU 1 layout: gen 0.40 + rerank 0.30 = 0.70 (~22.4 GiB / 32 GiB target).
-    # Switched from sync FastAPI wrapper to vllm-serve so AsyncLLMEngine +
-    # continuous batching can fan out concurrent rerank requests across the
-    # GPU instead of serializing them through one Python event loop.
-    CUDA_VISIBLE_DEVICES="${RERANK_GPU}" nohup .venv/bin/vllm serve Qwen/Qwen3-Reranker-0.6B \
-        --served-model-name reranker-model \
-        --host 0.0.0.0 \
-        --port 18083 \
-        --gpu-memory-utilization 0.30 \
-        --max-model-len 4096 \
-        --enable-prefix-caching \
-        --attention-backend FLASHINFER \
-        --trust-remote-code > logs/vllm_reranker.log 2>&1 &
+    echo "❌ Embedding endpoint is unreachable or missing model '${configured_model}': ${configured_url}" >&2
+    return 1
 }
 
 case $SERVICE in
     neo4j)  start_neo4j ;;
     gen)    start_gen ;;
     embed)  start_embed ;;
-    rerank) start_rerank ;;
     all)
         start_neo4j
         start_gen
         start_embed
-        start_rerank
         ;;
     *)
-        echo "Usage: $0 {neo4j|gen|embed|rerank|all}"
+        echo "Usage: $0 {neo4j|gen|embed|all}"
         exit 1
         ;;
 esac

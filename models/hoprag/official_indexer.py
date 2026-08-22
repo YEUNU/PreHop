@@ -1,4 +1,4 @@
-"""Official HopRAG indexing wired to local vLLM + our Neo4j namespacing.
+"""Official HopRAG indexing wired to external OpenAI-compatible inference.
 
 `third_party/HopRAG` is the upstream package. It's not pip-installable: it
 imports `config` and `tool` as top-level modules and bakes config-time vars
@@ -6,29 +6,35 @@ imports `config` and `tool` as top-level modules and bakes config-time vars
 constants. We:
 
 1. Prepend the package dir to sys.path.
-2. Import `config`, override its attributes for local vLLM + corpus-tagged
+2. Import `config`, override its attributes for external inference + corpus-tagged
    labels, and recompile the cypher templates that string-concatenated
    `edge_name` at module load.
-3. Monkey-patch `tool.load_embed_model` / `tool.get_doc_embeds` to use our
-   vLLM embedding endpoint (avoids loading SentenceTransformer locally).
+3. Monkey-patch `tool.load_embed_model` / `tool.get_doc_embeds` to use the
+   configured embedding endpoint (avoids loading SentenceTransformer locally).
 4. Then `import HopBuilder`, which picks up the patched config.
 
 `HopBuilder.create_edge` does pairwise question similarity, which is O(N²) per
-group. We group documents by company (FinanceBench is company-anchored, like
-prehop §3.1.4 same-company HOP filter) so each group stays tractable.
+group. We preserve the official per-problem context groups so each edge build
+stays tractable without a dataset-specific entity gate.
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
+import importlib
+import io
 import itertools
 import json
 import logging
 import os
 import shutil
 import sys
+import tempfile
 import threading
+import time
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -40,14 +46,16 @@ _GEN_API_BASES: list[str] = [
     s.strip()
     for s in os.environ.get(
         "RAG_HOP_GEN_API_BASES",
-        os.environ.get("RAG_HOP_GEN_API_BASE", os.environ.get("VLLM_URL", "http://localhost:28000/v1")),
+        os.environ.get("RAG_HOP_GEN_API_BASE", os.environ.get("VLLM_URL", "")),
     ).split(",")
     if s.strip()
 ]
-_GEN_API_BASE = _GEN_API_BASES[0]
+_GEN_API_BASE = _GEN_API_BASES[0] if _GEN_API_BASES else ""
 _GEN_MODEL_NAME = os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
-_EMBED_API_BASE = os.environ.get("RAG_HOP_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", "http://localhost:18082/v1"))
-_EMBED_MODEL_NAME = os.environ.get("RAG_HOP_EMBED_MODEL_NAME", os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model"))
+_EMBED_API_BASE = os.environ.get("RAG_HOP_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", ""))
+_EMBED_MODEL_NAME = os.environ.get(
+    "RAG_HOP_EMBED_MODEL_NAME", os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
+)
 _EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")))
 _GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
 _DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")))
@@ -55,6 +63,25 @@ _NODE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_NODE_BATCH", "200")))
 _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
 
 _OUTPUT_ROOT = Path(os.environ.get("RAG_HOP_OUTPUT_ROOT", "data/hoprag_output"))
+
+
+def _atomic_pickle_dump(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            import pickle
+
+            pickle.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def output_dir_for(corpus_tag: str) -> Path:
@@ -71,43 +98,20 @@ def input_dir_for(corpus_tag: str) -> Path:
 
 # ---------------------------------------------------------------- file staging
 
+
 def _stage_input_files(
     dataset_path: str,
     corpus_tag: str,
-    sample_companies: Optional[list[str]],
-) -> tuple[Path, dict[str, str]]:
-    """Materialize a tag-scoped input dir, return (dir, doc_to_company map)."""
+) -> tuple[Path, list[str]]:
+    """Materialize every corpus file in a tag-scoped input directory."""
     src_root = Path(dataset_path)
-    if not src_root.exists():
-        raise FileNotFoundError(f"dataset_path not found: {dataset_path}")
+    if not src_root.is_dir():
+        raise FileNotFoundError(f"dataset directory not found: {dataset_path}")
 
     files = sorted(p for p in src_root.iterdir() if p.suffix in (".txt", ".md"))
 
-    doc_info_path = Path("data/financebench_document_information.jsonl")
-    doc_to_company: dict[str, str] = {}
-    if doc_info_path.exists():
-        with doc_info_path.open() as fh:
-            for line in fh:
-                rec = json.loads(line)
-                if rec.get("doc_name") and rec.get("company"):
-                    doc_to_company[rec["doc_name"]] = rec["company"]
-
-    if sample_companies:
-        valid = {n for n, c in doc_to_company.items() if c in sample_companies}
-        kept = []
-        for fp in files:
-            stem = fp.stem
-            if stem in valid:
-                kept.append(fp)
-            else:
-                parts = stem.rsplit("_page_", 1)
-                if len(parts) == 2 and parts[0] in valid:
-                    kept.append(fp)
-        logger.info(
-            "HopRAG staging: filtering by %d sample companies -> %d/%d files",
-            len(sample_companies), len(kept), len(files),
-        )
-        files = kept
+    if not files:
+        raise ValueError(f"HopRAG staging selected no .txt/.md files from {dataset_path}")
 
     staged = input_dir_for(corpus_tag)
     if staged.exists():
@@ -123,22 +127,11 @@ def _stage_input_files(
 
     logger.info("HopRAG staging: %d files materialized at %s", len(files), staged)
 
-    # filename → company map for grouped edge construction
-    file_to_company: dict[str, str] = {}
-    for fp in files:
-        stem = fp.stem
-        if stem in doc_to_company:
-            file_to_company[fp.name] = doc_to_company[stem]
-        else:
-            parts = stem.rsplit("_page_", 1)
-            if len(parts) == 2 and parts[0] in doc_to_company:
-                file_to_company[fp.name] = doc_to_company[parts[0]]
-            else:
-                file_to_company[fp.name] = "_unknown"
-    return staged, file_to_company
+    return staged, [fp.name for fp in files]
 
 
 # ---------------------------------------------------------------- monkey patch
+
 
 class _VLLMEmbedClient:
     """Drop-in replacement for SentenceTransformer.encode().
@@ -154,6 +147,7 @@ class _VLLMEmbedClient:
         self.dim = dim
         import requests
         from requests.adapters import HTTPAdapter
+
         self._sess = requests.Session()
         # Default pool_maxsize=10 overflows when DOC_WORKERS × CHUNK_THREADS > 10.
         # Set to 128 to avoid "Connection pool is full" warnings under parallel load.
@@ -207,22 +201,41 @@ def _install_round_robin_patch(config) -> None:
     Also caps max_tokens to 1024 so long 10-K documents (28K+ tokens) fit
     within the 32768 context window (32768 - 1024 = 31744 max input).
     """
+    import urllib.error
     import urllib.request
+
     import tool
     from openai import OpenAI as _OrigOpenAI
 
-    # Only include endpoints that respond to /health right now.
+    # Validate the OpenAI-compatible model registry rather than a proxy-specific
+    # /health route. A two-second /health probe produced false negatives while
+    # a healthy external server was busy near its max_num_seqs limit.
     live_bases = []
     for base in _GEN_API_BASES:
-        health_url = base.rstrip("/").removesuffix("v1").rstrip("/") + "/health"
-        try:
-            urllib.request.urlopen(health_url, timeout=2)
-            live_bases.append(base)
-        except Exception:
-            logger.warning("HopRAG: gen endpoint unreachable, skipping: %s", base)
+        models_url = base.rstrip("/") + "/models"
+        for attempt in range(1, 4):
+            try:
+                request = urllib.request.Request(
+                    models_url,
+                    headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
+                )
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    payload = json.load(response)
+                model_ids = {item.get("id") for item in payload.get("data", [])}
+                if _GEN_MODEL_NAME not in model_ids:
+                    raise RuntimeError(
+                        f"configured model {_GEN_MODEL_NAME!r} not advertised by {models_url}: "
+                        f"{sorted(model_id for model_id in model_ids if model_id)}"
+                    )
+                live_bases.append(base)
+                break
+            except (OSError, urllib.error.URLError, ValueError, RuntimeError) as exc:
+                if attempt == 3:
+                    logger.warning("HopRAG: generation endpoint rejected after retries: %s (%s)", base, exc)
+                else:
+                    time.sleep(attempt)
     if not live_bases:
-        logger.warning("HopRAG: no live gen endpoints; falling back to all configured")
-        live_bases = list(_GEN_API_BASES)
+        raise ConnectionError(f"HopRAG: no configured generation endpoint passed its health check: {_GEN_API_BASES}")
     logger.info("HopRAG: live gen endpoints for round-robin: %s", live_bases)
 
     _cycle = itertools.cycle(live_bases)
@@ -231,9 +244,9 @@ def _install_round_robin_patch(config) -> None:
 
     class _RoundRobinOpenAI(_OrigOpenAI):
         """Drop-in replacement: rotates base_url across live gen endpoints."""
+
         def __init__(self, api_key=None, base_url=None, **kwargs):
-            if base_url and any(base_url.startswith(b.rstrip("/v1").rstrip("/"))
-                                for b in _local_bases_set):
+            if base_url and any(base_url.startswith(b.rstrip("/v1").rstrip("/")) for b in _local_bases_set):
                 with _lock:
                     base_url = next(_cycle)
             super().__init__(api_key=api_key, base_url=base_url, **kwargs)
@@ -247,15 +260,13 @@ def _install_round_robin_patch(config) -> None:
     # Root cause of "Unterminated string" errors: per-chunk input was unbounded,
     # so the model generated question lists longer than _MAX_OUTPUT.
     # Fix: cap input to 3000 chars (~667 tokens) → question list ~10 items ~250t
-    # output, well under the 512t budget. Financial text runs ~4.5 chars/token.
+    # output, well under the 512-token budget.
     _MAX_OUTPUT = 512
-    _MAX_MODEL_LEN = 32768
     _MAX_INPUT_CHARS = 3000  # chars — tight cap on each LLM call's user message
 
     _orig_get_chat_completion = tool._get_chat_completion
 
-    def _capped_get_chat_completion(chat, return_json=True, model=None,
-                                    max_tokens=4096, keys=None):
+    def _capped_get_chat_completion(chat, return_json=True, model=None, max_tokens=4096, keys=None):
         # Truncate the last user message if it exceeds the input budget.
         messages = list(chat)
         for i in range(len(messages) - 1, -1, -1):
@@ -264,11 +275,11 @@ def _install_round_robin_patch(config) -> None:
                 if len(text) > _MAX_INPUT_CHARS:
                     messages = list(messages)
                     messages[i] = {**messages[i], "content": text[:_MAX_INPUT_CHARS]}
-                    logger.debug("HopRAG: truncated user message %d→%d chars",
-                                 len(text), _MAX_INPUT_CHARS)
+                    logger.debug("HopRAG: truncated user message %d→%d chars", len(text), _MAX_INPUT_CHARS)
                 break
         return _orig_get_chat_completion(
-            messages, return_json=return_json,
+            messages,
+            return_json=return_json,
             model=model,
             max_tokens=min(max_tokens, _MAX_OUTPUT),
             keys=keys,
@@ -290,17 +301,17 @@ def _install_round_robin_patch(config) -> None:
         # Fast path: vLLM json_object guarantees valid JSON — parse directly.
         try:
             return json.loads(text)
-        except Exception:
-            pass
+        except json.JSONDecodeError:
+            logger.debug("HopRAG response required upstream non-standard JSON cleanup")
         # Slow path: original clean_json_str logic for non-standard responses.
         return _orig_txt2obj(text)
 
     tool.txt2obj = _safe_txt2obj
 
     logger.info(
-        "HopRAG: round-robin OpenAI patch + max_tokens cap installed "
-        "across %d endpoints: %s",
-        len(live_bases), live_bases,
+        "HopRAG: round-robin OpenAI patch + max_tokens cap installed across %d endpoints: %s",
+        len(live_bases),
+        live_bases,
     )
 
 
@@ -309,29 +320,36 @@ def _install_optional_stubs() -> None:
     sentence_transformers + modelscope). They get imported at module load by
     third_party/HopRAG/tool.py but we replace their downstream calls."""
     import types
+
+    def _unavailable(name: str):
+        def _raise(*_args, **_kwargs):
+            raise RuntimeError(
+                f"HopRAG optional dependency '{name}' was unexpectedly used; the local runtime hook was not installed"
+            )
+
+        return _raise
+
     if "paddlenlp" not in sys.modules:
         m = types.ModuleType("paddlenlp")
-        m.Taskflow = lambda *a, **kw: (lambda _t: [])
+        m.Taskflow = _unavailable("paddlenlp")
         sys.modules["paddlenlp"] = m
     if "sentence_transformers" not in sys.modules:
         m = types.ModuleType("sentence_transformers")
+
         class _ST:
-            def __init__(self, *a, **kw): pass
-            def encode(self, docs, **kw):
-                return [0.0] * 768 if isinstance(docs, str) else [[0.0] * 768 for _ in docs]
+            def __init__(self, *_args, **_kwargs):
+                _unavailable("sentence_transformers")()
+
         m.SentenceTransformer = _ST
         sys.modules["sentence_transformers"] = m
     if "modelscope" not in sys.modules:
         m = types.ModuleType("modelscope")
+
         class _Dummy:
             @classmethod
-            def from_pretrained(cls, *a, **kw): return cls()
-            def eval(self): return self
-            def to(self, *a, **kw): return self
-            @property
-            def device(self): return "cpu"
-            def __call__(self, *a, **kw):
-                return types.SimpleNamespace(logits=[0.0])
+            def from_pretrained(cls, *_args, **_kwargs):
+                _unavailable("modelscope")()
+
         m.AutoModelForCausalLM = _Dummy
         m.AutoModelForSequenceClassification = _Dummy
         m.AutoTokenizer = _Dummy
@@ -344,7 +362,11 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
     if str(_HOPRAG_ROOT) not in sys.path:
         sys.path.insert(0, str(_HOPRAG_ROOT))
 
-    import config
+    # Upstream config.py prints its baked-in demo configuration at import time
+    # (hotpot + a localhost model).  It is replaced immediately below and is
+    # never used, so suppress that misleading vendor-only line in run logs.
+    with contextlib.redirect_stdout(io.StringIO()):
+        config = importlib.import_module("config")
 
     config.local_base = _GEN_API_BASE
     config.local_key = _GEN_API_KEY
@@ -360,7 +382,8 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
     config.max_thread_num = max(1, int(os.environ.get("RAG_HOP_MAX_THREADS", "8")))
 
     safe = "".join(c if c.isalnum() else "_" for c in corpus_tag)
-    config.dataset_name = "financebench"
+    config.dataset_name = corpus_tag
+    config.corpus_tag = corpus_tag
     config.node_name = f"HO_{safe}"
     config.edge_name = f"HO_{safe}_p2a"
     config.generator_label = f"HO_{safe}_"
@@ -382,7 +405,8 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
         "{keywords: $keywords, embed: $embed, question: $answerable_question}]->(b)"
     )
 
-    # Reflect new local_model_name in deployment_sign so _get_chat_completion
+    # Reflect the external model in upstream's `local_model_name` field so
+    # `_get_chat_completion`
     # routes to our vLLM rather than gpt.
     config.deployment_sign = {
         "gpt": {
@@ -399,14 +423,15 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
     if len(_GEN_API_BASES) >= 1:
         _install_round_robin_patch(config)
 
-    # Neo4j connection from our env (matches Neo4jService defaults).
+    # Neo4j connection from our env.
     config.neo4j_url = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
     config.neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
-    config.neo4j_password = os.environ.get("NEO4J_PASSWORD", "1q2w3e4r")
+    config.neo4j_password = os.environ.get("NEO4J_PASSWORD", "")
     config.neo4j_dbname = os.environ.get("NEO4J_DATABASE", "neo4j")
 
     # Patch tool to use vLLM embeddings instead of local SentenceTransformer.
     import tool
+
     embed_client = _VLLMEmbedClient(_EMBED_API_BASE, _EMBED_MODEL_NAME, _EMBED_DIM)
     tool.load_embed_model = lambda _name: embed_client
 
@@ -424,8 +449,8 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
     # callers unpack only 2 values → ValueError: too many values to unpack.
     # Root cause: tool.try_run hardcodes a 3-tuple on exhausted retries, but
     # _get_chat_completion with keys=["Question List"] normally returns 2 values.
-    # Patch get_question_list directly so LLM failure yields an empty list instead.
-    _orig_get_question_list = tool.get_question_list
+    # Patch get_question_list directly so exhausted retries fail the document
+    # instead of silently dropping every affected chunk from the graph.
 
     def _safe_get_question_list(extract_template, sentences, query_generator):
         result = tool.get_chat_completion(
@@ -435,12 +460,15 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
             max_tokens=4096,
         )
         if not isinstance(result, (tuple, list)) or len(result) != 2:
-            return []
+            raise RuntimeError("HopRAG question generation returned an invalid result")
         question_list, _ = result
-        return question_list or []
+        if not isinstance(question_list, list) or not question_list:
+            raise RuntimeError("HopRAG question generation returned no questions")
+        return question_list
 
     tool.get_question_list = _safe_get_question_list
     import HopBuilder as _HB_tmp
+
     _HB_tmp.get_question_list = _safe_get_question_list
 
     _patch_hopbuilder_for_pandas2()
@@ -463,6 +491,7 @@ def _spacy_ner_eng(text: str):
     global _SPACY_NLP
     if _SPACY_NLP is None:
         import spacy
+
         _SPACY_NLP = spacy.load("en_core_web_sm", disable=["parser"])
     doc = _SPACY_NLP(str(text or ""))
     seen = set()
@@ -517,15 +546,13 @@ def _patch_hopbuilder_for_pandas2() -> None:
     ]
     for old, new in replacements:
         if old not in src:
-            raise RuntimeError(
-                f"HopBuilder.create_edge source pattern not found: {old[:60]}..."
-            )
+            raise RuntimeError(f"HopBuilder.create_edge source pattern not found: {old[:60]}...")
         src = src.replace(old, new)
 
     # Bind into the HopBuilder module namespace so cypher templates etc resolve.
     namespace = dict(HopBuilder.__dict__)
     namespace.update({"pd": pd})
-    exec(compile(src, "<hop_create_edge_patched>", "exec"), namespace)
+    exec(compile(src, "<hop_create_edge_patched>", "exec"), namespace)  # noqa: S102 - patch vendored method source
     patched = namespace["create_edge"]
     patched._patched_for_pandas2 = True  # type: ignore[attr-defined]
     HopBuilder.QABuilder.create_edge = patched
@@ -550,9 +577,11 @@ def _patch_create_nodes_offline_parallel() -> None:
     - _VLLMEmbedClient shares a requests.Session across threads, which is safe
       for concurrent POST calls (urllib3 connection pool is thread-safe).
     """
-    import HopBuilder
     import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import as_completed as _as_completed
+
+    import HopBuilder
     from tqdm import tqdm as _tqdm
 
     if getattr(HopBuilder.QABuilder.create_nodes_offline, "_patched_parallel", False):
@@ -577,11 +606,18 @@ def _patch_create_nodes_offline_parallel() -> None:
         # Only load the node-ID list (.ids companion) to avoid pulling ~168MB of
         # embedding/question data per doc into RAM at startup (54GB for 324 docs).
         docid2nodes: dict = {}
-        node2questiondict: dict = {}  # kept empty — Stage 2 streams per-doc pkls
         cached_doc_ids: set = set()
 
         for pkl_file in sorted(per_doc_dir.glob("*.pkl")):
             doc_id = pkl_file.stem
+            source_file = Path(docs_dir) / doc_id
+            digest_file = per_doc_dir / (doc_id + ".sha256")
+            if not source_file.is_file() or not digest_file.is_file():
+                continue
+            expected_digest = hashlib.sha256(source_file.read_bytes()).hexdigest()
+            if digest_file.read_text(encoding="utf-8").strip() != expected_digest:
+                logger.info("HopRAG cache invalidated for changed document: %s", doc_id)
+                continue
             ids_file = per_doc_dir / (doc_id + ".ids")
             if ids_file.exists():
                 try:
@@ -590,36 +626,41 @@ def _patch_create_nodes_offline_parallel() -> None:
                     docid2nodes[doc_id] = local_nodes
                     cached_doc_ids.add(doc_id)
                     continue
-                except Exception:
-                    pass  # fall through to pkl read below
+                except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                    logger.warning("HopRAG cache id companion is invalid (%s): %s", ids_file, exc)
             # No .ids companion yet (pkl from an older run): load pkl once,
             # write the .ids file, then discard the heavy question/embed data.
             try:
                 with open(pkl_file, "rb") as fh:
                     local_nodes, _local_n2q = pickle.load(fh)
-                with open(ids_file, "w") as fh:
-                    json.dump(local_nodes, fh)
+                from utils.io import _write_json
+
+                _write_json(ids_file, local_nodes)
                 docid2nodes[doc_id] = local_nodes
                 cached_doc_ids.add(doc_id)
-            except Exception as exc:
+            except (OSError, EOFError, pickle.PickleError, TypeError, ValueError) as exc:
                 logger.warning(
                     "HopRAG parallel: corrupt per-doc cache %s, will reprocess: %s",
-                    pkl_file.name, exc,
+                    pkl_file.name,
+                    exc,
                 )
                 pkl_file.unlink(missing_ok=True)
 
         # Skip docs already in the main cache (self.done) OR per-doc cache.
         docs_to_process = [
-            d for d in docs_pool[start_index : start_index + span]
-            if d not in self.done and d not in cached_doc_ids
+            d for d in docs_pool[start_index : start_index + span] if d not in self.done and d not in cached_doc_ids
         ]
 
         import config as _cfg
+
         logger.info(
             "HopRAG parallel node build: %d to process, %d from per-doc cache, "
             "%d in main cache | doc_workers=%d chunk_threads=%d",
-            len(docs_to_process), len(cached_doc_ids), len(self.done),
-            _doc_workers, _cfg.max_thread_num,
+            len(docs_to_process),
+            len(cached_doc_ids),
+            len(self.done),
+            _doc_workers,
+            _cfg.max_thread_num,
         )
 
         _id_lock = threading.Lock()
@@ -633,12 +674,14 @@ def _patch_create_nodes_offline_parallel() -> None:
                 with open(doc_path, "r") as fh:
                     doc = fh.read()
                 sentence2node = self.get_single_doc_qa(doc)
+                if not sentence2node:
+                    raise RuntimeError("HopRAG produced no indexable nodes for the document")
                 local_nodes = []
                 local_n2q = {}
-                for _text, tup in sentence2node.items():
+                for tup in sentence2node.values():
                     node = {
                         "text": tup[0],
-                        "keywords": sorted(list(tup[1])),
+                        "keywords": sorted(tup[1]),
                         "embed": tup[2],
                     }
                     with _id_lock:
@@ -649,18 +692,19 @@ def _patch_create_nodes_offline_parallel() -> None:
 
                 # Atomic write: tmp → rename so a crash during write leaves no partial file.
                 cache_file = per_doc_dir / (doc_id + ".pkl")
-                tmp_file = per_doc_dir / (doc_id + ".pkl.tmp")
-                with open(tmp_file, "wb") as fh:
-                    pickle.dump((local_nodes, local_n2q), fh)
-                tmp_file.rename(cache_file)
+                _atomic_pickle_dump(cache_file, (local_nodes, local_n2q))
 
                 # Write lightweight .ids companion (just the node-ID list) so
                 # future restarts skip loading the full ~168MB pkl at startup.
+                from utils.io import _write_json
+
                 ids_file = per_doc_dir / (doc_id + ".ids")
-                ids_tmp = per_doc_dir / (doc_id + ".ids.tmp")
-                with open(ids_tmp, "w") as fh:
-                    json.dump(local_nodes, fh)
-                ids_tmp.rename(ids_file)
+                _write_json(ids_file, local_nodes)
+                digest_file = per_doc_dir / (doc_id + ".sha256")
+                digest_file.write_text(
+                    hashlib.sha256(Path(doc_path).read_bytes()).hexdigest(),
+                    encoding="utf-8",
+                )
 
                 # Explicitly free before return: concurrent.futures caches the
                 # return value inside the Future object until the executor exits.
@@ -668,39 +712,51 @@ def _patch_create_nodes_offline_parallel() -> None:
                 # accumulate in memory even though the main loop discards it.
                 del sentence2node, local_n2q
                 return doc_id, local_nodes, None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - aggregate heterogeneous per-document failures
                 import traceback as _tb
+
                 logger.warning(
                     "HopRAG parallel: error on %s: %s\n%s",
-                    doc_id, exc, _tb.format_exc(),
+                    doc_id,
+                    exc,
+                    _tb.format_exc(),
                 )
                 _time.sleep(1)
                 return doc_id, None, None
 
+        failed_docs: list[str] = []
+        processed_docs = 0
         with ThreadPoolExecutor(max_workers=_doc_workers) as pool:
             futures = {pool.submit(_process_one, d): d for d in docs_to_process}
-            for fut in _tqdm(
-                _as_completed(futures), total=len(futures), desc="create_nodes_parallel"
-            ):
+            for fut in _tqdm(_as_completed(futures), total=len(futures), desc="create_nodes_parallel"):
                 doc_id, nodes, _n2q = fut.result()
                 if nodes is not None:
                     docid2nodes[doc_id] = nodes
+                    processed_docs += 1
                     # _n2q intentionally NOT accumulated — per-doc pkls hold the
-                    # data; Stage 2 streams them company-by-company to avoid OOM.
+                    # data; Stage 2 streams them group-by-group to avoid OOM.
+                else:
+                    failed_docs.append(doc_id)
 
         logger.info(
             "HopRAG parallel node build complete: %d docs total (%d processed + %d cached)",
-            len(docid2nodes), len(docs_to_process), len(cached_doc_ids),
+            len(docid2nodes),
+            processed_docs,
+            len(cached_doc_ids),
         )
+        if failed_docs:
+            preview = ", ".join(failed_docs[:10])
+            raise RuntimeError(f"HopRAG Stage 1 failed for {len(failed_docs)} document(s): {preview}")
         return docid2nodes, {}  # empty — Stage 2 streams per-doc pkls
 
     _parallel_create_nodes_offline._patched_parallel = True  # type: ignore[attr-defined]
     HopBuilder.QABuilder.create_nodes_offline = _parallel_create_nodes_offline
     import config as _hop_config
+
     logger.info(
-        "HopRAG: patched create_nodes_offline for doc-level parallelism "
-        "(doc_workers=%d, chunk_threads=%d)",
-        _doc_workers, _hop_config.max_thread_num,
+        "HopRAG: patched create_nodes_offline for doc-level parallelism (doc_workers=%d, chunk_threads=%d)",
+        _doc_workers,
+        _hop_config.max_thread_num,
     )
 
 
@@ -729,10 +785,12 @@ def _patch_create_nodes_cache_batched() -> None:
 
         logger.info("HopRAG batched nodes: label=%s from %s", self.label, cache_dir)
         if self.driver is None:
-            from neo4j import GraphDatabase
             import config as _c
+            from neo4j import GraphDatabase
+
             self.driver = GraphDatabase.driver(
-                _c.neo4j_url, auth=(_c.neo4j_user, _c.neo4j_password),
+                _c.neo4j_url,
+                auth=(_c.neo4j_user, _c.neo4j_password),
                 database=_c.neo4j_dbname,
             )
 
@@ -754,7 +812,8 @@ def _patch_create_nodes_cache_batched() -> None:
 
         logger.info(
             "HopRAG batched nodes: inserting %d nodes in batches of %d",
-            len(all_items), _batch_size,
+            len(all_items),
+            _batch_size,
         )
 
         unwind_query = (
@@ -769,10 +828,7 @@ def _patch_create_nodes_cache_batched() -> None:
         with self.driver.session() as session:
             for i in range(0, len(all_items), _batch_size):
                 batch = all_items[i : i + _batch_size]
-                rows = [
-                    {"text": text, "keywords": kw, "embed": emb}
-                    for _, text, kw, emb, _ in batch
-                ]
+                rows = [{"text": text, "keywords": kw, "embed": emb} for _, text, kw, emb, _ in batch]
                 result = session.run(unwind_query, {"rows": rows})
                 new_ids = [r[0] for r in result]
 
@@ -789,7 +845,8 @@ def _patch_create_nodes_cache_batched() -> None:
                 if (i // _batch_size + 1) % 20 == 0 or i + _batch_size >= len(all_items):
                     logger.info(
                         "HopRAG batched nodes: %d/%d inserted",
-                        min(i + _batch_size, len(all_items)), len(all_items),
+                        min(i + _batch_size, len(all_items)),
+                        len(all_items),
                     )
 
         return new_docid2nodes, new_node2questiondict
@@ -836,15 +893,17 @@ def _edges_via_chunked_topk(
         for question_label, tuplelist in qdict.items():
             for qi, tup in enumerate(tuplelist):
                 question, keywords, emb = tup
-                data.append({
-                    "doc_id": doc_id,
-                    "node_id": node_id,
-                    "question_label": question_label,
-                    "question_id": qi,
-                    "embedding": np.asarray(emb, dtype=np.float32),
-                    "question": question,
-                    "keywords": keywords,
-                })
+                data.append(
+                    {
+                        "doc_id": doc_id,
+                        "node_id": node_id,
+                        "question_label": question_label,
+                        "question_id": qi,
+                        "embedding": np.asarray(emb, dtype=np.float32),
+                        "question": question,
+                        "keywords": keywords,
+                    }
+                )
 
     if not data:
         return pd.DataFrame(), pd.DataFrame()
@@ -860,7 +919,7 @@ def _edges_via_chunked_topk(
         return pd.DataFrame(), answerable_df
 
     # Stack embeddings into 2-D float32 arrays for chunked matmul.
-    pending_emb = np.stack(pending_df["embedding"].values).astype(np.float32)   # (N_p, dim)
+    pending_emb = np.stack(pending_df["embedding"].values).astype(np.float32)  # (N_p, dim)
     answerable_emb = np.stack(answerable_df["embedding"].values).astype(np.float32)  # (N_a, dim)
 
     actual_k = min(top_k, len(answerable_df))
@@ -868,7 +927,7 @@ def _edges_via_chunked_topk(
     best_a_scores = np.empty((len(pending_df), actual_k), dtype=np.float32)
 
     for i in range(0, len(pending_df), chunk_size):
-        chunk = pending_emb[i : i + chunk_size]            # (C, dim)
+        chunk = pending_emb[i : i + chunk_size]  # (C, dim)
         sims = (chunk @ answerable_emb.T).astype(np.float32)  # (C, N_a)
         if actual_k < sims.shape[1]:
             idx = np.argpartition(sims, -actual_k, axis=1)[:, -actual_k:]
@@ -907,17 +966,19 @@ def _edges_via_chunked_topk(
             union_kw = (p_kw | a_kw) if (p_kw or a_kw) else set()
             inter_kw = p_kw & a_kw
             sparse_sim = len(inter_kw) / len(union_kw) if union_kw else 0.0
-            edge_rows.append({
-                "node_id_x": int(p_nid),
-                "node_id_y": int(a_nid),
-                "doc_id_x": p_did,
-                "doc_id_y": a_dids[ai],
-                "question_x": p_qs[pi],
-                "question_y": a_qs[ai],
-                "keywords_both": union_kw,
-                "embedding_x": p_embs[pi],
-                "similarity": float(best_a_scores[pi, rank]) + sparse_sim,
-            })
+            edge_rows.append(
+                {
+                    "node_id_x": int(p_nid),
+                    "node_id_y": int(a_nid),
+                    "doc_id_x": p_did,
+                    "doc_id_y": a_dids[ai],
+                    "question_x": p_qs[pi],
+                    "question_y": a_qs[ai],
+                    "keywords_both": union_kw,
+                    "embedding_x": p_embs[pi],
+                    "similarity": float(best_a_scores[pi, rank]) + sparse_sim,
+                }
+            )
 
     del best_a_idx, best_a_scores
 
@@ -932,8 +993,10 @@ def _edges_via_chunked_topk(
 
     # cartesian1: best answerable per pending question (intra + cross doc).
     idx1 = cartesian.groupby("question_x")["similarity"].idxmax()
-    cartesian1 = cartesian.loc[idx1].sort_values("similarity", ascending=False).drop_duplicates(
-        subset=["node_id_x", "node_id_y"], keep="first"
+    cartesian1 = (
+        cartesian.loc[idx1]
+        .sort_values("similarity", ascending=False)
+        .drop_duplicates(subset=["node_id_x", "node_id_y"], keep="first")
     )
 
     # cartesian2: cross-doc only, top-2 per pending question.
@@ -941,7 +1004,8 @@ def _edges_via_chunked_topk(
     del cartesian
     cartesian2 = (
         cartesian2.sort_values(["question_x", "similarity"], ascending=[True, False])
-        .groupby("question_x").head(2)
+        .groupby("question_x")
+        .head(2)
         .sort_values("similarity", ascending=False)
         .drop_duplicates(subset=["node_id_x", "node_id_y"], keep="first")
     )
@@ -956,16 +1020,19 @@ def _edges_via_chunked_topk(
     cartesian2 = cartesian2.iloc[: int(max_edges * (1 - inner_ratio))]
 
     cols = ["node_id_x", "question_y", "keywords_both", "embedding_x", "node_id_y", "similarity"]
-    edges_df = pd.concat(
-        [cartesian1[cols], cartesian2[cols]], ignore_index=True
-    ).drop_duplicates(subset=["node_id_x", "node_id_y"], keep="first")
+    edges_df = pd.concat([cartesian1[cols], cartesian2[cols]], ignore_index=True).drop_duplicates(
+        subset=["node_id_x", "node_id_y"], keep="first"
+    )
 
     used_q = set(cartesian1["question_y"].tolist()) | set(cartesian2["question_y"].tolist())
     abstract2chunk_df = answerable_df[~answerable_df["question"].isin(used_q)]
 
     logger.info(
         "HopRAG chunked edges: %d edges, %d abstract2chunk (top_k=%d, chunk=%d)",
-        len(edges_df), len(abstract2chunk_df), top_k, chunk_size,
+        len(edges_df),
+        len(abstract2chunk_df),
+        top_k,
+        chunk_size,
     )
     return edges_df, abstract2chunk_df
 
@@ -994,8 +1061,10 @@ def _patch_create_edge_batched() -> None:
     class _NullSession:
         def run(self, *a, **kw):
             return iter([])
+
         def __enter__(self):
             return self
+
         def __exit__(self, *a):
             pass
 
@@ -1009,6 +1078,7 @@ def _patch_create_edge_batched() -> None:
         # Ensure a real driver exists before we swap it.
         if self.driver is None:
             from neo4j import GraphDatabase
+
             self.driver = GraphDatabase.driver(
                 _hop_config.neo4j_url,
                 auth=(_hop_config.neo4j_user, _hop_config.neo4j_password),
@@ -1018,10 +1088,8 @@ def _patch_create_edge_batched() -> None:
         real_driver = self.driver
 
         if len(node2questiondict) > _EDGE_CHUNKED_THRESHOLD:
-            # Large company: avoid O(N²) cross join OOM with chunked top-K.
-            self.edges, self.abstract2chunk = _edges_via_chunked_topk(
-                node2questiondict, docid2nodes
-            )
+            # Large group: avoid O(N²) cross join OOM with chunked top-K.
+            self.edges, self.abstract2chunk = _edges_via_chunked_topk(node2questiondict, docid2nodes)
         else:
             self.driver = _NullDriver()
             try:
@@ -1052,19 +1120,19 @@ def _patch_create_edge_batched() -> None:
                 emb = row["embedding_x"]
                 if hasattr(emb, "tolist"):
                     emb = emb.tolist()
-                p2a_rows.append({
-                    "id1": int(row["node_id_x"]),
-                    "id2": int(row["node_id_y"]),
-                    "keywords": sorted(list(row["keywords_both"])),
-                    "embed": emb,
-                    "question": row["question_y"],
-                })
+                p2a_rows.append(
+                    {
+                        "id1": int(row["node_id_x"]),
+                        "id2": int(row["node_id_y"]),
+                        "keywords": sorted(row["keywords_both"]),
+                        "embed": emb,
+                        "question": row["question_y"],
+                    }
+                )
             with self.driver.session() as session:
                 for i in range(0, len(p2a_rows), _batch_size):
                     session.run(pending2answerable_batch, {"rows": p2a_rows[i : i + _batch_size]})
-            logger.info(
-                "HopRAG batched edges: %d pending2answerable inserted", len(p2a_rows)
-            )
+            logger.info("HopRAG batched edges: %d pending2answerable inserted", len(p2a_rows))
 
         if self.abstract2chunk is not None and len(self.abstract2chunk) > 0:
             a2a_rows = []
@@ -1073,19 +1141,19 @@ def _patch_create_edge_batched() -> None:
                 if hasattr(emb, "tolist"):
                     emb = emb.tolist()
                 abstract_id = docid2nodes[row["doc_id"]][0]
-                a2a_rows.append({
-                    "abstract_id": int(abstract_id),
-                    "id2": int(row["node_id"]),
-                    "keywords": sorted(list(row["keywords"])),
-                    "embed": emb,
-                    "question": row["question"],
-                })
+                a2a_rows.append(
+                    {
+                        "abstract_id": int(abstract_id),
+                        "id2": int(row["node_id"]),
+                        "keywords": sorted(row["keywords"]),
+                        "embed": emb,
+                        "question": row["question"],
+                    }
+                )
             with self.driver.session() as session:
                 for i in range(0, len(a2a_rows), _batch_size):
                     session.run(abstract2answerable_batch, {"rows": a2a_rows[i : i + _batch_size]})
-            logger.info(
-                "HopRAG batched edges: %d abstract2answerable inserted", len(a2a_rows)
-            )
+            logger.info("HopRAG batched edges: %d abstract2answerable inserted", len(a2a_rows))
 
     _batched_create_edge._patched_edge_batched = True  # type: ignore[attr-defined]
     HopBuilder.QABuilder.create_edge = _batched_create_edge
@@ -1094,29 +1162,124 @@ def _patch_create_edge_batched() -> None:
 
 # ---------------------------------------------------------------- driver
 
-def _group_files_by_company(file_to_company: dict[str, str]) -> dict[str, list[str]]:
+
+def _build_official_edge_groups(
+    corpus_tag: str,
+    staged_dir: Path,
+    staged_files: list[str],
+) -> dict[str, list[str]]:
+    """Build the small per-problem document groups used by official HopRAG.
+
+    Upstream HopRAG creates HotpotQA/MuSiQue edges within each problem's
+    supplied context instead of taking a corpus-wide Cartesian product. The
+    normalized benchmark files retain only gold evidence, so use the raw
+    dataset context when available and fall back to the normalized evidence
+    list for MultiHop-RAG (which upstream does not publish a loader for).
+    """
+    import html
+
+    title_to_file: dict[str, str] = {}
+    for path in staged_dir.iterdir():
+        if not path.is_file():
+            continue
+        with open(path, "r", encoding="utf-8") as handle:
+            first_line = handle.readline().strip()
+        title = first_line.removeprefix("Title: ").strip()
+        if title:
+            title_to_file[title] = path.name
+
+    def _resolve_titles(titles) -> list[str]:
+        resolved = []
+        for raw_title in titles or []:
+            title = html.unescape(str(raw_title or "").strip())
+            filename = title_to_file.get(title)
+            if filename is None:
+                import re
+
+                safe = re.sub(r'[\\/*?:"<>|]', "_", title).strip()
+                safe = re.sub(r"\s+", "_", safe)[:150] or "untitled"
+                candidate = f"{safe}.txt"
+                if (staged_dir / candidate).is_file():
+                    filename = candidate
+            if filename and filename not in resolved:
+                resolved.append(filename)
+        return resolved
+
     groups: dict[str, list[str]] = {}
-    for fname, company in file_to_company.items():
-        groups.setdefault(company, []).append(fname)
+    tag = corpus_tag.lower()
+    if tag == "hotpotqa":
+        import pyarrow.parquet as pq
+
+        raw_path = Path("data/hotpotqa_distractor_validation.parquet")
+        if not raw_path.is_file():
+            raise FileNotFoundError(f"HotpotQA raw context is required for official HopRAG edges: {raw_path}")
+        table = pq.read_table(raw_path, columns=["id", "context"])
+        for row in table.to_pylist():
+            context = row.get("context") or {}
+            docs = _resolve_titles(context.get("title") or [])
+            if docs:
+                groups[str(row.get("id"))] = docs
+    elif tag == "musique":
+        raw_path = Path("data/musique_ans_v1.0_dev.jsonl")
+        if not raw_path.is_file():
+            raise FileNotFoundError(f"MuSiQue raw context is required for official HopRAG edges: {raw_path}")
+        with open(raw_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                if row.get("answerable") is False:
+                    continue
+                docs = _resolve_titles(paragraph.get("title") for paragraph in (row.get("paragraphs") or []))
+                if docs:
+                    groups[str(row.get("id"))] = docs
+    elif tag == "multihoprag":
+        raw_path = Path("data/MultiHopRAG.json")
+        if not raw_path.is_file():
+            raise FileNotFoundError(f"MultiHop-RAG source is required for HopRAG edges: {raw_path}")
+        with open(raw_path, "r", encoding="utf-8") as handle:
+            rows = json.load(handle)
+        for idx, row in enumerate(rows):
+            docs = _resolve_titles(evidence.get("title") for evidence in (row.get("evidence_list") or []))
+            if docs:
+                groups[str(idx)] = docs
+    else:
+        raise ValueError(f"HopRAG has no official edge grouping for unsupported corpus={corpus_tag!r}")
+
+    if not groups:
+        raise ValueError(f"HopRAG found no edge-construction groups for corpus={corpus_tag}")
+    grouped_docs = {doc for docs in groups.values() for doc in docs}
+    missing_docs = sorted(set(staged_files) - grouped_docs)
+    if missing_docs:
+        raise RuntimeError(
+            "HopRAG official edge groups do not cover every staged document: "
+            f"missing={len(missing_docs)}, sample={missing_docs[:5]}"
+        )
+    logger.info(
+        "HopRAG official edge groups: %d problems, %d/%d referenced documents",
+        len(groups),
+        len(grouped_docs),
+        len(staged_files),
+    )
     return groups
 
 
-def _run_stage2_company_streaming(
+def _run_stage2_group_streaming(
     builder,
     per_doc_dir: Path,
-    file_to_company: dict[str, str],
+    staged_files: list[str],
     config,
 ) -> None:
-    """Insert nodes + build edges one company at a time to avoid OOM.
+    """Insert nodes per document, then build edges per official problem group.
 
-    Peak memory: one company's embedding data (~30-100 MB) instead of all
-    324 docs at once (~54 GB).  Source of truth: per-doc pkls in per_doc_dir.
+    The split keeps memory bounded and supports documents shared by many
+    HotpotQA/MuSiQue problems. Source of truth is the content-addressed per-doc
+    cache produced by Stage 1.
     """
     import gc
     import pickle
 
     if builder.driver is None:
         from neo4j import GraphDatabase
+
         builder.driver = GraphDatabase.driver(
             config.neo4j_url,
             auth=(config.neo4j_user, config.neo4j_password),
@@ -1129,20 +1292,23 @@ def _run_stage2_company_streaming(
         f"embed: row.embed}}) "
         f"RETURN id(n)"
     )
-    backfill_cypher = (
-        "UNWIND $rows AS row MATCH (n) WHERE id(n) = row.id "
-        "SET n.source = row.source, n.company = row.company"
-    )
+    backfill_cypher = "UNWIND $rows AS row MATCH (n) WHERE id(n) = row.id SET n.source = row.source"
 
-    groups = _group_files_by_company(file_to_company)
+    # Derive the staged directory from the per-doc cache layout.
+    staged_dir = per_doc_dir.parents[1] / "_input"
+    groups = _build_official_edge_groups(
+        getattr(config, "corpus_tag", "default"),
+        staged_dir,
+        staged_files,
+    )
 
     # Resume support: load tracking sets from cache dir sibling of per_doc_dir.
     cache_dir = per_doc_dir.parent
     nodes_done_path = cache_dir / "stage2_nodes_done.pkl"
     edges_done_path = cache_dir / "stage2_edges_done.pkl"
 
-    nodes_done: set = set()
-    edges_done: set = set()
+    nodes_done: set[str] = set()
+    edges_done: set[str] = set()
     if nodes_done_path.exists():
         with open(nodes_done_path, "rb") as fh:
             nodes_done = pickle.load(fh)
@@ -1150,207 +1316,155 @@ def _run_stage2_company_streaming(
         with open(edges_done_path, "rb") as fh:
             edges_done = pickle.load(fh)
 
-    # Detect companies that already have nodes from a prior partial run (e.g. 3M
-    # after the OOM kill). Querying by n.company allows resuming node insertion
-    # without creating duplicates; the company_n2q is rebuilt from per-doc pkls
-    # using the real Neo4j IDs fetched from the existing nodes.
-    existing_by_company: dict[str, list] = {}
+    existing_by_source: dict[str, list[int]] = {}
     with builder.driver.session() as s:
         res = s.run(
-            f"MATCH (n:{builder.label}) WHERE n.company IS NOT NULL "
-            f"RETURN n.company AS company, collect(id(n)) AS ids"
+            f"MATCH (n:{builder.label}) WHERE n.source IS NOT NULL RETURN n.source AS source, collect(id(n)) AS ids"
         )
         for rec in res:
-            existing_by_company[rec["company"]] = rec["ids"]
+            existing_by_source[str(rec["source"])] = list(rec["ids"])
 
-    if existing_by_company:
+    # A graph clear invalidates every marker. Otherwise validate node markers
+    # against actual sources; edge markers remain valid only while all nodes
+    # still exist, because upstream edges do not carry a problem/group id.
+    nodes_done &= {doc_id for doc_id in staged_files if Path(doc_id).stem in existing_by_source}
+    if not existing_by_source:
+        edges_done.clear()
+    _atomic_pickle_dump(nodes_done_path, nodes_done)
+    _atomic_pickle_dump(edges_done_path, edges_done)
+
+    if existing_by_source:
         logger.info(
-            "HopRAG streaming: %d companies already have nodes (partial resume): %s",
-            len(existing_by_company), sorted(existing_by_company.keys()),
+            "HopRAG streaming: %d documents already have nodes (partial resume)",
+            len(existing_by_source),
         )
 
     total_nodes = 0
+    # Stage 2a: insert each document exactly once, independent of how many
+    # problem contexts reference it.
+    for doc_index, doc_id in enumerate(sorted(staged_files), start=1):
+        pkl_file = per_doc_dir / (doc_id + ".pkl")
+        if not pkl_file.is_file():
+            raise FileNotFoundError(f"HopRAG Stage 2 cache missing for {doc_id}: {pkl_file}")
+        try:
+            with open(pkl_file, "rb") as handle:
+                _local_nodes, local_n2q = pickle.load(handle)
+        except Exception as exc:
+            raise RuntimeError(f"HopRAG corrupt Stage 2 cache for {doc_id}") from exc
+        if not local_n2q:
+            raise RuntimeError(f"HopRAG Stage 2 cache has no nodes for {doc_id}")
 
-    for company, doc_list in groups.items():
-        if company in edges_done:
-            logger.info("HopRAG streaming: skip company=%s (edges already done)", company)
+        stem = Path(doc_id).stem
+        existing_ids = existing_by_source.get(stem, [])
+        if existing_ids:
+            if len(existing_ids) != len(local_n2q):
+                raise RuntimeError(
+                    f"HopRAG resume count mismatch for {doc_id}: Neo4j={len(existing_ids)}, cache={len(local_n2q)}"
+                )
+            nodes_done.add(doc_id)
+            del local_n2q
+            gc.collect()
             continue
 
-        company_n2q: dict = {}
-        company_docid2nodes: dict = {}
-        backfill_pairs: list = []
+        rows = []
+        for node, _questiondict in local_n2q.values():
+            embed = node["embed"]
+            if hasattr(embed, "tolist"):
+                embed = embed.tolist()
+            rows.append({"text": node["text"], "keywords": node["keywords"], "embed": embed})
 
-        if company in nodes_done or company in existing_by_company:
-            # Nodes already in Neo4j — rebuild company_n2q by querying Neo4j per-doc.
-            # Neo4j auto-increments node IDs, so ORDER BY id(n) matches insertion order,
-            # which matches local_n2q.items() dict order (Python 3.7+ insertion order).
+        real_ids: list[int] = []
+        with builder.driver.session() as session:
+            for offset in range(0, len(rows), _NODE_INSERT_BATCH):
+                batch = rows[offset : offset + _NODE_INSERT_BATCH]
+                result = session.run(unwind_insert, {"rows": batch})
+                batch_ids = [record[0] for record in result]
+                if len(batch_ids) != len(batch):
+                    raise RuntimeError(f"HopRAG UNWIND returned {len(batch_ids)} IDs for {len(batch)} nodes")
+                real_ids.extend(batch_ids)
+            backfill = [{"id": int(real_id), "source": stem} for real_id in real_ids]
+            session.run(backfill_cypher, {"rows": backfill})
+        existing_by_source[stem] = real_ids
+        nodes_done.add(doc_id)
+        _atomic_pickle_dump(nodes_done_path, nodes_done)
+        total_nodes += len(real_ids)
+        if doc_index % 100 == 0 or doc_index == len(staged_files):
             logger.info(
-                "HopRAG streaming: company=%s nodes already inserted — rebuilding n2q from Neo4j+pkl",
-                company,
+                "HopRAG Stage 2a nodes: %d/%d documents, %d nodes inserted this run",
+                doc_index,
+                len(staged_files),
+                total_nodes,
             )
-            per_doc_id_query = (
-                f"MATCH (n:{builder.label}) WHERE n.source = $stem "
-                f"RETURN id(n) AS nid ORDER BY id(n)"
-            )
-            rebuild_ok = True
-            for doc_id in sorted(doc_list):
-                stem = Path(doc_id).stem
-                pkl_file = per_doc_dir / (doc_id + ".pkl")
-                if not pkl_file.exists():
-                    logger.warning("HopRAG streaming resume: missing pkl for %s, skipping company", doc_id)
-                    rebuild_ok = False
-                    break
-                try:
-                    with open(pkl_file, "rb") as fh:
-                        _local_nodes, local_n2q = pickle.load(fh)
-                except Exception as exc:
-                    logger.warning("HopRAG streaming resume: corrupt pkl %s: %s", doc_id, exc)
-                    rebuild_ok = False
-                    break
-
-                with builder.driver.session() as s:
-                    existing_ids = [r["nid"] for r in s.run(per_doc_id_query, {"stem": stem})]
-
-                if len(existing_ids) != len(local_n2q):
-                    logger.warning(
-                        "HopRAG streaming resume: doc %s Neo4j count %d != pkl count %d — skipping company",
-                        doc_id, len(existing_ids), len(local_n2q),
-                    )
-                    rebuild_ok = False
-                    break
-
-                for real_id, ((_fake_id, did), (_node, questiondict)) in zip(
-                    existing_ids, local_n2q.items()
-                ):
-                    company_n2q[(real_id, did)] = questiondict
-                    company_docid2nodes.setdefault(did, []).append(real_id)
-                del local_n2q
-                gc.collect()
-
-            if not rebuild_ok or not company_n2q:
-                logger.warning(
-                    "HopRAG streaming: could not rebuild n2q for company=%s — skipping edges", company
-                )
-                del company_n2q, company_docid2nodes, backfill_pairs
-                gc.collect()
-                continue
-
-        else:
-            # Normal path: insert nodes for this company.
-            for doc_id in sorted(doc_list):
-                pkl_file = per_doc_dir / (doc_id + ".pkl")
-                if not pkl_file.exists():
-                    logger.warning("HopRAG streaming: missing pkl for %s, skipping", doc_id)
-                    continue
-                try:
-                    with open(pkl_file, "rb") as fh:
-                        _local_nodes, local_n2q = pickle.load(fh)
-                except Exception as exc:
-                    logger.warning("HopRAG streaming: corrupt pkl for %s: %s", doc_id, exc)
-                    continue
-
-                rows: list = []
-                key_order: list = []
-                for (_fake_id, did), (node, questiondict) in local_n2q.items():
-                    embed = node["embed"]
-                    if hasattr(embed, "tolist"):
-                        embed = embed.tolist()
-                    rows.append({
-                        "text": node["text"],
-                        "keywords": node["keywords"],
-                        "embed": embed,
-                    })
-                    key_order.append((did, questiondict))
-
-                if not rows:
-                    del local_n2q, rows, key_order
-                    gc.collect()
-                    continue
-
-                real_ids: list = []
-                with builder.driver.session() as session:
-                    for i in range(0, len(rows), _NODE_INSERT_BATCH):
-                        batch = rows[i : i + _NODE_INSERT_BATCH]
-                        result = session.run(unwind_insert, {"rows": batch})
-                        batch_ids = [r[0] for r in result]
-                        if len(batch_ids) != len(batch):
-                            raise RuntimeError(
-                                f"HopRAG streaming: UNWIND returned {len(batch_ids)} IDs "
-                                f"for batch of {len(batch)} — aborting"
-                            )
-                        real_ids.extend(batch_ids)
-
-                stem = Path(doc_id).stem
-                comp = file_to_company.get(doc_id, "_unknown")
-                for (did, questiondict), real_id in zip(key_order, real_ids):
-                    company_n2q[(real_id, did)] = questiondict
-                    company_docid2nodes.setdefault(did, []).append(real_id)
-                    backfill_pairs.append({"id": int(real_id), "source": stem, "company": comp})
-
-                total_nodes += len(real_ids)
-                del local_n2q, rows, key_order, real_ids
-                gc.collect()
-
-            if not company_docid2nodes:
-                continue
-
-            if backfill_pairs:
-                with builder.driver.session() as s:
-                    for i in range(0, len(backfill_pairs), _NODE_INSERT_BATCH):
-                        s.run(backfill_cypher, {"rows": backfill_pairs[i : i + _NODE_INSERT_BATCH]})
-
-            # Persist nodes_done immediately so a crash mid-edge won't re-insert nodes.
-            nodes_done.add(company)
-            with open(nodes_done_path, "wb") as fh:
-                pickle.dump(nodes_done, fh)
-
-        if company_n2q:
-            try:
-                builder.create_edge(company_n2q, company_docid2nodes)
-                logger.info(
-                    "HopRAG streaming: edges for company=%s (%d docs, %d nodes)",
-                    company, len(company_docid2nodes), len(company_n2q),
-                )
-                edges_done.add(company)
-                with open(edges_done_path, "wb") as fh:
-                    pickle.dump(edges_done, fh)
-            except Exception as exc:
-                logger.warning(
-                    "HopRAG streaming: edge build failed company=%s: %s", company, exc
-                )
-
-        del company_n2q, company_docid2nodes, backfill_pairs
+        del local_n2q, rows, real_ids
         gc.collect()
 
-    logger.info("HopRAG streaming Stage 2 complete: %d total nodes inserted", total_nodes)
+    # Stage 2b: stream one official problem context at a time.
+    for group_index, (group_id, doc_list) in enumerate(groups.items(), start=1):
+        if group_id in edges_done:
+            continue
+        group_n2q: dict = {}
+        group_docid2nodes: dict = {}
+        for doc_id in doc_list:
+            pkl_file = per_doc_dir / (doc_id + ".pkl")
+            try:
+                with open(pkl_file, "rb") as handle:
+                    _local_nodes, local_n2q = pickle.load(handle)
+            except Exception as exc:
+                raise RuntimeError(f"HopRAG could not load edge cache for group={group_id}, doc={doc_id}") from exc
+            real_ids = existing_by_source.get(Path(doc_id).stem, [])
+            if len(real_ids) != len(local_n2q):
+                raise RuntimeError(f"HopRAG edge input mismatch for group={group_id}, doc={doc_id}")
+            for real_id, ((_fake_id, did), (_node, questiondict)) in zip(real_ids, local_n2q.items()):
+                group_n2q[(real_id, did)] = questiondict
+                group_docid2nodes.setdefault(did, []).append(real_id)
+        if not group_n2q:
+            raise RuntimeError(f"HopRAG edge group {group_id} has no nodes")
+        try:
+            builder.create_edge(group_n2q, group_docid2nodes)
+        except Exception as exc:
+            raise RuntimeError(f"HopRAG edge build failed for group={group_id}") from exc
+        edges_done.add(group_id)
+        _atomic_pickle_dump(edges_done_path, edges_done)
+        if group_index % 100 == 0 or group_index == len(groups):
+            logger.info("HopRAG Stage 2b edges: %d/%d groups", group_index, len(groups))
+        del group_n2q, group_docid2nodes
+        gc.collect()
+
+    missing_edge_groups = set(groups) - edges_done
+    if missing_edge_groups:
+        raise RuntimeError(
+            "HopRAG Stage 2 incomplete; missing completed edge groups: " + ", ".join(sorted(missing_edge_groups)[:10])
+        )
+    logger.info("HopRAG streaming Stage 2 complete: %d nodes inserted this run", total_nodes)
 
 
 def _run_official_index_blocking(
     dataset_path: str,
     corpus_tag: str,
-    sample_companies: Optional[list[str]],
 ) -> None:
     """Synchronous driver — HopBuilder is sync, so we call it directly and
     let the orchestrator wrap us in run_in_executor."""
     _setup_hoprag_modules(corpus_tag)
 
     # Now safe to import HopBuilder (it does `from config import *`).
-    import HopBuilder
     import config
+    import HopBuilder
 
-    staged_input, file_to_company = _stage_input_files(
-        dataset_path, corpus_tag, sample_companies
-    )
+    staged_input, staged_files = _stage_input_files(dataset_path, corpus_tag)
     cache_dir = cache_dir_for(corpus_tag)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Stage 1: build nodes (LLM-heavy: title/keywords + answerable+pending Qs).
     # main_nodes auto-resumes via docid2nodes.json cache.
     logger.info(
-        "HopRAG official indexing: corpus_tag=%s, %d input files, output=%s, "
-        "node_name=%s edge_name=%s gen=%s embed=%s",
-        corpus_tag, len(file_to_company), output_dir_for(corpus_tag),
-        config.node_name, config.edge_name, _GEN_API_BASE, _EMBED_API_BASE,
+        "HopRAG official indexing: corpus_tag=%s, %d input files, output=%s, node_name=%s edge_name=%s gen=%s embed=%s",
+        corpus_tag,
+        len(staged_files),
+        output_dir_for(corpus_tag),
+        config.node_name,
+        config.edge_name,
+        _GEN_API_BASE,
+        _EMBED_API_BASE,
     )
 
     HopBuilder.main_nodes(
@@ -1358,23 +1472,18 @@ def _run_official_index_blocking(
         docs_dir=str(staged_input),
         label=config.node_name,
         start_index=0,
-        span=len(file_to_company) + 100,
+        span=len(staged_files) + 100,
         offline=True,
     )
 
-    # Stage 2: insert nodes + build edges, streamed one company at a time.
+    # Stage 2: insert nodes once, then build edges one official group at a time.
     # Avoids loading all 324 docs × ~168 MB = ~54 GB into RAM at once.
     per_doc_dir = cache_dir / "docs"
     if not per_doc_dir.exists() or not any(per_doc_dir.glob("*.pkl")):
-        logger.error(
-            "HopRAG: per-doc pkl cache missing at %s — cannot build edges. "
-            "Re-run Stage 1 (run_index.sh --model hoprag).",
-            per_doc_dir,
-        )
-        return
+        raise RuntimeError(f"HopRAG per-doc cache missing at {per_doc_dir}; Stage 1 produced no usable output")
 
     builder = HopBuilder.QABuilder(done=set(), label=config.node_name)
-    _run_stage2_company_streaming(builder, per_doc_dir, file_to_company, config)
+    _run_stage2_group_streaming(builder, per_doc_dir, staged_files, config)
 
     # Stage 3: vector + fulltext indices.
     builder.create_index()
@@ -1387,7 +1496,6 @@ def _run_official_index_blocking(
 async def run_official_index(
     dataset_path: str,
     corpus_tag: str,
-    sample_companies: Optional[list[str]] = None,
 ) -> None:
     """Async wrapper around the sync HopBuilder driver."""
     loop = asyncio.get_event_loop()
@@ -1396,5 +1504,4 @@ async def run_official_index(
         _run_official_index_blocking,
         dataset_path,
         corpus_tag,
-        sample_companies,
     )

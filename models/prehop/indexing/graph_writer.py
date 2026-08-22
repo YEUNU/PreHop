@@ -7,62 +7,18 @@ to HopEdgeMixin (paper §3.1.4).
 Three node types per (strategy, corpus_tag) namespace:
 - Body / Q- / Q+ vector indices, plus matching BM25-style fulltext indices.
 """
+
 import asyncio
 import logging
 import random
 import re
-from typing import Any, Optional
+from typing import Any
 
 from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
 
 from core.config import RAGConfig
 
 from .chunking import _make_semantic_chunk_id
-
-
-_COMPANY_ALIASES = {
-    # Typo in the source corpus filename — `ACTIVSIONBLIZZARD_2023Q2_10Q.txt`
-    # is missing an 'I' compared to all other Activision Blizzard filings.
-    # Without normalization, the same-company HOP filter would split this
-    # company into two graph islands.
-    "ACTIVSIONBLIZZARD": "ACTIVISIONBLIZZARD",
-}
-
-
-def _company_from_source(source: str) -> str:
-    """Extract a normalized company key from a FinanceBench filename.
-
-    Filenames follow `<COMPANY>_<YEAR>[Qn]_<FORM>.txt`, e.g.
-      3M_2015_10K.txt                -> 3M
-      JOHNSON_JOHNSON_2023_10K.txt   -> JOHNSON_JOHNSON
-      AMERICANWATERWORKS_2020_10K.txt -> AMERICANWATERWORKS
-      BESTBUY_2023_8K_dated-2023-04-24.txt -> BESTBUY
-      3M_2023Q2_10Q.txt              -> 3M
-      MCDONALDS_8K_dated-2023-...txt -> MCDONALDS  (no year token; falls
-                                                    back to parts[0])
-      Pfizer_2023Q2_10Q.txt          -> PFIZER     (case-normalized)
-      ACTIVSIONBLIZZARD_2023Q2_...txt -> ACTIVISIONBLIZZARD  (typo aliased)
-
-    Splits on `_`, joins all segments before the first segment starting
-    with a 4-digit year token. Multi-word names (with underscores) are
-    preserved. Result is uppercased and run through the alias map so that
-    case-inconsistent filenames (e.g., `Pfizer` vs `PFIZER`) and known
-    typos collapse onto a single company key. Used as the same-company
-    HOP-edge filter (paper §3.1.4) to keep multi-hop bridges intra-entity.
-    """
-    if not source:
-        return ""
-    base = source.rsplit(".", 1)[0]
-    parts = base.split("_")
-    extracted = parts[0]
-    for i, p in enumerate(parts):
-        if re.match(r"^\d{4}", p):  # year token like "2015" or "2023Q2"
-            extracted = "_".join(parts[:i]) if i > 0 else parts[0]
-            break
-
-    normalized = extracted.upper()
-    return _COMPANY_ALIASES.get(normalized, normalized)
-
 
 logger = logging.getLogger(__name__)
 
@@ -80,18 +36,9 @@ class GraphWriterMixin:
                 f"""
                 CREATE VECTOR INDEX {index_name} IF NOT EXISTS
                 FOR (n:{self.chunk_label}) ON (n.{property_name})
-                OPTIONS {{indexConfig: {{`vector.dimensions`: $dimensions, `vector.similarity_function`: 'cosine'}}}} """
-                ,
+                OPTIONS {{indexConfig: {{`vector.dimensions`: $dimensions, `vector.similarity_function`: 'cosine'}}}} """,
                 {"dimensions": self.vector_dimensions},
             )
-
-        if RAGConfig.RECREATE_TEXT_INDEX:
-            for index_name in [
-                self.body_text_index,
-                self.q_minus_text_index,
-                self.q_plus_text_index,
-            ]:
-                await self.neo4j.execute_query(f"DROP INDEX {index_name} IF EXISTS")
 
         await self.neo4j.execute_query(f"""
             CREATE FULLTEXT INDEX {self.body_text_index} IF NOT EXISTS
@@ -107,9 +54,11 @@ class GraphWriterMixin:
             OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
 
         await self.neo4j.execute_query(
-            f"CREATE INDEX {self.chunk_label}_id_idx IF NOT EXISTS FOR (n:{self.chunk_label}) ON (n.id)")
+            f"CREATE INDEX {self.chunk_label}_id_idx IF NOT EXISTS FOR (n:{self.chunk_label}) ON (n.id)"
+        )
         await self.neo4j.execute_query(
-            f"CREATE INDEX {self.doc_label}_fn_idx IF NOT EXISTS FOR (n:{self.doc_label}) ON (n.filename)")
+            f"CREATE INDEX {self.doc_label}_fn_idx IF NOT EXISTS FOR (n:{self.doc_label}) ON (n.filename)"
+        )
 
     async def _ensure_index_ready(self):
         if self._index_ready:
@@ -134,7 +83,7 @@ class GraphWriterMixin:
         ]
         return any(marker in code or marker in text for marker in markers)
 
-    async def retry_query(self, query: str, parameters: Optional[dict[str, Any]] = None):
+    async def retry_query(self, query: str, parameters: dict[str, Any] | None = None):
         for attempt in range(self.max_retries):
             try:
                 return await self.neo4j.execute_query(query, parameters)
@@ -143,7 +92,7 @@ class GraphWriterMixin:
                     raise
                 if attempt == self.max_retries - 1:
                     raise
-                delay = (RAGConfig.RETRY_DELAY * (2 ** attempt)) + random.uniform(0, RAGConfig.RETRY_DELAY)
+                delay = (RAGConfig.RETRY_DELAY * (2**attempt)) + random.uniform(0, RAGConfig.RETRY_DELAY)
                 logger.warning(
                     "Neo4j transient error (attempt %d/%d), retrying in %.2fs: %s",
                     attempt + 1,
@@ -160,18 +109,23 @@ class GraphWriterMixin:
             RETURN d.filename as id
         """
         async with self._batch_lock:
-            results = await self.retry_query(query, {
-                "filename": filename,
-                "title": metadata.get("title", filename),
-            })
-        return results[0]["id"] if results else filename
+            results = await self.retry_query(
+                query,
+                {
+                    "filename": filename,
+                    "title": metadata.get("title", filename),
+                },
+            )
+        if not results or not results[0].get("id"):
+            raise RuntimeError(f"Neo4j did not return a document id for {filename!r}")
+        return str(results[0]["id"])
 
     async def build_graph(self, knowledge: dict[str, Any], source: str, document_filename: str):
         await self._ensure_index_ready()
 
         chunks = knowledge.get("chunks", [])
         if not chunks:
-            return
+            raise ValueError(f"No chunks generated for source={source!r}")
 
         body_texts = [str(chunk.get("text", "") or "") for chunk in chunks]
         q_minus_texts = [
@@ -179,29 +133,23 @@ class GraphWriterMixin:
             for chunk in chunks
         ]
 
-        gated_q_plus_per_chunk: list[list[str]] = []
+        q_plus_per_chunk: list[list[str]] = []
         q_plus_texts: list[str] = []
         for chunk in chunks:
-            raw_q_plus = self._dedupe_preserve_order([str(value or "") for value in chunk.get("q_plus", [])])
-            gated_q_plus = [
-                question for question in raw_q_plus
-                if self._is_high_quality_q_plus(
-                    question,
-                    str(chunk.get("title", "") or ""),
-                    str(chunk.get("text", "") or ""),
-                )
-            ]
-            gated_q_plus_per_chunk.append(gated_q_plus)
-            q_plus_texts.append(" ".join(gated_q_plus).strip())
+            q_plus = self._dedupe_preserve_order([str(value or "") for value in chunk.get("q_plus", [])])
+            q_plus_per_chunk.append(q_plus)
+            q_plus_texts.append(" ".join(q_plus).strip())
 
         empty_per_chunk = [[] for _ in body_texts]
         embed_jobs = [self._embed_sparse_texts(body_texts)]
         embed_jobs.append(
-            self._embed_sparse_texts(q_minus_texts) if RAGConfig.ABLATION_Q_MINUS
+            self._embed_sparse_texts(q_minus_texts)
+            if RAGConfig.ABLATION_Q_MINUS
             else asyncio.sleep(0, result=empty_per_chunk)
         )
         embed_jobs.append(
-            self._embed_sparse_texts(q_plus_texts) if RAGConfig.ABLATION_Q_PLUS
+            self._embed_sparse_texts(q_plus_texts)
+            if RAGConfig.ABLATION_Q_PLUS
             else asyncio.sleep(0, result=empty_per_chunk)
         )
         body_embeds, q_minus_embeds, q_plus_embeds = await asyncio.gather(*embed_jobs)
@@ -212,13 +160,9 @@ class GraphWriterMixin:
             q_minus_embedding = (
                 q_minus_embeds[index] if RAGConfig.ABLATION_Q_MINUS and index < len(q_minus_embeds) else []
             )
-            q_plus_embedding = (
-                q_plus_embeds[index] if RAGConfig.ABLATION_Q_PLUS and index < len(q_plus_embeds) else []
-            )
+            q_plus_embedding = q_plus_embeds[index] if RAGConfig.ABLATION_Q_PLUS and index < len(q_plus_embeds) else []
             q_plus_items = (
-                gated_q_plus_per_chunk[index]
-                if RAGConfig.ABLATION_Q_PLUS and index < len(gated_q_plus_per_chunk)
-                else []
+                q_plus_per_chunk[index] if RAGConfig.ABLATION_Q_PLUS and index < len(q_plus_per_chunk) else []
             )
 
             if not body_embedding:
@@ -227,25 +171,26 @@ class GraphWriterMixin:
                     f"title={chunk.get('title', '')} sent_id={chunk.get('sent_id', -1)}"
                 )
             chunk_id = _make_semantic_chunk_id(source, chunk["title"], chunk["sent_id"])
-            batch_data.append({
-                "id": chunk_id,
-                "text": chunk["text"],
-                "source": source,
-                "company": _company_from_source(source),
-                "title": chunk["title"],
-                "sent_id": chunk["sent_id"],
-                "page": chunk.get("page", 0),
-                "embedding": body_embedding,
-                "q_minus_embedding": q_minus_embedding if q_minus_embedding else None,
-                "q_plus_embedding": q_plus_embedding if q_plus_embedding and q_plus_items else None,
-                "q_minus_text": (
-                    q_minus_texts[index] if RAGConfig.ABLATION_Q_MINUS and index < len(q_minus_texts) else ""
-                ),
-                "q_plus_text": (
-                    q_plus_texts[index] if RAGConfig.ABLATION_Q_PLUS and index < len(q_plus_texts) else ""
-                ),
-                "chunk_summary": chunk["summary"],
-            })
+            batch_data.append(
+                {
+                    "id": chunk_id,
+                    "text": chunk["text"],
+                    "source": source,
+                    "title": chunk["title"],
+                    "sent_id": chunk["sent_id"],
+                    "page": chunk.get("page", 0),
+                    "embedding": body_embedding,
+                    "q_minus_embedding": q_minus_embedding if q_minus_embedding else None,
+                    "q_plus_embedding": q_plus_embedding if q_plus_embedding and q_plus_items else None,
+                    "q_minus_text": (
+                        q_minus_texts[index] if RAGConfig.ABLATION_Q_MINUS and index < len(q_minus_texts) else ""
+                    ),
+                    "q_plus_text": (
+                        q_plus_texts[index] if RAGConfig.ABLATION_Q_PLUS and index < len(q_plus_texts) else ""
+                    ),
+                    "chunk_summary": chunk["summary"],
+                }
+            )
 
         async with self._batch_lock:
             self._pending_batch.append({"data": batch_data, "doc_id": document_filename})
@@ -263,28 +208,41 @@ class GraphWriterMixin:
         current_batch = self._pending_batch
         self._pending_batch = []
 
-        for item in current_batch:
-            await self.retry_query(f"""
-                MATCH (d:{self.doc_label} {{filename: $doc_id}})
-                WITH d
-                UNWIND $batch AS item
-                MERGE (c:{self.chunk_label} {{id: item.id}})
-                SET c.text = item.text, c.source = item.source, c.company = item.company,
-                    c.title = item.title,
-                    c.sent_id = item.sent_id, c.page = item.page,
-                    c.embedding = item.embedding,
-                    c.q_minus_embedding = item.q_minus_embedding,
-                    c.q_plus_embedding = item.q_plus_embedding, c.q_minus_text = item.q_minus_text,
-                    c.q_plus_text = item.q_plus_text, c.chunk_summary = item.chunk_summary
-                MERGE (d)-[:CONTAINS]->(c)
-            """, {"batch": item["data"], "doc_id": item["doc_id"]})
+        try:
+            for item in current_batch:
+                await self.retry_query(
+                    f"""
+                    MATCH (d:{self.doc_label} {{filename: $doc_id}})
+                    WITH d
+                    UNWIND $batch AS item
+                    MERGE (c:{self.chunk_label} {{id: item.id}})
+                    SET c.text = item.text, c.source = item.source,
+                        c.title = item.title,
+                        c.sent_id = item.sent_id, c.page = item.page,
+                        c.embedding = item.embedding,
+                        c.q_minus_embedding = item.q_minus_embedding,
+                        c.q_plus_embedding = item.q_plus_embedding, c.q_minus_text = item.q_minus_text,
+                        c.q_plus_text = item.q_plus_text, c.chunk_summary = item.chunk_summary
+                    MERGE (d)-[:CONTAINS]->(c)
+                """,
+                    {"batch": item["data"], "doc_id": item["doc_id"]},
+                )
 
-            await self.retry_query(f"""
-                UNWIND range(0, size($batch)-2) AS i
-                MATCH (c1:{self.chunk_label} {{id: $batch[i].id}})
-                MATCH (c2:{self.chunk_label} {{id: $batch[i+1].id}})
-                MERGE (c1)-[:NEXT]->(c2)
-            """, {"batch": item["data"]})
+                await self.retry_query(
+                    f"""
+                    UNWIND range(0, size($batch)-2) AS i
+                    MATCH (c1:{self.chunk_label} {{id: $batch[i].id}})
+                    MATCH (c2:{self.chunk_label} {{id: $batch[i+1].id}})
+                    MERGE (c1)-[:NEXT]->(c2)
+                """,
+                    {"batch": item["data"]},
+                )
+        except Exception:
+            # MERGE makes replay safe. Restore the whole wave, including items
+            # already written before the failure, so a later flush cannot
+            # silently lose documents when one Neo4j write exhausts retries.
+            self._pending_batch = current_batch + self._pending_batch
+            raise
 
         # HOP edge construction is now a single one-shot pass at the end of
         # indexing (`build_all_hop_edges`), invoked from cli/index.py after
