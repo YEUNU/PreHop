@@ -211,9 +211,10 @@ def _resolve_judge_fields(
         judge_score = UNJUDGED_SCORE
         judge_reason = "unjudged_no_score"
 
-    # Honest-abstain rule is deterministic. Otherwise hallucination tracks the
-    # judge: explicit field, else derived from a real score; an unjudged row
-    # stays unjudged (never fabricated as a hallucination).
+    # Honest-abstain rule is deterministic. Otherwise hallucination requires
+    # the judge's explicit field. A merely incorrect answer is not necessarily
+    # a hallucination, so deriving this label from score would conflate two
+    # different paper metrics.
     if _is_insufficient_text(response):
         hallucination = 0.0
         hallucination_reason = "non_answer_insufficient"
@@ -226,13 +227,9 @@ def _resolve_judge_fields(
         hallucination = 1.0 if parsed_hallu >= 0.5 else 0.0
         hallucination_reason = str((judge_payload or {}).get("reason", "")) or "combined_judge"
         hallucination_source = "combined_judge"
-    elif judge_score >= 0.0:
-        hallucination = 1.0 if judge_score < 1.0 else 0.0
-        hallucination_reason = "derived_from_judge_score"
-        hallucination_source = "llm_judge_fallback"
     else:
         hallucination = UNJUDGED_SCORE
-        hallucination_reason = "unjudged_no_score"
+        hallucination_reason = "unjudged_no_hallucination_field"
         hallucination_source = "unjudged"
 
     return {

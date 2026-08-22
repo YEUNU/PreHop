@@ -31,7 +31,12 @@ class VLLMClient:
         # 0 = infinite timeout (None)
         timeout_val = RAGConfig.LLM_REQUEST_TIMEOUT
         self._request_timeout = None if timeout_val == 0 else timeout_val
-        self._embed_semaphore = asyncio.Semaphore(RAGConfig.MAX_CONCURRENT_LLM_CALLS)
+        # HopRAG's synchronous upstream hooks may call this client from fresh
+        # event loops in worker threads. asyncio synchronization primitives
+        # are loop-bound after first contention, so keep one semaphore per
+        # running loop instead of sharing a single cross-loop object.
+        self._embed_semaphores: dict[int, asyncio.Semaphore] = {}
+        self._generation_semaphores: dict[int, asyncio.Semaphore] = {}
 
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -226,12 +231,26 @@ class VLLMClient:
         return f"Instruct: {task}\nQuery:{query}"
 
     async def _create_embedding_request(self, inputs: list[str]):
-        async with self._embed_semaphore:
+        loop_id = self._running_loop_id()
+        semaphore = self._embed_semaphores.setdefault(
+            loop_id,
+            asyncio.Semaphore(RAGConfig.MAX_CONCURRENT_EMBEDDING_REQUESTS),
+        )
+        async with semaphore:
             return await self._retry_with_backoff(
                 self.embed_client.embeddings.create,
                 model=self.embed_model_name,
                 input=inputs,
             )
+
+    async def _create_generation_request(self, request_client: AsyncOpenAI, params: dict[str, Any]):
+        loop_id = self._running_loop_id()
+        semaphore = self._generation_semaphores.setdefault(
+            loop_id,
+            asyncio.Semaphore(RAGConfig.MAX_CONCURRENT_LLM_CALLS),
+        )
+        async with semaphore:
+            return await self._retry_with_backoff(request_client.chat.completions.create, **params)
 
     async def _embed_batch_itemwise(self, batch: list[str], encoding_type: str) -> list[list[float]]:
         embeddings: list[list[float]] = []
@@ -385,7 +404,7 @@ class VLLMClient:
             if is_openai:
                 params.pop("extra_body", None)
             request_client = self.judge_client if is_openai else self.client
-            response = await self._retry_with_backoff(request_client.chat.completions.create, **params)
+            response = await self._create_generation_request(request_client, params)
             msg = response.choices[0].message
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 return msg
@@ -475,7 +494,7 @@ class VLLMClient:
                 params["extra_body"] = kwargs.get("extra_body") or {"chat_template_kwargs": {"enable_thinking": False}}
             if RAGConfig.LLM_SEED is not None:
                 params["seed"] = RAGConfig.LLM_SEED
-            response = await self._retry_with_backoff(self.judge_client.chat.completions.create, **params)
+            response = await self._create_generation_request(self.judge_client, params)
             content = response.choices[0].message.content or ""
             try:
                 parsed = json.loads(content)

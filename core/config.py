@@ -39,7 +39,9 @@ class RAGConfig:
 
     # --- RAG & Indexing Settings ---
     MAX_CONCURRENT_LLM_CALLS = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
-    EMBEDDING_BATCH_SIZE = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "128"))
+    MAX_CONCURRENT_EMBEDDING_REQUESTS = int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2"))
+    EMBEDDING_BATCH_SIZE = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32"))
+    VLLM_MAX_NUM_SEQS = int(os.environ.get("VLLM_MAX_NUM_SEQS", "128"))
     EMBEDDING_DIMENSIONS = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024"))
     NEO4J_BATCH_SIZE = int(os.environ.get("NEO4J_BATCH_SIZE", "25"))
 
@@ -52,9 +54,6 @@ class RAGConfig:
     VECTOR_SEARCH_LIMIT = int(os.environ.get("RAG_VECTOR_SEARCH_LIMIT", "20"))
     TEXT_SEARCH_LIMIT = int(os.environ.get("RAG_TEXT_SEARCH_LIMIT", "20"))
 
-    # --- Offline graph construction & traversal ---
-    HOP_THRESHOLD = float(os.environ.get("RAG_HOP_THRESHOLD", "0.82"))
-
     # --- Indexing Pipeline Settings ---
     # Fixed-size chunking (core-only rewrite — replaces adaptive/embedding-
     # similarity chunk splitting). Each page is windowed into chunks of
@@ -64,7 +63,20 @@ class RAGConfig:
     CHUNK_SENTENCES = int(os.environ.get("RAG_CHUNK_SENTENCES", "6"))
     MIN_CHUNK_SENTENCES = int(os.environ.get("RAG_MIN_CHUNK_SENTENCES", "2"))
     HOP_LINK_LIMIT = int(os.environ.get("RAG_HOP_LINK_LIMIT", "5"))
-    GRAPH_SEARCH_LIMIT = int(os.environ.get("RAG_GRAPH_SEARCH_LIMIT", "10"))
+    # Each individual Q+ searches all three document-side representations.
+    # Neo4j applies WHERE after ANN candidate generation, so the ANN pool is
+    # intentionally larger than the retained cross-document candidate list.
+    HOP_CANDIDATE_LIMIT = int(os.environ.get("RAG_HOP_CANDIDATE_LIMIT", "15"))
+    HOP_ANN_POOL = int(os.environ.get("RAG_HOP_ANN_POOL", "50"))
+    # HOP ANN sends high-dimensional vectors and candidate rows through Neo4j
+    # transactions. Keep waves/channels bounded independently from file/LLM
+    # concurrency to stay below the database transaction-memory pool.
+    HOP_GATHER_WAVE = int(os.environ.get("RAG_HOP_GATHER_WAVE", "64"))
+    HOP_CHANNEL_CONCURRENCY = int(os.environ.get("RAG_HOP_CHANNEL_CONCURRENCY", "2"))
+    # Q+->Q+ is supporting evidence for a direct Q+->Q-/body match, not an
+    # independently traversable document edge.
+    HOP_SAME_NEED_WEIGHT = float(os.environ.get("RAG_HOP_SAME_NEED_WEIGHT", "0.5"))
+    GRAPH_SEARCH_LIMIT = int(os.environ.get("RAG_GRAPH_SEARCH_LIMIT", "20"))
     DEFAULT_TOP_K = int(os.environ.get("RAG_DEFAULT_TOP_K", "12"))
     FULLTEXT_ANALYZER = os.environ.get("NEO4J_FULLTEXT_ANALYZER", "english")
 
@@ -72,7 +84,8 @@ class RAGConfig:
     # (Stage 1+2 RRF + similarity ordering, no graph expansion) for ablation; depth>0 uses
     # `graph_search` — deterministic traversal over the
     # NEXT/HOP edges built during indexing (paper §3.1.4), no LLM continuation
-    # check. depth=1 is the default (1-hop NEXT|HOP).
+    # check. depth=1 is the default (bidirectional NEXT plus outgoing
+    # HOP_ANSWER).
     GRAPH_HOP_DEPTH = int(os.environ.get("RAG_GRAPH_HOP_DEPTH", "1"))
 
     # --- Ablation & Experimental Toggles ---
@@ -95,3 +108,60 @@ class RAGConfig:
     #                        hypothetical channel). Stage 2 disabled.
     # No re-indexing required; only retrieval-time channel selection changes.
     HYPO_CHANNEL_VARIANT = os.environ.get("RAG_HYPO_CHANNEL_VARIANT", "full").strip().lower() or "full"
+
+    @classmethod
+    def validate(cls) -> None:
+        positive = {
+            "RETRY_COUNT": cls.RETRY_COUNT,
+            "MAX_CONCURRENT_LLM_CALLS": cls.MAX_CONCURRENT_LLM_CALLS,
+            "MAX_CONCURRENT_EMBEDDING_REQUESTS": cls.MAX_CONCURRENT_EMBEDDING_REQUESTS,
+            "EMBEDDING_BATCH_SIZE": cls.EMBEDDING_BATCH_SIZE,
+            "VLLM_MAX_NUM_SEQS": cls.VLLM_MAX_NUM_SEQS,
+            "EMBEDDING_DIMENSIONS": cls.EMBEDDING_DIMENSIONS,
+            "NEO4J_BATCH_SIZE": cls.NEO4J_BATCH_SIZE,
+            "RRF_K_CONSTANT": cls.RRF_K_CONSTANT,
+            "VECTOR_SEARCH_LIMIT": cls.VECTOR_SEARCH_LIMIT,
+            "TEXT_SEARCH_LIMIT": cls.TEXT_SEARCH_LIMIT,
+            "CHUNK_SENTENCES": cls.CHUNK_SENTENCES,
+            "MIN_CHUNK_SENTENCES": cls.MIN_CHUNK_SENTENCES,
+            "HOP_LINK_LIMIT": cls.HOP_LINK_LIMIT,
+            "HOP_CANDIDATE_LIMIT": cls.HOP_CANDIDATE_LIMIT,
+            "HOP_ANN_POOL": cls.HOP_ANN_POOL,
+            "HOP_GATHER_WAVE": cls.HOP_GATHER_WAVE,
+            "HOP_CHANNEL_CONCURRENCY": cls.HOP_CHANNEL_CONCURRENCY,
+            "GRAPH_SEARCH_LIMIT": cls.GRAPH_SEARCH_LIMIT,
+            "DEFAULT_TOP_K": cls.DEFAULT_TOP_K,
+        }
+        invalid = {name: value for name, value in positive.items() if value < 1}
+        if invalid:
+            raise ValueError(f"RAG configuration values must be positive: {invalid}")
+        if cls.EMBEDDING_BATCH_SIZE * cls.MAX_CONCURRENT_EMBEDDING_REQUESTS > cls.VLLM_MAX_NUM_SEQS:
+            raise ValueError(
+                "Embedding client can exceed VLLM_MAX_NUM_SEQS: "
+                f"batch={cls.EMBEDDING_BATCH_SIZE} * concurrent_requests="
+                f"{cls.MAX_CONCURRENT_EMBEDDING_REQUESTS} > {cls.VLLM_MAX_NUM_SEQS}"
+            )
+        if cls.MAX_CONCURRENT_LLM_CALLS > cls.VLLM_MAX_NUM_SEQS:
+            raise ValueError(
+                "Generation client can exceed VLLM_MAX_NUM_SEQS: "
+                f"concurrent_calls={cls.MAX_CONCURRENT_LLM_CALLS} > {cls.VLLM_MAX_NUM_SEQS}"
+            )
+        if cls.HOP_SAME_NEED_WEIGHT < 0:
+            raise ValueError("RAG_HOP_SAME_NEED_WEIGHT must be non-negative")
+        if cls.GRAPH_HOP_DEPTH < 0 or cls.GRAPH_HOP_DEPTH > 4:
+            raise ValueError("RAG_GRAPH_HOP_DEPTH must be between 0 and 4")
+
+        allowed_variants = {"full", "qminus_only", "qplus_only", "single_combined"}
+        if cls.HYPO_CHANNEL_VARIANT not in allowed_variants:
+            raise ValueError(
+                f"RAG_HYPO_CHANNEL_VARIANT={cls.HYPO_CHANNEL_VARIANT!r} is invalid; "
+                f"expected one of {sorted(allowed_variants)}"
+            )
+        if cls.HYPO_CHANNEL_VARIANT == "qminus_only" and not cls.ABLATION_Q_MINUS:
+            raise ValueError("qminus_only requires RAG_ABLATION_Q_MINUS=true")
+        if cls.HYPO_CHANNEL_VARIANT == "qplus_only" and not cls.ABLATION_Q_PLUS:
+            raise ValueError("qplus_only requires RAG_ABLATION_Q_PLUS=true")
+        if cls.HYPO_CHANNEL_VARIANT == "single_combined" and not (
+            cls.ABLATION_Q_MINUS and cls.ABLATION_Q_PLUS
+        ):
+            raise ValueError("single_combined requires both Q- and Q+ channels")

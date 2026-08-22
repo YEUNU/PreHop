@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-08-22 — Individual question graph and evidence-directed HOP/NEXT
+
+Q-/Q+ are now individual nodes with document-scoped embeddings rather than
+concatenated chunk properties. Every Q+ searches cross-document Q-, body, and
+Q+ channels; Q-/body matches are required for `HOP_ANSWER`, while Q+ same-need
+similarity is provenance/support only. Rank fusion replaces the obsolete 0.82
+cross-encoder-era cosine threshold. `NEXT` remains stored in document order and
+is traversed bidirectionally; `HOP_ANSWER` is traversed only toward evidence.
+Re-indexing a document atomically replaces its old chunk/question subgraph.
+Files removed from a corpus snapshot are pruned before a new run, and Naive
+now atomically replaces all chunks belonging to a changed/shortened source.
+Prehop no longer creates an empty document record before its embeddings have
+passed count/dimension validation.
+
+ANN over-fetch is now sized per source (`own representations + 15`, floor 50)
+instead of using the longest document for every request. Generation concurrency
+is enforced once per target event loop, embeddings use loop-local semaphores for
+HopRAG's threaded hooks, and the `max_num_seqs=128` capacity is validated. The
+unused threshold sweep, local-model/reranker loaders, and upstream end-to-end
+reranker script were removed.
+
+The matrix capacity planner now treats identical generation/embedding URLs as
+one shared `max_num_seqs` budget and separate URLs as independent budgets. It
+samples both queues and automatically reduces effective client concurrency
+before launch; official HopRAG's synchronous embedding hook now obeys the same
+batch/request limits and validates every returned vector.
+
+Judge hallucination is no longer inferred from an incorrect-answer score.
+OpenAI Batch reconciliation requires both explicit fields for every row and
+keeps the manifest/result untouched when either field is missing.
+
+Graph traversal now begins with the same 12 seeds as depth-0 retrieval. The
+old `top_k-1` combined with a graph-search cap of 10 silently removed two flat
+candidates before any edge was evaluated, which made the depth comparison
+invalid and caused avoidable gold-document losses.
+
 ## 2026-08-22 — Dataset-neutral Q⁺ storage
 
 Removed the post-generation Q⁺ heuristic gate entirely. All benchmark

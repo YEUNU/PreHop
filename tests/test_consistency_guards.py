@@ -40,8 +40,79 @@ def test_removed_optional_routes_are_not_configurable():
         "JUDGE_BATCH_ASYNC",
         "BENCHMARK_GATE_ENABLED",
         "RERANKER_THRESHOLD",
+        "HOP_THRESHOLD",
     ):
         assert not hasattr(RAGConfig, name)
+
+
+def test_config_rejects_unknown_hypothetical_channel_variant(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "typo")
+    with pytest.raises(ValueError, match="HYPO_CHANNEL_VARIANT"):
+        RAGConfig.validate()
+
+
+def test_config_rejects_disabled_requested_channel(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "qminus_only")
+    monkeypatch.setattr(RAGConfig, "ABLATION_Q_MINUS", False)
+    with pytest.raises(ValueError, match="requires"):
+        RAGConfig.validate()
+
+
+def test_config_rejects_embedding_pressure_above_server_capacity(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "EMBEDDING_BATCH_SIZE", 65)
+    monkeypatch.setattr(RAGConfig, "MAX_CONCURRENT_EMBEDDING_REQUESTS", 2)
+    monkeypatch.setattr(RAGConfig, "VLLM_MAX_NUM_SEQS", 128)
+    with pytest.raises(ValueError, match="Embedding client can exceed"):
+        RAGConfig.validate()
+
+
+def test_config_rejects_generation_pressure_above_server_capacity(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "MAX_CONCURRENT_LLM_CALLS", 129)
+    monkeypatch.setattr(RAGConfig, "VLLM_MAX_NUM_SEQS", 128)
+    with pytest.raises(ValueError, match="Generation client can exceed"):
+        RAGConfig.validate()
+
+
+def test_matrix_capacity_plan_accounts_for_shared_endpoint(monkeypatch):
+    from scripts.run_index_matrix import _fit_inference_capacity
+
+    monkeypatch.setenv("VLLM_URL", "http://inference.example/v1")
+    monkeypatch.setenv("VLLM_EMBED_URL", "http://inference.example/v1")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "128")
+    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "30")
+    monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
+    monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
+
+    plan = _fit_inference_capacity(max_parallel=2)
+
+    assert plan["generation_embedding_share_endpoint"] is True
+    assert plan["effective"]["embedding_concurrency_per_target"] == 1
+    assert plan["effective"]["aggregate_capacity_upper_bound"] == 124
+
+
+def test_matrix_capacity_plan_keeps_independent_server_budgets(monkeypatch):
+    from scripts.run_index_matrix import _fit_inference_capacity
+
+    monkeypatch.setenv("VLLM_URL", "http://generation.example/v1")
+    monkeypatch.setenv("VLLM_EMBED_URL", "http://embedding.example/v1")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "128")
+    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "30")
+    monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
+    monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
+
+    plan = _fit_inference_capacity(max_parallel=2)
+
+    assert plan["generation_embedding_share_endpoint"] is False
+    assert plan["adjusted"] is False
+    assert plan["effective"]["aggregate_capacity_upper_bound"] == 128
 
 
 def test_unjudged_benchmark_cannot_complete(tmp_path):
@@ -65,6 +136,28 @@ async def test_json_guard_rejects_truthy_wrong_schema():
             "Q-/Q+ generation",
             required_fields={"q_minus": list},
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        ({"summary": "ok", "q_minus": [123], "q_plus": []}, "non-string/blank"),
+        ({"summary": "ok", "q_minus": [""], "q_plus": []}, "non-string/blank"),
+        (
+            {"summary": "ok", "q_minus": ["q1", "q2", "q3", "q4"], "q_plus": []},
+            "more than 3",
+        ),
+        ({"summary": " ", "q_minus": [], "q_plus": []}, "blank summary"),
+    ],
+)
+async def test_knowledge_mapping_rejects_malformed_inner_schema(payload, message):
+    rag = GraphRAG(strategy="prehop")
+    rag.indexing_llm = AsyncMock()
+    rag.indexing_llm.generate_json.return_value = payload
+
+    with pytest.raises(ValueError, match=message):
+        await rag.extract_hoprag_queries("chunk", "title")
 
 
 @pytest.mark.asyncio
@@ -99,7 +192,7 @@ async def test_sparse_embedding_rejects_partial_batch():
 @pytest.mark.asyncio
 async def test_graph_flush_restores_batch_after_write_failure():
     rag = GraphRAG(strategy="prehop")
-    pending = {"data": [{"id": "c1"}], "doc_id": "doc.txt"}
+    pending = {"data": [{"id": "c1"}], "doc_id": "doc.txt", "doc_title": "Document"}
     rag._pending_batch = [pending]
     rag.retry_query = AsyncMock(side_effect=RuntimeError("neo4j down"))
 

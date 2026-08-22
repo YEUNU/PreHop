@@ -30,6 +30,27 @@ async def test_similarity_ordering_has_no_score_gate():
 
 
 @pytest.mark.asyncio
+async def test_hop_candidate_scoring_preserves_bridge_question_semantics():
+    rag = GraphRAG(strategy="prehop")
+    rag._embedding_similarity_scores = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[[0.6], [0.8]]
+    )
+    candidate = {
+        "id": "target",
+        "title": "2023 manual",
+        "text": "The target body.",
+        "bridge_text": "Bridge questions: Which 2023 manual superseded the 2022 port?",
+    }
+
+    selected, _ = await rag._score_and_select("Which manual superseded it?", [candidate], top_k=1)
+
+    assert rag._embedding_similarity_scores.await_args_list[1].args[1] == [candidate["bridge_text"]]
+    assert selected[0]["similarity_score"] == 0.6
+    assert selected[0]["bridge_similarity_score"] == 0.8
+    assert selected[0]["final_score"] == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
 async def test_retrieve_always_runs_q_plus_stage_in_full_mode():
     rag = GraphRAG(strategy="prehop")
 
@@ -76,7 +97,10 @@ async def test_retrieve_always_runs_q_plus_stage_in_full_mode():
 async def test_build_graph_stores_generated_q_plus_without_heuristic_filter():
     rag = GraphRAG(strategy="prehop")
     rag._ensure_index_ready = AsyncMock(return_value=None)  # type: ignore[method-assign]
-    rag.llm.get_embeddings = AsyncMock(side_effect=lambda texts: [[0.1] for _ in texts])
+    rag.vector_dimensions = 1
+    rag.llm.get_embeddings = AsyncMock(
+        side_effect=lambda texts, encoding_type="document": [[0.1] for _ in texts]
+    )
 
     # Storage keeps generated non-empty Q+ values without applying a
     # domain/keyword heuristic after the model's schema-validated response.
@@ -103,6 +127,152 @@ async def test_build_graph_stores_generated_q_plus_without_heuristic_filter():
 
     assert rag._pending_batch, "Expected build_graph to enqueue at least one batch item."
     payload = rag._pending_batch[-1]["data"][0]
-    assert payload["q_plus_text"] == (
-        "For FY2022, what happened? For AMD FY2022 cash flow statement, what was operating cash flow?"
+    assert [question["text"] for question in payload["q_plus"]] == [
+        "For FY2022, what happened?",
+        "For AMD FY2022 cash flow statement, what was operating cash flow?",
+    ]
+    assert len({question["id"] for question in payload["q_plus"]}) == 2
+    assert all(question["query_embedding"] == [0.1] for question in payload["q_plus"])
+
+
+@pytest.mark.asyncio
+async def test_qplus_only_similarity_cannot_create_hop_answer(monkeypatch):
+    rag = GraphRAG(strategy="prehop")
+    monkeypatch.setattr(RAGConfig, "HOP_LINK_LIMIT", 5)
+
+    async def fake_candidates(wave, channel):
+        if channel == "q_plus":
+            return [
+                {
+                    "source_chunk_id": wave[0]["id"],
+                    "source_question_id": wave[0]["questions"][0]["id"],
+                    "target_id": "same-need-only",
+                    "target_question_id": "qp-target",
+                    "score": 0.99,
+                }
+            ]
+        return []
+
+    rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
+    edges = await rag._process_hop_wave(
+        [
+            {
+                "id": "source-chunk",
+                "source": "manual-2022.txt",
+                "questions": [{"id": "qp-source", "query_embedding": [1.0]}],
+            }
+        ],
     )
+
+    assert edges == []
+
+
+@pytest.mark.asyncio
+async def test_hop_ann_pool_is_sized_per_source_not_by_corpus_max(monkeypatch):
+    rag = GraphRAG(strategy="prehop")
+    monkeypatch.setattr(RAGConfig, "HOP_ANN_POOL", 50)
+    monkeypatch.setattr(RAGConfig, "HOP_CANDIDATE_LIMIT", 15)
+    rag.retry_query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    await rag._find_hop_candidates_batch(
+        [
+            {
+                "id": "short-source-chunk",
+                "source": "short.txt",
+                "ann_pools": {"body": 22},
+                "questions": [{"id": "q-short", "query_embedding": [1.0]}],
+            },
+            {
+                "id": "long-source-chunk",
+                "source": "long.txt",
+                "ann_pools": {"body": 180},
+                "questions": [{"id": "q-long", "query_embedding": [1.0]}],
+            },
+        ],
+        "body",
+    )
+
+    parameters = rag.retry_query.await_args.args[1]
+    assert [item["ann_pool"] for item in parameters["source_questions"]] == [50, 180]
+
+
+@pytest.mark.asyncio
+async def test_qplus_to_qminus_preserves_same_need_as_support(monkeypatch):
+    rag = GraphRAG(strategy="prehop")
+    monkeypatch.setattr(RAGConfig, "HOP_LINK_LIMIT", 5)
+
+    async def fake_candidates(wave, channel):
+        source = {
+            "source_chunk_id": wave[0]["id"],
+            "source_question_id": wave[0]["questions"][0]["id"],
+        }
+        if channel == "q_minus":
+            return [{**source, "target_id": "manual-2023", "target_question_id": "qm-2023", "score": 0.8}]
+        if channel == "q_plus":
+            return [{**source, "target_id": "manual-2023", "target_question_id": "qp-2023", "score": 0.9}]
+        return []
+
+    rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
+    edges = await rag._process_hop_wave(
+        [
+            {
+                "id": "source-chunk",
+                "source": "manual-2022.txt",
+                "questions": [{"id": "qp-source", "query_embedding": [1.0]}],
+            }
+        ],
+    )
+
+    assert len(edges) == 1
+    assert edges[0]["tgt_id"] == "manual-2023"
+    assert edges[0]["direct_channels"] == ["q_minus"]
+    assert edges[0]["same_need_match"]["target_question_id"] == "qp-2023"
+
+
+@pytest.mark.asyncio
+async def test_each_individual_qplus_keeps_one_direction_before_global_fill(monkeypatch):
+    rag = GraphRAG(strategy="prehop")
+    monkeypatch.setattr(RAGConfig, "HOP_LINK_LIMIT", 2)
+
+    async def fake_candidates(wave, channel):
+        if channel != "body":
+            return []
+        return [
+            {
+                "source_chunk_id": wave[0]["id"],
+                "source_question_id": "q-first",
+                "target_id": "first-best",
+                "target_question_id": None,
+                "score": 0.99,
+            },
+            {
+                "source_chunk_id": wave[0]["id"],
+                "source_question_id": "q-first",
+                "target_id": "first-second",
+                "target_question_id": None,
+                "score": 0.98,
+            },
+            {
+                "source_chunk_id": wave[0]["id"],
+                "source_question_id": "q-second",
+                "target_id": "second-best",
+                "target_question_id": None,
+                "score": 0.70,
+            },
+        ]
+
+    rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
+    edges = await rag._process_hop_wave(
+        [
+            {
+                "id": "source-chunk",
+                "source": "source.txt",
+                "questions": [
+                    {"id": "q-first", "query_embedding": [1.0]},
+                    {"id": "q-second", "query_embedding": [1.0]},
+                ],
+            }
+        ],
+    )
+
+    assert {edge["tgt_id"] for edge in edges} == {"first-best", "second-best"}

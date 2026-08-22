@@ -33,8 +33,8 @@ strategy == prehop
   shared parser in spawn ProcessPool
   -> shared fixed page windows
   -> external generation: Q-/Q+/summary per chunk
-  -> external body/Q-/Q+ embeddings
-  -> Neo4j Document/Chunk/NEXT writes
+  -> external body/Q-/Q+ document embeddings + Q+ query embeddings
+  -> atomic Neo4j Document/Chunk/question replacement + NEXT writes
   -> after every document succeeds: whole-corpus HOP edge pass
 
 strategy == naive
@@ -85,8 +85,9 @@ a complete index.
 
 - Makes one schema-validated external generation call per chunk using
   `HOPRAG_PROMPT`.
-- Returns `summary`, `q_minus`, and `q_plus`; missing keys, invalid JSON, or
-  empty required values raise after client retries.
+- Returns `summary`, `q_minus`, and `q_plus`; missing keys, invalid JSON,
+  non-string list values, an empty summary, or more than three questions raise
+  after client retries. Empty Q-/Q+ lists are intentional valid outputs.
 - Q+ output has no post-generation keyword, domain, or heuristic quality gate.
   Only empty strings and exact duplicates are removed before storage.
 
@@ -99,8 +100,15 @@ a complete index.
 `indexing/graph_writer.py`
 
 - Creates corpus-tagged body/Q-/Q+ vector and full-text indexes plus id indexes.
-- Embeds body/Q-/Q+ concurrently, writes Document and Chunk nodes, and creates
-  ordered `NEXT` edges inside each document.
+- Stores each generated question as an individual `QMinus` or `QPlus` node;
+  multiple directions from one chunk are never concatenated into one vector.
+- Body, Q-, and document-side Q+ embeddings include `Document title: ...` so
+  manuals or reports from different years retain version scope. Q+ also stores
+  a separately instructed query embedding used only as the outgoing search.
+- Re-indexing one document atomically deletes its old contained chunks and
+  question nodes and writes its replacement subgraph. A second write creates
+  forward-only ordered `NEXT` edges; stale NEXT/HOP edges disappear with the
+  deleted old chunks.
 - There is no company property and no conditional index-recreation path. A cold
   run clears the graph/schema once before indexing.
 - Neo4j retries are restricted to transient/session/service errors. Failed
@@ -108,12 +116,24 @@ a complete index.
 
 `indexing/hop_edges.py`
 
-- Runs once after the complete Prehop corpus is flushed.
-- For each Q+-bearing source chunk, queries 15 cross-document Q+ ANN candidates,
-  retains cosine score `>= RAG_HOP_THRESHOLD`, and writes at most
-  `RAG_HOP_LINK_LIMIT` outgoing HOP edges.
-- There is no same-company filter, runtime-HOP mode, cross-encoder, or LLM call.
-- If Q+ is disabled for an ablation, the HOP pass is skipped by design.
+- Runs once after the complete Prehop corpus is flushed and indexes are online.
+- Every individual source Q+ retrieves up to 15 cross-document candidates from
+  target Q-, target body, and target Q+ channels.
+- Q+→Q- means the target advertises an answerable formulation; Q+→body means
+  direct passage evidence; Q+→Q+ means two documents express the same
+  unresolved need. Only Q-/body are direct evidence. Q+→Q+ receives weight
+  0.5 and can boost a direct match but can never create an edge alone.
+- Reciprocal-rank scores are fused per target chunk across every source Q+.
+  At most five targets become outgoing `HOP_ANSWER` edges. Provenance remains
+  inspectable as `ANSWERED_BY`, `SUPPORTED_BY`, and `SAME_NEED` relations.
+- There are deliberately no Q-↔Q- edges. Documents with the same answer but
+  different year/version remain alternative candidates rather than being
+  asserted as semantic continuations. Cross-document scope is mandatory.
+- Neo4j filters source documents after ANN. Each source therefore uses
+  `max(50, own-channel-count + 15)` as its pool: this keeps 15 foreign slots
+  without letting one giant document inflate every request in the corpus.
+- There is no cosine threshold, same-company filter, runtime-HOP mode,
+  cross-encoder, domain rule, or LLM call. If Q+ is disabled, the pass skips.
 
 ### Official baseline modules
 
@@ -174,9 +194,15 @@ similarity to order candidates, then returns the top-k without a score gate.
 There is no dedicated reranker model, rerank prompt, query
 rewrite, metadata boost, boilerplate penalty, company filter, or domain gate.
 
-`retrieval/traversal.py` orders seed nodes, walks only pre-built `NEXT|HOP`
-edges, orders each new frontier, deduplicates visited/excluded ids, and returns
-the top-k collected nodes. There is no query-time generation, continuation
+`retrieval/traversal.py` orders seed nodes, walks `NEXT` in both directions to
+recover preceding/following document context, and walks `HOP_ANSWER` only in
+the Q+→answer-evidence direction. It orders each new frontier, deduplicates
+visited/excluded ids, and returns the top-k collected nodes. HOP candidates are
+scored independently against their preserved source bridge-Q+ and target body,
+then the two cosine scores are averaged. This requires agreement on both sides
+of the evidence path; concatenating them let a strong bridge phrase mask an
+unrelated target, while discarding Q+ erased why the edge existed.
+There is no query-time generation, continuation
 prompt, heuristic stop gate, or runtime ANN supplement in Prehop retrieval.
 
 `retrieval/text_utils.py` contains only normalization, Lucene sanitization,
@@ -227,4 +253,22 @@ structural integrity counts, payload estimates, endpoint/host pressure, and
 failure logs beneath `artifacts/indexing/<run-id>`. It begins with bounded
 parallelism and reduces width when sustained host-memory or inference-queue
 pressure is observed. `VLLM_MAX_NUM_SEQS=128` is recorded as server capacity;
-client-side generation concurrency remains lower to leave queue headroom.
+generation concurrency is one global per-target/event-loop semaphore, not one
+limit per document. Embeddings default to two concurrent batches of 32 for one
+target. Before launching, the runner compares normalized generation and
+embedding URLs. Separate servers receive independent budgets; a shared server
+receives one combined budget across matrix width. At width 2, the current
+shared 128-sequence endpoint is automatically adjusted to one 32-item
+embedding batch plus 30 generation requests per target (aggregate bound 124).
+Generation and embedding queues are sampled separately, and sustained pressure
+still lowers target width for later work.
+
+The measurement set directly addresses the indexing-time tradeoff: overall
+and Prehop phase latency, logical storage, document/chunk/question/edge counts,
+Q-/Q+ and Q+-direction coverage, provenance completeness, exact NEXT topology,
+cross-document HOP invariants, and observed endpoint pressure. Retrieval and
+answer-quality attribution remains a separate benchmark/ablation concern; an
+index with valid topology is not reported as evidence that HOP improves QA.
+For the semantic middle layer, the runner resolves every full-query evidence
+title against indexed documents, then reports the fraction of fully resolved
+gold queries and gold document pairs connected by at least one `HOP_ANSWER`.

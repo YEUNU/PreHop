@@ -9,7 +9,7 @@
 # Tagging: all four strategies share one dataset-level corpus tag (`multihoprag`)
 # because the strategy is already encoded in the Neo4j label prefix
 # (PR_/NA_/HO_) and the ms_graphrag parquet path. Benchmarks are still run
-# per strategy. (The --queries smoke set uses its own mini corpus + tag.)
+# per strategy.
 #
 # Usage:
 #   ./run_multihoprag.sh all                          # index all 4 + benchmark (sample200)
@@ -19,7 +19,7 @@
 #
 # Options:
 #   --model   {all|prehop|naive|hoprag|ms_graphrag}   default: all
-#   --queries {smoke|sample200|full}                   default: sample200
+#   --queries {sample200|full}                         default: sample200
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
 set -e
@@ -46,10 +46,9 @@ done
 
 # Map the query-set selector to its corpus dir, corpus tag, and queries file.
 case "$QUERIES" in
-    smoke)     CORPUS_DIR="data/multihoprag_smoke_corpus"; CORPUS_TAG="multihoprag_smoke"; QUERIES_FILE="data/multihoprag_smoke_queries.json" ;;
     sample200) CORPUS_DIR="data/multihoprag_corpus";       CORPUS_TAG="multihoprag";       QUERIES_FILE="data/multihoprag_sample200_queries.json" ;;
     full)      CORPUS_DIR="data/multihoprag_corpus";       CORPUS_TAG="multihoprag";       QUERIES_FILE="data/multihoprag_queries.json" ;;
-    *) echo "Unknown --queries '$QUERIES' (use smoke|sample200|full)"; exit 1 ;;
+    *) echo "Unknown --queries '$QUERIES' (use sample200|full)"; exit 1 ;;
 esac
 
 if { [ "$STAGE" = "benchmark" ] || [ "$STAGE" = "bench" ] || [ "$STAGE" = "all" ]; } \
@@ -89,5 +88,5 @@ case "$STAGE" in
     index)           do_index ;;
     benchmark|bench) do_benchmark ;;
     all)             do_index; do_benchmark ;;
-    *) echo "Usage: $0 <index|benchmark|all> [--model all|<strategy>] [--queries smoke|sample200|full] [extra run_*.sh flags]"; exit 1 ;;
+    *) echo "Usage: $0 <index|benchmark|all> [--model all|<strategy>] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
 esac

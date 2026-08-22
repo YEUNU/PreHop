@@ -31,6 +31,7 @@ class NaiveRAG:
         self.vllm = VLLMClient()
         self._index_ready = False
         self._lock = asyncio.Lock()
+        self._index_setup_lock = asyncio.Lock()
 
     @staticmethod
     def _safe_token(value: str) -> str:
@@ -63,6 +64,37 @@ class NaiveRAG:
             else:
                 raise
 
+    async def _ensure_index_ready(self) -> None:
+        if self._index_ready:
+            return
+        async with self._index_setup_lock:
+            if self._index_ready:
+                return
+            await self.setup_index()
+            self._index_ready = True
+
+    async def reconcile_dataset_files(self, filenames: list[str]) -> int:
+        """Remove chunks whose source file is absent from this dataset snapshot."""
+        removed = 0
+        while True:
+            rows = await self.neo4j.execute_query(
+                f"""
+                MATCH (c:{self.chunk_label})
+                WHERE NOT c.source IN $filenames
+                WITH c LIMIT 1000
+                DETACH DELETE c
+                RETURN count(c) AS deleted
+                """,
+                {"filenames": filenames},
+            )
+            deleted = int(rows[0].get("deleted", 0) or 0) if rows else 0
+            removed += deleted
+            if deleted == 0:
+                break
+        if removed:
+            self.logger.info("NaiveRAG: removed %d stale chunk(s) before indexing.", removed)
+        return removed
+
     @staticmethod
     def _parse_document(filename: str, content: str) -> tuple[str, list[dict]]:
         parsed = parse_pages_offline(filename, content)
@@ -75,21 +107,27 @@ class NaiveRAG:
         return parsed["title"], chunks
 
     async def index_document(self, filename: str, content: str):
-        if not self._index_ready:
-            await self.setup_index()
-            self._index_ready = True
-
         title, chunks = self._parse_document(filename, content)
         if not chunks:
             raise ValueError(f"No indexable chunks found for {filename!r}")
 
-        texts = [chunk["text"] for chunk in chunks]
+        # Keep document/version scope in the vector representation. Prehop's
+        # body channel uses the identical representation so retrieval-only
+        # comparisons do not gain an asymmetric title signal.
+        texts = [f"Document title: {title}\n{chunk['text']}" for chunk in chunks]
         embeddings = await self.vllm.get_embeddings(texts)
-        if len(embeddings) != len(chunks) or any(not embedding for embedding in embeddings):
+        if len(embeddings) != len(chunks) or any(
+            len(embedding) != RAGConfig.EMBEDDING_DIMENSIONS for embedding in embeddings
+        ):
             raise ValueError(
                 f"NaiveRAG embedding failure for {title!r}: "
-                f"expected {len(chunks)} non-empty vectors, got {len(embeddings)}"
+                f"expected {len(chunks)} vectors of dimension {RAGConfig.EMBEDDING_DIMENSIONS}, "
+                f"got {len(embeddings)}"
             )
+
+        # Validate the external embedding shape before creating a fixed-size
+        # vector index, then serialize schema creation across file tasks.
+        await self._ensure_index_ready()
 
         batch_data = []
         for chunk, emb in zip(chunks, embeddings):
@@ -110,7 +148,11 @@ class NaiveRAG:
 
         async with self._lock, self.neo4j.driver.session() as session:
             query = f"""
-                    UNWIND $batch AS item
+                    OPTIONAL MATCH (old:{self.chunk_label} {{source: $source}})
+                    WITH collect(old) AS old_chunks, $batch AS replacement
+                    FOREACH (old IN old_chunks | DETACH DELETE old)
+                    WITH replacement
+                    UNWIND replacement AS item
                     MERGE (c:{self.chunk_label} {{id: item.id}})
                     SET c.text = item.text,
                         c.source = item.source,
@@ -119,7 +161,8 @@ class NaiveRAG:
                         c.page = item.page,
                         c.embedding = item.embedding
                 """
-            await session.run(query, batch=batch_data)  # type: ignore
+            result = await session.run(query, batch=batch_data, source=filename)  # type: ignore
+            await result.consume()
 
         self.logger.info("NaiveRAG: indexed %d fixed-window chunks for %s", len(batch_data), title)
 

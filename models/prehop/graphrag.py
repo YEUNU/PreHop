@@ -41,6 +41,8 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
 
         self.chunk_label = f"{self.prefix}{self._safe_corpus}_Chunk"
         self.doc_label = f"{self.prefix}{self._safe_corpus}_Document"
+        self.q_minus_label = f"{self.prefix}{self._safe_corpus}_QMinus"
+        self.q_plus_label = f"{self.prefix}{self._safe_corpus}_QPlus"
 
         self.body_vector_index = f"{self.strategy}_{self._safe_corpus}_vector_idx"
         self.body_text_index = f"{self.strategy}_{self._safe_corpus}_text_idx"
@@ -127,7 +129,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         No agent loop, no reflection, no refinement. The path is:
           1. Two-stage hybrid retrieve (Q-/body, then Q+ expansion).
           2. External-embedding cosine top-k ordering.
-          3. Deterministic 1-hop NEXT/HOP traversal over pre-built edges
+          3. Deterministic 1-hop bidirectional-NEXT/outgoing-HOP_ANSWER traversal
              (when RAG_GRAPH_HOP_DEPTH > 0, default).
           4. Single LLM synthesis call.
         """

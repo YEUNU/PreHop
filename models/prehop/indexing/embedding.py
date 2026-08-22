@@ -2,7 +2,12 @@
 
 
 class SparseEmbeddingMixin:
-    async def _embed_sparse_texts(self, texts: list[str]) -> list[list[float]]:
+    async def _embed_sparse_texts(
+        self,
+        texts: list[str],
+        *,
+        encoding_type: str = "document",
+    ) -> list[list[float]]:
         if not texts:
             return []
         positions: list[int] = []
@@ -18,7 +23,7 @@ class SparseEmbeddingMixin:
         if not payload:
             return result
 
-        embeddings = await self.llm.get_embeddings(payload)
+        embeddings = await self.llm.get_embeddings(payload, encoding_type=encoding_type)
         if len(embeddings) != len(payload) or any(not embedding for embedding in embeddings):
             raise ValueError(
                 f"Sparse-text embedding failure: expected {len(payload)} non-empty vectors, got {len(embeddings)}"

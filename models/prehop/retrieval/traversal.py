@@ -1,9 +1,11 @@
-"""Graph traversal over pre-built NEXT/HOP edges (paper §3.2.3 "Graph Traversal").
+"""Graph traversal over pre-built NEXT/HOP_ANSWER edges (paper §3.2.3).
 
 Starting from similarity-ordered seed nodes, the system expands deterministically along
-NEXT (sequential) and HOP (semantic, pre-built §3.1.4) edges.
+NEXT (sequential) and HOP_ANSWER (semantic, pre-built §3.1.4) edges. NEXT is
+read in both directions so a seed can recover preceding or following local
+context. HOP_ANSWER is read only in its Q+ -> answer-evidence direction.
 
-The query path traverses only the NEXT/HOP edges built during indexing.
+The query path traverses only the NEXT/HOP_ANSWER edges built during indexing.
 """
 
 import time
@@ -27,7 +29,7 @@ class TraversalMixin:
 
         Returns (context, nodes, timing) where timing = {"retrieve_ms":
         <initial hybrid retrieve>, "traversal_ms": <everything after that —
-        seed gating + NEXT/HOP frontier expansion>}. Split out so the paper's
+        seed selection + NEXT/HOP_ANSWER frontier expansion>}. Split out so the paper's
         headline latency claim (deterministic traversal, no per-hop LLM
         reasoning) can be reported as a stage breakdown, not just one total.
         """
@@ -45,7 +47,13 @@ class TraversalMixin:
 
         excluded_ids: set[str] = {str(eid).strip() for eid in (excluded_chunk_ids or set()) if str(eid).strip()}
 
-        seed_top_k = max(1, min(max(1, top_k - 1), RAGConfig.GRAPH_SEARCH_LIMIT))
+        # Start from the same top-k budget as depth=0. The previous top_k-1
+        # plus GRAPH_SEARCH_LIMIT=10 silently dropped two flat-retrieval
+        # candidates before traversal when the paper budget was 12, making
+        # depth=1 incomparable and able to hurt even when no useful edge was
+        # found. Neighbors now compete with, rather than pre-empt, the same
+        # complete seed set under the final shared similarity score.
+        seed_top_k = max(1, top_k)
         t_retrieve0 = time.perf_counter()
         _, seed_nodes = await self.retrieve(seed_query, top_k=seed_top_k)
         retrieve_ms = (time.perf_counter() - t_retrieve0) * 1000
@@ -55,7 +63,7 @@ class TraversalMixin:
             return {"retrieve_ms": retrieve_ms, "traversal_ms": max(0.0, total_ms - retrieve_ms)}
 
         # Filter out chunks already retrieved on prior turns of this query so
-        # NEXT/HOP graph traversal explores fresh territory rather than
+        # NEXT/HOP_ANSWER graph traversal explores fresh territory rather than
         # re-surfacing the same hub chunks via different seed paths.
         if excluded_ids:
             seed_nodes = [n for n in seed_nodes if str(n.get("id", "")).strip() not in excluded_ids]
@@ -68,7 +76,11 @@ class TraversalMixin:
         if not seed_ids:
             return "", [], _timing()
         search_query = " ".join(entities).strip() or " ".join(normalized_entities)
-        step_limit = max(RAGConfig.GRAPH_SEARCH_LIMIT, top_k * 6)
+        # A chunk has at most two sequential neighbors and HOP_LINK_LIMIT
+        # outgoing answer edges. This bound retains the complete first-hop
+        # neighborhood of every selected seed instead of applying an
+        # arbitrary, non-deterministic LIMIT before semantic scoring.
+        step_limit = max(RAGConfig.GRAPH_SEARCH_LIMIT, top_k * (RAGConfig.HOP_LINK_LIMIT + 2))
         frontier_ids = [seed_id for seed_id in seed_ids if seed_id]
         # Track within-call traversal history AND prior-turn exclusions so
         # neither this call's expansion nor the final result returns chunks
@@ -97,10 +109,20 @@ class TraversalMixin:
             async with self.neo4j.driver.session() as session:
                 query = f"""
                     UNWIND $frontier_ids AS src_id
-                    MATCH (src:{self.chunk_label} {{id: src_id}})-[:NEXT|HOP]->(related:{self.chunk_label})
+                    MATCH (src:{self.chunk_label} {{id: src_id}})
+                    CALL (src) {{
+                        MATCH (src)-[:NEXT]-(related:{self.chunk_label})
+                        RETURN related, [] AS bridge_questions
+                        UNION ALL
+                        MATCH (src)-[hop:HOP_ANSWER]->(related:{self.chunk_label})
+                        RETURN related, coalesce(hop.source_question_texts, []) AS bridge_questions
+                    }}
+                    WITH related, collect(DISTINCT bridge_questions) AS bridge_question_groups
                     WHERE NOT related.id IN $visited_ids
                     RETURN DISTINCT related.id as id, related.title as title, related.sent_id as sent_id,
-                                    related.page as page, related.text as text, related.source as source
+                                    related.page as page, related.text as text, related.source as source,
+                                    bridge_question_groups
+                    ORDER BY id
                     LIMIT $limit
                 """
                 result = await session.run(
@@ -112,6 +134,18 @@ class TraversalMixin:
                     },
                 )
                 candidates = [dict(record) async for record in result]
+
+            for candidate in candidates:
+                bridge_questions = list(
+                    dict.fromkeys(
+                        str(question).strip()
+                        for group in candidate.pop("bridge_question_groups", [])
+                        for question in group
+                        if str(question).strip()
+                    )
+                )
+                if bridge_questions:
+                    candidate["bridge_text"] = "Bridge questions: " + " ".join(bridge_questions)
 
             if not candidates:
                 break

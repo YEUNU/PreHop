@@ -83,34 +83,6 @@ def _install_missing_hoprag_stubs() -> None:
         paddlenlp.Taskflow = _unavailable("paddlenlp")  # type: ignore[attr-defined]
         sys.modules["paddlenlp"] = paddlenlp
 
-    if "sentence_transformers" not in sys.modules:
-        sentence_transformers = types.ModuleType("sentence_transformers")
-
-        class _SentenceTransformer:
-            def __init__(self, *_args, **_kwargs):
-                _unavailable("sentence_transformers")()
-
-        sentence_transformers.SentenceTransformer = _SentenceTransformer  # type: ignore[attr-defined]
-        sys.modules["sentence_transformers"] = sentence_transformers
-
-    if "modelscope" not in sys.modules:
-        modelscope = types.ModuleType("modelscope")
-
-        class _DummyModel:
-            @classmethod
-            def from_pretrained(cls, *_args, **_kwargs):
-                _unavailable("modelscope")()
-
-        class _DummyTokenizer:
-            @classmethod
-            def from_pretrained(cls, *_args, **_kwargs):
-                _unavailable("modelscope")()
-
-        modelscope.AutoModelForCausalLM = _DummyModel  # type: ignore[attr-defined]
-        modelscope.AutoTokenizer = _DummyTokenizer  # type: ignore[attr-defined]
-        modelscope.AutoModelForSequenceClassification = _DummyModel  # type: ignore[attr-defined]
-        sys.modules["modelscope"] = modelscope
-
 
 class HopRAGAdapter:
     """
@@ -291,7 +263,6 @@ class HopRAGAdapter:
             traversal="bfs_node",
             mock_dense=False,
             mock_sparse=False,
-            reranker=None,
         )
 
     async def _run_official_retrieval(self, query: str) -> list[str]:

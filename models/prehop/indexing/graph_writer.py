@@ -4,11 +4,13 @@ Owns the graph-write side: index lifecycle (vector + fulltext), document and
 chunk MERGE, NEXT edge creation, and batched writes. HOP edges are delegated
 to HopEdgeMixin (paper §3.1.4).
 
-Three node types per (strategy, corpus_tag) namespace:
-- Body / Q- / Q+ vector indices, plus matching BM25-style fulltext indices.
+Q- and Q+ are stored as individual question nodes rather than concatenated
+chunk properties.  This preserves multiple independent directions emitted by
+one chunk and makes every question-level HOP decision inspectable.
 """
 
 import asyncio
+import hashlib
 import logging
 import random
 import re
@@ -23,34 +25,44 @@ from .chunking import _make_semantic_chunk_id
 logger = logging.getLogger(__name__)
 
 
+def _make_question_id(chunk_id: str, channel: str, ordinal: int, text: str) -> str:
+    payload = f"{chunk_id}|{channel}|{ordinal}|{text}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _scoped_document_text(title: str, text: str) -> str:
+    """Keep document/version scope in every document-side embedding."""
+    return f"Document title: {title}\n{text}".strip()
+
+
 class GraphWriterMixin:
     async def setup_index(self):
         analyzer = re.sub(r"[^a-zA-Z0-9_\-]", "", RAGConfig.FULLTEXT_ANALYZER) or "english"
         vector_specs = [
-            (self.body_vector_index, "embedding"),
-            (self.q_minus_vector_index, "q_minus_embedding"),
-            (self.q_plus_vector_index, "q_plus_embedding"),
+            (self.body_vector_index, self.chunk_label, "embedding"),
+            (self.q_minus_vector_index, self.q_minus_label, "embedding"),
+            (self.q_plus_vector_index, self.q_plus_label, "embedding"),
         ]
-        for index_name, property_name in vector_specs:
+        for index_name, label, property_name in vector_specs:
             await self.neo4j.execute_query(
                 f"""
                 CREATE VECTOR INDEX {index_name} IF NOT EXISTS
-                FOR (n:{self.chunk_label}) ON (n.{property_name})
+                FOR (n:{label}) ON (n.{property_name})
                 OPTIONS {{indexConfig: {{`vector.dimensions`: $dimensions, `vector.similarity_function`: 'cosine'}}}} """,
                 {"dimensions": self.vector_dimensions},
             )
 
         await self.neo4j.execute_query(f"""
             CREATE FULLTEXT INDEX {self.body_text_index} IF NOT EXISTS
-            FOR (n:{self.chunk_label}) ON EACH [n.text, n.chunk_summary]
+            FOR (n:{self.chunk_label}) ON EACH [n.title, n.text, n.chunk_summary]
             OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
         await self.neo4j.execute_query(f"""
             CREATE FULLTEXT INDEX {self.q_minus_text_index} IF NOT EXISTS
-            FOR (n:{self.chunk_label}) ON EACH [n.q_minus_text]
+            FOR (n:{self.q_minus_label}) ON EACH [n.title, n.text]
             OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
         await self.neo4j.execute_query(f"""
             CREATE FULLTEXT INDEX {self.q_plus_text_index} IF NOT EXISTS
-            FOR (n:{self.chunk_label}) ON EACH [n.q_plus_text]
+            FOR (n:{self.q_plus_label}) ON EACH [n.title, n.text]
             OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
 
         await self.neo4j.execute_query(
@@ -58,6 +70,12 @@ class GraphWriterMixin:
         )
         await self.neo4j.execute_query(
             f"CREATE INDEX {self.doc_label}_fn_idx IF NOT EXISTS FOR (n:{self.doc_label}) ON (n.filename)"
+        )
+        await self.neo4j.execute_query(
+            f"CREATE INDEX {self.q_minus_label}_id_idx IF NOT EXISTS FOR (n:{self.q_minus_label}) ON (n.id)"
+        )
+        await self.neo4j.execute_query(
+            f"CREATE INDEX {self.q_plus_label}_id_idx IF NOT EXISTS FOR (n:{self.q_plus_label}) ON (n.id)"
         )
 
     async def _ensure_index_ready(self):
@@ -102,69 +120,132 @@ class GraphWriterMixin:
                 )
                 await asyncio.sleep(delay)
 
-    async def create_document_node(self, filename: str, metadata: dict[str, Any]) -> str:
-        query = f"""
-            MERGE (d:{self.doc_label} {{filename: $filename}})
-            SET d.title = $title, d.updated_at = timestamp()
-            RETURN d.filename as id
-        """
-        async with self._batch_lock:
-            results = await self.retry_query(
-                query,
-                {
-                    "filename": filename,
-                    "title": metadata.get("title", filename),
-                },
+    async def reconcile_dataset_files(self, filenames: list[str]) -> int:
+        """Remove documents no longer present in the current input snapshot."""
+        removed = 0
+        while True:
+            rows = await self.retry_query(
+                f"""
+                MATCH (d:{self.doc_label})
+                WHERE NOT d.filename IN $filenames
+                WITH d LIMIT 100
+                OPTIONAL MATCH (d)-[:CONTAINS]->(old:{self.chunk_label})
+                OPTIONAL MATCH (old)-[:HAS_Q_MINUS|HAS_Q_PLUS]->(old_q)
+                WITH collect(DISTINCT d) AS old_docs,
+                     collect(DISTINCT old) AS old_chunks,
+                     collect(DISTINCT old_q) AS old_questions
+                FOREACH (q IN old_questions | DETACH DELETE q)
+                FOREACH (c IN old_chunks | DETACH DELETE c)
+                FOREACH (d IN old_docs | DETACH DELETE d)
+                RETURN size(old_docs) AS deleted
+                """,
+                {"filenames": filenames},
             )
-        if not results or not results[0].get("id"):
-            raise RuntimeError(f"Neo4j did not return a document id for {filename!r}")
-        return str(results[0]["id"])
+            deleted = int(rows[0].get("deleted", 0) or 0) if rows else 0
+            removed += deleted
+            if deleted == 0:
+                break
+        if removed:
+            logger.info("Removed %d stale Prehop document(s) before indexing.", removed)
+        return removed
 
     async def build_graph(self, knowledge: dict[str, Any], source: str, document_filename: str):
-        await self._ensure_index_ready()
-
         chunks = knowledge.get("chunks", [])
         if not chunks:
             raise ValueError(f"No chunks generated for source={source!r}")
 
-        body_texts = [str(chunk.get("text", "") or "") for chunk in chunks]
-        q_minus_texts = [
-            " ".join(self._dedupe_preserve_order([str(value or "") for value in chunk.get("q_minus", [])])).strip()
+        body_texts = [
+            _scoped_document_text(str(chunk.get("title", "") or ""), str(chunk.get("text", "") or ""))
             for chunk in chunks
         ]
+        q_minus_items: list[tuple[int, int, str]] = []
+        q_plus_items: list[tuple[int, int, str]] = []
+        for chunk_index, chunk in enumerate(chunks):
+            for channel in ("q_minus", "q_plus"):
+                values = chunk.get(channel, [])
+                if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                    raise TypeError(
+                        f"Cached/generated {channel} must be a list of strings: "
+                        f"source={source!r} sent_id={chunk.get('sent_id', -1)}"
+                    )
+            q_minus = self._dedupe_preserve_order(chunk.get("q_minus", []))
+            q_plus = self._dedupe_preserve_order(chunk.get("q_plus", []))
+            if RAGConfig.ABLATION_Q_MINUS:
+                q_minus_items.extend((chunk_index, ordinal, text) for ordinal, text in enumerate(q_minus))
+            if RAGConfig.ABLATION_Q_PLUS:
+                q_plus_items.extend((chunk_index, ordinal, text) for ordinal, text in enumerate(q_plus))
 
-        q_plus_per_chunk: list[list[str]] = []
-        q_plus_texts: list[str] = []
-        for chunk in chunks:
-            q_plus = self._dedupe_preserve_order([str(value or "") for value in chunk.get("q_plus", [])])
-            q_plus_per_chunk.append(q_plus)
-            q_plus_texts.append(" ".join(q_plus).strip())
+        q_minus_document_texts = [
+            _scoped_document_text(str(chunks[chunk_index].get("title", "") or ""), text)
+            for chunk_index, _ordinal, text in q_minus_items
+        ]
+        q_plus_document_texts = [
+            _scoped_document_text(str(chunks[chunk_index].get("title", "") or ""), text)
+            for chunk_index, _ordinal, text in q_plus_items
+        ]
+        q_plus_query_texts = [text for _chunk_index, _ordinal, text in q_plus_items]
 
-        empty_per_chunk = [[] for _ in body_texts]
-        embed_jobs = [self._embed_sparse_texts(body_texts)]
-        embed_jobs.append(
-            self._embed_sparse_texts(q_minus_texts)
-            if RAGConfig.ABLATION_Q_MINUS
-            else asyncio.sleep(0, result=empty_per_chunk)
+        body_embeds, q_minus_embeds, q_plus_embeds, q_plus_query_embeds = await asyncio.gather(
+            self._embed_sparse_texts(body_texts),
+            self._embed_sparse_texts(q_minus_document_texts),
+            self._embed_sparse_texts(q_plus_document_texts),
+            self._embed_sparse_texts(q_plus_query_texts, encoding_type="query"),
         )
-        embed_jobs.append(
-            self._embed_sparse_texts(q_plus_texts)
-            if RAGConfig.ABLATION_Q_PLUS
-            else asyncio.sleep(0, result=empty_per_chunk)
-        )
-        body_embeds, q_minus_embeds, q_plus_embeds = await asyncio.gather(*embed_jobs)
+
+        for stage, embeddings, expected in (
+            ("body", body_embeds, len(body_texts)),
+            ("Q-", q_minus_embeds, len(q_minus_items)),
+            ("Q+ document", q_plus_embeds, len(q_plus_items)),
+            ("Q+ query", q_plus_query_embeds, len(q_plus_items)),
+        ):
+            if len(embeddings) != expected or any(
+                len(embedding) != self.vector_dimensions for embedding in embeddings
+            ):
+                raise ValueError(
+                    f"{stage} embedding validation failed for source={source!r}: "
+                    f"expected {expected} vectors of dimension {self.vector_dimensions}"
+                )
+
+        # Create the fixed-dimension Neo4j schema only after the external
+        # endpoint has returned vectors of the configured dimension. A bad
+        # environment must fail without leaving an incompatible vector index
+        # behind for the next run.
+        await self._ensure_index_ready()
+
+        q_minus_by_chunk: dict[int, list[dict[str, Any]]] = {index: [] for index in range(len(chunks))}
+        for flat_index, (chunk_index, ordinal, text) in enumerate(q_minus_items):
+            chunk = chunks[chunk_index]
+            chunk_id = _make_semantic_chunk_id(source, chunk["title"], chunk["sent_id"])
+            q_minus_by_chunk[chunk_index].append(
+                {
+                    "id": _make_question_id(chunk_id, "q_minus", ordinal, text),
+                    "text": text,
+                    "ordinal": ordinal,
+                    "source": source,
+                    "title": chunk["title"],
+                    "embedding": q_minus_embeds[flat_index],
+                }
+            )
+
+        q_plus_by_chunk: dict[int, list[dict[str, Any]]] = {index: [] for index in range(len(chunks))}
+        for flat_index, (chunk_index, ordinal, text) in enumerate(q_plus_items):
+            chunk = chunks[chunk_index]
+            chunk_id = _make_semantic_chunk_id(source, chunk["title"], chunk["sent_id"])
+            q_plus_by_chunk[chunk_index].append(
+                {
+                    "id": _make_question_id(chunk_id, "q_plus", ordinal, text),
+                    "text": text,
+                    "ordinal": ordinal,
+                    "source": source,
+                    "title": chunk["title"],
+                    "embedding": q_plus_embeds[flat_index],
+                    "query_embedding": q_plus_query_embeds[flat_index],
+                }
+            )
 
         batch_data = []
         for index, chunk in enumerate(chunks):
             body_embedding = body_embeds[index] if index < len(body_embeds) else []
-            q_minus_embedding = (
-                q_minus_embeds[index] if RAGConfig.ABLATION_Q_MINUS and index < len(q_minus_embeds) else []
-            )
-            q_plus_embedding = q_plus_embeds[index] if RAGConfig.ABLATION_Q_PLUS and index < len(q_plus_embeds) else []
-            q_plus_items = (
-                q_plus_per_chunk[index] if RAGConfig.ABLATION_Q_PLUS and index < len(q_plus_per_chunk) else []
-            )
-
             if not body_embedding:
                 raise ValueError(
                     f"Missing embedding for chunk: source={source} "
@@ -180,20 +261,20 @@ class GraphWriterMixin:
                     "sent_id": chunk["sent_id"],
                     "page": chunk.get("page", 0),
                     "embedding": body_embedding,
-                    "q_minus_embedding": q_minus_embedding if q_minus_embedding else None,
-                    "q_plus_embedding": q_plus_embedding if q_plus_embedding and q_plus_items else None,
-                    "q_minus_text": (
-                        q_minus_texts[index] if RAGConfig.ABLATION_Q_MINUS and index < len(q_minus_texts) else ""
-                    ),
-                    "q_plus_text": (
-                        q_plus_texts[index] if RAGConfig.ABLATION_Q_PLUS and index < len(q_plus_texts) else ""
-                    ),
+                    "q_minus": q_minus_by_chunk[index],
+                    "q_plus": q_plus_by_chunk[index],
                     "chunk_summary": chunk["summary"],
                 }
             )
 
         async with self._batch_lock:
-            self._pending_batch.append({"data": batch_data, "doc_id": document_filename})
+            self._pending_batch.append(
+                {
+                    "data": batch_data,
+                    "doc_id": document_filename,
+                    "doc_title": str(knowledge.get("title") or document_filename),
+                }
+            )
             if len(self._pending_batch) >= RAGConfig.NEO4J_BATCH_SIZE:
                 await self._flush_graph_batch_unlocked()
 
@@ -212,20 +293,46 @@ class GraphWriterMixin:
             for item in current_batch:
                 await self.retry_query(
                     f"""
-                    MATCH (d:{self.doc_label} {{filename: $doc_id}})
+                    MERGE (d:{self.doc_label} {{filename: $doc_id}})
+                    SET d.title = $doc_title, d.updated_at = timestamp()
                     WITH d
-                    UNWIND $batch AS item
+                    OPTIONAL MATCH (d)-[:CONTAINS]->(old:{self.chunk_label})
+                    OPTIONAL MATCH (old)-[:HAS_Q_MINUS|HAS_Q_PLUS]->(old_q)
+                    WITH d, $batch AS new_batch,
+                         collect(DISTINCT old_q) AS old_questions,
+                         collect(DISTINCT old) AS old_chunks
+                    FOREACH (q IN old_questions | DETACH DELETE q)
+                    FOREACH (c IN old_chunks | DETACH DELETE c)
+                    WITH d, new_batch
+                    UNWIND new_batch AS item
                     MERGE (c:{self.chunk_label} {{id: item.id}})
                     SET c.text = item.text, c.source = item.source,
                         c.title = item.title,
                         c.sent_id = item.sent_id, c.page = item.page,
                         c.embedding = item.embedding,
-                        c.q_minus_embedding = item.q_minus_embedding,
-                        c.q_plus_embedding = item.q_plus_embedding, c.q_minus_text = item.q_minus_text,
-                        c.q_plus_text = item.q_plus_text, c.chunk_summary = item.chunk_summary
+                        c.chunk_summary = item.chunk_summary
                     MERGE (d)-[:CONTAINS]->(c)
+                    FOREACH (question IN item.q_minus |
+                        MERGE (q:{self.q_minus_label} {{id: question.id}})
+                        SET q.text = question.text, q.ordinal = question.ordinal,
+                            q.source = question.source, q.title = question.title,
+                            q.embedding = question.embedding
+                        MERGE (c)-[:HAS_Q_MINUS]->(q)
+                    )
+                    FOREACH (question IN item.q_plus |
+                        MERGE (q:{self.q_plus_label} {{id: question.id}})
+                        SET q.text = question.text, q.ordinal = question.ordinal,
+                            q.source = question.source, q.title = question.title,
+                            q.embedding = question.embedding,
+                            q.query_embedding = question.query_embedding
+                        MERGE (c)-[:HAS_Q_PLUS]->(q)
+                    )
                 """,
-                    {"batch": item["data"], "doc_id": item["doc_id"]},
+                    {
+                        "batch": item["data"],
+                        "doc_id": item["doc_id"],
+                        "doc_title": item["doc_title"],
+                    },
                 )
 
                 await self.retry_query(

@@ -172,13 +172,13 @@ def _recompute_aggregates(s: dict[str, Any]) -> None:
     s["refusal_rate"] = label_counts["Refusal"] / total
 
 
-def _unjudged_count(rows: list[dict[str, Any]]) -> int:
+def _unjudged_count(rows: list[dict[str, Any]], key: str = "llm_judge_score") -> int:
     return sum(
         1
         for row in rows
-        if isinstance(row.get("llm_judge_score"), (int, float))
-        and not isinstance(row.get("llm_judge_score"), bool)
-        and float(row["llm_judge_score"]) < 0
+        if not isinstance(row.get(key), (int, float))
+        or isinstance(row.get(key), bool)
+        or float(row[key]) < 0
     )
 
 
@@ -193,7 +193,7 @@ def _update_summary_status(summary: dict[str, Any]) -> None:
         summary["status"] = "pending_judge"
     elif any(row.get("error") for row in rows):
         summary["status"] = "completed_with_errors"
-    elif _unjudged_count(rows):
+    elif _unjudged_count(rows) or _unjudged_count(rows, "hallucination"):
         summary["status"] = "completed_with_unjudged"
     else:
         summary["status"] = "completed"
@@ -203,11 +203,14 @@ def _assert_benchmark_complete(summary: dict[str, Any], result_file: Path) -> No
     rows = summary.get("details") or []
     runtime_errors = sum(1 for row in rows if row.get("error"))
     unjudged = _unjudged_count(rows)
+    unjudged_hallucination = _unjudged_count(rows, "hallucination")
     failures = []
     if runtime_errors:
         failures.append(f"{runtime_errors} runtime error(s)")
     if unjudged:
         failures.append(f"{unjudged} unjudged row(s)")
+    if unjudged_hallucination:
+        failures.append(f"{unjudged_hallucination} row(s) without hallucination judgement")
     if failures:
         raise RuntimeError(f"Benchmark incomplete ({', '.join(failures)}); results saved to {result_file}")
 
@@ -371,6 +374,27 @@ async def reconcile_pending_judges(run_dir: Path) -> int:
             continue
 
         judge_model = str(manifest.get("judge_model", ""))
+        invalid_payloads = []
+        for row in rows:
+            custom_id = row.get("judge_custom_id")
+            if custom_id is None or str(custom_id) not in expected_ids:
+                continue
+            resolved_fields = _resolve_judge_fields(
+                payloads[str(custom_id)],
+                # Use a substantive sentinel so abstention rules cannot mask
+                # a missing explicit hallucination field during validation.
+                "substantive answer",
+                judge_model,
+            )
+            if resolved_fields["llm_judge_score"] < 0 or resolved_fields["hallucination"] < 0:
+                invalid_payloads.append(str(custom_id))
+        if invalid_payloads:
+            unresolved.append(
+                f"{batch_id}: {len(invalid_payloads)}/{len(expected_ids)} payload(s) "
+                "missing valid score or hallucination"
+            )
+            continue
+
         for row in rows:
             custom_id = row.get("judge_custom_id")
             if custom_id is None or str(custom_id) not in expected_ids:
@@ -548,7 +572,10 @@ async def run_benchmark(
                 "q_minus": RAGConfig.ABLATION_Q_MINUS,
                 "q_plus": RAGConfig.ABLATION_Q_PLUS,
                 "chunk_sentences": RAGConfig.CHUNK_SENTENCES,
-                "hop_threshold": RAGConfig.HOP_THRESHOLD,
+                "hop_link_limit": RAGConfig.HOP_LINK_LIMIT,
+                "hop_candidate_limit": RAGConfig.HOP_CANDIDATE_LIMIT,
+                "hop_ann_pool": RAGConfig.HOP_ANN_POOL,
+                "hop_same_need_weight": RAGConfig.HOP_SAME_NEED_WEIGHT,
                 "hypo_channel_variant": RAGConfig.HYPO_CHANNEL_VARIANT,
             },
         }

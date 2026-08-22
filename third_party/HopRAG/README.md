@@ -54,17 +54,17 @@ Follow these steps to set up the HopRAG environment and prepare for your first r
           * `local_key`
           * `local_model_name`
 
-      * **Embedding Model:** Specify the path to your locally downloaded embedding model. This model must be the same for both building the graph and retrieval.
+      * **Embedding Model:** In this vendored integration the model is served by
+        the project's required external embedding endpoint and must be the same
+        for graph construction and retrieval.
 
           * `embed_model`
           * `embed_model_dict`
           * `embed_dim`
 
-      * **(Optional) Local Models:** If you are using local models (transformer framework) for pseudo-query, traversal or reranking, update their paths. `query_generator_model` and `traversal_model` could also be the openai model name or locally deployed vllm model name.
-
-          * `reranker`
-          * `query_generator_model`
-          * `traversal_model`
+      * **Generation:** `models/hoprag/official_indexer.py` and
+        `models/hoprag/hoprag_adapter.py` inject the configured external
+        endpoint. Local model and reranker loaders are not part of this fork.
 
 -----
 
@@ -74,12 +74,14 @@ Follow this pipeline to build the graph, run retrieval, and generate answers.
 
 ### Step 1: Prepare the Dataset
 
-First, preprocess your dataset (`.json` or `.jsonl`) using `data_preprocess.py`. This script converts the data into a standardized `.jsonl` format and extracts all document passages into a directory of `.txt` files (the "doc pool").
+This project prepares its three supported corpora with
+`data/prepare_multihoprag.py`, `data/prepare_hotpotqa.py`, and
+`data/prepare_musique.py`. The unused upstream standalone preprocessor was
+removed so there is one corpus contract.
 
-  * For **HotpotQA** or **2WikiMultiHop**, use the `main_hotpot_2wiki` function.
-  * For **MuSiQue**, use the `main_musique` function.
-
-**Note:** Ensure the sentence delimiter used in this step (e.g., `\n\n` in line 25 of `process_data` function) matches the `signal` variable in `config.py` for consistent document chunking.
+`models/hoprag/official_indexer.py` stages that shared corpus contract into the
+upstream problem-group format and installs all runtime configuration before
+`HopBuilder` is imported.
 
 ### Step 2: Build Graph Nodes
 
@@ -143,24 +145,10 @@ To verify that the graph and retrieval functions are working correctly, you can 
 
 ### Step 5: Retrieval-Augmented Generation
 
-Now, run the end-to-end RAG pipeline using `HopGenerator.py` from your command line. This script retrieves relevant context from the graph and passes it to the LLM to generate the final answer. Before running `HopGenerator.py`, please carefully examine the variables in `config.py`, especially `traversal_model`, `embed_model`, `dataset_name`, `node_dense_index_name`(the specific index names to retrieve from) etc.
-
-**Example Command:**
-
-```bash
-nohup python3 HopGenerator.py \
-    --model_name 'gpt-3.5-turbo' \
-    --data_path 'quickstart_dataset/hotpot_example.jsonl' \
-    --save_dir 'quickstart_dataset/hotpot_output' \
-    --retriever_name 'HopRetriever' \
-    --max_hop 4 \
-    --topk 20 \
-    --traversal 'bfs_node' \
-    --mode 'common' \
-    --label 'hotpot_bgeen_qwen1b5' > hotpot_run_log.txt &
-```
-
-The script will generate a results file formatted for official evaluation scripts and a `cache` directory with detailed logs for each question.
+This repository calls `HopRetriever.search_docs` through
+`models/hoprag/hoprag_adapter.py`, then applies the same external synthesis
+prompt used by the in-repo comparison methods. The unused upstream standalone
+generator and its optional reranking branch were removed.
 
 ### Step 6: Evaluation
 

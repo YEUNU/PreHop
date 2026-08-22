@@ -12,7 +12,7 @@ from typing import List, Tuple, Dict, Set, Union
 from collections import defaultdict
 
 class HopRetriever:
-    def __init__(self,llm='gpt-4o-mini',max_hop:int=5,entry_type="edge",if_hybrid=False,if_trim=False,cache_context_path="./context_outcome.json",tol=2,mock_dense=False,mock_sparse=False,topk=10,traversal="bfs",embedding_model=embed_model,reranker=None):
+    def __init__(self,llm='gpt-4o-mini',max_hop:int=5,entry_type="edge",if_hybrid=False,if_trim=False,cache_context_path="./context_outcome.json",tol=2,mock_dense=False,mock_sparse=False,topk=10,traversal="bfs",embedding_model=embed_model):
         self.emb_model = load_embed_model(embedding_model)
         self.driver = GraphDatabase.driver(neo4j_url, auth=(neo4j_user, neo4j_password), database=neo4j_dbname, notifications_disabled_categories=neo4j_notification_filter)
         self.max_hop = max_hop
@@ -26,10 +26,6 @@ class HopRetriever:
         self.reasoning_model = load_language_model(llm)
         self.topk=topk
         self.traversal=traversal
-        if reranker is not None:
-            model,tokenizer=load_rerank_model(reranker)
-            self.rerank_model,self.rerank_tokenizer=model,tokenizer
-            self.topk=topk*2
 
     def process_query(self,query):
         # get embedding and keywords for hybrid retrieval
@@ -618,30 +614,3 @@ class HopRetriever:
             return self.search_docs_bfs_hop2(query)
         else:
             raise ValueError("traversal type must be 'dfs' or 'bfs' or 'bfs_sim_node' or 'bfs_node' or 'bfs_hop2'")
-    
-    def search_docs_rerank(self,query:str)->Tuple[List[str],List[float]]:
-        context,_ = self.search_docs(query)
-        pairs=[]
-        for passage in context:
-            pair=[query,passage]
-            pairs.append(pair)
-        with torch.no_grad():
-            inputs = self.rerank_tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=512).to(self.rerank_model.device)
-            scores = self.rerank_model(**inputs, return_dict=True).logits.view(-1, ).float()
-            scores = scores.cpu().numpy()
-        sorted_indices = np.argsort(scores)[::-1] # Sort in descending order
-        sorted_indices = sorted_indices[:self.topk//2]
-        sorted_context = [context[i] for i in sorted_indices]
-        scores = [float(scores[i]) for i in sorted_indices]
-        return sorted_context, scores # when using reranker topk gets doubled when init, so here it should be reduced by half
-                       
-if __name__ == "__main__":
-    query="Donnie Smith who plays as a left back for New England Revolution belongs to what league featuring 22 teams?"
-    retriever = HopRetriever(llm=traversal_model,max_hop = 4, entry_type="node",if_trim=False,if_hybrid=True,
-                             tol=30,topk=20,traversal='bfs_hop2',mock_dense=False,reranker=None)# no reranking then reranker=None; else: reranker=reranker
-    context,scores = retriever.search_docs(query)
-    print(context)
-    print(scores)
-    if retriever.driver is not None:
-        retriever.driver.close()
-        retriever.driver=None 

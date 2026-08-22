@@ -15,6 +15,7 @@ import asyncio
 import csv
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -63,6 +64,70 @@ class Target:
 def _safe_token(value: str) -> str:
     token = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_")
     return token or "default"
+
+
+def _normalized_endpoint(value: str) -> str:
+    return str(value or "").strip().removesuffix("/v1").rstrip("/")
+
+
+def _fit_inference_capacity(max_parallel: int) -> dict[str, Any]:
+    """Fit aggregate child-process pressure to the configured vLLM capacity."""
+    max_seqs = int(os.environ.get("VLLM_MAX_NUM_SEQS", "128"))
+    generation = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
+    embed_batch = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32"))
+    embed_concurrency = int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2"))
+    if min(max_parallel, max_seqs, generation, embed_batch, embed_concurrency) < 1:
+        raise ValueError("Inference capacity and concurrency values must all be positive")
+
+    original = {
+        "generation_concurrency_per_target": generation,
+        "embedding_batch_size": embed_batch,
+        "embedding_concurrency_per_target": embed_concurrency,
+    }
+    generation_url = _normalized_endpoint(os.environ.get("VLLM_URL", ""))
+    embedding_url = _normalized_endpoint(os.environ.get("VLLM_EMBED_URL", ""))
+    shared_endpoint = bool(generation_url and generation_url == embedding_url)
+
+    if shared_endpoint:
+        per_target_budget = max_seqs // max_parallel
+        while embed_concurrency > 1 and generation + embed_batch * embed_concurrency > per_target_budget:
+            embed_concurrency -= 1
+        generation = min(generation, per_target_budget - embed_batch * embed_concurrency)
+        if generation < 1:
+            raise ValueError(
+                "Shared inference endpoint cannot fit one generation request plus the embedding batch: "
+                f"max_num_seqs={max_seqs}, max_parallel={max_parallel}, embed_batch={embed_batch}"
+            )
+    else:
+        generation = min(generation, max_seqs // max_parallel)
+        embed_concurrency = min(embed_concurrency, max_seqs // (max_parallel * embed_batch))
+        if generation < 1 or embed_concurrency < 1:
+            raise ValueError(
+                "Separate inference endpoint capacity is too small for the requested matrix width: "
+                f"max_num_seqs={max_seqs}, max_parallel={max_parallel}, embed_batch={embed_batch}"
+            )
+
+    os.environ["MAX_CONCURRENT_LLM_CALLS"] = str(generation)
+    os.environ["RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS"] = str(embed_concurrency)
+    effective_total = max_parallel * (
+        generation + embed_batch * embed_concurrency
+        if shared_endpoint
+        else max(generation, embed_batch * embed_concurrency)
+    )
+    return {
+        "server_max_num_seqs": max_seqs,
+        "max_parallel": max_parallel,
+        "generation_embedding_share_endpoint": shared_endpoint,
+        "requested": original,
+        "effective": {
+            "generation_concurrency_per_target": generation,
+            "embedding_batch_size": embed_batch,
+            "embedding_concurrency_per_target": embed_concurrency,
+            "aggregate_capacity_upper_bound": effective_total,
+        },
+        "adjusted": generation != original["generation_concurrency_per_target"]
+        or embed_concurrency != original["embedding_concurrency_per_target"],
+    }
 
 
 def _git_revision() -> dict[str, Any]:
@@ -182,6 +247,94 @@ def _one_row(session, query: str) -> dict[str, Any]:
     return record.data() if record is not None else {}
 
 
+def _normalize_title(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _gold_hop_alignment(session, target: Target, chunk_label: str, document_label: str) -> dict[str, Any]:
+    """Measure whether offline HOP topology connects known evidence documents."""
+    query_path = ROOT / "data" / f"{target.dataset}_queries.json"
+    if not query_path.is_file():
+        raise FileNotFoundError(f"Full query file required for gold HOP alignment: {query_path}")
+    queries = json.loads(query_path.read_text(encoding="utf-8"))
+    if not isinstance(queries, list) or not queries:
+        raise ValueError(f"Gold HOP query file is empty or invalid: {query_path}")
+
+    observed_titles = {
+        _normalize_title(record["title"])
+        for record in session.run(f"MATCH (d:{document_label}) RETURN DISTINCT d.title AS title")
+        if _normalize_title(record["title"])
+    }
+    hop_pairs = {
+        tuple(
+            sorted(
+                (
+                    _normalize_title(record["source_title"]),
+                    _normalize_title(record["target_title"]),
+                )
+            )
+        )
+        for record in session.run(
+            f"""
+            MATCH (src:{chunk_label})-[:HOP_ANSWER]->(tgt:{chunk_label})
+            RETURN DISTINCT src.title AS source_title, tgt.title AS target_title
+            """
+        )
+        if _normalize_title(record["source_title"])
+        and _normalize_title(record["target_title"])
+        and _normalize_title(record["source_title"]) != _normalize_title(record["target_title"])
+    }
+
+    resolved_mentions = 0
+    total_mentions = 0
+    eligible_queries = 0
+    connected_queries = 0
+    gold_pairs: set[tuple[str, str]] = set()
+    for item in queries:
+        docs = list(
+            dict.fromkeys(
+                normalized
+                for normalized in (_normalize_title(value) for value in (item.get("evidence_docs") or []))
+                if normalized
+            )
+        )
+        total_mentions += len(docs)
+        resolved_mentions += sum(doc in observed_titles for doc in docs)
+        resolved_docs = [doc for doc in docs if doc in observed_titles]
+        # A partial corpus can make a query look connected by ignoring the
+        # missing evidence document. Only fully resolved gold sets are valid
+        # for query-level topology coverage.
+        if len(resolved_docs) != len(docs):
+            continue
+        query_pairs = {
+            tuple(sorted(pair))
+            for pair in itertools.combinations(resolved_docs, 2)
+            if pair[0] != pair[1]
+        }
+        if not query_pairs:
+            continue
+        eligible_queries += 1
+        gold_pairs.update(query_pairs)
+        if query_pairs & hop_pairs:
+            connected_queries += 1
+
+    connected_pairs = gold_pairs & hop_pairs
+    return {
+        "gold_query_count": len(queries),
+        "gold_hop_eligible_query_count": eligible_queries,
+        "gold_hop_connected_query_count": connected_queries,
+        "gold_query_hop_coverage": connected_queries / eligible_queries if eligible_queries else 0.0,
+        "gold_evidence_document_mentions": total_mentions,
+        "gold_evidence_document_resolved_mentions": resolved_mentions,
+        "gold_evidence_document_resolution_rate": resolved_mentions / total_mentions if total_mentions else 0.0,
+        "gold_document_pair_count": len(gold_pairs),
+        "gold_document_pair_hop_connected_count": len(connected_pairs),
+        "gold_document_pair_hop_coverage": len(connected_pairs) / len(gold_pairs) if gold_pairs else 0.0,
+        "distinct_hop_document_pair_count": len(hop_pairs),
+        "distinct_hop_pair_gold_alignment_rate": len(connected_pairs) / len(hop_pairs) if hop_pairs else 0.0,
+    }
+
+
 def _graph_stats(target: Target) -> dict[str, Any]:
     """Read strategy-scoped integrity and logical-size statistics."""
     if target.strategy == "ms_graphrag":
@@ -216,25 +369,97 @@ def _graph_stats(target: Target) -> dict[str, Any]:
             if target.strategy == "prehop":
                 chunk = f"PR_{safe}_Chunk"
                 document = f"PR_{safe}_Document"
+                q_minus = f"PR_{safe}_QMinus"
+                q_plus = f"PR_{safe}_QPlus"
                 stats = _one_row(
                     session,
                     f"""
                     MATCH (c:{chunk})
                     RETURN count(c) AS chunk_count,
+                           count(DISTINCT c.source) AS document_count,
                            count(DISTINCT c.id) AS unique_chunk_ids,
                            count(c.embedding) AS body_embedding_count,
-                           count(c.q_minus_embedding) AS q_minus_count,
-                           count(c.q_plus_embedding) AS q_plus_count,
                            count(CASE WHEN trim(coalesce(c.text, '')) = '' THEN 1 END) AS empty_text_count,
+                           count(CASE WHEN trim(coalesce(c.chunk_summary, '')) = '' THEN 1 END)
+                               AS empty_summary_count,
+                           count(CASE WHEN size(split(trim(coalesce(c.chunk_summary, '')), ' ')) > 35
+                                      THEN 1 END) AS summary_over_35_words,
                            collect(DISTINCT size(c.embedding)) AS embedding_dimensions,
-                           sum(size(coalesce(c.text, '')) + size(coalesce(c.q_minus_text, '')) +
-                               size(coalesce(c.q_plus_text, '')) + size(coalesce(c.chunk_summary, '')) +
-                               4 * coalesce(size(c.embedding), 0) +
-                               4 * coalesce(size(c.q_minus_embedding), 0) +
-                               4 * coalesce(size(c.q_plus_embedding), 0)) AS logical_payload_bytes_estimate
+                           sum(size(coalesce(c.title, '')) + size(coalesce(c.text, '')) +
+                               size(coalesce(c.chunk_summary, '')) +
+                               4 * coalesce(size(c.embedding), 0)) AS chunk_payload_bytes
                     """,
                 )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (q:{q_minus})
+                        RETURN count(q) AS q_minus_count,
+                               count(DISTINCT q.id) AS unique_q_minus_ids,
+                               count(q.embedding) AS q_minus_embedding_count,
+                               count(CASE WHEN trim(coalesce(q.text, '')) = '' THEN 1 END) AS empty_q_minus_count,
+                               count(CASE WHEN size(split(trim(coalesce(q.text, '')), ' ')) > 22
+                                          THEN 1 END) AS q_minus_over_22_words,
+                               collect(DISTINCT size(q.embedding)) AS q_minus_embedding_dimensions,
+                               sum(size(coalesce(q.title, '')) + size(coalesce(q.text, '')) +
+                                   4 * coalesce(size(q.embedding), 0)) AS q_minus_payload_bytes
+                        """,
+                    )
+                )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (q:{q_plus})
+                        RETURN count(CASE WHEN EXISTS {{
+                            MATCH (q)-[:ANSWERED_BY|SUPPORTED_BY]->()
+                        }} THEN 1 END) AS linked_q_plus_count
+                        """,
+                    )
+                )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (q:{q_plus})
+                        RETURN count(q) AS q_plus_count,
+                               count(DISTINCT q.id) AS unique_q_plus_ids,
+                               count(q.embedding) AS q_plus_embedding_count,
+                               count(q.query_embedding) AS q_plus_query_embedding_count,
+                               count(CASE WHEN trim(coalesce(q.text, '')) = '' THEN 1 END) AS empty_q_plus_count,
+                               count(CASE WHEN size(split(trim(coalesce(q.text, '')), ' ')) > 22
+                                          THEN 1 END) AS q_plus_over_22_words,
+                               collect(DISTINCT size(q.embedding)) AS q_plus_embedding_dimensions,
+                               collect(DISTINCT size(q.query_embedding)) AS q_plus_query_embedding_dimensions,
+                               sum(size(coalesce(q.title, '')) + size(coalesce(q.text, '')) +
+                                   4 * coalesce(size(q.embedding), 0) +
+                                   4 * coalesce(size(q.query_embedding), 0)) AS q_plus_payload_bytes
+                        """,
+                    )
+                )
                 stats.update(_one_row(session, f"MATCH (d:{document}) RETURN count(d) AS document_count"))
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (d:{document})
+                        OPTIONAL MATCH (d)-[:CONTAINS]->(c:{chunk})
+                        WITH d, count(c) AS chunks
+                        RETURN sum(CASE WHEN chunks > 0 THEN chunks - 1 ELSE 0 END) AS expected_next_edge_count
+                        """,
+                    )
+                )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (d:{document})-[:CONTAINS]->(c:{chunk})
+                        RETURN count(CASE WHEN d.filename <> c.source THEN 1 END)
+                                   AS contains_source_mismatch_count
+                        """,
+                    )
+                )
                 stats.update(
                     _one_row(
                         session,
@@ -246,10 +471,38 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                         """,
                     )
                 )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (src:{chunk})-[r:NEXT]->(tgt:{chunk})
+                        RETURN count(CASE WHEN src.source <> tgt.source THEN 1 END)
+                                   AS next_cross_document_count,
+                               count(CASE WHEN tgt.sent_id <> src.sent_id + 1 THEN 1 END)
+                                   AS next_nonconsecutive_count
+                        """,
+                    )
+                )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (c:{chunk})
+                        OPTIONAL MATCH (c)-[out:NEXT]->()
+                        WITH c, count(out) AS out_degree
+                        OPTIONAL MATCH ()-[incoming:NEXT]->(c)
+                        WITH c, out_degree, count(incoming) AS in_degree
+                        RETURN count(CASE WHEN out_degree > 1 THEN 1 END)
+                                   AS next_outdegree_violation_count,
+                               count(CASE WHEN in_degree > 1 THEN 1 END)
+                                   AS next_indegree_violation_count
+                        """,
+                    )
+                )
                 for rel, key in (
                     ("CONTAINS", "contains_edge_count"),
                     ("NEXT", "next_edge_count"),
-                    ("HOP", "hop_edge_count"),
+                    ("HOP_ANSWER", "hop_edge_count"),
                 ):
                     stats.update(
                         _one_row(
@@ -260,16 +513,121 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                         )
                     )
                 total = stats.get("chunk_count", 0) or 0
-                stats["q_minus_coverage"] = (stats.get("q_minus_count", 0) or 0) / total if total else 0.0
-                stats["q_plus_coverage"] = (stats.get("q_plus_count", 0) or 0) / total if total else 0.0
+                q_minus_covered = _one_row(
+                    session,
+                    f"MATCH (c:{chunk})-[:HAS_Q_MINUS]->(:{q_minus}) RETURN count(DISTINCT c) AS count",
+                ).get("count", 0)
+                q_plus_covered = _one_row(
+                    session,
+                    f"MATCH (c:{chunk})-[:HAS_Q_PLUS]->(:{q_plus}) RETURN count(DISTINCT c) AS count",
+                ).get("count", 0)
+                stats["q_minus_coverage"] = q_minus_covered / total if total else 0.0
+                stats["q_plus_coverage"] = q_plus_covered / total if total else 0.0
                 stats["duplicate_chunk_id_count"] = total - (stats.get("unique_chunk_ids", 0) or 0)
+                stats["duplicate_q_minus_id_count"] = (stats.get("q_minus_count", 0) or 0) - (
+                    stats.get("unique_q_minus_ids", 0) or 0
+                )
+                stats["duplicate_q_plus_id_count"] = (stats.get("q_plus_count", 0) or 0) - (
+                    stats.get("unique_q_plus_ids", 0) or 0
+                )
                 stats["avg_hop_out_degree"] = (stats.get("hop_edge_count", 0) or 0) / total if total else 0.0
+                stats["logical_payload_bytes_estimate"] = sum(
+                    stats.get(key, 0) or 0
+                    for key in ("chunk_payload_bytes", "q_minus_payload_bytes", "q_plus_payload_bytes")
+                )
+                for rel, key, target_label in (
+                    ("ANSWERED_BY", "answered_by_edge_count", q_minus),
+                    ("SAME_NEED", "same_need_edge_count", q_plus),
+                    ("SUPPORTED_BY", "supported_by_edge_count", chunk),
+                ):
+                    stats.update(
+                        _one_row(
+                            session,
+                            f"MATCH (:{q_plus})-[r:{rel}]->(:{target_label}) RETURN count(r) AS {key}",
+                        )
+                    )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (q:{q_minus})
+                        RETURN count(CASE WHEN NOT EXISTS {{
+                            MATCH (:{chunk})-[:HAS_Q_MINUS]->(q)
+                        }} THEN 1 END) AS orphan_q_minus_count
+                        """,
+                    )
+                )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (owner:{chunk})-[:HAS_Q_MINUS]->(q:{q_minus})
+                        RETURN count(CASE WHEN owner.source <> q.source OR owner.title <> q.title
+                                          THEN 1 END) AS q_minus_owner_mismatch_count
+                        """,
+                    )
+                )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (q:{q_plus})
+                        RETURN count(CASE WHEN NOT EXISTS {{
+                            MATCH (:{chunk})-[:HAS_Q_PLUS]->(q)
+                        }} THEN 1 END) AS orphan_q_plus_count
+                        """,
+                    )
+                )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (owner:{chunk})-[:HAS_Q_PLUS]->(q:{q_plus})
+                        RETURN count(CASE WHEN owner.source <> q.source OR owner.title <> q.title
+                                          THEN 1 END) AS q_plus_owner_mismatch_count
+                        """,
+                    )
+                )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (src:{chunk})-[r:HOP_ANSWER]->(tgt:{chunk})
+                        RETURN count(CASE WHEN src.source = tgt.source THEN 1 END) AS same_document_hop_count,
+                               count(CASE WHEN size(coalesce(r.direct_channels, [])) = 0 THEN 1 END)
+                                   AS hop_without_direct_signal_count,
+                               count(CASE WHEN ('q_minus' IN coalesce(r.direct_channels, []) AND
+                                                r.q_minus_score IS NULL) OR
+                                               ('body' IN coalesce(r.direct_channels, []) AND
+                                                r.body_score IS NULL)
+                                          THEN 1 END) AS hop_direct_score_mismatch_count,
+                               count(CASE WHEN size(coalesce(r.source_question_ids, [])) = 0 OR
+                                               size(coalesce(r.source_question_texts, [])) = 0
+                                          THEN 1 END) AS hop_without_bridge_provenance_count
+                        """,
+                    )
+                )
+                stats.update(
+                    _one_row(
+                        session,
+                        f"""
+                        MATCH (src:{chunk})-[r:HOP_ANSWER]->(:{chunk})
+                        WITH src, count(r) AS degree
+                        RETURN count(CASE WHEN degree > {int(os.environ.get('RAG_HOP_LINK_LIMIT', '5'))}
+                                          THEN 1 END) AS hop_outdegree_violation_count
+                        """,
+                    )
+                )
                 samples = session.run(
                     f"""
                     MATCH (c:{chunk})
+                    OPTIONAL MATCH (c)-[:HAS_Q_MINUS]->(qm:{q_minus})
+                    WITH c, collect(qm.text) AS q_minus_texts
+                    OPTIONAL MATCH (c)-[:HAS_Q_PLUS]->(qp:{q_plus})
                     RETURN c.source AS source, c.title AS title, c.page AS page,
                            c.sent_id AS sent_id, c.text AS text,
-                           c.q_minus_text AS q_minus_text, c.q_plus_text AS q_plus_text,
+                           q_minus_texts AS q_minus,
+                           collect(qp.text) AS q_plus,
                            c.chunk_summary AS chunk_summary
                     ORDER BY c.source, c.sent_id
                     LIMIT 8
@@ -278,15 +636,17 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                 stats["inspection_samples"] = [record.data() for record in samples]
                 hop_samples = session.run(
                     f"""
-                    MATCH (src:{chunk})-[r:HOP]->(tgt:{chunk})
+                    MATCH (src:{chunk})-[r:HOP_ANSWER]->(tgt:{chunk})
                     RETURN src.source AS source, src.text AS source_text,
                            tgt.source AS target_source, tgt.text AS target_text,
-                           r.score AS score
+                           r.score AS score, r.direct_channels AS direct_channels,
+                           r.same_need_score AS same_need_score
                     ORDER BY r.score DESC
                     LIMIT 8
                     """
                 )
                 stats["hop_inspection_samples"] = [record.data() for record in hop_samples]
+                stats.update(_gold_hop_alignment(session, target, chunk, document))
                 return stats
 
             if target.strategy == "naive":
@@ -300,7 +660,8 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                            count(c.embedding) AS body_embedding_count,
                            count(CASE WHEN trim(coalesce(c.text, '')) = '' THEN 1 END) AS empty_text_count,
                            collect(DISTINCT size(c.embedding)) AS embedding_dimensions,
-                           sum(size(coalesce(c.text, '')) + 4 * coalesce(size(c.embedding), 0))
+                           sum(size(coalesce(c.title, '')) + size(coalesce(c.text, '')) +
+                               4 * coalesce(size(c.embedding), 0))
                                AS logical_payload_bytes_estimate
                     """,
                 )
@@ -353,7 +714,61 @@ def _validate_target_stats(target: Target, stats: dict[str, Any], input_file_cou
                 raise ValueError(f"Prehop integrity violation: {key}={stats[key]}")
         if (stats.get("body_embedding_count", 0) or 0) != stats.get("chunk_count"):
             raise ValueError("Prehop body embedding coverage is incomplete")
+        for count_key, embedding_key in (
+            ("q_minus_count", "q_minus_embedding_count"),
+            ("q_plus_count", "q_plus_embedding_count"),
+            ("q_plus_count", "q_plus_query_embedding_count"),
+        ):
+            if (stats.get(embedding_key, 0) or 0) != (stats.get(count_key, 0) or 0):
+                raise ValueError(f"Prehop question embedding coverage is incomplete: {embedding_key}")
+        for dimension_key in (
+            "q_minus_embedding_dimensions",
+            "q_plus_embedding_dimensions",
+            "q_plus_query_embedding_dimensions",
+        ):
+            question_dimensions = sorted(
+                int(value) for value in (stats.get(dimension_key) or []) if value is not None
+            )
+            if question_dimensions and question_dimensions != [expected_dim]:
+                raise ValueError(
+                    f"Prehop {dimension_key}={question_dimensions}, expected [{expected_dim}]"
+                )
+        for key in (
+            "empty_q_minus_count",
+            "empty_q_plus_count",
+            "duplicate_q_minus_id_count",
+            "duplicate_q_plus_id_count",
+            "orphan_q_minus_count",
+            "orphan_q_plus_count",
+            "empty_summary_count",
+            "contains_source_mismatch_count",
+            "q_minus_owner_mismatch_count",
+            "q_plus_owner_mismatch_count",
+            "next_cross_document_count",
+            "next_nonconsecutive_count",
+            "next_outdegree_violation_count",
+            "next_indegree_violation_count",
+            "same_document_hop_count",
+            "hop_without_direct_signal_count",
+            "hop_direct_score_mismatch_count",
+            "hop_without_bridge_provenance_count",
+            "hop_outdegree_violation_count",
+        ):
+            if (stats.get(key, 0) or 0) != 0:
+                raise ValueError(f"Prehop integrity violation: {key}={stats[key]}")
+        if stats.get("next_edge_count") != stats.get("expected_next_edge_count"):
+            raise ValueError(
+                "Prehop NEXT edge count does not match the ordered per-document chunk topology"
+            )
+        if input_file_count > 1 and (stats.get("q_plus_count", 0) or 0) and not (
+            stats.get("hop_edge_count", 0) or 0
+        ):
+            raise ValueError("Prehop generated Q+ questions but no cross-document HOP_ANSWER edges")
     elif target.strategy == "naive":
+        if stats.get("document_count") != input_file_count:
+            raise ValueError(
+                f"Naive document count {stats.get('document_count')} != input files {input_file_count}"
+            )
         if not (stats.get("chunk_count", 0) or 0):
             raise ValueError("Naive index contains no chunks")
         if (stats.get("duplicate_chunk_id_count", 0) or 0) != 0:
@@ -387,8 +802,7 @@ def _host_memory() -> tuple[int, int, float]:
     return total, available, used_ratio
 
 
-def _vllm_pressure() -> dict[str, int]:
-    configured = os.environ.get("VLLM_URL", "").strip()
+def _endpoint_pressure(configured: str) -> dict[str, int]:
     if not configured:
         return {"running": 0, "waiting": 0}
     base = configured.removesuffix("/v1").rstrip("/")
@@ -408,6 +822,33 @@ def _vllm_pressure() -> dict[str, int]:
     }
 
 
+def _vllm_pressure() -> dict[str, int]:
+    """Read generation and embedding servers independently.
+
+    The two model classes intentionally live on different external servers;
+    observing only generation could miss an embedding queue bottleneck and
+    keep launching targets after the embedding server is saturated.
+    """
+    generation = _endpoint_pressure(os.environ.get("VLLM_URL", "").strip())
+    embedding_url = os.environ.get("VLLM_EMBED_URL", "").strip()
+    if embedding_url == os.environ.get("VLLM_URL", "").strip():
+        embedding = dict(generation)
+        total_running = generation["running"]
+        total_waiting = generation["waiting"]
+    else:
+        embedding = _endpoint_pressure(embedding_url)
+        total_running = generation["running"] + embedding["running"]
+        total_waiting = generation["waiting"] + embedding["waiting"]
+    return {
+        "generation_running": generation["running"],
+        "generation_waiting": generation["waiting"],
+        "embedding_running": embedding["running"],
+        "embedding_waiting": embedding["waiting"],
+        "running": total_running,
+        "waiting": total_waiting,
+    }
+
+
 async def _resource_sampler(run_dir: Path, state: dict[str, Any], stop: asyncio.Event, interval: float) -> None:
     pressure_streak = 0
     max_waiting = max(1, int(os.environ.get("RAG_MATRIX_MAX_VLLM_WAITING", "32")))
@@ -423,6 +864,10 @@ async def _resource_sampler(run_dir: Path, state: dict[str, Any], stop: asyncio.
             "host_memory_used_ratio": host_ratio,
             "vllm_running": vllm["running"],
             "vllm_waiting": vllm["waiting"],
+            "generation_vllm_running": vllm["generation_running"],
+            "generation_vllm_waiting": vllm["generation_waiting"],
+            "embedding_vllm_running": vllm["embedding_running"],
+            "embedding_vllm_waiting": vllm["embedding_waiting"],
         }
         state["samples"].append(sample)
         pressured = host_ratio >= 0.90 or vllm["waiting"] > max_waiting
@@ -505,7 +950,7 @@ async def _run_target(
     env["RAG_RUN_ID"] = child_run_id
     env["RAG_CHUNK_CACHE"] = "off"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    base_file_workers = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "2")))
+    base_file_workers = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "4")))
     base_hop_doc_workers = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")))
     base_ms_requests = max(1, int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "8")))
     env["RAG_MAX_PARALLEL_FILES"] = str(max(1, base_file_workers // concurrency_divisor))
@@ -584,6 +1029,10 @@ async def _run_target(
         result["failure_count"] = int(failure_payload.get("failed", 0))
     else:
         result["failure_count"] = 0
+    runtime_stats_path = ROOT / "data/index_stats" / f"{target.strategy}_{target.dataset}_{child_run_id}.json"
+    if runtime_stats_path.is_file():
+        runtime_payload = json.loads(runtime_stats_path.read_text(encoding="utf-8"))
+        result["runtime_stage_timing_seconds"] = runtime_payload.get("timing_seconds", {})
     if return_code == 0:
         try:
             result["index_stats"] = await asyncio.to_thread(_graph_stats, target)
@@ -637,6 +1086,8 @@ def _write_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
         "logical_payload_bytes_estimate",
         "q_minus_coverage",
         "q_plus_coverage",
+        "gold_query_hop_coverage",
+        "gold_document_pair_hop_coverage",
     ]
     rows = []
     for result in results:
@@ -651,6 +1102,8 @@ def _write_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
             "logical_payload_bytes_estimate": stats.get("logical_payload_bytes_estimate", 0),
             "q_minus_coverage": stats.get("q_minus_coverage", ""),
             "q_plus_coverage": stats.get("q_plus_coverage", ""),
+            "gold_query_hop_coverage": stats.get("gold_query_hop_coverage", ""),
+            "gold_document_pair_hop_coverage": stats.get("gold_document_pair_hop_coverage", ""),
         }
         rows.append(row)
     csv_buffer = io.StringIO()
@@ -660,12 +1113,12 @@ def _write_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
     _atomic_write_text(run_dir / "summary.csv", csv_buffer.getvalue())
 
     lines = [
-        "| Dataset | Strategy | Status | Files | Time (min) | Nodes/chunks | Edges | Max RSS (GiB) | Usable artifacts (MiB) | Logical graph (MiB) | Failures |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Dataset | Strategy | Status | Files | Time (min) | Nodes/chunks | Edges | Gold-query HOP (%) | Max RSS (GiB) | Usable artifacts (MiB) | Logical graph (MiB) | Failures |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for result, row in zip(results, rows):
         lines.append(
-            "| {dataset} | {strategy} | {status} | {files} | {minutes:.2f} | {nodes:,} | {edges:,} | "
+            "| {dataset} | {strategy} | {status} | {files} | {minutes:.2f} | {nodes:,} | {edges:,} | {gold_hop} | "
             "{rss:.2f} | {usable:.2f} | {logical:.2f} | {failures} |".format(
                 dataset=result["dataset"],
                 strategy=result["strategy"],
@@ -674,6 +1127,11 @@ def _write_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
                 minutes=result["elapsed_seconds"] / 60,
                 nodes=row["node_or_chunk_count"],
                 edges=row["edge_count"],
+                gold_hop=(
+                    f"{100 * row['gold_query_hop_coverage']:.2f}"
+                    if isinstance(row["gold_query_hop_coverage"], (int, float))
+                    else "—"
+                ),
                 rss=(result.get("max_rss_bytes", 0) or 0) / 2**30,
                 usable=(row["artifact_usable_bytes"] or 0) / 2**20,
                 logical=(row["logical_payload_bytes_estimate"] or 0) / 2**20,
@@ -735,6 +1193,7 @@ async def _verify_external_inference(run_dir: Path) -> None:
     from core.config import RAGConfig
     from core.vllm_client import VLLMClient
 
+    RAGConfig.validate()
     client = VLLMClient()
     try:
         embedding = await client.get_embedding("prehop indexing configuration probe")
@@ -772,6 +1231,7 @@ async def _main(args: argparse.Namespace) -> int:
     run_dir.mkdir(parents=True, exist_ok=False)
     selected_datasets = list(DATASETS) if args.datasets == ["all"] else args.datasets
     selected_strategies = list(STRATEGIES) if args.strategies == ["all"] else args.strategies
+    capacity_plan = _fit_inference_capacity(args.max_parallel)
     targets = [
         Target(dataset, strategy, DATASETS[dataset])
         for dataset in selected_datasets
@@ -808,15 +1268,21 @@ async def _main(args: argparse.Namespace) -> int:
             "prehop_naive_top_k": int(os.environ.get("RAG_DEFAULT_TOP_K", "12")),
             "hoprag_official_top_k": 20,
             "ms_graphrag_context_budget": "official package configuration",
-            "hop_threshold": float(os.environ.get("RAG_HOP_THRESHOLD", "0.82")),
+            "hop_link_limit": int(os.environ.get("RAG_HOP_LINK_LIMIT", "5")),
+            "hop_candidate_limit": int(os.environ.get("RAG_HOP_CANDIDATE_LIMIT", "15")),
+            "hop_ann_pool": int(os.environ.get("RAG_HOP_ANN_POOL", "50")),
+            "hop_gather_wave": int(os.environ.get("RAG_HOP_GATHER_WAVE", "64")),
+            "hop_channel_concurrency": int(os.environ.get("RAG_HOP_CHANNEL_CONCURRENCY", "2")),
+            "hop_same_need_weight": float(os.environ.get("RAG_HOP_SAME_NEED_WEIGHT", "0.5")),
             "q_minus_enabled": os.environ.get("RAG_ABLATION_Q_MINUS", "True").lower() == "true",
             "q_plus_enabled": os.environ.get("RAG_ABLATION_Q_PLUS", "True").lower() == "true",
-            "prehop_file_workers": int(os.environ.get("RAG_MAX_PARALLEL_FILES", "2")),
+            "prehop_file_workers": int(os.environ.get("RAG_MAX_PARALLEL_FILES", "4")),
             "hoprag_doc_workers": int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")),
             "hoprag_chunk_threads_per_document": int(os.environ.get("RAG_HOP_MAX_THREADS", "4")),
             "hoprag_question_validation_retries": int(os.environ.get("RAG_HOP_QUESTION_RETRIES", "3")),
             "ms_concurrent_requests": int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "8")),
         },
+        "inference_capacity_plan": capacity_plan,
         "inference": {
             "generation_url": os.environ.get("VLLM_URL", ""),
             "embedding_url": os.environ.get("VLLM_EMBED_URL", ""),
@@ -824,7 +1290,11 @@ async def _main(args: argparse.Namespace) -> int:
             "embedding_model": os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model"),
             "embedding_dimensions": int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")),
             "server_max_num_seqs": int(os.environ.get("VLLM_MAX_NUM_SEQS", "128")),
-            "client_max_concurrent_llm_calls_per_file": int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30")),
+            "client_max_concurrent_llm_calls_per_target": int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30")),
+            "embedding_batch_size": int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32")),
+            "max_concurrent_embedding_requests_per_target": int(
+                os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
+            ),
             "compute_location": "external (accelerator telemetry unavailable to this runner)",
         },
         "targets": [target.key for target in targets],

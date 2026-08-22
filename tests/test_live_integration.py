@@ -165,6 +165,8 @@ async def test_live_graphrag_index_retrieve_roundtrip():
     rag = GraphRAG(strategy="prehop", corpus_tag=corpus_tag)
 
     async def cleanup() -> None:
+        await rag.neo4j.execute_query(f"MATCH (n:{rag.q_minus_label}) DETACH DELETE n")
+        await rag.neo4j.execute_query(f"MATCH (n:{rag.q_plus_label}) DETACH DELETE n")
         await rag.neo4j.execute_query(f"MATCH (n:{rag.chunk_label}) DETACH DELETE n")
         await rag.neo4j.execute_query(f"MATCH (d:{rag.doc_label}) DETACH DELETE d")
 
@@ -198,17 +200,13 @@ async def test_live_graphrag_index_retrieve_roundtrip():
             "Unique token missing from generated chunks."
         )
 
-        doc_id = await _run_live_step(
-            "create_document_node",
-            rag.create_document_node(
-                "graphrag_live_smoke.txt",
-                {"title": knowledge["title"]},
-            ),
-            timeout_seconds=20.0,
-        )
         await _run_live_step(
             "build_graph",
-            rag.build_graph(knowledge, source="graphrag_live_smoke.txt", document_filename=doc_id),
+            rag.build_graph(
+                knowledge,
+                source="graphrag_live_smoke.txt",
+                document_filename="graphrag_live_smoke.txt",
+            ),
             timeout_seconds=120.0,
         )
         await _run_live_step("flush_graph_batch", rag.flush_graph_batch(), timeout_seconds=120.0)
@@ -236,6 +234,56 @@ async def test_live_graphrag_index_retrieve_roundtrip():
         assert nodes, "GraphRAG retrieve returned no nodes."
         retrieved_blob = (context + "\n" + "\n".join(n.get("text", "") for n in nodes)).lower()
         assert unique_token.lower() in retrieved_blob, "Unique token not present in retrieved context."
+
+        # Re-indexing the same document must atomically replace its complete
+        # chunk/question subgraph.  This catches stale NEXT and stale question
+        # nodes that a MERGE-only smoke cannot expose.
+        replacement = {
+            "title": "GraphRAG Live Smoke 10K revised",
+            "chunks": [
+                {
+                    "title": "GraphRAG Live Smoke 10K revised",
+                    "text": f"The revised filing retains {unique_token} as its only disclosed program.",
+                    "sent_id": 0,
+                    "page": 1,
+                    "summary": "The revised filing retains one disclosed program.",
+                    "q_minus": [f"Which program is retained in the revised filing containing {unique_token}?"],
+                    "q_plus": [f"Which later filing updated the metrics for {unique_token}?"],
+                }
+            ],
+        }
+        await _run_live_step(
+            "build_replacement_graph",
+            rag.build_graph(
+                replacement,
+                source="graphrag_live_smoke.txt",
+                document_filename="graphrag_live_smoke.txt",
+            ),
+            timeout_seconds=120.0,
+        )
+        await _run_live_step("flush_replacement_graph", rag.flush_graph_batch(), timeout_seconds=120.0)
+        replacement_counts = await _run_live_step(
+            "replacement_counts",
+            rag.neo4j.execute_query(
+                f"""
+                MATCH (d:{rag.doc_label} {{filename: $filename}})
+                OPTIONAL MATCH (d)-[:CONTAINS]->(c:{rag.chunk_label})
+                OPTIONAL MATCH (c)-[:HAS_Q_MINUS]->(qm:{rag.q_minus_label})
+                OPTIONAL MATCH (c)-[:HAS_Q_PLUS]->(qp:{rag.q_plus_label})
+                OPTIONAL MATCH (c)-[next:NEXT]->()
+                RETURN count(DISTINCT c) AS chunks,
+                       count(DISTINCT qm) AS q_minus,
+                       count(DISTINCT qp) AS q_plus,
+                       count(DISTINCT next) AS next_edges
+                """,
+                {"filename": "graphrag_live_smoke.txt"},
+            ),
+            timeout_seconds=20.0,
+        )
+        assert replacement_counts and replacement_counts[0]["chunks"] == 1
+        assert replacement_counts[0]["q_minus"] == 1
+        assert replacement_counts[0]["q_plus"] == 1
+        assert replacement_counts[0]["next_edges"] == 0
     finally:
         await _run_live_step("cleanup_after", cleanup(), timeout_seconds=20.0)
         await Neo4jService.global_close()

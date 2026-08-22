@@ -1,7 +1,7 @@
 [project]
 name = "prehop"
 version = "0.0.0"
-description = "Offline HOP-edge pre-scoring for deterministic multi-hop retrieval"
+description = "Question-level offline HOP construction for deterministic multi-hop retrieval"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -26,11 +26,9 @@ dependencies = [
                  # submodules those files import
     "litellm",  # ms_graphrag baseline routes generation through a LiteLLM Router
                 # (models/ms_graphrag/official_indexer.py, ms_adapter.py)
-    # paddlenlp/modelscope/sentence-transformers are NOT needed:
-    # third_party/HopRAG/tool.py imports them
-    # at module level, but models/hoprag/official_indexer.py installs import-only
-    # sentinels before that import. Any accidental runtime use raises loudly;
-    # the real packages are not part of the supported indexing/benchmark path.
+    # paddlenlp is not needed: the HopRAG adapter installs an import sentinel
+    # and replaces its tagger with spaCy. Local model/reranker loaders were
+    # removed; all inference must use the configured external endpoints.
 ]
 
 [project.optional-dependencies]

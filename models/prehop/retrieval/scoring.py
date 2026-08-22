@@ -42,13 +42,37 @@ class SimilarityScoringMixin:
         if not candidates:
             return [], []
 
-        scores = await self._embedding_similarity_scores(
+        body_scores = await self._embedding_similarity_scores(
             query,
-            [str(node.get("text", "")) for node in candidates],
+            [
+                f"Document title: {node.get('title', '')}\n{node.get('text', '')}".strip()
+                for node in candidates
+            ],
         )
-        for index, score in enumerate(scores):
-            candidates[index]["similarity_score"] = score
-            candidates[index]["final_score"] = score
+        bridge_indices = [
+            index for index, node in enumerate(candidates) if str(node.get("bridge_text") or "").strip()
+        ]
+        bridge_scores: list[float] = []
+        if bridge_indices:
+            bridge_scores = await self._embedding_similarity_scores(
+                query,
+                [str(candidates[index]["bridge_text"]).strip() for index in bridge_indices],
+            )
+        bridge_by_index = dict(zip(bridge_indices, bridge_scores))
+
+        for index, body_score in enumerate(body_scores):
+            # A traversed target should agree on both sides of the stored
+            # evidence path: the source Q+ must match the user need and the
+            # target body must itself remain relevant. A single concatenated
+            # embedding let a strong bridge phrase mask an unrelated target.
+            bridge_score = bridge_by_index.get(index)
+            final_score = (
+                (body_score + bridge_score) / 2.0 if bridge_score is not None else body_score
+            )
+            candidates[index]["similarity_score"] = body_score
+            if bridge_score is not None:
+                candidates[index]["bridge_similarity_score"] = bridge_score
+            candidates[index]["final_score"] = final_score
 
         ordered = sorted(candidates, key=lambda item: item.get("final_score", 0.0), reverse=True)
         return ordered[:top_k], ordered

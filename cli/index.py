@@ -9,7 +9,6 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from core.config import RAGConfig
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing.chunking import parse_pages_offline
@@ -43,29 +42,80 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
         return None
     chunk_label = engine.chunk_label
     doc_label = engine.doc_label
+    q_minus_label = engine.q_minus_label
+    q_plus_label = engine.q_plus_label
 
     chunk_rows = await engine.neo4j.execute_query(f"""
         MATCH (c:{chunk_label})
-        RETURN count(c) AS total_chunks,
-               count(c.q_minus_embedding) AS q_minus_chunks,
-               count(c.q_plus_embedding) AS q_plus_chunks
+        RETURN count(c) AS total_chunks
     """)
     chunk_stats = chunk_rows[0] if chunk_rows else {}
 
     doc_rows = await engine.neo4j.execute_query(f"MATCH (d:{doc_label}) RETURN count(d) AS total_docs")
     doc_stats = doc_rows[0] if doc_rows else {}
 
-    hop_rows = await engine.neo4j.execute_query(f"""
-        MATCH (:{chunk_label})-[r:HOP]->(:{chunk_label})
-        RETURN count(r) AS total_hop_edges
+    question_rows = await engine.neo4j.execute_query(f"""
+        MATCH (c:{chunk_label})
+        OPTIONAL MATCH (c)-[:HAS_Q_MINUS]->(qm:{q_minus_label})
+        WITH count(DISTINCT c) AS total_chunks,
+             count(DISTINCT qm) AS q_minus_questions,
+             count(DISTINCT CASE WHEN qm IS NOT NULL THEN c END) AS q_minus_chunks
+        MATCH (c2:{chunk_label})
+        OPTIONAL MATCH (c2)-[:HAS_Q_PLUS]->(qp:{q_plus_label})
+        RETURN total_chunks, q_minus_questions, q_minus_chunks,
+               count(DISTINCT qp) AS q_plus_questions,
+               count(DISTINCT CASE WHEN qp IS NOT NULL THEN c2 END) AS q_plus_chunks
     """)
-    hop_stats = hop_rows[0] if hop_rows else {}
+    question_stats = question_rows[0] if question_rows else {}
+
+    edge_rows = await engine.neo4j.execute_query(f"""
+        OPTIONAL MATCH (:{chunk_label})-[hop:HOP_ANSWER]->(:{chunk_label})
+        WITH count(hop) AS total_hop_edges
+        OPTIONAL MATCH (:{q_plus_label})-[answer:ANSWERED_BY]->(:{q_minus_label})
+        WITH total_hop_edges, count(answer) AS answered_by_edges
+        OPTIONAL MATCH (:{q_plus_label})-[same:SAME_NEED]->(:{q_plus_label})
+        WITH total_hop_edges, answered_by_edges, count(same) AS same_need_edges
+        OPTIONAL MATCH (:{q_plus_label})-[body:SUPPORTED_BY]->(:{chunk_label})
+        RETURN total_hop_edges, answered_by_edges, same_need_edges,
+               count(body) AS supported_by_edges
+    """)
+    edge_stats = edge_rows[0] if edge_rows else {}
+
+    quality_rows = await engine.neo4j.execute_query(f"""
+        MATCH (c:{chunk_label})
+        OPTIONAL MATCH (c)-[:HAS_Q_MINUS]->(qm:{q_minus_label})
+        OPTIONAL MATCH (c)-[:HAS_Q_PLUS]->(qp:{q_plus_label})
+        RETURN count(DISTINCT CASE WHEN size(split(trim(coalesce(qm.text, '')), ' ')) > 22
+                                   THEN qm END) AS q_minus_over_22_words,
+               count(DISTINCT CASE WHEN size(split(trim(coalesce(qp.text, '')), ' ')) > 22
+                                   THEN qp END) AS q_plus_over_22_words,
+               count(DISTINCT CASE WHEN size(split(trim(coalesce(c.chunk_summary, '')), ' ')) > 35
+                                   THEN c END) AS summary_over_35_words
+    """)
+    quality_stats = quality_rows[0] if quality_rows else {}
+    direction_rows = await engine.neo4j.execute_query(f"""
+        MATCH (q:{q_plus_label})
+        RETURN count(q) AS total_q_plus,
+               count(CASE WHEN EXISTS {{
+                   MATCH (q)-[:ANSWERED_BY|SUPPORTED_BY]->()
+               }} THEN 1 END) AS linked_q_plus
+    """)
+    direction_stats = direction_rows[0] if direction_rows else {}
+    hop_bridge_rows = await engine.neo4j.execute_query(f"""
+        MATCH (:{chunk_label})-[hop:HOP_ANSWER]->(:{chunk_label})
+        RETURN count(CASE WHEN size(coalesce(hop.source_question_ids, [])) = 0 OR
+                               size(coalesce(hop.source_question_texts, [])) = 0
+                          THEN 1 END) AS hop_without_bridge_provenance
+    """)
+    hop_bridge_stats = hop_bridge_rows[0] if hop_bridge_rows else {}
 
     total_chunks = chunk_stats.get("total_chunks", 0) or 0
     total_docs = doc_stats.get("total_docs", 0) or 0
-    q_minus_chunks = chunk_stats.get("q_minus_chunks", 0) or 0
-    q_plus_chunks = chunk_stats.get("q_plus_chunks", 0) or 0
-    total_hop_edges = hop_stats.get("total_hop_edges", 0) or 0
+    q_minus_chunks = question_stats.get("q_minus_chunks", 0) or 0
+    q_plus_chunks = question_stats.get("q_plus_chunks", 0) or 0
+    q_minus_questions = question_stats.get("q_minus_questions", 0) or 0
+    q_plus_questions = question_stats.get("q_plus_questions", 0) or 0
+    total_hop_edges = edge_stats.get("total_hop_edges", 0) or 0
 
     return {
         "total_documents": total_docs,
@@ -73,7 +123,25 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
         "avg_chunks_per_doc": (total_chunks / total_docs) if total_docs else 0.0,
         "q_minus_coverage": (q_minus_chunks / total_chunks) if total_chunks else 0.0,
         "q_plus_coverage": (q_plus_chunks / total_chunks) if total_chunks else 0.0,
+        "q_minus_questions": q_minus_questions,
+        "q_plus_questions": q_plus_questions,
+        "avg_q_minus_per_covered_chunk": (q_minus_questions / q_minus_chunks) if q_minus_chunks else 0.0,
+        "avg_q_plus_per_covered_chunk": (q_plus_questions / q_plus_chunks) if q_plus_chunks else 0.0,
         "total_hop_edges": total_hop_edges,
+        "answered_by_edges": edge_stats.get("answered_by_edges", 0) or 0,
+        "same_need_edges": edge_stats.get("same_need_edges", 0) or 0,
+        "supported_by_edges": edge_stats.get("supported_by_edges", 0) or 0,
+        "q_minus_over_22_words": quality_stats.get("q_minus_over_22_words", 0) or 0,
+        "q_plus_over_22_words": quality_stats.get("q_plus_over_22_words", 0) or 0,
+        "summary_over_35_words": quality_stats.get("summary_over_35_words", 0) or 0,
+        "linked_q_plus_questions": direction_stats.get("linked_q_plus", 0) or 0,
+        "q_plus_direction_coverage": (
+            (direction_stats.get("linked_q_plus", 0) or 0)
+            / (direction_stats.get("total_q_plus", 0) or 1)
+        ),
+        "hop_without_bridge_provenance": (
+            hop_bridge_stats.get("hop_without_bridge_provenance", 0) or 0
+        ),
         # Out-degree among HOP-eligible (Q+-surviving) source chunks only —
         # matches the "wrote N HOP edges over M Q+ chunks" indexing log line.
         "avg_hop_out_degree_per_eligible_chunk": (total_hop_edges / q_plus_chunks) if q_plus_chunks else 0.0,
@@ -85,24 +153,26 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
 
 
 async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> dict | None:
-    """Delete existing HOP edges for a corpus tag and rebuild them under the
-    current `RAGConfig.HOP_THRESHOLD` (env `RAG_HOP_THRESHOLD`).
+    """Delete and rebuild question-level HOP/provenance edges for one corpus.
 
-    Chunks/Q-/Q+/embeddings are untouched — HOP-edge construction is a
-    post-processing step over already-embedded chunks (see CLAUDE.md
-    "Re-index note"), so this is far cheaper than a full reindex. Used by
-    `--mode hop_rebuild` and `scripts/threshold_sweep.py` for τ_hop
-    sensitivity sweeps, where each threshold value only needs its edges
-    rebuilt, not the whole corpus re-chunked/re-embedded.
+    Chunk and individual Q-/Q+ nodes are untouched. The rebuild is a
+    rank-fusion post-process over their stored embeddings, so it remains much
+    cheaper than regenerating questions or document vectors.
     """
     if strategy != "prehop":
         raise ValueError(f"rebuild_hop_edges only supports strategy=prehop (got {strategy})")
     engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
     chunk_label = engine.chunk_label
-    await engine.neo4j.execute_query(f"MATCH (:{chunk_label})-[r:HOP]->(:{chunk_label}) DELETE r")
+    await engine.neo4j.execute_query(
+        f"MATCH (:{chunk_label})-[r:HOP_ANSWER]->(:{chunk_label}) DELETE r"
+    )
+    await engine.neo4j.execute_query(
+        f"MATCH (:{engine.q_plus_label})-[r]->() "
+        "WHERE type(r) IN ['ANSWERED_BY', 'SUPPORTED_BY', 'SAME_NEED'] DELETE r"
+    )
     await engine.build_all_hop_edges()
     stats = await _collect_graph_stats(engine, strategy)
-    logger.info("HOP rebuild complete for corpus_tag=%s (threshold=%s): %s", corpus_tag, RAGConfig.HOP_THRESHOLD, stats)
+    logger.info("HOP rebuild complete for corpus_tag=%s: %s", corpus_tag, stats)
     return stats
 
 
@@ -157,6 +227,7 @@ async def _run_indexing_unlocked(
 ):
     """Index files using selected strategy with parallel processing."""
     started_at = time.perf_counter()
+    stage_timing: dict[str, float] = {}
     logger.info(
         "Indexing strategy: %s | Dataset: %s | Corpus: %s",
         strategy,
@@ -210,14 +281,16 @@ async def _run_indexing_unlocked(
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
+    # A successful run represents the current directory snapshot exactly.
+    # Prune documents removed since an earlier run of the same corpus tag;
+    # per-document writes below atomically replace changed/shortened files.
+    if hasattr(engine, "reconcile_dataset_files"):
+        await engine.reconcile_dataset_files(files)
+
     # Cap how many files can sit in the post-parse chunking+LLM pipeline
-    # simultaneously. Each file's chunker fans out one LLM task per page
-    # (page-summary stage is `gather([get_page_summary(p) for p in pages])`),
-    # bypassing the per-call semaphore. With 16 files × ~200 pages we'd
-    # schedule ~3,200 concurrent coroutines — page-summary fan-out is now
-    # gated inside chunking.py via `page_summary_sem` (RAG_MAX_PARALLEL_PAGES)
-    # and chunk-level fan-out via `chunk_sem` (MAX_CONCURRENT_LLM_CALLS), so
-    # the outer file_semaphore is now the only file-level gate.
+    # simultaneously. Each file can fan out one generation task per chunk;
+    # VLLMClient applies one process-wide-per-event-loop request semaphore,
+    # while this outer gate bounds resident document/chunk state.
     file_concurrency = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "4")))
     file_semaphore = asyncio.Semaphore(file_concurrency)
     progress = {"started": 0, "completed": 0, "lock": asyncio.Lock()}
@@ -263,9 +336,7 @@ async def _run_indexing_unlocked(
             try:
                 if is_graph:
                     knowledge = await engine.extract_knowledge(content, source=filename, prepared_pages=prepared_pages)
-                    doc_meta = {"title": knowledge["title"]}
-                    doc_id = await engine.create_document_node(filename, doc_meta)
-                    await engine.build_graph(knowledge, source=filename, document_filename=doc_id)
+                    await engine.build_graph(knowledge, source=filename, document_filename=filename)
                 else:
                     await engine.index_document(filename, content)
                 async with progress["lock"]:
@@ -346,24 +417,29 @@ async def _run_indexing_unlocked(
     finally:
         if parse_pool is not None:
             await asyncio.to_thread(parse_pool.shutdown, wait=True, cancel_futures=True)
+    stage_timing["document_pipeline_seconds"] = time.perf_counter() - started_at
 
     if is_graph:
+        graph_flush_started = time.perf_counter()
         try:
             await engine.flush_graph_batch()
         except Exception as exc:  # noqa: BLE001 - aggregate graph finalization failure
             logger.error("Final graph batch flush failed: %s", exc)
             failed_files.append({"item": "__graph_flush__", "stage": "graph_flush", "error": str(exc)})
+        stage_timing["graph_flush_seconds"] = time.perf_counter() - graph_flush_started
 
         # One-shot HOP edge construction over the complete graph (paper
         # §3.1.4). Done after all chunks/embeddings are written so every
         # source chunk has the same candidate pool. Strategies that don't
         # use HOP (e.g., naive_rag) won't have this method.
         if not any(item["stage"] == "graph_flush" for item in failed_files) and hasattr(engine, "build_all_hop_edges"):
+            hop_started = time.perf_counter()
             try:
                 await engine.build_all_hop_edges()
             except Exception as exc:  # noqa: BLE001 - aggregate post-index HOP failure
                 logger.error("HOP edge construction failed: %s", exc)
                 failed_files.append({"item": "__hop_edges__", "stage": "hop_edges", "error": str(exc)})
+            stage_timing["hop_build_seconds"] = time.perf_counter() - hop_started
 
     global_failure = any(item["stage"] in {"graph_flush", "hop_edges"} for item in failed_files)
     finalized_successes = 0 if global_failure else stats["succeeded"]
@@ -408,12 +484,15 @@ async def _run_indexing_unlocked(
     # Measurement failures make the run incomplete: paper tables must not
     # silently report an index whose structural statistics were never read.
     graph_stats = None
+    graph_stats_started = time.perf_counter()
     try:
         graph_stats = await _collect_graph_stats(engine, strategy)
     except Exception as exc:  # noqa: BLE001 - Neo4j driver exposes heterogeneous errors
         logger.error("Graph stats collection failed: %s", exc)
         failed_files.append({"item": "__graph_stats__", "stage": "graph_stats", "error": str(exc)})
+    stage_timing["graph_stats_seconds"] = time.perf_counter() - graph_stats_started
     if graph_stats is not None:
+        graph_stats["timing_seconds"] = dict(stage_timing)
         logger.info("Graph stats: %s", graph_stats)
         stats_dir = Path("data/index_stats")
         stats_dir.mkdir(parents=True, exist_ok=True)

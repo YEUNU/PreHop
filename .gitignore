@@ -211,15 +211,18 @@ __marimo__/
 *.out
 
 logs/
-data/debug
-data/results
-data/tmp
-artifacts/indexing/
+data/debug/
+data/results/
+data/tmp/
+# All run reports are reproducible and may contain very large per-target logs.
+artifacts/
 fig/
 neo4j_data/
 data/enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2
 
 .claude/
+# Dataset corpora, index caches, failure records, and generated statistics.
+# Preparation scripts and curated tracked samples directly under data/ remain.
 data/*/
 
 # MS GraphRAG / HopRAG indexer artifacts (parquet + lancedb + pickle caches).

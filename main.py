@@ -29,10 +29,14 @@ def _ensure_run_id() -> str:
 
 from cli.benchmark import reconcile_pending_judges, run_benchmark_multi_seed
 from cli.index import rebuild_hop_edges, run_indexing
+from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+# The OpenAI/httpx client logs one line per request at INFO.  Full indexing
+# emits millions of successful calls, obscuring progress and real warnings.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("Prehop")
 
 
@@ -106,6 +110,7 @@ async def main():
             await _clear_graph_and_schema(neo4j)
             logger.info("Neo4j graph and application schema cleared successfully.")
         elif args.mode == "index":
+            RAGConfig.validate()
             if args.clear_graph:
                 neo4j = Neo4jService()
                 logger.warning("Clearing all Neo4j data and application schema before indexing...")
@@ -113,8 +118,10 @@ async def main():
                 logger.info("Neo4j graph and application schema cleared successfully.")
             await run_indexing(args.dataset, args.strategy, args.model, args.corpus_tag, args.save_intermediate)
         elif args.mode == "hop_rebuild":
+            RAGConfig.validate()
             await rebuild_hop_edges(args.corpus_tag or "default", args.strategy)
         elif args.mode == "benchmark":
+            RAGConfig.validate()
             corpus_tag = args.corpus_tag or "default"
             env_ts = os.environ.get("RAG_BENCHMARK_TIMESTAMP")
             timestamp = env_ts if env_ts else run_id
@@ -140,6 +147,7 @@ async def main():
                 ]
                 raise RuntimeError("; ".join(item for item in failures if item))
         elif args.mode == "benchmark_all":
+            RAGConfig.validate()
             corpus_tag = args.corpus_tag or "default"
             env_ts = os.environ.get("RAG_BENCHMARK_TIMESTAMP")
             timestamp = env_ts if env_ts else run_id

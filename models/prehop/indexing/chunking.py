@@ -215,8 +215,6 @@ class ChunkingMixin:
         if not pages:
             raise ValueError(f"No indexable text found in source={source!r}")
 
-        chunk_sem = asyncio.Semaphore(RAGConfig.MAX_CONCURRENT_LLM_CALLS)
-
         async def process_page(page: dict[str, Any]) -> list[dict[str, Any]]:
             page_num = page["num"]
             page_content = page["content"]
@@ -229,8 +227,7 @@ class ChunkingMixin:
                 return []
 
             async def hoprag_for_chunk(chunk_text: str):
-                async with chunk_sem:
-                    return await self.extract_hoprag_queries(chunk_text, title)
+                return await self.extract_hoprag_queries(chunk_text, title)
 
             q_results = await asyncio.gather(*[hoprag_for_chunk(t) for t in chunk_texts])
 
@@ -273,7 +270,10 @@ class ChunkingMixin:
                     {
                         "sent_id": chunk["sent_id"],
                         "page": chunk["page"],
-                        "text": chunk["text"][:200] + "...",
+                        # Keep the complete text so cold-generation and
+                        # cache-hit debug artifacts have identical semantics
+                        # and can be audited against the live graph.
+                        "text": chunk["text"],
                         "q_minus": chunk["q_minus"],
                         "q_plus": chunk["q_plus"],
                         "summary": chunk["summary"],

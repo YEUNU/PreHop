@@ -1,10 +1,13 @@
 neo4j_notification_filter = ["DEPRECATION"]
 exception_log_path = "exception_log.txt"
-embed_model = 'bge_en'
-embed_model_dict = {"bge_en":"/path/to/your/bge_base_en"} 
-local_model_name = "local_qwen_3_8b" # modelname from locally deployed vllm server
+embed_model = 'external_embedding_required'
+embed_model_dict = {}
+# Compatibility field names retained for the upstream templates. The project
+# adapters replace them from .env before any call; standalone local inference
+# is intentionally unsupported.
+local_model_name = "external_generation_required"
 embed_dim = 768
-llm_device='cuda:5'
+llm_device='cpu'
 query_generator_model=local_model_name
 traversal_model=local_model_name
 
@@ -24,7 +27,7 @@ edge_sparse_index_name=generator_label+'edge_sparse_index'
 LOG = True
 DEBUG = False
 
-local_base =  'http://localhost:your_port/v1'
+local_base = ''
 local_key = "EMPTY"
 
 gpt_base = '' # don't add /chat/completions
@@ -38,7 +41,6 @@ neo4j_url = "bolt://localhost:7687"
 neo4j_user = "neo4j"
 neo4j_password = "your_password"
 neo4j_dbname = "neo4j"
-print("dataset_name:",dataset_name,"node:",node_name," edge:",edge_name," embed model:",embed_model,"query_generator_model:",query_generator_model,"traversal_model:",traversal_model,"local_model_name:",local_model_name)
 # 'fixed' without summary ensures questions focus on the text itself; 'pending' without summary allows questions to explore other texts.
 
 extract_template_fixed_eng="""

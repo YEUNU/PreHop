@@ -4,12 +4,9 @@ from openai import OpenAI
 import json
 import pickle
 from config import *
-import torch
 import re
 import time
 from paddlenlp import Taskflow
-from sentence_transformers import SentenceTransformer
-from modelscope import AutoModelForCausalLM, AutoTokenizer,AutoModelForSequenceClassification
 import numpy as np
 from typing import List, Tuple, Dict, Set
 
@@ -136,35 +133,15 @@ def get_ner_eng(text):
     return filtered
 
 def load_embed_model(model_name):
-    if model_name in embed_model_dict:
-        return SentenceTransformer(embed_model_dict[model_name],device=llm_device)  #
-    else:
-        raise NotImplementedError
+    raise RuntimeError("HopRAG embedding hook was not configured for the required external endpoint")
     
 def load_language_model(model_name):
-    # 如果llm已经本地部署了，直接用openai接口调用
-    for sign in deployment_sign:
-        if sign in model_name:
-            return model_name
-    # 否则用transformer框架加载模型
-    model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map=llm_device) #
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    return model,tokenizer
-
-def load_rerank_model(model_name):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSequenceClassification.from_pretrained(model_name)
-    model.eval()
-    model.to(llm_device)
-    return model,tokenizer
+    if any(sign in model_name for sign in deployment_sign):
+        return model_name
+    raise RuntimeError("HopRAG generation model is not mapped to a configured external endpoint")
 
 def get_doc_embeds(documents, model):
-    with torch.no_grad():
-        embeddings = model.encode(documents, normalize_embeddings=True, device=llm_device).tolist() # 
-    return embeddings
+    raise RuntimeError("HopRAG embedding hook was not configured for the required external endpoint")
 
 def _get_chat_completion(chat, return_json=True, model=default_gpt_model, max_tokens=4096, keys=None):
     if not isinstance(chat, list):
@@ -222,15 +199,9 @@ def get_chat_completion(chat, return_json=True, model=default_gpt_model, max_tok
 def pending_dot_answerable(pending_df,answerable_df):
     pending=np.array(pending_df['embedding'].tolist())
     answerable=np.array(answerable_df['embedding'].tolist())
-    if torch.cuda.is_available():
-        pending=torch.tensor(pending).cuda()
-        answerable=torch.tensor(answerable).cuda()
-        dense_similarity=pending.mm(answerable.T).cpu().numpy()
-    else:
-        dense_similarity=pending.dot(answerable.T)
+    dense_similarity=pending.dot(answerable.T)
     outcome=dense_similarity.flatten().tolist()
     del pending,answerable,dense_similarity
-    torch.cuda.empty_cache()
     return outcome
 
 def sparse_similarities_df(df)->Dict[Tuple[str,str],float]:
@@ -244,7 +215,3 @@ def sparse_similarities_df(df)->Dict[Tuple[str,str],float]:
             sparse_similarities[(docs_keywords[i],docs_keywords[j])]=sparse_similarity(set(eval(docs_keywords[i])),set(eval(docs_keywords[j])))
             sparse_similarities[(docs_keywords[j],docs_keywords[i])]=sparse_similarities[(docs_keywords[i],docs_keywords[j])]
     return sparse_similarities
-
-
-if __name__ == "__main__":
-    print(get_chat_completion([{"role": "user", "content": "What is the capital of China? reply in json format {\"Answer\":\"\"}"}], keys=["Answer"], model=default_gpt_model, max_tokens=4096))

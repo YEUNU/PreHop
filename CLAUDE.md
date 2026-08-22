@@ -13,9 +13,13 @@ branch map is in `docs/ARCHITECTURE.md`.
 - The embedding dimension in `NEO4J_VECTOR_DIMENSIONS` must equal the endpoint's
   actual vector length. Startup probes validate the configured model ids and
   dimensions.
-- The server capacity is `VLLM_MAX_NUM_SEQS=128`. The client deliberately uses
-  lower concurrency (`MAX_CONCURRENT_LLM_CALLS`, currently 30) so concurrent
-  strategies have queue headroom.
+- The server capacity is `VLLM_MAX_NUM_SEQS=128`. Generation uses one global
+  per-target/event-loop semaphore (`MAX_CONCURRENT_LLM_CALLS`, default 30), not
+  one limit per document. Embeddings default to batches of 32 with two requests
+  per target. The full-matrix runner detects whether generation and embedding
+  share a URL; for the current shared endpoint and width 2 it lowers embedding
+  concurrency to one, keeping the combined aggregate bound at 124. Separate
+  URLs are budgeted and pressure-sampled independently.
 - A dedicated reranker is not used. The external embedding endpoint supplies
   vectors for threshold-free cosine top-k ordering.
 - Prehop has no query rewrite, rerank simplification prompt, continuation
@@ -58,11 +62,14 @@ chunker. Raw pipe text remains raw.
 # Remove all graph data and application schema
 .venv/bin/python main.py --mode clear_graph
 
-# Rebuild only Prehop HOP edges after changing the HOP threshold
+# Rebuild only Prehop HOP/provenance edges after changing rank-fusion settings
 .venv/bin/python main.py --mode hop_rebuild --strategy prehop --corpus-tag multihoprag
 
 # Full cold measured matrix
 .venv/bin/python scripts/run_index_matrix.py --clear-graph --max-parallel 2
+
+# Resume an already submitted OpenAI Batch judge after interruption
+.venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
 
 # Verification
 uv run --extra dev ruff check .
@@ -108,8 +115,9 @@ than relying only on progress logs:
 - verify raw chunk text, title/page/sent_id ordering, grounded Q-, outward Q+,
   summary, and absence of fabricated/table-converted text;
 - query total Documents/Chunks and Q-/Q+ coverage;
-- after the final pass, inspect HOP edge score ranges, per-source out-degree,
-  cross-source property, and representative source/target Q+ text;
+- after the final pass, inspect HOP direct-channel provenance, per-source
+  out-degree, cross-source property, and representative Q+→Q-/body/SAME_NEED
+  source/target text;
 - compare source file count to indexed Document count and fail on any mismatch.
 
 Debug output is namespaced by run, strategy, corpus, and source. Index logs and

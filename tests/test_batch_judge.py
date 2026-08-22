@@ -49,6 +49,13 @@ def test_resolve_judge_fields_never_fabricates_missing_score():
     assert fields["hallucination"] == -1.0
 
 
+def test_resolve_judge_fields_does_not_derive_hallucination_from_score():
+    fields = _resolve_judge_fields({"score": 0.0, "reason": "incorrect"}, "substantive answer", "gpt-test")
+    assert fields["llm_judge_score"] == 0.0
+    assert fields["hallucination"] == -1.0
+    assert fields["hallucination_source"] == "unjudged"
+
+
 def _write_pending_run(tmp_path, payload_count=2):
     run_dir = tmp_path / "run"
     result_dir = run_dir / "naive" / "corpus"
@@ -95,6 +102,29 @@ async def test_reconcile_requires_complete_batch_before_patch(tmp_path, monkeypa
     )
 
     with pytest.raises(RuntimeError, match="missing 1/2"):
+        await benchmark.reconcile_pending_judges(run_dir)
+
+    assert result_file.read_text(encoding="utf-8") == before
+    assert manifest.exists()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_preserves_manifest_when_hallucination_field_is_missing(tmp_path, monkeypatch):
+    run_dir, result_file, manifest = _write_pending_run(tmp_path)
+    before = result_file.read_text(encoding="utf-8")
+    monkeypatch.setattr(RAGConfig, "OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        batch_judge,
+        "resolve_batches",
+        lambda *_args: {
+            "batch-1": {
+                "0": {"score": 1, "hallucination": 0, "reason": "ok"},
+                "1": {"score": 0, "reason": "missing field"},
+            }
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="missing valid score or hallucination"):
         await benchmark.reconcile_pending_judges(run_dir)
 
     assert result_file.read_text(encoding="utf-8") == before

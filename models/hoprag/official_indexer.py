@@ -57,6 +57,10 @@ _EMBED_MODEL_NAME = os.environ.get(
     "RAG_HOP_EMBED_MODEL_NAME", os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
 )
 _EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")))
+_EMBED_BATCH_SIZE = max(1, int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32")))
+_EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
+    max(1, int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")))
+)
 _GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
 _DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")))
 _QUESTION_RETRIES = max(1, int(os.environ.get("RAG_HOP_QUESTION_RETRIES", "3")))
@@ -181,25 +185,38 @@ class _VLLMEmbedClient:
         if not documents:
             return np.zeros((0, self.dim), dtype=np.float32)
 
-        # vLLM batches via continuous batching; chunk to keep payloads sane.
-        chunk = 64
+        # Respect the same aggregate server-capacity budget as the in-repo
+        # clients. This synchronous official path can be called by several
+        # document threads, so the semaphore must be thread-based.
+        chunk = _EMBED_BATCH_SIZE
         out = []
         for i in range(0, len(documents), chunk):
             batch = documents[i : i + chunk]
-            r = self._sess.post(
-                f"{self.base_url}/embeddings",
-                json={
-                    "model": self.model,
-                    "input": batch,
-                    "encoding_format": "float",
-                },
-                headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
-                timeout=180,
-            )
+            with _EMBED_REQUEST_SEMAPHORE:
+                r = self._sess.post(
+                    f"{self.base_url}/embeddings",
+                    json={
+                        "model": self.model,
+                        "input": batch,
+                        "encoding_format": "float",
+                    },
+                    headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
+                    timeout=180,
+                )
             r.raise_for_status()
-            data = r.json()["data"]
+            data = sorted(r.json()["data"], key=lambda item: int(item.get("index", 0)))
+            if len(data) != len(batch):
+                raise ValueError(
+                    f"HopRAG embedding count mismatch: expected {len(batch)}, got {len(data)}"
+                )
             for d in data:
-                out.append(d["embedding"])
+                vector = d.get("embedding")
+                if not isinstance(vector, list) or len(vector) != self.dim:
+                    raise ValueError(
+                        f"HopRAG embedding dimension mismatch: expected {self.dim}, "
+                        f"got {len(vector) if isinstance(vector, list) else 'missing'}"
+                    )
+                out.append(vector)
 
         arr = np.asarray(out, dtype=np.float32)
         return arr[0] if single else arr
@@ -329,9 +346,7 @@ def _install_round_robin_patch(config) -> None:
 
 
 def _install_optional_stubs() -> None:
-    """Stub HopRAG's heavy/Chinese-NLP deps that we don't need (paddlenlp +
-    sentence_transformers + modelscope). They get imported at module load by
-    third_party/HopRAG/tool.py but we replace their downstream calls."""
+    """Stub upstream Chinese-NLP tagging; the supported adapter replaces it."""
     import types
 
     def _unavailable(name: str):
@@ -346,27 +361,6 @@ def _install_optional_stubs() -> None:
         m = types.ModuleType("paddlenlp")
         m.Taskflow = _unavailable("paddlenlp")
         sys.modules["paddlenlp"] = m
-    if "sentence_transformers" not in sys.modules:
-        m = types.ModuleType("sentence_transformers")
-
-        class _ST:
-            def __init__(self, *_args, **_kwargs):
-                _unavailable("sentence_transformers")()
-
-        m.SentenceTransformer = _ST
-        sys.modules["sentence_transformers"] = m
-    if "modelscope" not in sys.modules:
-        m = types.ModuleType("modelscope")
-
-        class _Dummy:
-            @classmethod
-            def from_pretrained(cls, *_args, **_kwargs):
-                _unavailable("modelscope")()
-
-        m.AutoModelForCausalLM = _Dummy
-        m.AutoModelForSequenceClassification = _Dummy
-        m.AutoTokenizer = _Dummy
-        sys.modules["modelscope"] = m
 
 
 def _setup_hoprag_modules(corpus_tag: str) -> None:
@@ -447,9 +441,10 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
 
     embed_client = _VLLMEmbedClient(_EMBED_API_BASE, _EMBED_MODEL_NAME, _EMBED_DIM)
     tool.load_embed_model = lambda _name: embed_client
-
-    # Default get_doc_embeds calls model.encode(...).tolist() — our wrapper
-    # already returns numpy with .tolist(), so the original works as-is.
+    tool.get_doc_embeds = lambda documents, model: model.encode(
+        documents,
+        normalize_embeddings=True,
+    ).tolist()
 
     # Replace paddlenlp-based POS tagging with spaCy. Original keeps content
     # words (nouns/proper-nouns/verbs/adj) and drops function words. Without

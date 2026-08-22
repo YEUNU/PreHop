@@ -1,4 +1,4 @@
-# Prehop / HypoHop: Indexing-Time HOP-Edge Pre-Scoring for Deterministic Multi-Hop Retrieval
+# Prehop / HypoHop: Question-Level Offline HOP Construction for Deterministic Multi-Hop Retrieval
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -6,8 +6,8 @@
 > before benchmark numbers are reported.
 
 Reference implementation of a GraphRAG framework whose core claim is
-indexing-time HOP-edge pre-scoring: chunk-to-chunk semantic edges are
-computed once, offline, from embedding similarity, so the query path expands
+indexing-time HOP construction: inspectable question-level evidence links are
+rank-fused once, offline, into chunk-to-chunk edges, so the query path expands
 the graph deterministically with no per-hop LLM reasoning. The query path is
 a thin two-stage hybrid retrieve over a graph built once offline — no agent
 loop, no reflection, no refinement.
@@ -19,11 +19,14 @@ loop, no reflection, no refinement.
 Core indexing-time design, currently evaluated on MultiHop-RAG, HotpotQA, and MuSiQue:
 
 1. **Predictive Knowledge Mapping** — every chunk receives dual hypothetical-query annotations ($Q^-$ for self-contained facts, $Q^+$ for outgoing dependencies), indexed separately. This is the structural precondition for HOP edges below, not a standalone feature.
-2. **Rank-Based HOP Edges Pre-Built Offline** — chunk-to-chunk semantic edges are computed once, offline, from Q+/candidate embedding cosine similarity (no cross-encoder model); the query path never expands the graph with an LLM call.
+2. **Rank-Fused HOP Edges Pre-Built Offline** — every Q+ independently searches cross-document Q-, body, and Q+ representations. Q+/Q- or Q+/body is required for a traversable edge; Q+/Q+ can only support its rank. There is no learned cross-encoder or cosine threshold.
 
 Chunking is fixed-size (page-scoped sentence windows) — see `CLAUDE.md` "Architecture notes" for details.
 
-The query path is deliberately thin: two-stage hybrid retrieve (Q⁻/body, then Q⁺ expansion), external-embedding cosine top-k ordering, deterministic 1-hop traversal over the pre-built NEXT/HOP edges, and a single LLM synthesis call with inline citations.
+The query path is deliberately thin: two-stage hybrid retrieve (Q⁻/body, then
+Q⁺ expansion), external-embedding cosine top-k ordering, deterministic 1-hop
+traversal over bidirectional `NEXT` and outgoing `HOP_ANSWER` edges, and a
+single LLM synthesis call.
 
 ---
 
@@ -44,7 +47,7 @@ prehop/
 │   ├── index.py                     # indexing runner
 │   └── benchmark.py                 # benchmark runner (single + multi-seed)
 ├── core/
-│   ├── config.py                    # RAGConfig — env-driven thresholds
+│   ├── config.py                    # RAGConfig — validated env-driven settings
 │   ├── neo4j_service.py             # async Neo4j driver lifecycle
 │   └── vllm_client.py               # external generation/embedding clients
 ├── models/
@@ -59,7 +62,7 @@ prehop/
 │   ├── abstain.py                   # honest-abstain detection + shared 3-way answer_label
 │   ├── metrics.py                   # deferred Batch judge + retrieval metrics
 │   ├── batch_judge.py               # OpenAI Batch submit/poll/reconcile support
-│   ├── similarity.py                # cosine_similarity (candidate + HOP-edge scoring)
+│   ├── similarity.py                # cosine similarity for final candidate ordering
 │   ├── prompts/                     # indexing, shared synthesis, and judge prompts
 │   └── io.py / formatters.py / parsers.py / reporting.py
 ├── data/                            # datasets and generated local indices (gitignored)
@@ -154,7 +157,7 @@ Neo4j once and runs every available dataset × strategy target through a bounded
 parallel queue:
 
 ```bash
-python scripts/run_index_matrix.py --clear-graph --max-parallel 2
+.venv/bin/python scripts/run_index_matrix.py --clear-graph --max-parallel 2 --save-prehop-intermediate
 ```
 
 Results are isolated under `artifacts/indexing/<run-id>/`: per-target logs,
@@ -164,6 +167,31 @@ vLLM queue pressure automatically reduces the parallel width for remaining
 targets; a resource/rate-limit failure also halves that target's internal
 worker count on retry. `logical_payload_bytes_estimate` is a cross-strategy reproducible
 payload estimate; it is not Neo4j's physical store-file size.
+Prehop's runtime stats also split document generation/embedding, final graph
+flush, HOP construction, and structural-audit time. Question coverage,
+direction coverage, provenance completeness, graph size, prompt-length
+violations, and NEXT/HOP topology checks are read from the stored result rather
+than inferred from counters. For Prehop, full-query gold evidence titles are
+also resolved against the indexed corpus and used to report gold-document-pair
+and query-level HOP connectivity. This is an intermediate semantic-validity
+measure, not a substitute for retrieval/answer accuracy.
+If generation and embedding resolve to the same endpoint, the runner fits their
+combined concurrency across all active targets under `VLLM_MAX_NUM_SEQS`; with
+the current 128-sequence server and width 2 it lowers embedding concurrency
+from 2 to 1 (32 + 30 per target, aggregate upper bound 124). Separate endpoint
+URLs receive independent capacity budgets. Both queues are sampled.
+
+OpenAI Batch judging is the default evaluation path. An interrupted submitted
+batch can be resumed without re-running retrieval:
+
+```bash
+.venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
+```
+
+Batch payloads must contain valid explicit `score` and `hallucination` fields;
+partial or malformed output keeps its reconciliation manifest and is never
+converted into a paper metric. Post-hoc `kfold_analysis.py` and
+`paired_bootstrap.py` produce uncertainty and paired-difference artifacts.
 
 ---
 
@@ -192,16 +220,18 @@ Full list in the paper appendix; the most important:
 |---|---|---|
 | `CHUNK_SENTENCES` | 6 | fixed-size chunking window (sentences per chunk) |
 | `MIN_CHUNK_SENTENCES` | 2 | trailing short window merges into the previous chunk below this |
-| `τ_hop` (`HOP_THRESHOLD`) | 0.82 | offline HOP-edge cosine-similarity gate |
 | `L_hop` | 5 | max outgoing HOP edges per source chunk |
-| `K_hop` | 15 | HOP candidate pool per source chunk |
+| `K_hop` | 15 | retained candidates per question and target channel |
+| ANN floor | 50 | minimum pool; raised per source by its own representations + `K_hop` |
+| same-need weight | 0.5 | Q+→Q+ RRF support; never sufficient to create `HOP_ANSWER` |
 | Stage 1 weights | 0.7 / 0.3 | $Q^-$ / body |
 | Stage 2 weights | 0.6 / 0.4 | $Q^+$ / $Q^-$ support |
 | RRF `k` | 60 | $w_v=1.3$, $w_t=1.0$ |
 | Embedding dim | `NEO4J_VECTOR_DIMENSIONS` | must match the configured embedding model's actual output dim (see `CLAUDE.md` "Model / inference infra") |
 
-`τ_hop` affects only offline HOP-edge construction. Query-time candidate
-ordering has no learned reranker, score threshold, or heuristic gate.
+Offline HOP construction is rank-based and has no learned reranker, fixed
+cosine threshold, domain gate, or heuristic gate. Query-time candidate
+ordering is likewise threshold-free.
 
 ---
 
