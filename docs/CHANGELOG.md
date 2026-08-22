@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-23 — Explicit routed-server capacity and retry backoff
+
+The matrix runner no longer assumes that identical OpenAI-compatible URLs mean
+generation and embedding share one accelerator scheduler. An explicit
+`RAG_INFERENCE_CAPACITY_MODE` records routed-server topology, with separate
+generation and embedding `max_num_seqs` budgets. Generation capacity now uses
+the generation-heavy width rather than all matrix slots. Resource retries also
+halve the target's global LLM semaphore in addition to Prehop file, HopRAG
+adapter, and MS GraphRAG adapter concurrency. The 128-sequence full-run profile
+therefore starts at 120 generation calls with eight sequences of headroom; no
+official baseline implementation is changed.
+
 ## 2026-08-22 — Individual question graph and evidence-directed HOP/NEXT
 
 Q-/Q+ are now individual nodes with document-scoped embeddings rather than

@@ -176,10 +176,11 @@ Naive flattens 32 source documents into each embedding/write batch, which is
 important for one-chunk corpora. A live 64-document HotpotQA probe improved
 from the former roughly 3 documents/s to 47 documents/s while preserving 64
 distinct sources, 72 chunks, and 2,560-dimensional vectors.
-With generation-heavy overlap disabled, official HopRAG uses 10 document
-workers × 4 chunk threads (upper bound 40 calls), and MS GraphRAG uses 32
-concurrent requests. Both remain below the shared 128-sequence server limit;
-resource failures still halve the affected target on retry.
+With generation-heavy overlap disabled, the full-run profile gives official
+HopRAG 30 document workers × 4 chunk threads (upper bound 120 calls), and MS
+GraphRAG 120 concurrent requests. These are adapter/orchestrator limits; the
+vendored official implementations are not modified. Resource failures halve
+the affected target's adapter limits and global LLM semaphore on retry.
 Prehop's runtime stats also split document generation/embedding, final graph
 flush, HOP construction, and structural-audit time. Question coverage,
 direction coverage, provenance completeness, graph size, prompt-length
@@ -188,11 +189,13 @@ than inferred from counters. For Prehop, full-query gold evidence titles are
 also resolved against the indexed corpus and used to report gold-document-pair
 and query-level HOP connectivity. This is an intermediate semantic-validity
 measure, not a substitute for retrieval/answer accuracy.
-If generation and embedding resolve to the same endpoint, the runner fits their
-combined concurrency across all active targets under `VLLM_MAX_NUM_SEQS`; with
-the current 128-sequence server and width 2 it lowers embedding concurrency
-from 2 to 1 (32 + 30 per target, aggregate upper bound 124). Separate endpoint
-URLs receive independent capacity budgets. Both queues are sampled.
+Capacity topology is explicit. `RAG_INFERENCE_CAPACITY_MODE=separate` is used
+when generation and embedding model names are routed by one API gateway to
+different accelerator servers; each receives its own `max_num_seqs=128`
+budget. `shared` combines their worst-case pressure under one budget, while
+`auto` conservatively infers sharing from URL equality. The calculation uses
+`--max-generation-parallel` for generation rather than dividing that budget by
+embedding-only matrix slots. Both queues are sampled.
 
 OpenAI Batch judging is the default evaluation path. An interrupted submitted
 batch can be resumed without re-running retrieval:

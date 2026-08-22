@@ -70,10 +70,7 @@ def _next_compatible_target_index(
     """Choose work without overlapping too many generation-heavy targets."""
     active_generation = sum(target.strategy in GENERATION_HEAVY_STRATEGIES for target in active)
     for index, target in enumerate(pending):
-        if (
-            target.strategy not in GENERATION_HEAVY_STRATEGIES
-            or active_generation < max_generation_parallel
-        ):
+        if target.strategy not in GENERATION_HEAVY_STRATEGIES or active_generation < max_generation_parallel:
             return index
     return None
 
@@ -87,14 +84,35 @@ def _normalized_endpoint(value: str) -> str:
     return str(value or "").strip().removesuffix("/v1").rstrip("/")
 
 
-def _fit_inference_capacity(max_parallel: int) -> dict[str, Any]:
-    """Fit aggregate child-process pressure to the configured vLLM capacity."""
+def _fit_inference_capacity(max_parallel: int, max_generation_parallel: int = 1) -> dict[str, Any]:
+    """Fit aggregate child-process pressure to the configured inference capacity.
+
+    A shared OpenAI-compatible gateway does not imply shared accelerator
+    capacity: generation and embedding model names may route to independent
+    servers. ``RAG_INFERENCE_CAPACITY_MODE`` makes that topology explicit.
+    """
     max_seqs = int(os.environ.get("VLLM_MAX_NUM_SEQS", "128"))
+    generation_max_seqs = int(os.environ.get("VLLM_GENERATION_MAX_NUM_SEQS", str(max_seqs)))
+    embedding_max_seqs = int(os.environ.get("VLLM_EMBED_MAX_NUM_SEQS", str(max_seqs)))
     generation = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
     embed_batch = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32"))
     embed_concurrency = int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2"))
-    if min(max_parallel, max_seqs, generation, embed_batch, embed_concurrency) < 1:
+    if (
+        min(
+            max_parallel,
+            max_generation_parallel,
+            max_seqs,
+            generation_max_seqs,
+            embedding_max_seqs,
+            generation,
+            embed_batch,
+            embed_concurrency,
+        )
+        < 1
+    ):
         raise ValueError("Inference capacity and concurrency values must all be positive")
+    if max_generation_parallel > max_parallel:
+        raise ValueError("Generation-heavy parallelism cannot exceed total parallelism")
 
     original = {
         "generation_concurrency_per_target": generation,
@@ -103,43 +121,62 @@ def _fit_inference_capacity(max_parallel: int) -> dict[str, Any]:
     }
     generation_url = _normalized_endpoint(os.environ.get("VLLM_URL", ""))
     embedding_url = _normalized_endpoint(os.environ.get("VLLM_EMBED_URL", ""))
-    shared_endpoint = bool(generation_url and generation_url == embedding_url)
+    capacity_mode = os.environ.get("RAG_INFERENCE_CAPACITY_MODE", "auto").strip().lower()
+    if capacity_mode not in {"auto", "shared", "separate"}:
+        raise ValueError("RAG_INFERENCE_CAPACITY_MODE must be auto, shared, or separate")
+    same_gateway = bool(generation_url and generation_url == embedding_url)
+    shared_capacity = same_gateway if capacity_mode == "auto" else capacity_mode == "shared"
 
-    if shared_endpoint:
-        per_target_budget = max_seqs // max_parallel
-        while embed_concurrency > 1 and generation + embed_batch * embed_concurrency > per_target_budget:
+    if shared_capacity:
+        embedding_pressure = max_parallel * embed_batch * embed_concurrency
+        while embed_concurrency > 1 and embedding_pressure >= max_seqs:
             embed_concurrency -= 1
-        generation = min(generation, per_target_budget - embed_batch * embed_concurrency)
+            embedding_pressure = max_parallel * embed_batch * embed_concurrency
+        generation_budget = (max_seqs - embedding_pressure) // max_generation_parallel
+        generation = min(generation, generation_budget)
         if generation < 1:
             raise ValueError(
                 "Shared inference endpoint cannot fit one generation request plus the embedding batch: "
-                f"max_num_seqs={max_seqs}, max_parallel={max_parallel}, embed_batch={embed_batch}"
+                f"max_num_seqs={max_seqs}, max_parallel={max_parallel}, "
+                f"max_generation_parallel={max_generation_parallel}, embed_batch={embed_batch}"
             )
     else:
-        generation = min(generation, max_seqs // max_parallel)
-        embed_concurrency = min(embed_concurrency, max_seqs // (max_parallel * embed_batch))
+        generation = min(generation, generation_max_seqs // max_generation_parallel)
+        embed_concurrency = min(
+            embed_concurrency,
+            embedding_max_seqs // (max_parallel * embed_batch),
+        )
         if generation < 1 or embed_concurrency < 1:
             raise ValueError(
                 "Separate inference endpoint capacity is too small for the requested matrix width: "
-                f"max_num_seqs={max_seqs}, max_parallel={max_parallel}, embed_batch={embed_batch}"
+                f"generation_max_num_seqs={generation_max_seqs}, "
+                f"embedding_max_num_seqs={embedding_max_seqs}, "
+                f"max_parallel={max_parallel}, embed_batch={embed_batch}"
             )
 
     os.environ["MAX_CONCURRENT_LLM_CALLS"] = str(generation)
     os.environ["RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS"] = str(embed_concurrency)
-    effective_total = max_parallel * (
-        generation + embed_batch * embed_concurrency
-        if shared_endpoint
-        else max(generation, embed_batch * embed_concurrency)
+    generation_pressure = max_generation_parallel * generation
+    embedding_pressure = max_parallel * embed_batch * embed_concurrency
+    effective_total = (
+        generation_pressure + embedding_pressure if shared_capacity else max(generation_pressure, embedding_pressure)
     )
     return {
         "server_max_num_seqs": max_seqs,
+        "generation_server_max_num_seqs": generation_max_seqs,
+        "embedding_server_max_num_seqs": embedding_max_seqs,
         "max_parallel": max_parallel,
-        "generation_embedding_share_endpoint": shared_endpoint,
+        "max_generation_parallel": max_generation_parallel,
+        "capacity_mode": capacity_mode,
+        "generation_embedding_share_gateway": same_gateway,
+        "generation_embedding_share_endpoint": shared_capacity,
         "requested": original,
         "effective": {
             "generation_concurrency_per_target": generation,
             "embedding_batch_size": embed_batch,
             "embedding_concurrency_per_target": embed_concurrency,
+            "generation_capacity_upper_bound": generation_pressure,
+            "embedding_capacity_upper_bound": embedding_pressure,
             "aggregate_capacity_upper_bound": effective_total,
         },
         "adjusted": generation != original["generation_concurrency_per_target"]
@@ -323,11 +360,7 @@ def _gold_hop_alignment(session, target: Target, chunk_label: str, document_labe
         # for query-level topology coverage.
         if len(resolved_docs) != len(docs):
             continue
-        query_pairs = {
-            tuple(sorted(pair))
-            for pair in itertools.combinations(resolved_docs, 2)
-            if pair[0] != pair[1]
-        }
+        query_pairs = {tuple(sorted(pair)) for pair in itertools.combinations(resolved_docs, 2) if pair[0] != pair[1]}
         if not query_pairs:
             continue
         eligible_queries += 1
@@ -629,7 +662,7 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                         f"""
                         MATCH (src:{chunk})-[r:HOP_ANSWER]->(:{chunk})
                         WITH src, count(r) AS degree
-                        RETURN count(CASE WHEN degree > {int(os.environ.get('RAG_HOP_LINK_LIMIT', '5'))}
+                        RETURN count(CASE WHEN degree > {int(os.environ.get("RAG_HOP_LINK_LIMIT", "5"))}
                                           THEN 1 END) AS hop_outdegree_violation_count
                         """,
                     )
@@ -743,13 +776,9 @@ def _validate_target_stats(target: Target, stats: dict[str, Any], input_file_cou
             "q_plus_embedding_dimensions",
             "q_plus_query_embedding_dimensions",
         ):
-            question_dimensions = sorted(
-                int(value) for value in (stats.get(dimension_key) or []) if value is not None
-            )
+            question_dimensions = sorted(int(value) for value in (stats.get(dimension_key) or []) if value is not None)
             if question_dimensions and question_dimensions != [expected_dim]:
-                raise ValueError(
-                    f"Prehop {dimension_key}={question_dimensions}, expected [{expected_dim}]"
-                )
+                raise ValueError(f"Prehop {dimension_key}={question_dimensions}, expected [{expected_dim}]")
         for key in (
             "empty_q_minus_count",
             "empty_q_plus_count",
@@ -774,18 +803,12 @@ def _validate_target_stats(target: Target, stats: dict[str, Any], input_file_cou
             if (stats.get(key, 0) or 0) != 0:
                 raise ValueError(f"Prehop integrity violation: {key}={stats[key]}")
         if stats.get("next_edge_count") != stats.get("expected_next_edge_count"):
-            raise ValueError(
-                "Prehop NEXT edge count does not match the ordered per-document chunk topology"
-            )
-        if input_file_count > 1 and (stats.get("q_plus_count", 0) or 0) and not (
-            stats.get("hop_edge_count", 0) or 0
-        ):
+            raise ValueError("Prehop NEXT edge count does not match the ordered per-document chunk topology")
+        if input_file_count > 1 and (stats.get("q_plus_count", 0) or 0) and not (stats.get("hop_edge_count", 0) or 0):
             raise ValueError("Prehop generated Q+ questions but no cross-document HOP_ANSWER edges")
     elif target.strategy == "naive":
         if stats.get("document_count") != input_file_count:
-            raise ValueError(
-                f"Naive document count {stats.get('document_count')} != input files {input_file_count}"
-            )
+            raise ValueError(f"Naive document count {stats.get('document_count')} != input files {input_file_count}")
         if not (stats.get("chunk_count", 0) or 0):
             raise ValueError("Naive index contains no chunks")
         if (stats.get("duplicate_chunk_id_count", 0) or 0) != 0:
@@ -970,12 +993,14 @@ async def _run_target(
     base_file_workers = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "16")))
     base_hop_doc_workers = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")))
     base_ms_requests = max(1, int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "32")))
+    base_llm_calls = max(1, int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30")))
     env["RAG_MAX_PARALLEL_FILES"] = str(max(1, base_file_workers // concurrency_divisor))
     env.setdefault("RAG_FILE_SCHEDULE_BATCH", "32")
     env.setdefault("RAG_PARSE_WORKERS", "8")
     env["RAG_HOP_DOC_WORKERS"] = str(max(1, base_hop_doc_workers // concurrency_divisor))
     env.setdefault("RAG_HOP_MAX_THREADS", "4")
     env["RAG_MS_CONCURRENT_REQUESTS"] = str(max(1, base_ms_requests // concurrency_divisor))
+    env["MAX_CONCURRENT_LLM_CALLS"] = str(max(1, base_llm_calls // concurrency_divisor))
     before = await asyncio.to_thread(_artifact_sizes, target)
     started = time.time()
     print(f"[matrix] start {target.key} attempt={attempt}", flush=True)
@@ -1025,6 +1050,7 @@ async def _run_target(
             "hoprag_doc_workers": int(env["RAG_HOP_DOC_WORKERS"]),
             "hoprag_chunk_threads": int(env["RAG_HOP_MAX_THREADS"]),
             "ms_requests": int(env["RAG_MS_CONCURRENT_REQUESTS"]),
+            "max_concurrent_llm_calls": int(env["MAX_CONCURRENT_LLM_CALLS"]),
         },
         "started_at": started,
         "finished_at": finished,
@@ -1248,7 +1274,7 @@ async def _main(args: argparse.Namespace) -> int:
     run_dir.mkdir(parents=True, exist_ok=False)
     selected_datasets = list(DATASETS) if args.datasets == ["all"] else args.datasets
     selected_strategies = list(STRATEGIES) if args.strategies == ["all"] else args.strategies
-    capacity_plan = _fit_inference_capacity(args.max_parallel)
+    capacity_plan = _fit_inference_capacity(args.max_parallel, args.max_generation_parallel)
     targets = [
         Target(dataset, strategy, DATASETS[dataset])
         for dataset in selected_datasets
@@ -1326,7 +1352,10 @@ async def _main(args: argparse.Namespace) -> int:
                 "RAG_HOP_MAX_THREADS",
                 "RAG_HOP_QUESTION_RETRIES",
                 "RAG_MS_CONCURRENT_REQUESTS",
+                "RAG_INFERENCE_CAPACITY_MODE",
                 "VLLM_MAX_NUM_SEQS",
+                "VLLM_GENERATION_MAX_NUM_SEQS",
+                "VLLM_EMBED_MAX_NUM_SEQS",
                 "MAX_CONCURRENT_LLM_CALLS",
             )
         },

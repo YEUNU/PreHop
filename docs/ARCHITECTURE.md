@@ -255,18 +255,19 @@ parallelism and reduces width when sustained host-memory or inference-queue
 pressure is observed. `VLLM_MAX_NUM_SEQS=128` is recorded as server capacity;
 generation concurrency is one global per-target/event-loop semaphore, not one
 limit per document. Embeddings default to two concurrent batches of 32 for one
-target. Before launching, the runner compares normalized generation and
-embedding URLs. Separate servers receive independent budgets; a shared server
-receives one combined budget across matrix width. At width 2, the current
-shared 128-sequence endpoint is automatically adjusted to one 32-item
-embedding batch plus 30 generation requests per target (aggregate bound 124).
+target. `RAG_INFERENCE_CAPACITY_MODE` records whether the model names share an
+accelerator scheduler. This matters when one gateway URL routes generation and
+embedding to different servers: `separate` preserves their independent 128
+sequence budgets, `shared` combines worst-case pressure, and `auto` infers from
+URL equality. Generation pressure is multiplied by
+`--max-generation-parallel`, not by embedding-only matrix slots.
 Generation and embedding queues are sampled separately, and sustained pressure
 still lowers target width for later work.
 The scheduler additionally caps generation-heavy targets at one in flight
 (`--max-generation-parallel 1`). It scans ahead for an embedding-only Naive
 target to occupy the remaining width. This policy was selected after a cold
 run showed Prehop throughput fall from roughly 7 to 2–3 documents/minute when
-official HopRAG began generating concurrently on the shared endpoint.
+official HopRAG began generating concurrently on the generation server.
 Naive uses document batches of 32: it parses every source, flattens all chunks
 into one external embedding request stream, validates every vector, and
 atomically replaces the batch's source nodes in one Neo4j transaction. This

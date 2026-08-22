@@ -86,16 +86,17 @@ def test_matrix_capacity_plan_accounts_for_shared_endpoint(monkeypatch):
 
     monkeypatch.setenv("VLLM_URL", "http://inference.example/v1")
     monkeypatch.setenv("VLLM_EMBED_URL", "http://inference.example/v1")
+    monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "shared")
     monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "128")
     monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "30")
     monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
     monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
 
-    plan = _fit_inference_capacity(max_parallel=2)
+    plan = _fit_inference_capacity(max_parallel=2, max_generation_parallel=1)
 
     assert plan["generation_embedding_share_endpoint"] is True
     assert plan["effective"]["embedding_concurrency_per_target"] == 1
-    assert plan["effective"]["aggregate_capacity_upper_bound"] == 124
+    assert plan["effective"]["aggregate_capacity_upper_bound"] == 94
 
 
 def test_matrix_capacity_plan_keeps_independent_server_budgets(monkeypatch):
@@ -103,15 +104,39 @@ def test_matrix_capacity_plan_keeps_independent_server_budgets(monkeypatch):
 
     monkeypatch.setenv("VLLM_URL", "http://generation.example/v1")
     monkeypatch.setenv("VLLM_EMBED_URL", "http://embedding.example/v1")
+    monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "auto")
     monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "128")
     monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "30")
     monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
     monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
 
-    plan = _fit_inference_capacity(max_parallel=2)
+    plan = _fit_inference_capacity(max_parallel=2, max_generation_parallel=1)
 
     assert plan["generation_embedding_share_endpoint"] is False
     assert plan["adjusted"] is False
+    assert plan["effective"]["aggregate_capacity_upper_bound"] == 128
+
+
+def test_matrix_capacity_plan_supports_separate_servers_behind_one_gateway(monkeypatch):
+    from scripts.run_index_matrix import _fit_inference_capacity
+
+    monkeypatch.setenv("VLLM_URL", "http://gateway.example/v1")
+    monkeypatch.setenv("VLLM_EMBED_URL", "http://gateway.example/v1")
+    monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "separate")
+    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "128")
+    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "128")
+    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "120")
+    monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
+    monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
+
+    plan = _fit_inference_capacity(max_parallel=2, max_generation_parallel=1)
+
+    assert plan["generation_embedding_share_gateway"] is True
+    assert plan["generation_embedding_share_endpoint"] is False
+    assert plan["effective"]["generation_concurrency_per_target"] == 120
+    assert plan["effective"]["embedding_concurrency_per_target"] == 2
+    assert plan["effective"]["generation_capacity_upper_bound"] == 120
+    assert plan["effective"]["embedding_capacity_upper_bound"] == 128
     assert plan["effective"]["aggregate_capacity_upper_bound"] == 128
 
 
