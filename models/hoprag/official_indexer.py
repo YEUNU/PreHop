@@ -486,9 +486,13 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
                         exc,
                     )
                     time.sleep(min(2 ** (attempt - 1), 4))
-        raise RuntimeError(
-            f"HopRAG question generation remained invalid after {_QUESTION_RETRIES} attempts: {last_error}"
+        logger.warning(
+            "HopRAG question generation remained invalid after %d attempts (%s); "
+            "using the official empty-list skip for this paragraph",
+            _QUESTION_RETRIES,
+            last_error,
         )
+        return []
 
     tool.get_question_list = _safe_get_question_list
     import HopBuilder as _HB_tmp

@@ -12,8 +12,10 @@ period, statement, or keyword rule affects graph construction.
 The full cold matrix exposed an official HopRAG question-generation response
 with a valid JSON shape but an empty question list. That case now receives
 three bounded retries of the same official generation step. A still-empty,
-blank, or malformed list fails the document and target explicitly; it is not
-silently dropped or replaced with another retrieval/indexing method.
+blank, or malformed paragraph result uses the upstream empty-list skip with an
+explicit warning and a measured skip count; if every paragraph is skipped,
+the resulting empty document still fails the target. No alternative indexing
+or retrieval method is substituted.
 
 What was tried, what changed, and why — kept separate from `CLAUDE.md` so
 that file can stay pure current-state reference. Newest first. Entries

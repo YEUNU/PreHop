@@ -576,6 +576,8 @@ async def _run_target(
         "artifact_growth_bytes": after["artifact_total_bytes"] - before["artifact_total_bytes"],
         **(await asyncio.to_thread(_parse_time_file, time_path)),
     }
+    log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    result["hoprag_skipped_question_groups"] = log_text.count("using the official empty-list skip")
     failure_path = ROOT / "data/index_failures" / f"{target.strategy}_{target.dataset}_{child_run_id}.json"
     if failure_path.is_file():
         failure_payload = json.loads(failure_path.read_text(encoding="utf-8"))
@@ -627,6 +629,7 @@ def _write_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
         "peak_host_memory_used_ratio",
         "peak_vllm_waiting",
         "failure_count",
+        "hoprag_skipped_question_groups",
         "node_or_chunk_count",
         "edge_count",
         "artifact_usable_bytes",
