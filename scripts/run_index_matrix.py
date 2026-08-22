@@ -376,7 +376,6 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                     f"""
                     MATCH (c:{chunk})
                     RETURN count(c) AS chunk_count,
-                           count(DISTINCT c.source) AS document_count,
                            count(DISTINCT c.id) AS unique_chunk_ids,
                            count(c.embedding) AS body_embedding_count,
                            count(CASE WHEN trim(coalesce(c.text, '')) = '' THEN 1 END) AS empty_text_count,
@@ -656,6 +655,7 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                     f"""
                     MATCH (c:{chunk})
                     RETURN count(c) AS chunk_count,
+                           count(DISTINCT c.source) AS document_count,
                            count(DISTINCT c.id) AS unique_chunk_ids,
                            count(c.embedding) AS body_embedding_count,
                            count(CASE WHEN trim(coalesce(c.text, '')) = '' THEN 1 END) AS empty_text_count,
