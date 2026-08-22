@@ -176,6 +176,10 @@ Naive flattens 32 source documents into each embedding/write batch, which is
 important for one-chunk corpora. A live 64-document HotpotQA probe improved
 from the former roughly 3 documents/s to 47 documents/s while preserving 64
 distinct sources, 72 chunks, and 2,560-dimensional vectors.
+With generation-heavy overlap disabled, official HopRAG uses 10 document
+workers × 4 chunk threads (upper bound 40 calls), and MS GraphRAG uses 32
+concurrent requests. Both remain below the shared 128-sequence server limit;
+resource failures still halve the affected target on retry.
 Prehop's runtime stats also split document generation/embedding, final graph
 flush, HOP construction, and structural-audit time. Question coverage,
 direction coverage, provenance completeness, graph size, prompt-length

@@ -62,7 +62,7 @@ _EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
     max(1, int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")))
 )
 _GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
-_DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")))
+_DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")))
 _QUESTION_RETRIES = max(1, int(os.environ.get("RAG_HOP_QUESTION_RETRIES", "3")))
 _NODE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_NODE_BATCH", "200")))
 _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
@@ -589,7 +589,8 @@ def _patch_create_nodes_offline_parallel() -> None:
     Inner per-doc chunk parallelism (max_thread_num) is preserved — the two
     levels of parallelism stack:
         total concurrent LLM calls ≈ _DOC_WORKERS × max_thread_num
-    e.g. DOC_WORKERS=4 × CHUNK_THREADS=8 → 32 concurrent calls across 2 endpoints.
+        e.g. DOC_WORKERS=10 × CHUNK_THREADS=4 → at most 40 calls on the
+        shared 128-sequence endpoint.
 
     Thread-safety notes:
     - Node-ID assignment uses a lock-protected counter.  IDs only need to be

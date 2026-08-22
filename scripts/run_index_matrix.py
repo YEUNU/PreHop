@@ -968,8 +968,8 @@ async def _run_target(
     env["RAG_CHUNK_CACHE"] = "off"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     base_file_workers = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "16")))
-    base_hop_doc_workers = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")))
-    base_ms_requests = max(1, int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "8")))
+    base_hop_doc_workers = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")))
+    base_ms_requests = max(1, int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "32")))
     env["RAG_MAX_PARALLEL_FILES"] = str(max(1, base_file_workers // concurrency_divisor))
     env.setdefault("RAG_FILE_SCHEDULE_BATCH", "32")
     env.setdefault("RAG_PARSE_WORKERS", "8")
@@ -1295,10 +1295,10 @@ async def _main(args: argparse.Namespace) -> int:
             "q_minus_enabled": os.environ.get("RAG_ABLATION_Q_MINUS", "True").lower() == "true",
             "q_plus_enabled": os.environ.get("RAG_ABLATION_Q_PLUS", "True").lower() == "true",
             "prehop_file_workers": int(os.environ.get("RAG_MAX_PARALLEL_FILES", "16")),
-            "hoprag_doc_workers": int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")),
+            "hoprag_doc_workers": int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")),
             "hoprag_chunk_threads_per_document": int(os.environ.get("RAG_HOP_MAX_THREADS", "4")),
             "hoprag_question_validation_retries": int(os.environ.get("RAG_HOP_QUESTION_RETRIES", "3")),
-            "ms_concurrent_requests": int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "8")),
+            "ms_concurrent_requests": int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "32")),
         },
         "inference_capacity_plan": capacity_plan,
         "inference": {

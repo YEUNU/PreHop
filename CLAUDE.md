@@ -95,6 +95,9 @@ Naive batches 32 source documents per embedding/write transaction. Prehop's
 outer in-flight file cap defaults to 16; its generation semaphore remains 30,
 so short one-chunk corpora can use the endpoint without making long-document
 fan-out unbounded.
+Official HopRAG defaults to 10 document workers × 4 chunk threads, and MS
+GraphRAG to 32 concurrent requests. Since no other generation-heavy target is
+allowed beside either one, their upper bounds remain within max-seq 128.
 
 A measured cold run must:
 

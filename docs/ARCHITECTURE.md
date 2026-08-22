@@ -273,6 +273,11 @@ atomically replaces the batch's source nodes in one Neo4j transaction. This
 turns short-document datasets into real embedding batches instead of thousands
 of one-item requests. The measured 64-document HotpotQA probe processed 47.1
 documents/s and returned the exact 64-source/72-chunk topology.
+The generation-heavy baselines then use the safe capacity left by serialization:
+HopRAG runs 10 document workers with 4 chunk threads (at most 40 generation
+calls), while MS GraphRAG runs 32 concurrent requests. The matrix previously
+overrode MS's own 48-request default down to 8 and HopRAG down to 4, which
+needlessly under-used a 128-sequence server once cross-method overlap was gone.
 
 The measurement set directly addresses the indexing-time tradeoff: overall
 and Prehop phase latency, logical storage, document/chunk/question/edge counts,

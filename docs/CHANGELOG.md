@@ -35,6 +35,10 @@ probe improved throughput from roughly 3 to 47.1 documents/s with exact source,
 chunk, and embedding-dimension integrity. The Prehop file in-flight default is
 16 (still bounded by the 30-request generation semaphore) to avoid
 under-utilizing the endpoint on one-chunk corpora.
+Because generation-heavy targets are now serialized, HopRAG's validated
+document-worker setting is restored to 10 (4 chunk threads, upper bound 40)
+and the matrix uses 32 MS GraphRAG requests instead of its former conservative
+8; both stay within the shared max-seq 128 budget.
 
 Judge hallucination is no longer inferred from an incorrect-answer score.
 OpenAI Batch reconciliation requires both explicit fields for every row and
