@@ -115,6 +115,28 @@ def test_matrix_capacity_plan_keeps_independent_server_budgets(monkeypatch):
     assert plan["effective"]["aggregate_capacity_upper_bound"] == 128
 
 
+def test_matrix_scheduler_fills_spare_slot_with_embedding_only_target():
+    from scripts.run_index_matrix import DATASETS, Target, _next_compatible_target_index
+
+    active = [Target("multihoprag", "prehop", DATASETS["multihoprag"])]
+    pending = [
+        Target("multihoprag", "hoprag", DATASETS["multihoprag"]),
+        Target("multihoprag", "ms_graphrag", DATASETS["multihoprag"]),
+        Target("hotpotqa", "naive", DATASETS["hotpotqa"]),
+    ]
+
+    assert _next_compatible_target_index(pending, active, max_generation_parallel=1) == 2
+
+
+def test_matrix_scheduler_waits_when_only_generation_targets_remain():
+    from scripts.run_index_matrix import DATASETS, Target, _next_compatible_target_index
+
+    active = [Target("multihoprag", "prehop", DATASETS["multihoprag"])]
+    pending = [Target("multihoprag", "hoprag", DATASETS["multihoprag"])]
+
+    assert _next_compatible_target_index(pending, active, max_generation_parallel=1) is None
+
+
 def test_unjudged_benchmark_cannot_complete(tmp_path):
     summary = {
         "details": [{"llm_judge_score": -1.0}],

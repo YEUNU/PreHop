@@ -167,6 +167,11 @@ vLLM queue pressure automatically reduces the parallel width for remaining
 targets; a resource/rate-limit failure also halves that target's internal
 worker count on retry. `logical_payload_bytes_estimate` is a cross-strategy reproducible
 payload estimate; it is not Neo4j's physical store-file size.
+Only one generation-heavy target runs at once by default because generation
+and embedding currently share the external endpoint; an embedding-only Naive
+target from a later dataset fills the second slot. This preserves useful
+parallelism without the measured throughput collapse from overlapping Prehop,
+HopRAG, or MS GraphRAG generation workloads.
 Prehop's runtime stats also split document generation/embedding, final graph
 flush, HOP construction, and structural-audit time. Question coverage,
 direction coverage, provenance completeness, graph size, prompt-length

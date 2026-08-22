@@ -26,6 +26,10 @@ one shared `max_num_seqs` budget and separate URLs as independent budgets. It
 samples both queues and automatically reduces effective client concurrency
 before launch; official HopRAG's synchronous embedding hook now obeys the same
 batch/request limits and validates every returned vector.
+After observing Prehop throughput drop from about 7 to 2–3 documents/minute
+when HopRAG joined the same generation endpoint, the matrix scheduler now caps
+generation-heavy targets at one and fills spare width with Naive targets from
+later datasets.
 
 Judge hallucination is no longer inferred from an incorrect-answer score.
 OpenAI Batch reconciliation requires both explicit fields for every row and

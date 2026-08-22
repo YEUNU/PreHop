@@ -48,6 +48,7 @@ DATASETS = {
 }
 EXPECTED_FILE_COUNTS = {"multihoprag": 609, "hotpotqa": 66_581, "musique": 17_629}
 STRATEGIES = ("prehop", "naive", "hoprag", "ms_graphrag")
+GENERATION_HEAVY_STRATEGIES = frozenset({"prehop", "hoprag", "ms_graphrag"})
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,22 @@ class Target:
     @property
     def key(self) -> str:
         return f"{self.dataset}__{self.strategy}"
+
+
+def _next_compatible_target_index(
+    pending: list[Target],
+    active: list[Target],
+    max_generation_parallel: int,
+) -> int | None:
+    """Choose work without overlapping too many generation-heavy targets."""
+    active_generation = sum(target.strategy in GENERATION_HEAVY_STRATEGIES for target in active)
+    for index, target in enumerate(pending):
+        if (
+            target.strategy not in GENERATION_HEAVY_STRATEGIES
+            or active_generation < max_generation_parallel
+        ):
+            return index
+    return None
 
 
 def _safe_token(value: str) -> str:
@@ -1251,6 +1268,7 @@ async def _main(args: argparse.Namespace) -> int:
         "cold_graph": bool(args.clear_graph),
         "cold_artifacts": bool(args.clear_graph),
         "initial_parallelism": args.max_parallel,
+        "max_generation_parallelism": args.max_generation_parallel,
         "target_attempts": args.target_attempts,
         "datasets": selected_datasets,
         "strategies": selected_strategies,
@@ -1341,7 +1359,14 @@ async def _main(args: argparse.Namespace) -> int:
     try:
         while pending or running:
             while pending and len(running) < state["parallel_limit"]:
-                target = pending.pop(0)
+                pending_index = _next_compatible_target_index(
+                    pending,
+                    list(running.values()),
+                    args.max_generation_parallel,
+                )
+                if pending_index is None:
+                    break
+                target = pending.pop(pending_index)
                 attempts_by_target[target.key] += 1
                 attempt = attempts_by_target[target.key]
                 state["active"].add(target.key)
@@ -1450,6 +1475,12 @@ def main() -> int:
     parser.add_argument("--datasets", nargs="+", choices=["all", *DATASETS], default=["all"])
     parser.add_argument("--strategies", nargs="+", choices=["all", *STRATEGIES], default=["all"])
     parser.add_argument("--max-parallel", type=int, default=2)
+    parser.add_argument(
+        "--max-generation-parallel",
+        type=int,
+        default=1,
+        help="Maximum generation-heavy targets in flight; embedding-only Naive work can fill remaining slots.",
+    )
     parser.add_argument("--sample-seconds", type=float, default=5.0)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--clear-graph", action="store_true")
@@ -1459,6 +1490,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.max_parallel < 1:
         parser.error("--max-parallel must be >= 1")
+    if args.max_generation_parallel < 1 or args.max_generation_parallel > args.max_parallel:
+        parser.error("--max-generation-parallel must be between 1 and --max-parallel")
     if args.sample_seconds <= 0:
         parser.error("--sample-seconds must be > 0")
     if args.target_attempts < 1:

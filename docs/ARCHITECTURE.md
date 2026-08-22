@@ -262,6 +262,11 @@ shared 128-sequence endpoint is automatically adjusted to one 32-item
 embedding batch plus 30 generation requests per target (aggregate bound 124).
 Generation and embedding queues are sampled separately, and sustained pressure
 still lowers target width for later work.
+The scheduler additionally caps generation-heavy targets at one in flight
+(`--max-generation-parallel 1`). It scans ahead for an embedding-only Naive
+target to occupy the remaining width. This policy was selected after a cold
+run showed Prehop throughput fall from roughly 7 to 2–3 documents/minute when
+official HopRAG began generating concurrently on the shared endpoint.
 
 The measurement set directly addresses the indexing-time tradeoff: overall
 and Prehop phase latency, logical storage, document/chunk/question/edge counts,

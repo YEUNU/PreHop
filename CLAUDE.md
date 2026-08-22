@@ -88,6 +88,9 @@ inference pressure, and reduces the remaining width when pressure is sustained.
 It does not increase width again within the same run. Each child is a separate
 process group, so interruption terminates descendants and prevents overlapping
 debug/index jobs.
+At most one of Prehop/HopRAG/MS GraphRAG runs at once by default; these are all
+generation-heavy. The scheduler scans ahead for Naive targets to fill the
+second slot, preserving parallel embedding work without generation contention.
 
 A measured cold run must:
 
