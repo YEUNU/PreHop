@@ -811,6 +811,7 @@ async def _main(args: argparse.Namespace) -> int:
             "prehop_file_workers": int(os.environ.get("RAG_MAX_PARALLEL_FILES", "2")),
             "hoprag_doc_workers": int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")),
             "hoprag_chunk_threads_per_document": int(os.environ.get("RAG_HOP_MAX_THREADS", "4")),
+            "hoprag_question_validation_retries": int(os.environ.get("RAG_HOP_QUESTION_RETRIES", "3")),
             "ms_concurrent_requests": int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "8")),
         },
         "inference": {
@@ -832,6 +833,7 @@ async def _main(args: argparse.Namespace) -> int:
                 "RAG_PARSE_WORKERS",
                 "RAG_HOP_DOC_WORKERS",
                 "RAG_HOP_MAX_THREADS",
+                "RAG_HOP_QUESTION_RETRIES",
                 "RAG_MS_CONCURRENT_REQUESTS",
                 "VLLM_MAX_NUM_SEQS",
                 "MAX_CONCURRENT_LLM_CALLS",

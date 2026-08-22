@@ -59,10 +59,23 @@ _EMBED_MODEL_NAME = os.environ.get(
 _EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")))
 _GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
 _DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "4")))
+_QUESTION_RETRIES = max(1, int(os.environ.get("RAG_HOP_QUESTION_RETRIES", "3")))
 _NODE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_NODE_BATCH", "200")))
 _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
 
 _OUTPUT_ROOT = Path(os.environ.get("RAG_HOP_OUTPUT_ROOT", "data/hoprag_output"))
+
+
+def _validated_question_list(result) -> list[str]:
+    """Validate the official helper's ``(questions, chat)`` return shape."""
+    if not isinstance(result, (tuple, list)) or len(result) != 2:
+        raise ValueError("invalid result shape")
+    questions, _ = result
+    if not isinstance(questions, list) or not questions:
+        raise ValueError("empty question list")
+    if any(not isinstance(question, str) or not question.strip() for question in questions):
+        raise ValueError("question list contains a non-string or blank item")
+    return questions
 
 
 def _atomic_pickle_dump(path: Path, payload) -> None:
@@ -453,18 +466,29 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
     # instead of silently dropping every affected chunk from the graph.
 
     def _safe_get_question_list(extract_template, sentences, query_generator):
-        result = tool.get_chat_completion(
-            [{"role": "user", "content": extract_template.format(sentences=sentences)}],
-            keys=["Question List"],
-            model=query_generator,
-            max_tokens=4096,
+        last_error: ValueError | None = None
+        for attempt in range(1, _QUESTION_RETRIES + 1):
+            result = tool.get_chat_completion(
+                [{"role": "user", "content": extract_template.format(sentences=sentences)}],
+                keys=["Question List"],
+                model=query_generator,
+                max_tokens=4096,
+            )
+            try:
+                return _validated_question_list(result)
+            except ValueError as exc:
+                last_error = exc
+                if attempt < _QUESTION_RETRIES:
+                    logger.warning(
+                        "HopRAG question generation validation failed (%d/%d): %s; retrying",
+                        attempt,
+                        _QUESTION_RETRIES,
+                        exc,
+                    )
+                    time.sleep(min(2 ** (attempt - 1), 4))
+        raise RuntimeError(
+            f"HopRAG question generation remained invalid after {_QUESTION_RETRIES} attempts: {last_error}"
         )
-        if not isinstance(result, (tuple, list)) or len(result) != 2:
-            raise RuntimeError("HopRAG question generation returned an invalid result")
-        question_list, _ = result
-        if not isinstance(question_list, list) or not question_list:
-            raise RuntimeError("HopRAG question generation returned no questions")
-        return question_list
 
     tool.get_question_list = _safe_get_question_list
     import HopBuilder as _HB_tmp

@@ -122,6 +122,16 @@ async def test_hoprag_official_failure_is_not_replaced_by_vector_search():
         await adapter._run_official_retrieval("query")
 
 
+def test_hoprag_question_list_validation_rejects_empty_generation():
+    from models.hoprag.official_indexer import _validated_question_list
+
+    with pytest.raises(ValueError, match="empty question list"):
+        _validated_question_list(([], []))
+    with pytest.raises(ValueError, match="blank item"):
+        _validated_question_list((["valid?", ""], []))
+    assert _validated_question_list((["valid?"], [])) == ["valid?"]
+
+
 def test_cli_has_no_domain_gate():
     import main
 
