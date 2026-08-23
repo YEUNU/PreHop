@@ -18,9 +18,18 @@ from .config import RAGConfig
 
 class VLLMClient:
     _client_cache: ClassVar[dict] = {}
+    _QUERY_EMBED_CACHE_LIMIT = 2048
 
     def __init__(self, model_name: str | None = None):
         self.logger = logging.getLogger(__name__)
+        # One query-time retrieval call re-embeds the identical query string
+        # across several independent channel/scoring calls (hybrid.py's RRF
+        # channels, scoring.py's body/bridge passes). Embeddings are a pure
+        # function of (text, model), so caching single-text query embeddings
+        # here is safe for the process lifetime and avoids redundant network
+        # round trips; document batches are never cached since their content
+        # differs per call.
+        self._query_embed_cache: dict[str, list[float]] = {}
         self.vllm_url = RAGConfig.VLLM_URL
         self.embed_url = RAGConfig.VLLM_EMBED_URL
 
@@ -521,6 +530,12 @@ class VLLMClient:
         if not texts:
             return []
 
+        single_query = encoding_type == "query" and len(texts) == 1
+        if single_query:
+            cached = self._query_embed_cache.get(texts[0])
+            if cached is not None:
+                return [cached]
+
         # Truncate and format query texts to prevent embedding model overflow.
         embed_max_tokens = self._embedding_token_limit()
         truncated_texts: list[str] = []
@@ -550,6 +565,12 @@ class VLLMClient:
                     e,
                 )
                 all_embeddings.extend(await self._embed_batch_itemwise(batch, encoding_type=encoding_type))
+
+        if single_query and all_embeddings and all_embeddings[0]:
+            if len(self._query_embed_cache) >= self._QUERY_EMBED_CACHE_LIMIT:
+                self._query_embed_cache.clear()
+            self._query_embed_cache[texts[0]] = all_embeddings[0]
+
         return all_embeddings
 
     async def get_embedding(self, text: str) -> list[float]:

@@ -8,6 +8,7 @@ The original benchmark query is used directly; retrieval has no query-time
 generation or heuristic query transformation.
 """
 
+import asyncio
 from typing import Any
 
 from core.config import RAGConfig
@@ -54,13 +55,17 @@ class RetrieveMixin:
             # HopRAG-style single hypothetical channel: equal-weight Q-/Q+
             # candidates fused through the same RRF accumulator, no direction
             # distinction. Body is excluded to isolate the direction split.
-            q_minus_nodes = await self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_minus")
-            q_plus_nodes = await self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_plus")
+            q_minus_nodes, q_plus_nodes = await asyncio.gather(
+                self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_minus"),
+                self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_plus"),
+            )
             _accumulate(stage1_merged, q_minus_nodes, "stage1_rrf_score", 0.5)
             _accumulate(stage1_merged, q_plus_nodes, "stage1_rrf_score", 0.5)
         elif RAGConfig.ABLATION_Q_MINUS:
-            q_minus_nodes = await self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_minus")
-            body_nodes = await self._hybrid_rrf_candidates(query, limit=max(10, top_k * 4), channel="body")
+            q_minus_nodes, body_nodes = await asyncio.gather(
+                self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_minus"),
+                self._hybrid_rrf_candidates(query, limit=max(10, top_k * 4), channel="body"),
+            )
             _accumulate(stage1_merged, q_minus_nodes, "stage1_rrf_score", 0.7)
             _accumulate(stage1_merged, body_nodes, "stage1_rrf_score", 0.3)
         else:
@@ -73,18 +78,24 @@ class RetrieveMixin:
             reverse=True,
         )[: max(20, top_k * 6)]
 
-        stage1_nodes, _ = await self._score_and_select(query, stage1_candidates, top_k)
         use_q_plus_stage = RAGConfig.ABLATION_Q_PLUS and variant == "full"
-
         if not use_q_plus_stage:
+            # Only score/select stage 1 here when it is the final result --
+            # when stage 2 runs, its own _score_and_select call at the end
+            # supersedes this pass, so scoring stage 1 first would just be
+            # discarded work (an extra embedding-similarity round trip per
+            # query for no effect on the returned nodes).
+            stage1_nodes, _ = await self._score_and_select(query, stage1_candidates, top_k)
             return stage1_nodes, stage1_candidates
 
         # --- Stage 2: Q+ expansion (Q+ 0.6 + Q- support 0.4) per paper §3.2.3 ---
         expanded: dict[str, dict[str, Any]] = {self._node_identity(node): dict(node) for node in stage1_candidates}
         q_plus_weight = 0.6
         q_minus_support_weight = 0.4
-        q_plus_nodes = await self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_plus")
-        q_minus_support_nodes = await self._hybrid_rrf_candidates(query, limit=max(10, top_k * 4), channel="q_minus")
+        q_plus_nodes, q_minus_support_nodes = await asyncio.gather(
+            self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_plus"),
+            self._hybrid_rrf_candidates(query, limit=max(10, top_k * 4), channel="q_minus"),
+        )
         _accumulate(expanded, q_plus_nodes, "stage2_rrf_score", q_plus_weight)
         _accumulate(expanded, q_minus_support_nodes, "stage2_support_score", q_minus_support_weight)
 
