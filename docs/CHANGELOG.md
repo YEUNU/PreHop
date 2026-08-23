@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-08-23 — Per-source diversity cap in final evidence selection
+
+The incremental single-seed traversal (previous entry) had two live bugs.
+`_expand_frontier`'s Cypher put a bare `WHERE` directly after a `CALL (src)
+{ ... }` subquery block, which Neo4j's grammar rejects; it needed an explicit
+`WITH src, related, path_type, edge_score` in between. The seed loop also
+skipped a candidate seed once it appeared in `discovered_ids`, not just
+`expanded_ids` — so a seed only passively swept up as another (earlier,
+same-document) seed's NEXT-neighbor never got its own expansion turn and lost
+its own HOP_ANSWER edges, even when it was the one chunk carrying a path to a
+second gold document. Fixed by gating the skip on `expanded_ids` alone.
+
+Neither bug fix alone changed retrieval outcomes on a 15-query dev check.
+Manual inspection of the two tracked loss cases found the real driver was
+downstream: `_score_and_select`'s final top-k was pure global score order, so
+several near-duplicate high-scoring chunks from one strongly-relevant
+document routinely filled most of the evidence slots and crowded out the
+only chunk from a second, lower-scoring gold document. `scoring.py` now caps
+each source at `RAG_MAX_CHUNKS_PER_SOURCE_FRACTION` (default 0.34) of top_k
+in final selection (`floor(top_k * fraction)`, minimum 1); capped-out
+candidates still backfill by score if too few distinct sources exist to fill
+top_k. A dataset-structure check on the multihoprag sample confirmed this is
+well-motivated, not overfit: 60/60 sampled queries have gold evidence
+spanning 2+ distinct documents (avg 2.4).
+
+Tuning used `fact_recall` (does retrieved chunk text actually contain the
+gold evidence fact), not `doc_recall` (does the gold title merely appear
+anywhere in results) — doc_recall turned out gameable: capping at 1 chunk
+per document pushed doc_recall to 0.903 but dropped fact_recall to 0.531,
+below the 0.589 true-baseline (pre-fix, pre-incremental-traversal) figure,
+because forcing maximal spread away from the strongest passages reduces the
+odds of landing on the specific relevant one. 0.34 gave both doc_recall
+0.787 and the best fact_recall 0.619. A follow-up sweep of
+`MAX_CHUNKS_PER_SOURCE_FRACTION`, `GRAPH_HOP_DEPTH`, `GRAPH_SEARCH_LIMIT`,
+`HOP_LINK_LIMIT`, and `HOP_SAME_NEED_WEIGHT` confirmed every existing default
+(including 0.34) already sits at its local optimum; no further change was
+needed. A 10,000-resample paired bootstrap over the 60-query fact_recall
+delta (+0.031, 95% CI [-0.014, +0.076]) does not yet exclude zero — the
+improvement is directional, not proven significant at this sample size.
+
+A full 200-query official benchmark on MultiHop-RAG with the fix and the
+0.34 default (LLM judge excluded from this figure set — same served model
+as generation, so self-judged and unreliable): avg_doc_match 0.735,
+avg_evidence_doc_recall 0.582, avg_hits@10 0.432, avg_hits@4 0.304,
+avg_map@10 0.261, avg_mrr@10 0.454, avg_answer_attempted 0.64. Latency
+breakdown: avg_retrieve_ms 2598, avg_traversal_ms 1716, avg_synthesis_ms
+9211, avg_latency 13525.
+
 ## 2026-08-23 — Explicit routed-server capacity and retry backoff
 
 The matrix runner no longer assumes that identical OpenAI-compatible URLs mean

@@ -190,19 +190,37 @@ the two ordered lists with weighted RRF (`k=60`, vector 1.3, text 1.0).
   Disabling Q+ explicitly as an ablation also disables Stage 2.
 
 `retrieval/scoring.py` uses external query/document embeddings and cosine
-similarity to order candidates, then returns the top-k without a score gate.
-There is no dedicated reranker model, rerank prompt, query
-rewrite, metadata boost, boilerplate penalty, company filter, or domain gate.
+similarity to order candidates; there is no dedicated reranker model, rerank
+prompt, query rewrite, metadata boost, boilerplate penalty, company filter,
+or domain gate. Final top-k selection caps each source document at
+`RAG_MAX_CHUNKS_PER_SOURCE_FRACTION` (default 0.34, `floor(top_k *
+fraction)`, minimum 1) of the returned slots — pure global score order let
+several near-duplicate high-scoring chunks from one document fill most of
+the evidence set and crowd out the only chunk carrying a second gold
+document, directly undermining multi-hop, cross-document evidence. Same
+rule for every source/dataset. Candidates over the cap still backfill by
+score if there are not enough distinct sources to fill top_k.
 
-`retrieval/traversal.py` orders seed nodes, walks `NEXT` in both directions to
-recover preceding/following document context, and walks `HOP_ANSWER` only in
-the Q+→answer-evidence direction. It orders each new frontier, deduplicates
-visited/excluded ids, and returns the top-k collected nodes. HOP candidates are
-scored independently against their preserved source bridge-Q+ and target body,
-then the two cosine scores are averaged. This requires agreement on both sides
-of the evidence path; concatenating them let a strong bridge phrase mask an
-unrelated target, while discarding Q+ erased why the edge existed.
-There is no query-time generation, continuation
+`retrieval/traversal.py` treats the wide Stage 2 RRF pool (not just the
+top-k) as an ordered seed queue and expands one not-yet-expanded seed at a
+time, incremental best-first, rather than all seeds at once. `NEXT` is
+walked in both directions to recover preceding/following document context;
+`HOP_ANSWER` is walked only in the Q+→answer-evidence direction. NEXT and
+HOP paths are ranked separately per expansion step, then fused per target
+chunk. A seed that was only passively swept up as another (higher-ranked,
+same-document) seed's NEXT-neighbor still gets its own expansion turn —
+gating that on "already discovered" instead of "already expanded" let one
+early seed's same-document walk silently consume the shared candidate
+budget before a lower-ranked, cross-document seed ever ran, at real cost to
+cross-document evidence coverage on a live multihoprag A/B check. Only a
+seed that has itself already been expanded is skipped. Candidates are
+pruned to a shared reservoir (`candidate_budget = max(24, top_k*8)`) after
+every step, then handed to `scoring.py` for final selection. HOP candidates
+are scored independently against their preserved source bridge-Q+ and
+target body, then the two cosine scores are averaged. This requires
+agreement on both sides of the evidence path; concatenating them let a
+strong bridge phrase mask an unrelated target, while discarding Q+ erased
+why the edge existed. There is no query-time generation, continuation
 prompt, heuristic stop gate, or runtime ANN supplement in Prehop retrieval.
 
 `retrieval/text_utils.py` contains only normalization, Lucene sanitization,

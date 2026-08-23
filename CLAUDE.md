@@ -21,7 +21,9 @@ branch map is in `docs/ARCHITECTURE.md`.
   concurrency to one, keeping the combined aggregate bound at 124. Separate
   URLs are budgeted and pressure-sampled independently.
 - A dedicated reranker is not used. The external embedding endpoint supplies
-  vectors for threshold-free cosine top-k ordering.
+  vectors for threshold-free cosine top-k ordering. Final selection caps each
+  source document at `RAG_MAX_CHUNKS_PER_SOURCE_FRACTION` (default 0.34) of
+  top_k so one strongly-matching document cannot fill the whole evidence set.
 - Prehop has no query rewrite, rerank simplification prompt, continuation
   prompt, runtime HOP, company/domain gate, metadata boost, boilerplate
   penalty, table-to-text generation, or Q+ heuristic post-filter.
