@@ -24,6 +24,11 @@ branch map is in `docs/ARCHITECTURE.md`.
   vectors for threshold-free cosine top-k ordering. Final selection caps each
   source document at `RAG_MAX_CHUNKS_PER_SOURCE_FRACTION` (default 0.34) of
   top_k so one strongly-matching document cannot fill the whole evidence set.
+- Query-time candidate-pool widths are config-driven:
+  `RAG_CANDIDATE_LIMIT_MULTIPLIER` (8), `RAG_SUPPORT_POOL_MULTIPLIER` (4),
+  `RAG_STAGE1_POOL_MULTIPLIER` (6), `RAG_WIDE_POOL_MULTIPLIER` (6). A single
+  query-time query string is embedded once per client instance and reused
+  across every channel/scoring call that needs it in the same retrieval.
 - Prehop has no query rewrite, rerank simplification prompt, continuation
   prompt, runtime HOP, company/domain gate, metadata boost, boilerplate
   penalty, table-to-text generation, or Q+ heuristic post-filter.

@@ -176,8 +176,10 @@ non-empty context
 ```
 
 `retrieval/hybrid.py` embeds the original query and runs vector plus Neo4j
-full-text search for one channel (`body`, `q_minus`, or `q_plus`). It fuses
-the two ordered lists with weighted RRF (`k=60`, vector 1.3, text 1.0).
+full-text search for one channel (`body`, `q_minus`, or `q_plus`). The two
+queries run on separate Neo4j sessions concurrently (`asyncio.gather`) rather
+than sharing one session's serialized request/response cycle, then fuse into
+one ordered list with weighted RRF (`k=60`, vector 1.3, text 1.0).
 
 `retrieval/retrieve.py` has these channel branches:
 
@@ -188,6 +190,18 @@ the two ordered lists with weighted RRF (`k=60`, vector 1.3, text 1.0).
 - `full` with Q- disabled: Stage 1 body only.
 - In full mode, Stage 2 always runs and adds Q+ and Q- support at 0.6/0.4.
   Disabling Q+ explicitly as an ablation also disables Stage 2.
+
+Each stage's two independent channel calls (e.g. Q-/body, or Q+/Q- support)
+run concurrently rather than sequentially. Stage 1 only scores/selects its
+own candidates when it is the final result; when Stage 2 runs (the default),
+Stage 1's candidates flow into Stage 2 unscored, since Stage 2's own final
+scoring pass would otherwise immediately discard a first scoring pass over
+the same pool. `core/vllm_client.py` caches single-text query embeddings
+per client instance (keyed by exact text, gated to `encoding_type="query"`
+single-item calls only, never document batches) so the same query string is
+not re-embedded across every channel/scoring call that needs it within one
+retrieval — text-to-embedding is a pure function of (text, model), so this
+changes no values, only removes redundant network round trips.
 
 `retrieval/scoring.py` uses external query/document embeddings and cosine
 similarity to order candidates; there is no dedicated reranker model, rerank
@@ -200,6 +214,18 @@ the evidence set and crowd out the only chunk carrying a second gold
 document, directly undermining multi-hop, cross-document evidence. Same
 rule for every source/dataset. Candidates over the cap still backfill by
 score if there are not enough distinct sources to fill top_k.
+
+`retrieve.py`'s Stage 1 and `traversal.py`'s incremental collection each size
+their candidate pool as `max(floor, top_k * multiplier)` —
+`RAG_CANDIDATE_LIMIT_MULTIPLIER` (8), `RAG_SUPPORT_POOL_MULTIPLIER` (4),
+`RAG_STAGE1_POOL_MULTIPLIER` (6), and `RAG_WIDE_POOL_MULTIPLIER` (6, shared
+by `retrieve.py`'s Stage 2 cap and `traversal.py`'s `candidate_budget`) —
+instead of the fixed literals used before this was config-driven. A 60-query
+multihoprag fact_recall
+sweep found the wide-pool default of 8 both slower and no better than 6
+(fact_recall 0.611 vs 0.619, ~25% more traversal latency for no gain), so the
+default moved to 6; the other three multipliers were swept too and showed no
+improvement beyond run-to-run noise, so they kept their original values.
 
 `retrieval/traversal.py` treats the wide Stage 2 RRF pool (not just the
 top-k) as an ordered seed queue and expands one not-yet-expanded seed at a

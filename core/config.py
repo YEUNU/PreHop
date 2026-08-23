@@ -80,6 +80,20 @@ class RAGConfig:
     DEFAULT_TOP_K = int(os.environ.get("RAG_DEFAULT_TOP_K", "12"))
     FULLTEXT_ANALYZER = os.environ.get("NEO4J_FULLTEXT_ANALYZER", "english")
 
+    # --- Candidate pool sizing (query time) ---
+    # Retrieval sizes several intermediate candidate pools as
+    # `max(floor, top_k * multiplier)` before final scoring/selection. A
+    # wider pool costs extra Neo4j/embedding round trips; a narrower one
+    # risks pruning the one chunk that eventually reaches a gold document
+    # before scoring or traversal ever sees it.
+    CANDIDATE_LIMIT_MULTIPLIER = int(os.environ.get("RAG_CANDIDATE_LIMIT_MULTIPLIER", "8"))
+    SUPPORT_POOL_MULTIPLIER = int(os.environ.get("RAG_SUPPORT_POOL_MULTIPLIER", "4"))
+    STAGE1_POOL_MULTIPLIER = int(os.environ.get("RAG_STAGE1_POOL_MULTIPLIER", "6"))
+    # Shared by retrieve.py's stage 2 candidate cap and traversal.py's
+    # incremental-collection reservoir: both represent the final wide
+    # candidate pool handed to scoring.
+    WIDE_POOL_MULTIPLIER = int(os.environ.get("RAG_WIDE_POOL_MULTIPLIER", "6"))
+
     # Final top-k selection is otherwise pure global score order, so several
     # near-duplicate high-scoring chunks from one source document can occupy
     # most of the evidence slots and crowd out a lower-scoring chunk that is
@@ -142,6 +156,10 @@ class RAGConfig:
             "HOP_CHANNEL_CONCURRENCY": cls.HOP_CHANNEL_CONCURRENCY,
             "GRAPH_SEARCH_LIMIT": cls.GRAPH_SEARCH_LIMIT,
             "DEFAULT_TOP_K": cls.DEFAULT_TOP_K,
+            "CANDIDATE_LIMIT_MULTIPLIER": cls.CANDIDATE_LIMIT_MULTIPLIER,
+            "SUPPORT_POOL_MULTIPLIER": cls.SUPPORT_POOL_MULTIPLIER,
+            "STAGE1_POOL_MULTIPLIER": cls.STAGE1_POOL_MULTIPLIER,
+            "WIDE_POOL_MULTIPLIER": cls.WIDE_POOL_MULTIPLIER,
         }
         invalid = {name: value for name, value in positive.items() if value < 1}
         if invalid:

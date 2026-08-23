@@ -32,7 +32,8 @@ class RetrieveMixin:
         ranked Q+ seed from exposing a useful HOP path.
         """
         stage1_merged: dict[str, dict[str, Any]] = {}
-        candidate_limit_per_query = max(20, top_k * 8)
+        candidate_limit_per_query = max(20, top_k * RAGConfig.CANDIDATE_LIMIT_MULTIPLIER)
+        support_pool_limit = max(10, top_k * RAGConfig.SUPPORT_POOL_MULTIPLIER)
         rrf_score_keys = ("stage1_rrf_score", "stage2_rrf_score", "stage2_support_score")
 
         def _accumulate(
@@ -64,7 +65,7 @@ class RetrieveMixin:
         elif RAGConfig.ABLATION_Q_MINUS:
             q_minus_nodes, body_nodes = await asyncio.gather(
                 self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_minus"),
-                self._hybrid_rrf_candidates(query, limit=max(10, top_k * 4), channel="body"),
+                self._hybrid_rrf_candidates(query, limit=support_pool_limit, channel="body"),
             )
             _accumulate(stage1_merged, q_minus_nodes, "stage1_rrf_score", 0.7)
             _accumulate(stage1_merged, body_nodes, "stage1_rrf_score", 0.3)
@@ -76,7 +77,7 @@ class RetrieveMixin:
             stage1_merged.values(),
             key=lambda item: item.get("stage1_rrf_score", 0.0),
             reverse=True,
-        )[: max(20, top_k * 6)]
+        )[: max(20, top_k * RAGConfig.STAGE1_POOL_MULTIPLIER)]
 
         use_q_plus_stage = RAGConfig.ABLATION_Q_PLUS and variant == "full"
         if not use_q_plus_stage:
@@ -94,7 +95,7 @@ class RetrieveMixin:
         q_minus_support_weight = 0.4
         q_plus_nodes, q_minus_support_nodes = await asyncio.gather(
             self._hybrid_rrf_candidates(query, limit=candidate_limit_per_query, channel="q_plus"),
-            self._hybrid_rrf_candidates(query, limit=max(10, top_k * 4), channel="q_minus"),
+            self._hybrid_rrf_candidates(query, limit=support_pool_limit, channel="q_minus"),
         )
         _accumulate(expanded, q_plus_nodes, "stage2_rrf_score", q_plus_weight)
         _accumulate(expanded, q_minus_support_nodes, "stage2_support_score", q_minus_support_weight)
@@ -113,7 +114,7 @@ class RetrieveMixin:
             expanded.values(),
             key=lambda item: item.get("hybrid_rrf_score", 0.0),
             reverse=True,
-        )[: max(24, top_k * 8)]
+        )[: max(24, top_k * RAGConfig.WIDE_POOL_MULTIPLIER)]
 
         final_nodes, _ = await self._score_and_select(query, expanded_candidates, top_k)
         if not final_nodes:

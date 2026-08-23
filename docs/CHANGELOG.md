@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-08-23 — Query-time latency cleanup and candidate-pool retuning
+
+A multi-angle pass over the query path (hybrid.py/retrieve.py/scoring.py/
+traversal.py, prompted by "is there more to fix here") found three pieces of
+pure wasted work, unrelated to the diversity-cap fix above. Stage 1 of
+`retrieve.py` scored and selected its own candidates every query even though,
+in the default `full` variant, Stage 2 always runs next and its own final
+scoring pass immediately superseded that result — an entire embedding-
+similarity round trip over up to 72 candidates, discarded unused, every
+single query. `core/vllm_client.py` had no embedding cache, so the same query
+string was independently re-embedded up to seven times per retrieval call
+across hybrid.py's RRF channels and scoring.py's body/bridge passes; a
+client-instance-scoped cache (keyed by exact text, gated to single-item
+`encoding_type="query"` calls only, so document batches are never touched)
+collapses these to one real network call per distinct string. Independent
+channel fetches inside one stage (Q-/body, Q+/Q- support, and hybrid.py's own
+vector/fulltext pair, the last moved onto two Neo4j sessions) were sequential
+`await`s and now run concurrently via `asyncio.gather`. None of this changes
+ranking or selected results — confirmed by the existing test suite passing
+unchanged and by these being pure-function/dead-code fixes, not algorithm
+changes.
+
+Candidate-pool widths that fed Stage 1/Stage 2/traversal (`top_k * 6/8/4`
+literals) were config-driven into `RAG_CANDIDATE_LIMIT_MULTIPLIER`,
+`RAG_SUPPORT_POOL_MULTIPLIER`, `RAG_STAGE1_POOL_MULTIPLIER`, and
+`RAG_WIDE_POOL_MULTIPLIER` (the last shared by `retrieve.py`'s Stage 2 cap and
+`traversal.py`'s `candidate_budget`, both representing the final wide pool
+handed to scoring) and re-swept with the same 60-query multihoprag fact_recall
+methodology used for the diversity cap. `RAG_WIDE_POOL_MULTIPLIER` moved from
+8 to 6: fact_recall improved (0.611 → 0.619, matching the 12x result) while
+avg_traversal_ms dropped about 25% (1026ms → 774ms) — a pool that wide was
+adding latency without adding evidence quality. The other three multipliers
+showed no change beyond already-observed run-to-run noise and kept their
+original values.
+
+These fixes are query-time only and do not touch or affect the concurrently
+running full-matrix indexing job (`full_20260823_routed`): that process
+already had the pre-fix code loaded in memory when it started, indexing never
+imports the retrieval-package mixins these changes touch, and the one shared
+file (`vllm_client.py`) only gained a cache that returns numerically identical
+embeddings for repeated text, never a value change.
+
 ## 2026-08-23 — Per-source diversity cap in final evidence selection
 
 The incremental single-seed traversal (previous entry) had two live bugs.

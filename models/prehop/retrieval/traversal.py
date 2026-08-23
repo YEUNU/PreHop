@@ -38,7 +38,7 @@ class TraversalMixin:
             for chunk_id in (excluded_chunk_ids or set())
             if str(chunk_id).strip()
         }
-        candidate_budget = max(24, top_k * 8)
+        candidate_budget = max(24, top_k * RAGConfig.WIDE_POOL_MULTIPLIER)
 
         t_retrieve0 = time.perf_counter()
         semantic_seeds, base_candidates = await self._retrieve_with_candidate_pool(

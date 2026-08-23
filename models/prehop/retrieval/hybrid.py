@@ -10,12 +10,18 @@ back to their owner chunks before RRF, so several matching questions from one
 chunk cannot consume several result slots.
 """
 
+import asyncio
 from typing import Any
 
 from core.config import RAGConfig
 
 
 class HybridSearchMixin:
+    async def _run_channel_query(self, query: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        async with self.neo4j.driver.session() as session:
+            result = await session.run(query, params)  # type: ignore
+            return [dict(record) async for record in result]
+
     def _channel_index_names(self, channel: str) -> tuple[str, str]:
         if channel == "q_minus":
             return self.q_minus_vector_index, self.q_minus_text_index
@@ -34,68 +40,59 @@ class HybridSearchMixin:
             "q_plus": "HAS_Q_PLUS",
         }.get(channel)
 
-        async with self.neo4j.driver.session() as session:
-            if question_relationship:
-                query_vec = f"""
-                    CALL db.index.vector.queryNodes('{vector_index}', $limit, $embedding)
-                    YIELD node, score
-                    MATCH (owner:{self.chunk_label})-[:{question_relationship}]->(node)
-                    WITH owner, max(score) AS score
-                    RETURN owner.id AS id, owner.title AS title,
-                           owner.sent_id AS sent_id, owner.page AS page,
-                           owner.text AS text, owner.source AS source,
-                           score AS score, 'vector' AS type, $channel AS channel
-                """
-            else:
-                query_vec = f"""
-                    CALL db.index.vector.queryNodes('{vector_index}', $limit, $embedding)
-                    YIELD node, score
-                    RETURN node.id AS id, node.title AS title,
-                           node.sent_id AS sent_id, node.page AS page,
-                           node.text AS text, node.source AS source,
-                           score AS score, 'vector' AS type, $channel AS channel
-                """
-            vec_res = await session.run(
-                query_vec,
-                {  # type: ignore
-                    "limit": RAGConfig.VECTOR_SEARCH_LIMIT,
-                    "embedding": embed,
-                    "channel": channel,
-                },
-            )
-            vector_nodes = [dict(record) async for record in vec_res]
+        safe_query = self._sanitize_fulltext_query(query)
+        fulltext_query = safe_query or self._normalize_entity_term(query) or str(query or "")
 
-            safe_query = self._sanitize_fulltext_query(query)
-            fulltext_query = safe_query or self._normalize_entity_term(query) or str(query or "")
-            if question_relationship:
-                query_ft = f"""
-                    CALL db.index.fulltext.queryNodes('{text_index}', $query, {{limit: $limit}})
-                    YIELD node, score
-                    MATCH (owner:{self.chunk_label})-[:{question_relationship}]->(node)
-                    WITH owner, max(score) AS score
-                    RETURN owner.id AS id, owner.title AS title,
-                           owner.sent_id AS sent_id, owner.page AS page,
-                           owner.text AS text, owner.source AS source,
-                           score AS score, 'text' AS type, $channel AS channel
-                """
-            else:
-                query_ft = f"""
-                    CALL db.index.fulltext.queryNodes('{text_index}', $query, {{limit: $limit}})
-                    YIELD node, score
-                    RETURN node.id AS id, node.title AS title,
-                           node.sent_id AS sent_id, node.page AS page,
-                           node.text AS text, node.source AS source,
-                           score AS score, 'text' AS type, $channel AS channel
-                """
-            ft_res = await session.run(
-                query_ft,
-                {  # type: ignore
-                    "query": fulltext_query,
-                    "limit": RAGConfig.TEXT_SEARCH_LIMIT,
-                    "channel": channel,
-                },
-            )
-            text_nodes = [dict(record) async for record in ft_res]
+        if question_relationship:
+            query_vec = f"""
+                CALL db.index.vector.queryNodes('{vector_index}', $limit, $embedding)
+                YIELD node, score
+                MATCH (owner:{self.chunk_label})-[:{question_relationship}]->(node)
+                WITH owner, max(score) AS score
+                RETURN owner.id AS id, owner.title AS title,
+                       owner.sent_id AS sent_id, owner.page AS page,
+                       owner.text AS text, owner.source AS source,
+                       score AS score, 'vector' AS type, $channel AS channel
+            """
+            query_ft = f"""
+                CALL db.index.fulltext.queryNodes('{text_index}', $query, {{limit: $limit}})
+                YIELD node, score
+                MATCH (owner:{self.chunk_label})-[:{question_relationship}]->(node)
+                WITH owner, max(score) AS score
+                RETURN owner.id AS id, owner.title AS title,
+                       owner.sent_id AS sent_id, owner.page AS page,
+                       owner.text AS text, owner.source AS source,
+                       score AS score, 'text' AS type, $channel AS channel
+            """
+        else:
+            query_vec = f"""
+                CALL db.index.vector.queryNodes('{vector_index}', $limit, $embedding)
+                YIELD node, score
+                RETURN node.id AS id, node.title AS title,
+                       node.sent_id AS sent_id, node.page AS page,
+                       node.text AS text, node.source AS source,
+                       score AS score, 'vector' AS type, $channel AS channel
+            """
+            query_ft = f"""
+                CALL db.index.fulltext.queryNodes('{text_index}', $query, {{limit: $limit}})
+                YIELD node, score
+                RETURN node.id AS id, node.title AS title,
+                       node.sent_id AS sent_id, node.page AS page,
+                       node.text AS text, node.source AS source,
+                       score AS score, 'text' AS type, $channel AS channel
+            """
+
+        # Independent read queries against different indexes; run each on its
+        # own session so they execute concurrently instead of sharing one
+        # session's serialized request/response cycle.
+        vector_nodes, text_nodes = await asyncio.gather(
+            self._run_channel_query(
+                query_vec, {"limit": RAGConfig.VECTOR_SEARCH_LIMIT, "embedding": embed, "channel": channel}
+            ),
+            self._run_channel_query(
+                query_ft, {"query": fulltext_query, "limit": RAGConfig.TEXT_SEARCH_LIMIT, "channel": channel}
+            ),
+        )
 
         all_nodes: dict[str, dict[str, Any]] = {}
         self._rrf_accumulate(all_nodes, vector_nodes, "rrf_score", RAGConfig.RRF_VECTOR_WEIGHT)
