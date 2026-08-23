@@ -162,14 +162,7 @@ async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> dict |
     if strategy != "prehop":
         raise ValueError(f"rebuild_hop_edges only supports strategy=prehop (got {strategy})")
     engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
-    chunk_label = engine.chunk_label
-    await engine.neo4j.execute_query(
-        f"MATCH (:{chunk_label})-[r:HOP_ANSWER]->(:{chunk_label}) DELETE r"
-    )
-    await engine.neo4j.execute_query(
-        f"MATCH (:{engine.q_plus_label})-[r]->() "
-        "WHERE type(r) IN ['ANSWERED_BY', 'SUPPORTED_BY', 'SAME_NEED'] DELETE r"
-    )
+    await engine.clear_hop_edges()
     await engine.build_all_hop_edges()
     stats = await _collect_graph_stats(engine, strategy)
     logger.info("HOP rebuild complete for corpus_tag=%s: %s", corpus_tag, stats)
@@ -465,6 +458,13 @@ async def _run_indexing_unlocked(
         if not any(item["stage"] == "graph_flush" for item in failed_files) and hasattr(engine, "build_all_hop_edges"):
             hop_started = time.perf_counter()
             try:
+                if hasattr(engine, "clear_hop_edges"):
+                    # A retried target (RAG_TARGET_ATTEMPTS > 1) may already
+                    # have a full edge set from a prior attempt that failed
+                    # on an unrelated document; without this, the rebuild
+                    # below would only add/update edges, never remove ones
+                    # the previous attempt's Q-/Q+ text no longer supports.
+                    await engine.clear_hop_edges()
                 await engine.build_all_hop_edges()
             except Exception as exc:  # noqa: BLE001 - aggregate post-index HOP failure
                 logger.error("HOP edge construction failed: %s", exc)

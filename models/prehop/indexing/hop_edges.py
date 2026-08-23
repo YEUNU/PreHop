@@ -370,6 +370,26 @@ class HopEdgeMixin:
                 {"matches": same_need},
             )
 
+    async def clear_hop_edges(self) -> None:
+        """Delete existing HOP/provenance edges before a rebuild.
+
+        build_all_hop_edges only ever adds/updates edges via MERGE keyed on
+        (src_id, tgt_id) or (question_id, question_id) pairs; it never
+        removes one. A one-shot build assumes it runs exactly once against a
+        fresh graph, but a retried target (a prior attempt already wrote a
+        full edge set before failing on an unrelated document) or an
+        explicit rebuild would otherwise leave edges from the previous
+        candidate selection stranded once regenerated Q-/Q+ text picks a
+        slightly different candidate set.
+        """
+        await self.retry_query(
+            f"MATCH (:{self.chunk_label})-[r:HOP_ANSWER]->(:{self.chunk_label}) DELETE r"
+        )
+        await self.retry_query(
+            f"MATCH (:{self.q_plus_label})-[r]->() "
+            "WHERE type(r) IN ['ANSWERED_BY', 'SUPPORTED_BY', 'SAME_NEED'] DELETE r"
+        )
+
     async def build_all_hop_edges(self) -> None:
         """Build rank-fused HOP edges after the complete corpus is visible."""
         if not RAGConfig.ABLATION_Q_PLUS:
