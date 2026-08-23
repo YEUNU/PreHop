@@ -15,6 +15,21 @@ from core.config import RAGConfig
 
 class RetrieveMixin:
     async def retrieve(self, query: str, top_k: int = RAGConfig.DEFAULT_TOP_K) -> tuple:
+        selected_nodes, _ = await self._retrieve_with_candidate_pool(query, top_k)
+        output_nodes = [self._without_transient_retrieval_scores(node) for node in selected_nodes]
+        return self._build_context_from_nodes(output_nodes), output_nodes
+
+    async def _retrieve_with_candidate_pool(
+        self,
+        query: str,
+        top_k: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return semantic top-k nodes and the pre-selection RRF candidate pool.
+
+        ``retrieve`` exposes only the final evidence nodes. Graph traversal uses
+        the wider pool so a Q-/body-heavy semantic top-k cannot prevent a lower
+        ranked Q+ seed from exposing a useful HOP path.
+        """
         stage1_merged: dict[str, dict[str, Any]] = {}
         candidate_limit_per_query = max(20, top_k * 8)
         rrf_score_keys = ("stage1_rrf_score", "stage2_rrf_score", "stage2_support_score")
@@ -62,11 +77,7 @@ class RetrieveMixin:
         use_q_plus_stage = RAGConfig.ABLATION_Q_PLUS and variant == "full"
 
         if not use_q_plus_stage:
-            for node in stage1_nodes:
-                node.pop("stage1_rrf_score", None)
-                node.pop("stage2_rrf_score", None)
-                node.pop("stage2_support_score", None)
-            return self._build_context_from_nodes(stage1_nodes), stage1_nodes
+            return stage1_nodes, stage1_candidates
 
         # --- Stage 2: Q+ expansion (Q+ 0.6 + Q- support 0.4) per paper §3.2.3 ---
         expanded: dict[str, dict[str, Any]] = {self._node_identity(node): dict(node) for node in stage1_candidates}
@@ -78,7 +89,7 @@ class RetrieveMixin:
         _accumulate(expanded, q_minus_support_nodes, "stage2_support_score", q_minus_support_weight)
 
         if not expanded:
-            return "", []
+            return [], []
 
         for node in expanded.values():
             node["hybrid_rrf_score"] = (
@@ -95,11 +106,20 @@ class RetrieveMixin:
 
         final_nodes, _ = await self._score_and_select(query, expanded_candidates, top_k)
         if not final_nodes:
-            return "", []
+            return [], expanded_candidates
 
-        for node in final_nodes:
-            node.pop("stage1_rrf_score", None)
-            node.pop("stage2_rrf_score", None)
-            node.pop("stage2_support_score", None)
-            node.pop("hybrid_rrf_score", None)
-        return self._build_context_from_nodes(final_nodes), final_nodes
+        return final_nodes, expanded_candidates
+
+    @staticmethod
+    def _without_transient_retrieval_scores(node: dict[str, Any]) -> dict[str, Any]:
+        output = dict(node)
+        for key in (
+            "rrf_score",
+            "stage1_rrf_score",
+            "stage2_rrf_score",
+            "stage2_support_score",
+            "hybrid_rrf_score",
+            "graph_rrf_score",
+        ):
+            output.pop(key, None)
+        return output

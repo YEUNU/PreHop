@@ -80,6 +80,17 @@ class RAGConfig:
     DEFAULT_TOP_K = int(os.environ.get("RAG_DEFAULT_TOP_K", "12"))
     FULLTEXT_ANALYZER = os.environ.get("NEO4J_FULLTEXT_ANALYZER", "english")
 
+    # Final top-k selection is otherwise pure global score order, so several
+    # near-duplicate high-scoring chunks from one source document can occupy
+    # most of the evidence slots and crowd out a lower-scoring chunk that is
+    # the only path to a second gold document. A fixed fraction of top_k
+    # (rounded down, minimum 1) caps how many chunks a single source can
+    # contribute before the remaining slots open up to other sources; excess
+    # same-source candidates still backfill by score if there are not enough
+    # distinct sources to fill top_k. One rule for every dataset/strategy —
+    # no per-dataset tuning.
+    MAX_CHUNKS_PER_SOURCE_FRACTION = float(os.environ.get("RAG_MAX_CHUNKS_PER_SOURCE_FRACTION", "0.34"))
+
     # Graph traversal depth on the query path. depth=0 = pure `retrieve()`
     # (Stage 1+2 RRF + similarity ordering, no graph expansion) for ablation; depth>0 uses
     # `graph_search` — deterministic traversal over the
@@ -148,6 +159,8 @@ class RAGConfig:
             )
         if cls.HOP_SAME_NEED_WEIGHT < 0:
             raise ValueError("RAG_HOP_SAME_NEED_WEIGHT must be non-negative")
+        if not (0.0 < cls.MAX_CHUNKS_PER_SOURCE_FRACTION <= 1.0):
+            raise ValueError("RAG_MAX_CHUNKS_PER_SOURCE_FRACTION must be in (0, 1]")
         if cls.GRAPH_HOP_DEPTH < 0 or cls.GRAPH_HOP_DEPTH > 4:
             raise ValueError("RAG_GRAPH_HOP_DEPTH must be between 0 and 4")
 

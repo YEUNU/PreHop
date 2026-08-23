@@ -2,11 +2,14 @@
 
 This is not a separately served reranker and has no score gate. The configured
 external embedding endpoint encodes the query and candidate bodies; cosine
-similarity orders all candidates and the first ``top_k`` are returned.
+similarity orders all candidates, a per-source diversity cap is applied, and
+the first ``top_k`` are returned.
 """
 
+import math
 from typing import Any
 
+from core.config import RAGConfig
 from utils.similarity import cosine_similarity
 
 
@@ -75,4 +78,31 @@ class SimilarityScoringMixin:
             candidates[index]["final_score"] = final_score
 
         ordered = sorted(candidates, key=lambda item: item.get("final_score", 0.0), reverse=True)
-        return ordered[:top_k], ordered
+        return self._diverse_top_k(ordered, top_k), ordered
+
+    @staticmethod
+    def _diverse_top_k(ordered: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
+        """Cap how many chunks one source contributes to the evidence set.
+
+        Pure global score order lets several near-duplicate high-scoring
+        chunks from one document occupy most of the slots and crowd out the
+        only chunk that reaches a second, lower-scoring gold document —
+        directly undermining the point of multi-hop, cross-document
+        retrieval. Same rule for every source, so this stays dataset-neutral.
+        """
+        max_per_source = max(1, math.floor(top_k * RAGConfig.MAX_CHUNKS_PER_SOURCE_FRACTION))
+        selected: list[dict[str, Any]] = []
+        deferred: list[dict[str, Any]] = []
+        source_counts: dict[str, int] = {}
+        for node in ordered:
+            source = str(node.get("source") or node.get("title") or "")
+            if source_counts.get(source, 0) < max_per_source:
+                selected.append(node)
+                source_counts[source] = source_counts.get(source, 0) + 1
+            else:
+                deferred.append(node)
+            if len(selected) >= top_k:
+                break
+        if len(selected) < top_k:
+            selected.extend(deferred[: top_k - len(selected)])
+        return selected
