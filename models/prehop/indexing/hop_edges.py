@@ -424,28 +424,45 @@ class HopEdgeMixin:
         wave_size = RAGConfig.HOP_GATHER_WAVE
         total_sources = 0
         total_edges = 0
-        skip = 0
+        last_id = ""
         while True:
+            # Keyset pagination: filter and LIMIT the source chunk set by its
+            # indexed id *before* joining in Q+ questions/embeddings, so one
+            # transaction only ever materializes page_size chunks' worth of
+            # embedding data. The previous SKIP/LIMIT sat after an ORDER BY +
+            # collect(...) over every Q+ question in the whole corpus, so
+            # every page re-collected and re-sorted the corpus-wide embedding
+            # set before trimming it down -- harmless on multihoprag's 609
+            # documents, but on hotpotqa's ~216k Q+ questions (~4.4GB of
+            # vectors) that single transaction exceeded Neo4j's transaction
+            # memory limit and failed the whole indexing run after the
+            # document pipeline had already completed.
             rows = await self.retry_query(
                 f"""
-                MATCH (src:{self.chunk_label})-[:HAS_Q_PLUS]->(q:{self.q_plus_label})
+                MATCH (src:{self.chunk_label})
+                WHERE src.id > $last_id
+                WITH src
+                ORDER BY src.id
+                LIMIT $limit
+                OPTIONAL MATCH (src)-[:HAS_Q_PLUS]->(q:{self.q_plus_label})
                 WHERE q.query_embedding IS NOT NULL
                 WITH src, q
-                ORDER BY q.ordinal, q.id
-                WITH src, collect({{
+                ORDER BY src.id, q.ordinal, q.id
+                WITH src, collect(CASE WHEN q IS NULL THEN null ELSE {{
                     id: q.id,
                     text: q.text,
                     query_embedding: q.query_embedding
-                }}) AS questions
-                RETURN src.id AS id, src.source AS source, questions AS questions
+                }} END) AS raw_questions
+                RETURN src.id AS id, src.source AS source,
+                       [x IN raw_questions WHERE x IS NOT NULL] AS questions
                 ORDER BY src.id
-                SKIP $skip LIMIT $limit
                 """,
-                {"skip": skip, "limit": page_size},
+                {"last_id": last_id, "limit": page_size},
             )
             if not rows:
                 break
 
+            last_id = rows[-1]["id"]
             page_items = [
                 {
                     "id": row["id"],
@@ -457,6 +474,7 @@ class HopEdgeMixin:
                     },
                 }
                 for row in rows
+                if row["questions"]
             ]
             page_count = len(page_items)
             if total_sources == 0:
@@ -480,13 +498,15 @@ class HopEdgeMixin:
                 total_edges += len(edges)
 
             total_sources += page_count
-            skip += page_size
             logger.info(
                 "build_all_hop_edges: progress %d Q+-bearing chunks / %d HOP_ANSWER edges.",
                 total_sources,
                 total_edges,
             )
-            if page_count < page_size:
+            # Candidate scan size, not Q+-bearing count, signals the end --
+            # a partial page can still be full of Q+-less chunks with more
+            # Q+-bearing chunks further along the id range.
+            if len(rows) < page_size:
                 break
 
         logger.info(
