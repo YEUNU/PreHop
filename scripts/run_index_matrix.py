@@ -1149,7 +1149,13 @@ def _estimate_matrix_eta(state: dict[str, Any], active_etas: list[float]) -> tup
         "pending_estimated_seconds": pending_estimate,
         "historical_estimated_targets": historical_targets,
         "unknown_targets": unknown_targets,
+        "eta_lower_bound_seconds": active_remaining + pending_estimate,
     }
+    # A lower bound based only on active work is misleading during a cold
+    # start: future barriers may take hours. Keep the numeric ETA unknown until
+    # every remaining strategy has either a current-run or historical sample.
+    if unknown_targets:
+        return None, components
     if active_etas or pending_estimate > 0:
         return active_remaining + pending_estimate, components
     return None, components

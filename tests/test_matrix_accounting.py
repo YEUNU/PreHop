@@ -123,3 +123,22 @@ def test_cold_eta_uses_strategy_specific_historical_samples():
     assert eta == 120.0
     assert components["historical_estimated_targets"] == 2
     assert components["unknown_targets"] == 0
+
+
+def test_cold_eta_does_not_report_active_work_as_full_matrix_eta():
+    pending = type("Target", (), {"strategy": "ms_graphrag"})()
+    future = type("Target", (), {"strategy": "hoprag"})()
+    eta, components = _estimate_matrix_eta(
+        {
+            "parallel_limit": 3,
+            "max_generation_parallel": 3,
+            "results": [],
+            "pending": [pending],
+            "future_targets": [future],
+            "historical_strategy_samples": {"ms_graphrag": [30]},
+        },
+        [8],
+    )
+    assert eta is None
+    assert components["unknown_targets"] == 1
+    assert components["eta_lower_bound_seconds"] == 38
