@@ -220,7 +220,7 @@ def _validate_benchmark_data(benchmark_data: Any, source: str) -> list[dict[str,
         raise TypeError(f"Benchmark file must contain a JSON list: {source}")
     if not benchmark_data:
         raise ValueError(f"Benchmark file contains no queries: {source}")
-    supported = {"multihoprag", "hotpotqa", "musique"}
+    supported = {"multihoprag", "2wikimultihopqa", "musique"}
     validated: list[dict[str, Any]] = []
     dataset_markers: set[str] = set()
     for idx, item in enumerate(benchmark_data):
@@ -476,12 +476,12 @@ async def run_benchmark(
         raise ValueError("Benchmark query selection is empty after filtering/limit")
 
     # Dataset dispatch via the per-query `dataset` marker. MultiHop-RAG,
-    # HotpotQA, and MuSiQue all share one query schema (evidence_docs +
+    # 2WikiMultiHopQA, and MuSiQue all share one query schema (evidence_docs +
     # evidence_facts + category) and one evaluator
     # (evaluate_multihoprag_response: fact-level MRR/MAP/Hits@K + LLM judge).
     _MULTIHOP_DATASET_NAMES = {
         "multihoprag": "MultiHop-RAG",
-        "hotpotqa": "HotpotQA",
+        "2wikimultihopqa": "2WikiMultiHopQA",
         "musique": "MuSiQue",
     }
     dataset_marker = (benchmark_data[0].get("dataset", "") if benchmark_data else "").strip().lower()

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-08-24 — 2WikiMultiHopQA replacement and resumable matrix accounting
+
+The paper indexing matrix now uses MultiHop-RAG, 2WikiMultiHopQA, and MuSiQue;
+HotpotQA was removed from the active dataset suite because its closed-corpus
+indexing cost was disproportionate to the comparison. The official 2Wiki
+development split is normalized into the shared query/evidence schema, and
+HopRAG's adapter uses each question's supplied context group for edge building.
+
+The measured runner now enforces a 120-sequence capacity, records live
+`progress.json` snapshots with phase and ETA information, persists interrupted
+attempt fragments in the run directory, and provides
+`scripts/merge_index_matrix_runs.py` for cumulative timing across stopped and
+resumed runs. Official third-party baseline code remains vendored and unchanged.
+
 ## 2026-08-23 — Query-time latency cleanup and candidate-pool retuning
 
 A multi-angle pass over the query path (hybrid.py/retrieve.py/scoring.py/

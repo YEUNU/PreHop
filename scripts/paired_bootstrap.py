@@ -1,5 +1,5 @@
 """Query-level paired bootstrap: prehop vs each baseline, any of the three
-multi-hop datasets (MultiHop-RAG / HotpotQA / MuSiQue).
+multi-hop datasets (MultiHop-RAG / 2WikiMultiHopQA / MuSiQue).
 
 Per-fold CIs from a single run (see kfold_analysis.py) overlap across
 strategies, so they cannot establish whether prehop's lead over a given
@@ -15,7 +15,7 @@ difference (prehop - baseline) per query, and bootstraps the mean diff to a
   every strategy scores 0 by construction) is excluded — the diff is over
   gold-bearing queries only. Gold-lessness is detected from the row's
   `expected_sources` (docs/facts) rather than a dataset-specific category
-  name, so this works unmodified for HotpotQA/MuSiQue too (every query in
+  name, so this works unmodified for 2WikiMultiHopQA/MuSiQue too (every query in
   those two datasets carries gold evidence, so the exclusion never fires).
 
 The dataset name/tag is read from each result file's own `dataset`/
@@ -31,8 +31,8 @@ Usage:
     --out-dir data/results/<new>
 
   python scripts/paired_bootstrap.py \
-    --prehop data/results/<new>/prehop/hotpotqa/prehop_hotpotqa.json \
-    --baselines data/results/<base>/{naive,hoprag,ms_graphrag}/hotpotqa/*.json \
+    --prehop data/results/<new>/prehop/2wikimultihopqa/prehop_2wikimultihopqa.json \
+    --baselines data/results/<base>/{naive,hoprag,ms_graphrag}/2wikimultihopqa/*.json \
     --out-dir data/results/<new>
 """
 

@@ -453,8 +453,8 @@ class HopEdgeMixin:
             # collect(...) over every Q+ question in the whole corpus, so
             # every page re-collected and re-sorted the corpus-wide embedding
             # set before trimming it down -- harmless on multihoprag's 609
-            # documents, but on hotpotqa's ~216k Q+ questions (~4.4GB of
-            # vectors) that single transaction exceeded Neo4j's transaction
+            # documents, but on large Wikipedia-derived corpora with multiple
+            # GB of Q+ vectors that single transaction exceeded Neo4j's transaction
             # memory limit and failed the whole indexing run after the
             # document pipeline had already completed.
             rows = await self.retry_query(

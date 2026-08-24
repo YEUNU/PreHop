@@ -134,9 +134,10 @@ start_neo4j_docker() {
         -p 7687:7687 \
         -v "${neo4j_data_dir}:/data" \
         -e NEO4J_AUTH="${neo4j_user}/${neo4j_password}" \
-        -e NEO4J_server_memory_pagecache_size=4g \
-        -e NEO4J_server_memory_heap_initial__size=2g \
-        -e NEO4J_server_memory_heap_max__size=4g \
+        -e NEO4J_server_memory_pagecache_size=8g \
+        -e NEO4J_server_memory_heap_initial__size=8g \
+        -e NEO4J_server_memory_heap_max__size=16g \
+        -e NEO4J_dbms_memory_transaction_total_max=10g \
         neo4j:5-community > /dev/null
 }
 

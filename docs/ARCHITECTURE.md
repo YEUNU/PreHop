@@ -58,7 +58,7 @@ anything else
 
 All `.txt` and `.md` files are selected. There is no company/sample filter and
 no unsupported-dataset fallback grouping. HopRAG accepts only the three known
-corpus tags (`multihoprag`, `hotpotqa`, `musique`) because each needs its
+corpus tags (`multihoprag`, `2wikimultihopqa`, `musique`) because each needs its
 official problem-context grouping; another tag fails explicitly.
 
 The in-repo path limits simultaneously active files with
@@ -141,7 +141,7 @@ a complete index.
 
 - Stages every corpus file, routes both model types externally, and preserves
   upstream node/question generation.
-- Edges are constructed inside official problem contexts: HotpotQA raw
+- Edges are constructed inside official problem contexts: 2WikiMultiHopQA raw
   contexts, MuSiQue paragraph groups, or MultiHop-RAG evidence lists.
 - Per-document caches and stage markers support safe resume for ordinary runs;
   the measured cold runner removes them first.
@@ -291,17 +291,18 @@ silently changing an official baseline.
 
 ## Measured full matrix
 
-`scripts/run_index_matrix.py --clear-graph --max-parallel 2` runs all three
-datasets by four strategies. It records per-target wall time, CPU, peak RSS,
+`scripts/run_index_matrix.py --clear-graph --max-parallel 3
+--max-generation-parallel 3` runs all three datasets by four strategies in the
+order `ms_graphrag → hoprag → naive → prehop`. It records per-target wall time, CPU, peak RSS,
 structural integrity counts, payload estimates, endpoint/host pressure, and
 failure logs beneath `artifacts/indexing/<run-id>`. It begins with bounded
 parallelism and reduces width when sustained host-memory or inference-queue
-pressure is observed. `VLLM_MAX_NUM_SEQS=128` is recorded as server capacity;
+pressure is observed. `VLLM_MAX_NUM_SEQS=120` is enforced and recorded as server capacity;
 generation concurrency is one global per-target/event-loop semaphore, not one
 limit per document. Embeddings default to two concurrent batches of 32 for one
 target. `RAG_INFERENCE_CAPACITY_MODE` records whether the model names share an
 accelerator scheduler. This matters when one gateway URL routes generation and
-embedding to different servers: `separate` preserves their independent 128
+embedding to different servers: `separate` preserves their independent 120
 sequence budgets, `shared` combines worst-case pressure, and `auto` infers from
 URL equality. Generation pressure is multiplied by
 `--max-generation-parallel`, not by embedding-only matrix slots.
@@ -316,13 +317,13 @@ Naive uses document batches of 32: it parses every source, flattens all chunks
 into one external embedding request stream, validates every vector, and
 atomically replaces the batch's source nodes in one Neo4j transaction. This
 turns short-document datasets into real embedding batches instead of thousands
-of one-item requests. The measured 64-document HotpotQA probe processed 47.1
-documents/s and returned the exact 64-source/72-chunk topology.
+of one-item requests. Live progress markers, current phase, and ETA are written
+to `progress.json`.
 The generation-heavy baselines then use the safe capacity left by serialization:
 HopRAG runs 10 document workers with 4 chunk threads (at most 40 generation
 calls), while MS GraphRAG runs 32 concurrent requests. The matrix previously
 overrode MS's own 48-request default down to 8 and HopRAG down to 4, which
-needlessly under-used a 128-sequence server once cross-method overlap was gone.
+needlessly under-used the configured sequence budget once cross-method overlap was gone.
 
 The measurement set directly addresses the indexing-time tradeoff: overall
 and Prehop phase latency, logical storage, document/chunk/question/edge counts,

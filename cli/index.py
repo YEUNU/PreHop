@@ -29,6 +29,29 @@ def _artifact_run_id() -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._-") or "run"
 
 
+def _write_runtime_stage_stats(
+    strategy: str,
+    corpus_tag: str,
+    dataset_path: str,
+    timing_seconds: dict[str, float],
+    status: str,
+) -> None:
+    """Persist timing even for official adapters that do not use our graph stats."""
+    stats_dir = Path("data/index_stats")
+    stats_dir.mkdir(parents=True, exist_ok=True)
+    stats_path = stats_dir / f"{strategy}_{corpus_tag}_{_artifact_run_id()}.json"
+    _write_json(
+        stats_path,
+        {
+            "strategy": strategy,
+            "corpus_tag": corpus_tag,
+            "dataset_path": dataset_path,
+            "timing_seconds": dict(timing_seconds),
+            "status": status,
+        },
+    )
+
+
 async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     """Query the live graph for structural statistics after indexing.
 
@@ -241,10 +264,26 @@ async def _run_indexing_unlocked(
         # HOP/summary stages — MS does its own.
         from models.ms_graphrag.official_indexer import run_official_index as run_ms_index
 
-        await run_ms_index(
-            dataset_path=dataset_path,
-            corpus_tag=corpus_tag or "default",
-        )
+        official_started = time.perf_counter()
+        timing = {}
+        official_status = "complete"
+        try:
+            await run_ms_index(
+                dataset_path=dataset_path,
+                corpus_tag=corpus_tag or "default",
+            )
+        except BaseException:
+            official_status = "failed"
+            raise
+        finally:
+            timing["official_index_seconds"] = time.perf_counter() - official_started
+            _write_runtime_stage_stats(
+                strategy,
+                corpus_tag or "default",
+                dataset_path,
+                timing,
+                official_status,
+            )
         return
 
     if strategy == "hoprag":
@@ -254,10 +293,26 @@ async def _run_indexing_unlocked(
         # Neo4j under HO_<corpus_tag>_* labels.
         from models.hoprag.official_indexer import run_official_index as run_hop_index
 
-        await run_hop_index(
-            dataset_path=dataset_path,
-            corpus_tag=corpus_tag or "default",
-        )
+        official_started = time.perf_counter()
+        timing = {}
+        official_status = "complete"
+        try:
+            await run_hop_index(
+                dataset_path=dataset_path,
+                corpus_tag=corpus_tag or "default",
+            )
+        except BaseException:
+            official_status = "failed"
+            raise
+        finally:
+            timing["official_index_seconds"] = time.perf_counter() - official_started
+            _write_runtime_stage_stats(
+                strategy,
+                corpus_tag or "default",
+                dataset_path,
+                timing,
+                official_status,
+            )
         return
 
     if strategy == "prehop":
@@ -341,8 +396,8 @@ async def _run_indexing_unlocked(
             await _log_progress("done", filename)
 
     # Bound both resident file contents and scheduled coroutines. The old
-    # implementation loaded and scheduled every file at once (66k+ for
-    # HotpotQA), which inflated memory and event-loop overhead before useful
+    # implementation loaded and scheduled every file at once, which inflated
+    # memory and event-loop overhead before useful
     # work started.
     default_schedule_batch = 32 if not is_graph else file_concurrency * 2
     schedule_batch = max(

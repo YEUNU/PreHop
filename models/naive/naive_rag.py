@@ -121,7 +121,7 @@ class NaiveRAG:
             texts.extend(f"Document title: {title}\n{chunk['text']}" for chunk in chunks)
 
         # Flattening across source files is essential for short-document
-        # corpora: HotpotQA usually has one chunk per file, so per-document
+        # short-document corpora usually have one chunk per file, so per-document
         # calls silently turned a configured batch size of 32 into 66k
         # one-item requests.
         embeddings = await self.vllm.get_embeddings(texts)

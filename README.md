@@ -16,7 +16,7 @@ loop, no reflection, no refinement.
 
 ## What this repository is
 
-Core indexing-time design, currently evaluated on MultiHop-RAG, HotpotQA, and MuSiQue:
+Core indexing-time design, currently evaluated on MultiHop-RAG, 2WikiMultiHopQA, and MuSiQue:
 
 1. **Predictive Knowledge Mapping** — every chunk receives dual hypothetical-query annotations ($Q^-$ for self-contained facts, $Q^+$ for outgoing dependencies), indexed separately. This is the structural precondition for HOP edges below, not a standalone feature.
 2. **Rank-Fused HOP Edges Pre-Built Offline** — every Q+ independently searches cross-document Q-, body, and Q+ representations. Q+/Q- or Q+/body is required for a traversable edge; Q+/Q+ can only support its rank. There is no learned cross-encoder or cosine threshold.
@@ -67,15 +67,15 @@ prehop/
 │   └── io.py / formatters.py / parsers.py / reporting.py
 ├── data/                            # datasets and generated local indices (gitignored)
 │   ├── prepare_multihoprag.py       # download/build the MultiHop-RAG corpus + queries
-│   ├── prepare_hotpotqa.py          # download/build the HotpotQA (distractor) corpus + queries
+│   ├── prepare_2wikimultihopqa.py   # build the official 2WikiMultiHopQA dev corpus + queries
 │   ├── prepare_musique.py           # download/build the MuSiQue (answerable dev) corpus + queries
-│   └── make_sample.py               # stratified n≈200 query sample for hotpotqa/musique/multihoprag
+│   └── make_sample.py               # stratified query samples for the supported datasets
 ├── scripts/                         # analysis, judge reconciliation, and measured matrix runs
 ├── tests/                           # chunking / retrieval / live-integration
 ├── run_servers.sh                   # validate/start Neo4j + generation/embedding endpoints
 ├── run_index.sh / run_benchmark.sh  # low-level, dataset-agnostic
 ├── run_multihoprag.sh               # per-dataset entry: index|benchmark|all
-├── run_dataset.sh                   # per-dataset entry for hotpotqa|musique: index|benchmark|all
+├── run_dataset.sh                   # per-dataset entry for 2wikimultihopqa|musique
 ├── pyproject.toml                   # canonical dependency list (uv-managed)
 └── README.md
 ```
@@ -141,12 +141,16 @@ python3 data/prepare_multihoprag.py            # downloads corpus + full queries
 ./run_multihoprag.sh all                       # index all 4 + benchmark (sample200)
 ./run_multihoprag.sh benchmark --queries full  # or the full 2556-query set
 
-# HotpotQA / MuSiQue
-python3 data/prepare_hotpotqa.py && python3 data/make_sample.py --dataset hotpotqa --per-type 100
+# 2WikiMultiHopQA / MuSiQue
+python3 data/prepare_2wikimultihopqa.py && python3 data/make_sample.py --dataset 2wikimultihopqa --per-type 50
 python3 data/prepare_musique.py && python3 data/make_sample.py --dataset musique --per-type 67
-./run_dataset.sh hotpotqa all
+./run_dataset.sh 2wikimultihopqa all
 ./run_dataset.sh musique all
 ```
+
+If `data/2wikimultihop_raw/dev.json` is absent, the 2Wiki preparation script
+downloads the official archive and extracts only the development split needed
+for this closed-corpus experiment.
 
 See `CLAUDE.md` "Multi-hop dataset suite" for corpus/query file details per dataset.
 
@@ -157,7 +161,12 @@ Neo4j once and runs every available dataset × strategy target through a bounded
 parallel queue:
 
 ```bash
-.venv/bin/python scripts/run_index_matrix.py --clear-graph --max-parallel 2 --save-prehop-intermediate
+VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=120 \
+.venv/bin/python scripts/run_index_matrix.py \
+  --datasets multihoprag 2wikimultihopqa musique \
+  --strategies ms_graphrag hoprag naive prehop \
+  --clear-graph --max-parallel 3 --max-generation-parallel 3 \
+  --save-prehop-intermediate
 ```
 
 Results are isolated under `artifacts/indexing/<run-id>/`: per-target logs,
@@ -173,9 +182,10 @@ target from a later dataset fills the second slot. This preserves useful
 parallelism without the measured throughput collapse from overlapping Prehop,
 HopRAG, or MS GraphRAG generation workloads.
 Naive flattens 32 source documents into each embedding/write batch, which is
-important for one-chunk corpora. A live 64-document HotpotQA probe improved
-from the former roughly 3 documents/s to 47 documents/s while preserving 64
-distinct sources, 72 chunks, and 2,560-dimensional vectors.
+important for one-chunk corpora. Matrix runs also preserve per-target phase
+timing and interrupted attempt fragments in `attempt_journal.jsonl`; use
+`scripts/merge_index_matrix_runs.py` to combine stopped/resumed runs before
+reporting total wall time.
 With generation-heavy overlap disabled, the full-run profile gives official
 HopRAG 30 document workers × 4 chunk threads (upper bound 120 calls), and MS
 GraphRAG 120 concurrent requests. These are adapter/orchestrator limits; the
@@ -191,7 +201,7 @@ and query-level HOP connectivity. This is an intermediate semantic-validity
 measure, not a substitute for retrieval/answer accuracy.
 Capacity topology is explicit. `RAG_INFERENCE_CAPACITY_MODE=separate` is used
 when generation and embedding model names are routed by one API gateway to
-different accelerator servers; each receives its own `max_num_seqs=128`
+different accelerator servers; each receives its own `max_num_seqs=120`
 budget. `shared` combines their worst-case pressure under one budget, while
 `auto` conservatively infers sharing from URL equality. The calculation uses
 `--max-generation-parallel` for generation rather than dividing that budget by

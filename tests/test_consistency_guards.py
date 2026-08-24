@@ -64,7 +64,7 @@ async def test_graph_clear_uses_bounded_delete_transactions(monkeypatch):
 
 def test_benchmark_schema_rejects_missing_query():
     with pytest.raises(ValueError, match="non-empty 'query'"):
-        _validate_benchmark_data([{"dataset": "hotpotqa"}], "queries.json")
+        _validate_benchmark_data([{"dataset": "2wikimultihopqa"}], "queries.json")
 
 
 def test_removed_optional_routes_are_not_configurable():
@@ -121,7 +121,9 @@ def test_matrix_capacity_plan_accounts_for_shared_endpoint(monkeypatch):
     monkeypatch.setenv("VLLM_URL", "http://inference.example/v1")
     monkeypatch.setenv("VLLM_EMBED_URL", "http://inference.example/v1")
     monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "shared")
-    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "128")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "120")
+    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "120")
+    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "120")
     monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "30")
     monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
     monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
@@ -139,7 +141,9 @@ def test_matrix_capacity_plan_keeps_independent_server_budgets(monkeypatch):
     monkeypatch.setenv("VLLM_URL", "http://generation.example/v1")
     monkeypatch.setenv("VLLM_EMBED_URL", "http://embedding.example/v1")
     monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "auto")
-    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "128")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "120")
+    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "120")
+    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "120")
     monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "30")
     monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
     monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
@@ -147,8 +151,8 @@ def test_matrix_capacity_plan_keeps_independent_server_budgets(monkeypatch):
     plan = _fit_inference_capacity(max_parallel=2, max_generation_parallel=1)
 
     assert plan["generation_embedding_share_endpoint"] is False
-    assert plan["adjusted"] is False
-    assert plan["effective"]["aggregate_capacity_upper_bound"] == 128
+    assert plan["adjusted"] is True
+    assert plan["effective"]["aggregate_capacity_upper_bound"] == 64
 
 
 def test_matrix_capacity_plan_supports_separate_servers_behind_one_gateway(monkeypatch):
@@ -157,8 +161,9 @@ def test_matrix_capacity_plan_supports_separate_servers_behind_one_gateway(monke
     monkeypatch.setenv("VLLM_URL", "http://gateway.example/v1")
     monkeypatch.setenv("VLLM_EMBED_URL", "http://gateway.example/v1")
     monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "separate")
-    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "128")
-    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "128")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "120")
+    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "120")
+    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "120")
     monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "120")
     monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
     monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
@@ -168,10 +173,10 @@ def test_matrix_capacity_plan_supports_separate_servers_behind_one_gateway(monke
     assert plan["generation_embedding_share_gateway"] is True
     assert plan["generation_embedding_share_endpoint"] is False
     assert plan["effective"]["generation_concurrency_per_target"] == 120
-    assert plan["effective"]["embedding_concurrency_per_target"] == 2
+    assert plan["effective"]["embedding_concurrency_per_target"] == 1
     assert plan["effective"]["generation_capacity_upper_bound"] == 120
-    assert plan["effective"]["embedding_capacity_upper_bound"] == 128
-    assert plan["effective"]["aggregate_capacity_upper_bound"] == 128
+    assert plan["effective"]["embedding_capacity_upper_bound"] == 64
+    assert plan["effective"]["aggregate_capacity_upper_bound"] == 120
 
 
 def test_matrix_scheduler_fills_spare_slot_with_embedding_only_target():
@@ -181,7 +186,7 @@ def test_matrix_scheduler_fills_spare_slot_with_embedding_only_target():
     pending = [
         Target("multihoprag", "hoprag", DATASETS["multihoprag"]),
         Target("multihoprag", "ms_graphrag", DATASETS["multihoprag"]),
-        Target("hotpotqa", "naive", DATASETS["hotpotqa"]),
+        Target("2wikimultihopqa", "naive", DATASETS["2wikimultihopqa"]),
     ]
 
     assert _next_compatible_target_index(pending, active, max_generation_parallel=1) == 2

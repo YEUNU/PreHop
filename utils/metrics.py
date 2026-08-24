@@ -261,7 +261,7 @@ async def _judge_or_defer(
     return await _run_combined_judge(judge_prompt, response, vllm_client)
 
 
-# --- Multi-hop dataset metrics (MultiHop-RAG, HotpotQA, MuSiQue) ---
+# --- Multi-hop dataset metrics (MultiHop-RAG, 2WikiMultiHopQA, MuSiQue) ---
 
 
 def _fact_matches_chunk(fact_norm: str, chunk_norm: str) -> bool:
@@ -378,7 +378,7 @@ async def evaluate_multihoprag_response(
     custom_id: str | None = None,
 ) -> dict:
     """Shared evaluator for every multi-hop-shaped dataset (MultiHop-RAG,
-    HotpotQA, MuSiQue — any dataset whose queries carry evidence_docs +
+    2WikiMultiHopQA, MuSiQue — any dataset whose queries carry evidence_docs +
     evidence_facts + a category/question_type): type-aware LLM judge +
     fact-level retrieval ranking metrics (MRR/MAP/Hits@K). Ranking-metric
     methodology follows Tang & Yang (2024) (MultiHop-RAG). Judging uses

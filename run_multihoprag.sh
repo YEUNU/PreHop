@@ -26,7 +26,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"; cd "$SCRIPT_DIR"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 
-STRATEGIES=(prehop naive hoprag ms_graphrag)
+STRATEGIES=(ms_graphrag hoprag naive prehop)
 
 STAGE="${1:-all}"; shift || true
 MODEL="all"

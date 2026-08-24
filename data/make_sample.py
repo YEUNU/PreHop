@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 """Build a stratified query sample (balanced by category/question_type) for
-any multi-hop-shaped dataset (multihoprag, hotpotqa, musique).
+any multi-hop-shaped dataset (multihoprag, 2wikimultihopqa, musique).
 
-Uses one implementation for MultiHop-RAG, HotpotQA, and MuSiQue so the
+Uses one implementation for MultiHop-RAG, 2WikiMultiHopQA, and MuSiQue so the
 datasets do not need near-duplicate sampling scripts. Graph baselines are slow
 (hoprag ~160s/query), so k-fold figures run on a balanced sample instead of
 the full query set. Equal count per category with a fixed seed keeps the
 sample reproducible and each fold/category balanced.
 
-    python data/make_sample.py --dataset hotpotqa --per-type 50   # n=100 (2 types)
+    python data/make_sample.py --dataset 2wikimultihopqa --per-type 50
     python data/make_sample.py --dataset musique --per-type 50    # n=150 (3 hop counts)
     python data/make_sample.py --dataset multihoprag --per-type 50 --seed 42
 
@@ -29,7 +29,7 @@ def main() -> int:
     ap.add_argument(
         "--dataset",
         required=True,
-        choices=["multihoprag", "hotpotqa", "musique"],
+        choices=["multihoprag", "2wikimultihopqa", "musique"],
         help="which dataset's full query file to sample from",
     )
     ap.add_argument("--per-type", type=int, default=50, help="queries sampled per category")

@@ -43,11 +43,11 @@ load_dotenv(ROOT / ".env")
 
 DATASETS = {
     "multihoprag": ROOT / "data/multihoprag_corpus",
-    "hotpotqa": ROOT / "data/hotpotqa_corpus",
+    "2wikimultihopqa": ROOT / "data/2wikimultihopqa_corpus",
     "musique": ROOT / "data/musique_corpus",
 }
-EXPECTED_FILE_COUNTS = {"multihoprag": 609, "hotpotqa": 66_581, "musique": 17_629}
-STRATEGIES = ("prehop", "naive", "hoprag", "ms_graphrag")
+EXPECTED_FILE_COUNTS = {"multihoprag": 609, "2wikimultihopqa": 54_957, "musique": 17_629}
+STRATEGIES = ("ms_graphrag", "hoprag", "naive", "prehop")
 GENERATION_HEAVY_STRATEGIES = frozenset({"prehop", "hoprag", "ms_graphrag"})
 
 
@@ -91,9 +91,11 @@ def _fit_inference_capacity(max_parallel: int, max_generation_parallel: int = 1)
     capacity: generation and embedding model names may route to independent
     servers. ``RAG_INFERENCE_CAPACITY_MODE`` makes that topology explicit.
     """
-    max_seqs = int(os.environ.get("VLLM_MAX_NUM_SEQS", "128"))
+    max_seqs = int(os.environ.get("VLLM_MAX_NUM_SEQS", "120"))
     generation_max_seqs = int(os.environ.get("VLLM_GENERATION_MAX_NUM_SEQS", str(max_seqs)))
     embedding_max_seqs = int(os.environ.get("VLLM_EMBED_MAX_NUM_SEQS", str(max_seqs)))
+    if max(max_seqs, generation_max_seqs, embedding_max_seqs) > 120:
+        raise ValueError("Paper matrix requires VLLM max_num_seqs values <= 120")
     generation = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
     embed_batch = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32"))
     embed_concurrency = int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2"))
@@ -847,7 +849,11 @@ def _endpoint_pressure(configured: str) -> dict[str, int]:
         return {"running": 0, "waiting": 0}
     base = configured.removesuffix("/v1").rstrip("/")
     try:
-        with urllib.request.urlopen(f"{base}/metrics", timeout=3) as response:
+        request = urllib.request.Request(f"{base}/metrics")
+        api_key = os.environ.get("VLLM_API_KEY", "").strip()
+        if api_key and api_key != "EMPTY":
+            request.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(request, timeout=3) as response:
             body = response.read().decode("utf-8", errors="replace")
     except (OSError, urllib.error.URLError):
         return {"running": 0, "waiting": 0}
@@ -929,6 +935,11 @@ async def _resource_sampler(run_dir: Path, state: dict[str, Any], stop: asyncio.
             print(f"[matrix] pressure confirmed; parallelism {old} -> {state['parallel_limit']}", flush=True)
             pressure_streak = 0
         await asyncio.to_thread(_append_jsonl, run_dir / "resource_samples.jsonl", sample)
+        progress_state = dict(state)
+        progress_state["pending"] = list(state.get("pending", []))
+        progress_state["results"] = list(state.get("results", []))
+        progress_state["attempts"] = dict(state.get("attempts", {}))
+        await asyncio.to_thread(_write_progress_snapshot, run_dir, progress_state)
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
         except TimeoutError:
@@ -954,6 +965,176 @@ def _parse_time_file(path: Path) -> dict[str, Any]:
     return out
 
 
+def _phase_timing(result: dict[str, Any]) -> dict[str, float]:
+    raw = result.get("phase_timing_seconds") or result.get("runtime_stage_timing_seconds") or {}
+    return {str(key): float(value) for key, value in raw.items() if isinstance(value, (int, float))}
+
+
+def _aggregate_attempt_history(history: list[dict[str, Any]]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for item in history:
+        for phase, seconds in _phase_timing(item).items():
+            totals[phase] = totals.get(phase, 0.0) + seconds
+    return dict(sorted(totals.items()))
+
+
+def _log_progress(log_path: Path) -> dict[str, Any]:
+    """Extract the latest bounded progress marker from a live target log."""
+    if not log_path.is_file():
+        return {}
+    text = log_path.read_text(encoding="utf-8", errors="replace")[-200_000:]
+    phase = "indexing"
+    phase_markers = (
+        ("extract_graph", "extract_graph"),
+        ("extract graph progress", "extract_graph"),
+        ("community_reports", "community_reports"),
+        ("create_edge", "create_edge"),
+        ("hop edges", "hop_build"),
+        ("graph flush", "graph_flush"),
+        ("graph stats", "graph_stats"),
+        ("indexing progress", "document_pipeline"),
+    )
+    lowered = text.lower()
+    for marker, phase_name in phase_markers:
+        if marker in lowered:
+            phase = phase_name
+    progress: dict[str, Any] = {"phase": phase}
+    matches = list(re.finditer(r"completed=(\d+)/(\d+)", text, re.IGNORECASE))
+    if matches:
+        match = matches[-1]
+        progress.update({"completed": int(match.group(1)), "total": int(match.group(2)), "marker": "completed"})
+        return progress
+    matches = list(re.finditer(r"(?:extract graph progress|progress)\s*:?\s*(\d+)/(\d+)", text, re.IGNORECASE))
+    if matches:
+        match = matches[-1]
+        progress.update({"completed": int(match.group(1)), "total": int(match.group(2)), "marker": "progress"})
+        return progress
+    return progress
+
+
+def _write_progress_snapshot(run_dir: Path, state: dict[str, Any]) -> None:
+    now = time.time()
+    results_by_target = {item.get("target"): item for item in state.get("results", []) if item.get("target")}
+    targets: dict[str, dict[str, Any]] = {}
+    for key, result in results_by_target.items():
+        targets[key] = {
+            "status": result.get("status"),
+            "attempts": result.get("measurement_attempts", result.get("attempt", 1)),
+            "elapsed_seconds": result.get("elapsed_seconds", 0.0),
+            "phase_timing_seconds": _phase_timing(result),
+        }
+    for key, meta in state.get("attempts", {}).items():
+        progress = _log_progress(Path(meta["log_path"]))
+        elapsed = max(0.0, now - float(meta["started_at"]))
+        eta = None
+        if progress.get("completed", 0) > 0 and progress.get("total", 0) > progress["completed"]:
+            rate = progress["completed"] / elapsed if elapsed else 0.0
+            eta = (progress["total"] - progress["completed"]) / rate if rate else None
+        targets[key] = {
+            "status": "running",
+            "attempt": meta["attempt"],
+            "elapsed_seconds": elapsed,
+            "progress": progress,
+            "eta_seconds": eta,
+            "current_phase": progress.get("phase", "indexing"),
+            "log_path": meta["log_path"],
+        }
+    completed = sum(item.get("status") == "complete" for item in targets.values())
+    failed = sum(item.get("status") in {"failed", "measurement_failed"} for item in targets.values())
+    interrupted = sum(item.get("status") == "interrupted" for item in targets.values())
+    running = sum(item.get("status") == "running" for item in targets.values())
+    snapshot = {
+        "updated_at": now,
+        "status": state.get("snapshot_status", "running"),
+        "targets_total": len(state.get("all_targets", [])),
+        "targets_completed": completed,
+        "targets_failed": failed,
+        "targets_interrupted": interrupted,
+        "targets_running": running,
+        "targets_pending": len(state.get("pending", [])),
+        "eta_seconds": max(
+            (item["eta_seconds"] for item in targets.values() if item.get("eta_seconds") is not None),
+            default=None,
+        ),
+        "targets": targets,
+    }
+    _atomic_write_text(run_dir / "progress.json", json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n")
+
+
+def _write_phase_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
+    """Write target-level and strategy-level phase accounting for paper tables."""
+    target_fields = [
+        "dataset",
+        "strategy",
+        "status",
+        "measurement_attempts",
+        "elapsed_seconds",
+        "phase_accounted_seconds",
+        "phase_unaccounted_seconds",
+        "phase",
+        "phase_seconds",
+    ]
+    target_rows: list[dict[str, Any]] = []
+    strategy_totals: dict[tuple[str, str], dict[str, Any]] = {}
+    for result in results:
+        timing = _phase_timing(result)
+        accounted = sum(timing.values())
+        unaccounted = max(0.0, float(result.get("elapsed_seconds", 0.0)) - accounted)
+        for phase, seconds in timing.items():
+            target_rows.append(
+                {
+                    "dataset": result["dataset"],
+                    "strategy": result["strategy"],
+                    "status": result["status"],
+                    "measurement_attempts": result.get("measurement_attempts", 1),
+                    "elapsed_seconds": result.get("elapsed_seconds", 0.0),
+                    "phase_accounted_seconds": accounted,
+                    "phase_unaccounted_seconds": unaccounted,
+                    "phase": phase,
+                    "phase_seconds": seconds,
+                }
+            )
+            key = (result["strategy"], phase)
+            aggregate = strategy_totals.setdefault(
+                key,
+                {"strategy": result["strategy"], "phase": phase, "dataset_count": 0, "target_count": 0, "seconds": 0.0},
+            )
+            aggregate["target_count"] += 1
+            aggregate["seconds"] += seconds
+        # Keep a zero-phase row for interrupted attempts whose adapter had not
+        # emitted a completed phase yet; this makes missing timing visible.
+        if not timing:
+            target_rows.append(
+                {
+                    "dataset": result["dataset"],
+                    "strategy": result["strategy"],
+                    "status": result["status"],
+                    "measurement_attempts": result.get("measurement_attempts", 1),
+                    "elapsed_seconds": result.get("elapsed_seconds", 0.0),
+                    "phase_accounted_seconds": 0.0,
+                    "phase_unaccounted_seconds": result.get("elapsed_seconds", 0.0),
+                    "phase": "unreported",
+                    "phase_seconds": 0.0,
+                }
+            )
+    phase_csv = io.StringIO()
+    writer = csv.DictWriter(phase_csv, fieldnames=target_fields)
+    writer.writeheader()
+    writer.writerows(target_rows)
+    _atomic_write_text(run_dir / "phase_summary.csv", phase_csv.getvalue())
+
+    strategy_rows = list(strategy_totals.values())
+    strategy_csv = io.StringIO()
+    strategy_fields = ["strategy", "phase", "dataset_count", "target_count", "seconds", "minutes"]
+    writer = csv.DictWriter(strategy_csv, fieldnames=strategy_fields)
+    writer.writeheader()
+    for row in sorted(strategy_rows, key=lambda item: (item["strategy"], item["phase"])):
+        row["dataset_count"] = len({result["dataset"] for result in results if result["strategy"] == row["strategy"]})
+        row["minutes"] = row["seconds"] / 60.0
+        writer.writerow(row)
+    _atomic_write_text(run_dir / "model_phase_summary.csv", strategy_csv.getvalue())
+
+
 async def _run_target(
     target: Target,
     run_dir: Path,
@@ -961,6 +1142,7 @@ async def _run_target(
     save_intermediate: bool,
     attempt: int,
     concurrency_divisor: int,
+    attempt_started_at: float | None = None,
 ) -> dict[str, Any]:
     attempt_suffix = f"__attempt_{attempt}" if attempt > 1 else ""
     child_run_id = f"{matrix_id}_{target.key}{attempt_suffix}"
@@ -1002,7 +1184,23 @@ async def _run_target(
     env["RAG_MS_CONCURRENT_REQUESTS"] = str(max(1, base_ms_requests // concurrency_divisor))
     env["MAX_CONCURRENT_LLM_CALLS"] = str(max(1, base_llm_calls // concurrency_divisor))
     before = await asyncio.to_thread(_artifact_sizes, target)
-    started = time.time()
+    started = attempt_started_at if attempt_started_at is not None else time.time()
+    await asyncio.to_thread(
+        _append_jsonl,
+        run_dir / "attempt_journal.jsonl",
+        {
+            "event": "attempt_started",
+            "target": target.key,
+            "dataset": target.dataset,
+            "strategy": target.strategy,
+            "attempt": attempt,
+            "run_id": child_run_id,
+            "started_at": started,
+            "log_path": str(log_path),
+            "time_path": str(time_path),
+            "concurrency_divisor": concurrency_divisor,
+        },
+    )
     print(f"[matrix] start {target.key} attempt={attempt}", flush=True)
     log_handle = await asyncio.to_thread(log_path.open, "wb")
     process: asyncio.subprocess.Process | None = None
@@ -1076,6 +1274,7 @@ async def _run_target(
     if runtime_stats_path.is_file():
         runtime_payload = json.loads(runtime_stats_path.read_text(encoding="utf-8"))
         result["runtime_stage_timing_seconds"] = runtime_payload.get("timing_seconds", {})
+        result["phase_timing_seconds"] = dict(result["runtime_stage_timing_seconds"])
     if return_code == 0:
         try:
             result["index_stats"] = await asyncio.to_thread(_graph_stats, target)
@@ -1091,6 +1290,67 @@ async def _run_target(
         flush=True,
     )
     return result
+
+
+async def _interrupted_attempt_result(
+    run_dir: Path,
+    matrix_id: str,
+    target: Target,
+    attempt: int,
+    started_at: float,
+    concurrency_divisor: int,
+) -> dict[str, Any]:
+    """Materialize a partial fragment when Ctrl-C stops a live child."""
+    suffix = f"__attempt_{attempt}" if attempt > 1 else ""
+    child_run_id = f"{matrix_id}_{target.key}{suffix}"
+    log_path = run_dir / "logs" / f"{target.key}{suffix}.log"
+    time_path = run_dir / "time" / f"{target.key}{suffix}.txt"
+    finished_at = time.time()
+    after = await asyncio.to_thread(_artifact_sizes, target)
+    result: dict[str, Any] = {
+        "target": target.key,
+        "dataset": target.dataset,
+        "strategy": target.strategy,
+        "corpus_path": str(target.corpus_path),
+        "input_file_count": len(list(target.corpus_path.glob("*.txt"))) + len(list(target.corpus_path.glob("*.md"))),
+        "input_bytes": await asyncio.to_thread(_tree_size, target.corpus_path),
+        "run_id": child_run_id,
+        "attempt": attempt,
+        "concurrency_divisor": concurrency_divisor,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "elapsed_seconds": max(0.0, finished_at - started_at),
+        "return_code": None,
+        "status": "interrupted",
+        "log_path": str(log_path),
+        "time_path": str(time_path),
+        "artifact_after": after,
+        "artifact_growth_bytes": 0,
+        **(await asyncio.to_thread(_parse_time_file, time_path)),
+    }
+    runtime_stats_path = ROOT / "data/index_stats" / f"{target.strategy}_{target.dataset}_{child_run_id}.json"
+    if runtime_stats_path.is_file():
+        try:
+            runtime_payload = json.loads(runtime_stats_path.read_text(encoding="utf-8"))
+            result["runtime_stage_timing_seconds"] = runtime_payload.get("timing_seconds", {})
+            result["phase_timing_seconds"] = dict(result["runtime_stage_timing_seconds"])
+        except (OSError, TypeError, ValueError):
+            pass
+    return result
+
+
+def _snapshot_attempt_sidecars(run_dir: Path, result: dict[str, Any]) -> None:
+    """Copy global adapter sidecars into the immutable matrix run directory."""
+    target_dir = run_dir / "attempts" / result["target"] / f"attempt_{result['attempt']}"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(target_dir / "result.json", result)
+    candidates = [
+        ROOT / "data/index_stats" / f"{result['strategy']}_{result['dataset']}_{result['run_id']}.json",
+        ROOT / "data/index_failures" / f"{result['strategy']}_{result['dataset']}_{result['run_id']}.json",
+    ]
+    for source in candidates:
+        if source.is_file():
+            shutil.copy2(source, target_dir / source.name)
 
 
 def _add_target_pressure_peaks(results: list[dict[str, Any]], samples: list[dict[str, Any]]) -> None:
@@ -1116,6 +1376,9 @@ def _write_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
         "status",
         "input_file_count",
         "elapsed_seconds",
+        "phase_accounted_seconds",
+        "phase_unaccounted_seconds",
+        "phase_timing_seconds_json",
         "files_per_second",
         "max_rss_bytes",
         "peak_host_memory_used_ratio",
@@ -1138,6 +1401,12 @@ def _write_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
         stats = result.get("index_stats", {})
         row = {
             **{key: result.get(key, "") for key in fields},
+            "phase_accounted_seconds": sum(_phase_timing(result).values()),
+            "phase_unaccounted_seconds": max(
+                0.0,
+                float(result.get("elapsed_seconds", 0.0)) - sum(_phase_timing(result).values()),
+            ),
+            "phase_timing_seconds_json": json.dumps(_phase_timing(result), sort_keys=True),
             "node_or_chunk_count": nodes,
             "edge_count": edges,
             "artifact_usable_bytes": result.get("artifact_after", {}).get("artifact_usable_bytes", 0),
@@ -1189,6 +1458,7 @@ def _write_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
         ]
     )
     _atomic_write_text(run_dir / "paper_table.md", "\n".join(lines) + "\n")
+    _write_phase_tables(run_dir, results)
 
 
 async def _clear_graph(run_dir: Path) -> None:
@@ -1333,7 +1603,7 @@ async def _main(args: argparse.Namespace) -> int:
             "generation_model": os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model"),
             "embedding_model": os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model"),
             "embedding_dimensions": int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")),
-            "server_max_num_seqs": int(os.environ.get("VLLM_MAX_NUM_SEQS", "128")),
+            "server_max_num_seqs": int(os.environ.get("VLLM_MAX_NUM_SEQS", "120")),
             "client_max_concurrent_llm_calls_per_target": int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30")),
             "embedding_batch_size": int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32")),
             "max_concurrent_embedding_requests_per_target": int(
@@ -1376,14 +1646,20 @@ async def _main(args: argparse.Namespace) -> int:
         "active": set(),
         "samples": [],
         "events": [],
+        "all_targets": targets,
+        "pending": [],
+        "attempts": {},
+        "results": [],
     }
     stop = asyncio.Event()
     sampler = asyncio.create_task(_resource_sampler(run_dir, state, stop, args.sample_seconds))
     pending = list(targets)
+    state["pending"] = pending
     running: dict[asyncio.Task, Target] = {}
     attempts_by_target: dict[str, int] = {target.key: 0 for target in targets}
     concurrency_divisors: dict[str, int] = {target.key: 1 for target in targets}
     attempt_history: dict[str, list[dict[str, Any]]] = {target.key: [] for target in targets}
+    active_attempts: dict[str, dict[str, Any]] = {}
     results: list[dict[str, Any]] = []
     try:
         while pending or running:
@@ -1398,7 +1674,19 @@ async def _main(args: argparse.Namespace) -> int:
                 target = pending.pop(pending_index)
                 attempts_by_target[target.key] += 1
                 attempt = attempts_by_target[target.key]
+                attempt_started_at = time.time()
                 state["active"].add(target.key)
+                active_attempts[target.key] = {
+                    "target": target,
+                    "attempt": attempt,
+                    "started_at": attempt_started_at,
+                    "concurrency_divisor": concurrency_divisors[target.key],
+                    "log_path": str(
+                        run_dir / "logs" / f"{target.key}{f'__attempt_{attempt}' if attempt > 1 else ''}.log"
+                    ),
+                    "strategy": target.strategy,
+                }
+                state["attempts"] = active_attempts
                 task = asyncio.create_task(
                     _run_target(
                         target,
@@ -1407,6 +1695,7 @@ async def _main(args: argparse.Namespace) -> int:
                         args.save_prehop_intermediate,
                         attempt,
                         concurrency_divisors[target.key],
+                        attempt_started_at,
                     )
                 )
                 running[task] = target
@@ -1416,8 +1705,15 @@ async def _main(args: argparse.Namespace) -> int:
             for task in done:
                 target = running.pop(task)
                 state["active"].discard(target.key)
+                active_attempts.pop(target.key, None)
                 result = await task
                 attempt_history[target.key].append(result)
+                _snapshot_attempt_sidecars(run_dir, result)
+                await asyncio.to_thread(
+                    _append_jsonl,
+                    run_dir / "attempt_journal.jsonl",
+                    {"event": "attempt_finished", "result": result},
+                )
                 if result["status"] == "failed":
                     log_text = Path(result["log_path"]).read_text(encoding="utf-8", errors="replace").lower()
                     resource_markers = ("out of memory", "cuda oom", "killed", "429", "rate limit")
@@ -1457,6 +1753,7 @@ async def _main(args: argparse.Namespace) -> int:
                     result["user_cpu_seconds"] = sum(item.get("user_cpu_seconds", 0.0) for item in history)
                     result["system_cpu_seconds"] = sum(item.get("system_cpu_seconds", 0.0) for item in history)
                     result["max_rss_bytes"] = max(item.get("max_rss_bytes", 0) or 0 for item in history)
+                    result["phase_timing_seconds"] = _aggregate_attempt_history(history)
                     result["started_at"] = first["started_at"]
                     result["artifact_before"] = first["artifact_before"]
                     result["artifact_growth_bytes"] = (
@@ -1468,6 +1765,7 @@ async def _main(args: argparse.Namespace) -> int:
                     )
                 else:
                     result["measurement_attempts"] = 1
+                    result["phase_timing_seconds"] = _aggregate_attempt_history(history)
                 if result["strategy"] == "prehop" and result.get("index_stats"):
                     _write_json(
                         run_dir / f"prehop_inspection__{result['dataset']}.json",
@@ -1478,6 +1776,7 @@ async def _main(args: argparse.Namespace) -> int:
                         },
                     )
                 results.append(result)
+                state["results"] = results
                 results.sort(
                     key=lambda item: (
                         selected_datasets.index(item["dataset"]),
@@ -1485,6 +1784,46 @@ async def _main(args: argparse.Namespace) -> int:
                     )
                 )
                 _write_json(run_dir / "results.json", results)
+                await asyncio.to_thread(_write_progress_snapshot, run_dir, state)
+    except asyncio.CancelledError:
+        # asyncio.run() cancels the matrix task on Ctrl-C.  The child task's
+        # cancellation handler terminates its process group; preserve a
+        # measurable fragment for every live target before propagating the
+        # cancellation to the caller.
+        live_tasks = list(running)
+        for task in live_tasks:
+            task.cancel()
+        if live_tasks:
+            await asyncio.gather(*live_tasks, return_exceptions=True)
+        for target_key, info in list(active_attempts.items()):
+            target = info["target"]
+            partial = await _interrupted_attempt_result(
+                run_dir,
+                matrix_id,
+                target,
+                info["attempt"],
+                info["started_at"],
+                info["concurrency_divisor"],
+            )
+            attempt_history[target_key].append(partial)
+            _snapshot_attempt_sidecars(run_dir, partial)
+            await asyncio.to_thread(
+                _append_jsonl,
+                run_dir / "attempt_journal.jsonl",
+                {"event": "attempt_finished", "result": partial},
+            )
+            results.append(partial)
+            state["results"] = results
+        if results:
+            active_attempts.clear()
+            state["attempts"] = {}
+            state["snapshot_status"] = "interrupted"
+            _write_json(run_dir / "partial_results.json", results)
+            _write_json(run_dir / "results.json", results)
+            _write_tables(run_dir, results)
+            _write_json(run_dir / "parallelism_events.json", state["events"])
+            _write_progress_snapshot(run_dir, state)
+        raise
     finally:
         stop.set()
         await sampler
@@ -1494,6 +1833,18 @@ async def _main(args: argparse.Namespace) -> int:
     _write_json(run_dir / "parallelism_events.json", state["events"])
     _write_tables(run_dir, results)
     failed = [result for result in results if result["status"] != "complete"]
+    final_progress = json.loads((run_dir / "progress.json").read_text(encoding="utf-8")) if (run_dir / "progress.json").is_file() else {}
+    final_progress.update(
+        {
+            "updated_at": time.time(),
+            "status": "complete" if not failed else "failed",
+            "targets_completed": len(results) - len(failed),
+            "targets_failed": len(failed),
+            "targets_running": 0,
+            "targets_pending": 0,
+        }
+    )
+    _atomic_write_text(run_dir / "progress.json", json.dumps(final_progress, indent=2, ensure_ascii=False) + "\n")
     print(f"[matrix] artifacts: {run_dir}")
     print(f"[matrix] complete={len(results) - len(failed)} failed={len(failed)}")
     return 1 if failed else 0

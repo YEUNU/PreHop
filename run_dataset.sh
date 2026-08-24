@@ -1,16 +1,16 @@
 #!/bin/bash
 #
-# run_dataset.sh — run a HotpotQA/MuSiQue-shaped dataset end to end.
+# run_dataset.sh — run a multi-hop QA dataset end to end.
 #
 # Generalized version of run_multihoprag.sh's wrapper pattern for datasets
-# added after MultiHop-RAG (HotpotQA, MuSiQue) — same corpus/tag/queries
+# added after MultiHop-RAG (2WikiMultiHopQA, MuSiQue) — same corpus/tag/queries
 # convention, one script instead of two near-duplicates. MultiHop-RAG keeps
 # its own dedicated run_multihoprag.sh (unchanged, already documented).
 # All are plain text, so there is no OCR stage.
 #
 # Usage:
-#   ./run_dataset.sh hotpotqa index                          # index all 4 strategies
-#   ./run_dataset.sh hotpotqa benchmark --queries sample200   # benchmark all on the n=200 sample
+#   ./run_dataset.sh 2wikimultihopqa index                   # index all 4 strategies
+#   ./run_dataset.sh 2wikimultihopqa benchmark --queries sample200
 #   ./run_dataset.sh musique all --model prehop              # index + benchmark, one strategy
 #
 # Options:
@@ -22,7 +22,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"; cd "$SCRIPT_DIR"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 
-STRATEGIES=(prehop naive hoprag ms_graphrag)
+STRATEGIES=(ms_graphrag hoprag naive prehop)
 
 DATASET="$1"; shift || true
 STAGE="${1:-all}"; shift || true
@@ -42,8 +42,8 @@ while [ $# -gt 0 ]; do
 done
 
 case "$DATASET" in
-    hotpotqa|musique) ;;
-    *) echo "Unknown dataset '$DATASET' (use hotpotqa|musique)"; exit 1 ;;
+    2wikimultihopqa|musique) ;;
+    *) echo "Unknown dataset '$DATASET' (use 2wikimultihopqa|musique)"; exit 1 ;;
 esac
 
 CORPUS_DIR="data/${DATASET}_corpus"
@@ -95,5 +95,5 @@ case "$STAGE" in
     index)           do_index ;;
     benchmark|bench) do_benchmark ;;
     all)             do_index; do_benchmark ;;
-    *) echo "Usage: $0 <hotpotqa|musique> <index|benchmark|all> [--model all|<strategy>] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
+    *) echo "Usage: $0 <2wikimultihopqa|musique> <index|benchmark|all> [--model all|<strategy>] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
 esac

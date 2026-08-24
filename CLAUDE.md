@@ -1,7 +1,7 @@
 # Prehop repository guide
 
 The current system evaluates Prehop, Naive RAG, official HopRAG, and official
-MS GraphRAG on MultiHop-RAG, HotpotQA, and MuSiQue. The detailed module and
+MS GraphRAG on MultiHop-RAG, 2WikiMultiHopQA, and MuSiQue. The detailed module and
 branch map is in `docs/ARCHITECTURE.md`.
 
 ## Supported state
@@ -13,7 +13,7 @@ branch map is in `docs/ARCHITECTURE.md`.
 - The embedding dimension in `NEO4J_VECTOR_DIMENSIONS` must equal the endpoint's
   actual vector length. Startup probes validate the configured model ids and
   dimensions.
-- The server capacity is `VLLM_MAX_NUM_SEQS=128`. Generation uses one global
+- The paper matrix server capacity is `VLLM_MAX_NUM_SEQS=120`. Generation uses one global
   per-target/event-loop semaphore (`MAX_CONCURRENT_LLM_CALLS`, default 30), not
   one limit per document. Embeddings default to batches of 32 with two requests
   per target. The full-matrix runner detects whether generation and embedding
@@ -45,7 +45,7 @@ branch map is in `docs/ARCHITECTURE.md`.
 | Tag | Corpus directory | Full query file |
 |---|---|---|
 | `multihoprag` | `data/multihoprag_corpus` | `data/multihoprag_queries.json` |
-| `hotpotqa` | `data/hotpotqa_corpus` | `data/hotpotqa_queries.json` |
+| `2wikimultihopqa` | `data/2wikimultihopqa_corpus` | `data/2wikimultihopqa_queries.json` |
 | `musique` | `data/musique_corpus` | `data/musique_queries.json` |
 
 Corpus files use `Title: ...`, optional `--- Page N ---` markers, then raw
@@ -72,8 +72,17 @@ chunker. Raw pipe text remains raw.
 # Rebuild only Prehop HOP/provenance edges after changing rank-fusion settings
 .venv/bin/python main.py --mode hop_rebuild --strategy prehop --corpus-tag multihoprag
 
-# Full cold measured matrix
-.venv/bin/python scripts/run_index_matrix.py --clear-graph --max-parallel 2
+# Full cold measured matrix (aggregate sequence bound 120)
+VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=120 \
+.venv/bin/python scripts/run_index_matrix.py \
+  --datasets multihoprag 2wikimultihopqa musique \
+  --strategies ms_graphrag hoprag naive prehop \
+  --clear-graph --max-parallel 3 --max-generation-parallel 3
+
+# Combine stopped/resumed matrix fragments into cumulative phase timings
+.venv/bin/python scripts/merge_index_matrix_runs.py \
+  artifacts/indexing/<run-a> artifacts/indexing/<run-b> \
+  --out-dir artifacts/indexing/merged-paper-run
 
 # Resume an already submitted OpenAI Batch judge after interruption
 .venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
@@ -89,8 +98,9 @@ model id is missing/unreachable, indexing and benchmarking fail before work.
 
 ## Full matrix behavior
 
-`scripts/run_index_matrix.py` runs 12 targets: three datasets by four
-strategies. It starts with at most two targets concurrently, samples host and
+`scripts/run_index_matrix.py` runs 12 targets: MultiHop-RAG, 2WikiMultiHopQA,
+and MuSiQue by four strategies in the order
+`ms_graphrag → hoprag → naive → prehop`. It starts with at most three targets concurrently, samples host and
 inference pressure, and reduces the remaining width when pressure is sustained.
 It does not increase width again within the same run. Each child is a separate
 process group, so interruption terminates descendants and prevents overlapping

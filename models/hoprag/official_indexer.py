@@ -63,6 +63,7 @@ _EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
 )
 _GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
 _DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")))
+_INTERNAL_RETRIES = max(1, int(os.environ.get("RAG_HOP_INTERNAL_RETRIES", "2")))
 _QUESTION_RETRIES = max(1, int(os.environ.get("RAG_HOP_QUESTION_RETRIES", "3")))
 _NODE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_NODE_BATCH", "200")))
 _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
@@ -370,7 +371,7 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
         sys.path.insert(0, str(_HOPRAG_ROOT))
 
     # Upstream config.py prints its baked-in demo configuration at import time
-    # (hotpot + a localhost model).  It is replaced immediately below and is
+    # (a demo dataset + a localhost model).  It is replaced immediately below and is
     # never used, so suppress that misleading vendor-only line in run logs.
     with contextlib.redirect_stdout(io.StringIO()):
         config = importlib.import_module("config")
@@ -439,6 +440,32 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
     # Patch tool to use vLLM embeddings instead of local SentenceTransformer.
     import tool
 
+    # Upstream ``try_run`` returns (None, None, None) after exhausting its
+    # retries. Callers unpack different tuple shapes, so the sentinel turns
+    # the real generation error into a misleading NoneType/unpack error.
+    # Re-raise the last exception after the exact configured attempt count.
+    config.max_try_num = _INTERNAL_RETRIES
+    tool.max_try_num = _INTERNAL_RETRIES
+
+    def _strict_try_run(func, *args, **kwargs):
+        last_error = None
+        for attempt in range(1, _INTERNAL_RETRIES + 1):
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - preserve upstream retry boundary
+                last_error = exc
+                with open(tool.exception_log_path, "a", encoding="utf-8") as handle:
+                    handle.write(f"Exception: {exc}\n")
+                    handle.write(f"Attempt: {attempt}/{_INTERNAL_RETRIES}\n")
+                    handle.write(f"Commandline: {sys.argv}\n")
+                if attempt < _INTERNAL_RETRIES:
+                    time.sleep(3)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("HopRAG retry wrapper exited without a result")
+
+    tool.try_run = _strict_try_run
+
     embed_client = _VLLMEmbedClient(_EMBED_API_BASE, _EMBED_MODEL_NAME, _EMBED_DIM)
     tool.load_embed_model = lambda _name: embed_client
     tool.get_doc_embeds = lambda documents, model: model.encode(
@@ -461,17 +488,17 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
     # instead of silently dropping every affected chunk from the graph.
 
     def _safe_get_question_list(extract_template, sentences, query_generator):
-        last_error: ValueError | None = None
+        last_error: Exception | None = None
         for attempt in range(1, _QUESTION_RETRIES + 1):
-            result = tool.get_chat_completion(
-                [{"role": "user", "content": extract_template.format(sentences=sentences)}],
-                keys=["Question List"],
-                model=query_generator,
-                max_tokens=4096,
-            )
             try:
+                result = tool.get_chat_completion(
+                    [{"role": "user", "content": extract_template.format(sentences=sentences)}],
+                    keys=["Question List"],
+                    model=query_generator,
+                    max_tokens=4096,
+                )
                 return _validated_question_list(result)
-            except ValueError as exc:
+            except (TypeError, ValueError) as exc:
                 last_error = exc
                 if attempt < _QUESTION_RETRIES:
                     logger.warning(
@@ -565,6 +592,54 @@ def _patch_hopbuilder_for_pandas2() -> None:
         (
             "cartesian2['keywords_both']=cartesian2.apply(lambda x:x['keywords_x'].union(x['keywords_y']),axis=1)",
             "cartesian2['keywords_both']=[set(kx).union(set(ky)) for kx,ky in zip(cartesian2['keywords_x'],cartesian2['keywords_y'])]",
+        ),
+        (
+            # A group with all-pending or all-answerable questions (every doc in
+            # this official problem-context group had the other side empty-list
+            # skipped during Q generation) makes the cross join 0 rows. pandas'
+            # groupby(...).apply(fn) on an empty frame never calls fn, so the
+            # result silently loses the doc_id_x/doc_id_y columns the rest of
+            # create_edge assumes exist, raising KeyError downstream. A 0-row
+            # cross join can only ever produce 0 edges regardless, so short
+            # circuit to that same (official) outcome instead of computing it.
+            "cartesian=pending_df.merge(answerable_df,how='cross') # x:pending y:answerable",
+            (
+                "if pending_df.empty or answerable_df.empty:\n"
+                "        self.edges=pd.DataFrame(columns=['node_id_x','question_y','keywords_both','embedding_x','node_id_y','similarity'])\n"
+                "        self.abstract2chunk=answerable_df\n"
+                "        return\n"
+                "    cartesian=pending_df.merge(answerable_df,how='cross') # x:pending y:answerable"
+            ),
+        ),
+        (
+            "cartesian=cartesian.loc[cartesian['node_id_x']!=cartesian['node_id_y']] # Nodes cannot form self-loops, but they can connect to different sentences within the same document (i.e., different nodes)",
+            (
+                "cartesian=cartesian.loc[cartesian['node_id_x']!=cartesian['node_id_y']] # Nodes cannot form self-loops, but they can connect to different sentences within the same document (i.e., different nodes)\n"
+                "    if cartesian.empty:\n"
+                "        self.edges=pd.DataFrame(columns=['node_id_x','question_y','keywords_both','embedding_x','node_id_y','similarity'])\n"
+                "        self.abstract2chunk=answerable_df\n"
+                "        return"
+            ),
+        ),
+        (
+            "cartesian=cartesian.groupby(['doc_id_x','doc_id_y']).apply(get_sparse_similarity_transform).reset_index(drop=True)#",
+            (
+                "cartesian=cartesian.groupby(['doc_id_x','doc_id_y']).apply(get_sparse_similarity_transform).reset_index(drop=True)#\n"
+                "    if cartesian.empty or 'doc_id_x' not in cartesian.columns or 'doc_id_y' not in cartesian.columns:\n"
+                "        self.edges=pd.DataFrame(columns=['node_id_x','question_y','keywords_both','embedding_x','node_id_y','similarity'])\n"
+                "        self.abstract2chunk=answerable_df\n"
+                "        return"
+            ),
+        ),
+        (
+            "cartesian2=cartesian.loc[cartesian['doc_id_x']!=cartesian['doc_id_y']] # To avoid building edges all within the same document, a fallback edge creation step ensures different documents",
+            (
+                "if cartesian.empty or 'doc_id_x' not in cartesian.columns or 'doc_id_y' not in cartesian.columns:\n"
+                "        self.edges=pd.DataFrame(columns=['node_id_x','question_y','keywords_both','embedding_x','node_id_y','similarity'])\n"
+                "        self.abstract2chunk=answerable_df\n"
+                "        return\n"
+                "    cartesian2=cartesian.loc[cartesian['doc_id_x']!=cartesian['doc_id_y']] # To avoid building edges all within the same document, a fallback edge creation step ensures different documents"
+            ),
         ),
     ]
     for old, new in replacements:
@@ -1194,7 +1269,7 @@ def _build_official_edge_groups(
 ) -> dict[str, list[str]]:
     """Build the small per-problem document groups used by official HopRAG.
 
-    Upstream HopRAG creates HotpotQA/MuSiQue edges within each problem's
+    Upstream HopRAG creates grouped edges within each problem's
     supplied context instead of taking a corpus-wide Cartesian product. The
     normalized benchmark files retain only gold evidence, so use the raw
     dataset context when available and fall back to the normalized evidence
@@ -1231,19 +1306,7 @@ def _build_official_edge_groups(
 
     groups: dict[str, list[str]] = {}
     tag = corpus_tag.lower()
-    if tag == "hotpotqa":
-        import pyarrow.parquet as pq
-
-        raw_path = Path("data/hotpotqa_distractor_validation.parquet")
-        if not raw_path.is_file():
-            raise FileNotFoundError(f"HotpotQA raw context is required for official HopRAG edges: {raw_path}")
-        table = pq.read_table(raw_path, columns=["id", "context"])
-        for row in table.to_pylist():
-            context = row.get("context") or {}
-            docs = _resolve_titles(context.get("title") or [])
-            if docs:
-                groups[str(row.get("id"))] = docs
-    elif tag == "musique":
+    if tag == "musique":
         raw_path = Path("data/musique_ans_v1.0_dev.jsonl")
         if not raw_path.is_file():
             raise FileNotFoundError(f"MuSiQue raw context is required for official HopRAG edges: {raw_path}")
@@ -1265,6 +1328,16 @@ def _build_official_edge_groups(
             docs = _resolve_titles(evidence.get("title") for evidence in (row.get("evidence_list") or []))
             if docs:
                 groups[str(idx)] = docs
+    elif tag == "2wikimultihopqa":
+        raw_path = Path("data/2wikimultihop_raw/dev.json")
+        if not raw_path.is_file():
+            raise FileNotFoundError(f"2WikiMultiHopQA source is required for official HopRAG edges: {raw_path}")
+        with open(raw_path, "r", encoding="utf-8") as handle:
+            rows = json.load(handle)
+        for row in rows:
+            docs = _resolve_titles(item[0] for item in (row.get("context") or []) if isinstance(item, list) and item)
+            if docs:
+                groups[str(row.get("_id"))] = docs
     else:
         raise ValueError(f"HopRAG has no official edge grouping for unsupported corpus={corpus_tag!r}")
 
@@ -1295,7 +1368,7 @@ def _run_stage2_group_streaming(
     """Insert nodes per document, then build edges per official problem group.
 
     The split keeps memory bounded and supports documents shared by many
-    HotpotQA/MuSiQue problems. Source of truth is the content-addressed per-doc
+    2WikiMultiHopQA/MuSiQue problems. Source of truth is the content-addressed per-doc
     cache produced by Stage 1.
     """
     import gc
