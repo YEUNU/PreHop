@@ -182,6 +182,23 @@ def _unjudged_count(rows: list[dict[str, Any]], key: str = "llm_judge_score") ->
     )
 
 
+def _unjudged_groundedness_count(rows: list[dict[str, Any]]) -> int:
+    """Count substantive rows without a context-groundedness judgement."""
+    from utils.abstain import is_abstain
+
+    count = 0
+    for row in rows:
+        if row.get("error"):
+            continue
+        final_answer = _extract_final_answer(str(row.get("answer", "") or ""))
+        if is_abstain(final_answer):
+            continue
+        value = row.get("groundedness")
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or float(value) < 0:
+            count += 1
+    return count
+
+
 def _update_summary_status(summary: dict[str, Any]) -> None:
     rows = summary.get("details") or []
     if len(rows) < int(summary.get("total_queries", len(rows)) or 0):
@@ -193,7 +210,7 @@ def _update_summary_status(summary: dict[str, Any]) -> None:
         summary["status"] = "pending_judge"
     elif any(row.get("error") for row in rows):
         summary["status"] = "completed_with_errors"
-    elif _unjudged_count(rows) or _unjudged_count(rows, "hallucination"):
+    elif _unjudged_count(rows) or _unjudged_count(rows, "hallucination") or _unjudged_groundedness_count(rows):
         summary["status"] = "completed_with_unjudged"
     else:
         summary["status"] = "completed"
@@ -204,6 +221,7 @@ def _assert_benchmark_complete(summary: dict[str, Any], result_file: Path) -> No
     runtime_errors = sum(1 for row in rows if row.get("error"))
     unjudged = _unjudged_count(rows)
     unjudged_hallucination = _unjudged_count(rows, "hallucination")
+    unjudged_groundedness = _unjudged_groundedness_count(rows)
     failures = []
     if runtime_errors:
         failures.append(f"{runtime_errors} runtime error(s)")
@@ -211,6 +229,8 @@ def _assert_benchmark_complete(summary: dict[str, Any], result_file: Path) -> No
         failures.append(f"{unjudged} unjudged row(s)")
     if unjudged_hallucination:
         failures.append(f"{unjudged_hallucination} row(s) without hallucination judgement")
+    if unjudged_groundedness:
+        failures.append(f"{unjudged_groundedness} substantive row(s) without groundedness judgement")
     if failures:
         raise RuntimeError(f"Benchmark incomplete ({', '.join(failures)}); results saved to {result_file}")
 
@@ -382,16 +402,20 @@ async def reconcile_pending_judges(run_dir: Path) -> int:
             resolved_fields = _resolve_judge_fields(
                 payloads[str(custom_id)],
                 # Use a substantive sentinel so abstention rules cannot mask
-                # a missing explicit hallucination field during validation.
+                # missing explicit context-axis fields during validation.
                 "substantive answer",
                 judge_model,
             )
-            if resolved_fields["llm_judge_score"] < 0 or resolved_fields["hallucination"] < 0:
+            if (
+                resolved_fields["llm_judge_score"] < 0
+                or resolved_fields["groundedness"] < 0
+                or resolved_fields["hallucination"] < 0
+            ):
                 invalid_payloads.append(str(custom_id))
         if invalid_payloads:
             unresolved.append(
                 f"{batch_id}: {len(invalid_payloads)}/{len(expected_ids)} payload(s) "
-                "missing valid score or hallucination"
+                "missing valid score, groundedness, or hallucination"
             )
             continue
 
@@ -476,9 +500,10 @@ async def run_benchmark(
         raise ValueError("Benchmark query selection is empty after filtering/limit")
 
     # Dataset dispatch via the per-query `dataset` marker. MultiHop-RAG,
-    # 2WikiMultiHopQA, and MuSiQue all share one query schema (evidence_docs +
-    # evidence_facts + category) and one evaluator
-    # (evaluate_multihoprag_response: fact-level MRR/MAP/Hits@K + LLM judge).
+    # 2WikiMultiHopQA, and MuSiQue share one query schema, but their evidence
+    # units differ. The evaluator keeps deterministic answer EM/F1 primary,
+    # uses title-level evidence P/R/F1 across datasets, and only runs
+    # sentence/fact ranking metrics where the gold unit is aligned.
     _MULTIHOP_DATASET_NAMES = {
         "multihoprag": "MultiHop-RAG",
         "2wikimultihopqa": "2WikiMultiHopQA",
@@ -613,6 +638,8 @@ async def run_benchmark(
                     evidence_facts=item.get("evidence_facts", []),
                     evidence_docs=item.get("evidence_docs", []),
                     question_type=item.get("question_type", ""),
+                    dataset=dataset_marker,
+                    answer_aliases=item.get("answer_aliases", []),
                     vllm_client=vllm,
                     batch_collector=batch_collector,
                     custom_id=str(idx),
@@ -644,10 +671,17 @@ async def run_benchmark(
                 metrics = {
                     "llm_judge_score": 0.0,
                     "llm_judge_reason": "runtime_error",
+                    "groundedness": -1.0,
+                    "groundedness_source": "runtime_error",
                     "hallucination": 0.0,
                     "hallucination_reason": "runtime_error",
                     "hallucination_source": "runtime_error",
                     "hallucination_model": str(RAGConfig.EVAL_MODEL or ""),
+                    "answer_em": -1.0,
+                    "answer_f1": -1.0,
+                    "answer_precision": -1.0,
+                    "answer_recall": -1.0,
+                    "null_refusal": -1.0,
                     "doc_match": 0.0,
                     # Keep the same numeric keys the success path emits so the
                     # summary auto-averaging stays consistent across queries.
@@ -656,6 +690,8 @@ async def run_benchmark(
                     "hits@4": 0.0,
                     "hits@10": 0.0,
                     "evidence_doc_recall": 0.0,
+                    "evidence_doc_precision": 0.0,
+                    "evidence_doc_f1": 0.0,
                 }
                 expected_sources = {
                     "docs": item.get("evidence_docs", []),

@@ -1,7 +1,12 @@
 import json
 
 from scripts.merge_index_matrix_runs import merge
-from scripts.run_index_matrix import _aggregate_attempt_history, _log_progress
+from scripts.run_index_matrix import (
+    _aggregate_attempt_history,
+    _estimate_matrix_eta,
+    _log_progress,
+    _read_attempt_journal,
+)
 
 
 def _result(run_id: str, status: str, elapsed: float, phase: float) -> dict:
@@ -59,3 +64,62 @@ def test_live_log_progress_recognizes_ms_phase(tmp_path):
         "total": 100,
         "marker": "progress",
     }
+
+
+def test_resume_journal_loads_attempt_fragments_and_highest_attempt(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    row = _result("run", "interrupted", 10, 7)
+    row["target"] = "multihoprag__ms_graphrag"
+    row["attempt"] = 2
+    (run_dir / "attempt_journal.jsonl").write_text(
+        json.dumps({"event": "attempt_started", "target": row["target"], "attempt": 2})
+        + "\n"
+        + json.dumps({"event": "attempt_finished", "result": row})
+        + "\n",
+        encoding="utf-8",
+    )
+    history, highest = _read_attempt_journal(run_dir)
+    assert highest == {"multihoprag__ms_graphrag": 2}
+    assert history["multihoprag__ms_graphrag"][0]["status"] == "interrupted"
+
+
+def test_eta_includes_future_barrier_estimates():
+    pending = type("Target", (), {"strategy": "ms_graphrag"})()
+    future = type("Target", (), {"strategy": "hoprag"})()
+    eta, components = _estimate_matrix_eta(
+        {
+            "parallel_limit": 3,
+            "results": [
+                {"strategy": "ms_graphrag", "status": "complete", "elapsed_seconds": 30},
+                {"strategy": "hoprag", "status": "complete", "elapsed_seconds": 20},
+            ],
+            "pending": [pending],
+            "future_targets": [future],
+        },
+        [10],
+    )
+    assert eta == 60
+    assert components["pending_estimated_seconds"] == 50
+
+
+def test_cold_eta_uses_strategy_specific_historical_samples():
+    pending = type("Target", (), {"strategy": "ms_graphrag"})()
+    future = type("Target", (), {"strategy": "hoprag"})()
+    eta, components = _estimate_matrix_eta(
+        {
+            "parallel_limit": 3,
+            "max_generation_parallel": 3,
+            "results": [],
+            "pending": [pending],
+            "future_targets": [future],
+            "historical_strategy_samples": {
+                "ms_graphrag": [30],
+                "hoprag": [90],
+            },
+        },
+        [],
+    )
+    assert eta == 120.0
+    assert components["historical_estimated_targets"] == 2
+    assert components["unknown_targets"] == 0

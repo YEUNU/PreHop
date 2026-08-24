@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-08-24 — Matrix barrier, capacity, and continuation correction
+
+The paper matrix runner now executes strict strategy barriers in the requested
+order `ms_graphrag → hoprag → naive → prehop`; all selected datasets in a
+strategy phase finish before the next strategy begins. Adapter-specific
+generation settings are clamped to one shared per-target budget, so MS
+GraphRAG's request semaphore and HopRAG's document-worker/thread product are
+included in the aggregate `max_num_seqs=120` guard.
+
+An interrupted matrix can be continued in the same run directory with
+`--resume --run-id <run-id>`. Progress ETA includes pending datasets and future
+strategy barriers, and the default human-readable watch interval is one hour.
+Attempt wording is explicit: `--target-attempts 2` means two total pipeline
+attempts, while `RAG_HOP_INTERNAL_RETRIES=2` means two total official-call
+attempts. The vendored HopRAG history is retained; this correction does not
+rewrite historical third-party changes.
+
+The continuation path now records SIGINT/SIGTERM interruptions as resumable
+attempt fragments, uses strategy-specific durations from prior matrix results
+for cold-start ETA estimates, and records MS GraphRAG's dropped-relationship
+integrity warnings in each target result. HopRAG's batched edge writes use
+sequential node matches to avoid Neo4j cartesian-product warnings. Naive timing
+is documented as aggregate-only because its adapter does not expose finer
+phase boundaries.
+
 ## 2026-08-24 — 2WikiMultiHopQA replacement and resumable matrix accounting
 
 The paper indexing matrix now uses MultiHop-RAG, 2WikiMultiHopQA, and MuSiQue;
@@ -12,7 +37,9 @@ The measured runner now enforces a 120-sequence capacity, records live
 `progress.json` snapshots with phase and ETA information, persists interrupted
 attempt fragments in the run directory, and provides
 `scripts/merge_index_matrix_runs.py` for cumulative timing across stopped and
-resumed runs. Official third-party baseline code remains vendored and unchanged.
+resumed runs. The matrix adapter changes in this release do not rewrite the
+vendored third-party tree; historical vendored changes remain part of the
+repository history and are documented separately.
 
 ## 2026-08-23 — Query-time latency cleanup and candidate-pool retuning
 

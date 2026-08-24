@@ -13,13 +13,12 @@ branch map is in `docs/ARCHITECTURE.md`.
 - The embedding dimension in `NEO4J_VECTOR_DIMENSIONS` must equal the endpoint's
   actual vector length. Startup probes validate the configured model ids and
   dimensions.
-- The paper matrix server capacity is `VLLM_MAX_NUM_SEQS=120`. Generation uses one global
-  per-target/event-loop semaphore (`MAX_CONCURRENT_LLM_CALLS`, default 30), not
-  one limit per document. Embeddings default to batches of 32 with two requests
-  per target. The full-matrix runner detects whether generation and embedding
-  share a URL; for the current shared endpoint and width 2 it lowers embedding
-  concurrency to one, keeping the combined aggregate bound at 124. Separate
-  URLs are budgeted and pressure-sampled independently.
+- The paper matrix server capacity is `VLLM_MAX_NUM_SEQS=120`. The matrix runner
+  clamps `MAX_CONCURRENT_LLM_CALLS`, `RAG_MS_CONCURRENT_REQUESTS`, and
+  `RAG_HOP_DOC_WORKERS × RAG_HOP_MAX_THREADS` under one per-target budget, then
+  multiplies that budget by the three concurrent datasets in the active
+  strategy phase. Embeddings default to batches of 32 and are budgeted
+  separately when generation and embedding use separate accelerator servers.
 - A dedicated reranker is not used. The external embedding endpoint supplies
   vectors for threshold-free cosine top-k ordering. Final selection caps each
   source document at `RAG_MAX_CHUNKS_PER_SOURCE_FRACTION` (default 0.34) of
@@ -39,6 +38,13 @@ branch map is in `docs/ARCHITECTURE.md`.
   this is documented baseline behavior and is routed to the external endpoint.
 - Benchmark LLM judging uses OpenAI Batch by default and never silently falls
   back to synchronous paid calls. Disable it only for an explicit debug run.
+- Benchmark answer quality now emits deterministic normalized EM/F1 (including
+  MuSiQue aliases) as the primary signal and keeps LLM-judge semantic
+  correctness and context groundedness as separate diagnostic fields. Evidence
+  metrics are dataset-aware: null
+  MultiHop-RAG queries are excluded from retrieval averages, sentence/fact
+  ranking metrics are skipped for paragraph-level MuSiQue gold evidence, and
+  title-level evidence precision/recall/F1 is reported separately.
 
 ## Data and tags
 
@@ -84,6 +90,10 @@ VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=1
   artifacts/indexing/<run-a> artifacts/indexing/<run-b> \
   --out-dir artifacts/indexing/merged-paper-run
 
+# Continue an interrupted matrix in the same run folder
+.venv/bin/python scripts/run_index_matrix.py \
+  --run-id <run-id> --resume --target-attempts 3
+
 # Resume an already submitted OpenAI Batch judge after interruption
 .venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
 
@@ -105,16 +115,20 @@ inference pressure, and reduces the remaining width when pressure is sustained.
 It does not increase width again within the same run. Each child is a separate
 process group, so interruption terminates descendants and prevents overlapping
 debug/index jobs.
-At most one of Prehop/HopRAG/MS GraphRAG runs at once by default; these are all
-generation-heavy. The scheduler scans ahead for Naive targets to fill the
-second slot, preserving parallel embedding work without generation contention.
+The scheduler uses a strict strategy barrier: all selected datasets for
+`ms_graphrag` finish before `hoprag` starts, then `naive`, then `prehop`.
+Within a phase, selected datasets run concurrently when the parallel limits
+are at least the dataset count.
 Naive batches 32 source documents per embedding/write transaction. Prehop's
 outer in-flight file cap defaults to 16; its generation semaphore remains 30,
 so short one-chunk corpora can use the endpoint without making long-document
 fan-out unbounded.
-Official HopRAG defaults to 10 document workers × 4 chunk threads, and MS
-GraphRAG to 32 concurrent requests. Since no other generation-heavy target is
-allowed beside either one, their upper bounds remain within max-seq 128.
+Official HopRAG and MS GraphRAG receive adapter-specific limits derived from
+the same phase budget. With three generation targets and a 120 sequence
+server, each target is capped at 40 generation calls; HopRAG's worker/thread
+product and MS GraphRAG's request semaphore are both clamped to that value.
+The runner writes pending-phase ETA components to `progress.json` and emits a
+watch line hourly by default (`--watch-interval` changes this).
 
 A measured cold run must:
 
@@ -156,8 +170,39 @@ cannot overwrite one another.
 Prehop and Naive use the same chunks, shared synthesis prompt, and top-k 12.
 HopRAG retains the upstream official end-to-end top-k 20; MS GraphRAG retains
 its official context budget. These unequal official settings must be stated in
-the paper. A controlled equal-budget retrieval experiment, if added, must be
-reported separately from official-baseline results.
+the paper. A controlled equal-budget retrieval experiment is reported
+separately from official-baseline results.
+
+## Paper specification rules
+
+`docs/prehop_paper.md` is a local, gitignored finalized evaluation
+specification. It records the current method, dataset-specific metrics, and
+reporting decisions; it is not a source of benchmark results. When editing it:
+
+- Separate confirmed implementation facts, measured results, and hypotheses.
+  Never invent a result, citation, author detail, dataset count, or statistical
+  conclusion. A value without a verified artifact is omitted from the paper.
+- Preserve established AI-research terminology when it improves precision,
+  including RAG, GraphRAG, LLM, approximate-nearest-neighbor search, RRF, and
+  LLM-as-a-judge. Define an acronym or specialized term at first use, then
+  avoid unnecessary restatement; simplify only implementation-specific names
+  that do not help a reader reproduce or understand the method.
+- Record the exact run ID, git revision, environment/model settings, dataset
+  split, seed, judge status, and artifact path for every reported number. A
+  result is paper-eligible only when the target completed without integrity or
+  measurement failures and the judge output is complete.
+- Keep official-baseline behavior and Prehop ablations clearly distinct. Do
+  not silently equalize top-k/context budgets or alter upstream HopRAG/MS
+  GraphRAG behavior; label any controlled comparison separately.
+- Report indexing and query-time costs separately. State that Prehop uses
+  offline Q-/Q+/HOP construction, has no query-time retrieval LLM call, and
+  makes one final synthesis call only when context is non-empty.
+- For every table or figure, retain its metric definition, denominator,
+  aggregation rule, uncertainty estimate, and source artifact. Do not publish
+  self-judged or partial Batch-judge numbers as final results.
+- Keep the local specification ignored. A submission copy is a deliberate
+  tracked export only after its venue/version is fixed and secrets, local
+  endpoints, generated logs, and private submission notes are removed.
 
 ## Generated files and repository hygiene
 

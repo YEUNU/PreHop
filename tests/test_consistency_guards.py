@@ -179,6 +179,48 @@ def test_matrix_capacity_plan_supports_separate_servers_behind_one_gateway(monke
     assert plan["effective"]["aggregate_capacity_upper_bound"] == 120
 
 
+def test_matrix_capacity_clamps_ms_and_hoprag_adapter_settings(monkeypatch):
+    from scripts.run_index_matrix import _fit_inference_capacity
+
+    monkeypatch.setenv("VLLM_URL", "http://generation.example/v1")
+    monkeypatch.setenv("VLLM_EMBED_URL", "http://embedding.example/v1")
+    monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "separate")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "120")
+    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "120")
+    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "120")
+    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "120")
+    monkeypatch.setenv("RAG_MS_CONCURRENT_REQUESTS", "120")
+    monkeypatch.setenv("RAG_HOP_DOC_WORKERS", "30")
+    monkeypatch.setenv("RAG_HOP_MAX_THREADS", "4")
+    monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
+    monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
+
+    plan = _fit_inference_capacity(max_parallel=3, max_generation_parallel=3)
+
+    assert plan["effective"]["generation_concurrency_per_target"] == 40
+    assert plan["effective"]["ms_concurrent_requests"] == 40
+    assert plan["effective"]["hoprag_doc_workers"] == 10
+    assert plan["effective"]["hoprag_generation_pressure_per_target"] == 40
+    assert plan["effective"]["aggregate_capacity_upper_bound"] == 120
+
+
+def test_matrix_records_ms_missing_entity_warnings():
+    from scripts.run_index_matrix import _extract_integrity_warnings
+
+    warnings = _extract_integrity_warnings(
+        "ms_graphrag",
+        "WARNING: Dropped 127 relationship(s) referencing non-existent entities.\n",
+    )
+    assert warnings == [
+        {
+            "type": "dropped_relationships_missing_entities",
+            "count": 127,
+            "message": "Dropped 127 relationship(s) referencing non-existent entities",
+        }
+    ]
+    assert _extract_integrity_warnings("naive", "Dropped 127 relationship(s) referencing non-existent entities") == []
+
+
 def test_matrix_scheduler_fills_spare_slot_with_embedding_only_target():
     from scripts.run_index_matrix import DATASETS, Target, _next_compatible_target_index
 

@@ -52,6 +52,7 @@ def test_resolve_judge_fields_never_fabricates_missing_score():
 def test_resolve_judge_fields_does_not_derive_hallucination_from_score():
     fields = _resolve_judge_fields({"score": 0.0, "reason": "incorrect"}, "substantive answer", "gpt-test")
     assert fields["llm_judge_score"] == 0.0
+    assert fields["groundedness"] == -1.0
     assert fields["hallucination"] == -1.0
     assert fields["hallucination_source"] == "unjudged"
 
@@ -98,7 +99,9 @@ async def test_reconcile_requires_complete_batch_before_patch(tmp_path, monkeypa
     monkeypatch.setattr(
         batch_judge,
         "resolve_batches",
-        lambda *_args: {"batch-1": {"0": {"score": 1, "hallucination": 0, "reason": "ok"}}},
+        lambda *_args: {
+            "batch-1": {"0": {"score": 1, "groundedness": 1, "hallucination": 0, "reason": "ok"}}
+        },
     )
 
     with pytest.raises(RuntimeError, match="missing 1/2"):
@@ -118,13 +121,13 @@ async def test_reconcile_preserves_manifest_when_hallucination_field_is_missing(
         "resolve_batches",
         lambda *_args: {
             "batch-1": {
-                "0": {"score": 1, "hallucination": 0, "reason": "ok"},
+                "0": {"score": 1, "groundedness": 1, "hallucination": 0, "reason": "ok"},
                 "1": {"score": 0, "reason": "missing field"},
             }
         },
     )
 
-    with pytest.raises(RuntimeError, match="missing valid score or hallucination"):
+    with pytest.raises(RuntimeError, match="missing valid score, groundedness, or hallucination"):
         await benchmark.reconcile_pending_judges(run_dir)
 
     assert result_file.read_text(encoding="utf-8") == before
@@ -140,8 +143,8 @@ async def test_reconcile_patches_complete_batch_and_removes_manifest(tmp_path, m
         "resolve_batches",
         lambda *_args: {
             "batch-1": {
-                "0": {"score": 1, "hallucination": 0, "reason": "ok"},
-                "1": {"score": 0, "hallucination": 1, "reason": "wrong"},
+                "0": {"score": 1, "groundedness": 1, "hallucination": 0, "reason": "ok"},
+                "1": {"score": 0, "groundedness": 0, "hallucination": 1, "reason": "wrong"},
             }
         },
     )

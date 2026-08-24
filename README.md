@@ -2,8 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> No results table is published yet; the clean full-corpus matrix must finish
-> before benchmark numbers are reported.
+> Benchmark numbers are intentionally omitted from this overview. They are
+> published only from a complete, integrity-checked full-corpus matrix.
 
 Reference implementation of a GraphRAG framework whose core claim is
 indexing-time HOP construction: inspectable question-level evidence links are
@@ -32,9 +32,15 @@ single LLM synthesis call.
 
 ## Results
 
-Not yet published — the system has not been benchmarked end-to-end since
-the current core-only architecture landed. See `CLAUDE.md` "Multi-hop
-dataset suite" for how to run one.
+The repository fixes dataset-specific evaluation rather than using one pooled
+retrieval score. Deterministic normalized answer EM/F1 is primary, with
+alias-aware matching for MuSiQue. MultiHop-RAG uses non-null fact recall and a
+separate null-refusal slice; 2WikiMultiHopQA uses supporting-title P/R/F1;
+MuSiQue uses supporting-paragraph/title P/R/F1 because its gold evidence is
+paragraph-level. The LLM judge is supplemental: semantic correctness and
+context groundedness are separate fields, and it is never the sole answer
+metric. See [the local paper specification](docs/prehop_paper.md) and
+`CLAUDE.md` for the complete protocol.
 
 ---
 
@@ -126,7 +132,12 @@ python3 data/prepare_multihoprag.py
 ./stop_servers.sh all
 ```
 
-Result JSON is written to `data/results/<timestamp>/prehop/<corpus_tag>/*.json` and includes per-query details, category breakdowns, the shared 3-way answer label (Correct / Incorrect / Refusal), and aggregate metrics.
+Result JSON is written to `data/results/<timestamp>/prehop/<corpus_tag>/*.json`
+and includes per-query deterministic answer EM/F1, evidence metrics,
+category breakdowns, the shared 3-way answer label (Correct / Incorrect /
+Refusal), supplemental LLM-judge fields, and aggregate metrics. Missing gold
+units are excluded with `-1`; evaluated misses are zero. Incomplete or failed
+runs are not paper-eligible.
 
 ### Per-dataset entrypoints
 
@@ -157,8 +168,8 @@ See `CLAUDE.md` "Multi-hop dataset suite" for corpus/query file details per data
 ### Full indexing matrix and paper measurements
 
 After starting generation and embedding services, the following command clears
-Neo4j once and runs every available dataset × strategy target through a bounded
-parallel queue:
+Neo4j once and runs the matrix in four strategy barriers. Each barrier runs the
+three datasets concurrently, then advances to the next strategy:
 
 ```bash
 VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=120 \
@@ -176,21 +187,32 @@ vLLM queue pressure automatically reduces the parallel width for remaining
 targets; a resource/rate-limit failure also halves that target's internal
 worker count on retry. `logical_payload_bytes_estimate` is a cross-strategy reproducible
 payload estimate; it is not Neo4j's physical store-file size.
-Only one generation-heavy target runs at once by default because generation
-and embedding currently share the external endpoint; an embedding-only Naive
-target from a later dataset fills the second slot. This preserves useful
-parallelism without the measured throughput collapse from overlapping Prehop,
-HopRAG, or MS GraphRAG generation workloads.
+The runner applies one per-target generation budget to `MAX_CONCURRENT_LLM_CALLS`,
+`RAG_MS_CONCURRENT_REQUESTS`, and HopRAG's
+`RAG_HOP_DOC_WORKERS × RAG_HOP_MAX_THREADS`. With three generation targets and
+`max_num_seqs=120`, the aggregate generation upper bound is at most 120.
 Naive flattens 32 source documents into each embedding/write batch, which is
 important for one-chunk corpora. Matrix runs also preserve per-target phase
-timing and interrupted attempt fragments in `attempt_journal.jsonl`; use
-`scripts/merge_index_matrix_runs.py` to combine stopped/resumed runs before
-reporting total wall time.
-With generation-heavy overlap disabled, the full-run profile gives official
-HopRAG 30 document workers × 4 chunk threads (upper bound 120 calls), and MS
-GraphRAG 120 concurrent requests. These are adapter/orchestrator limits; the
-vendored official implementations are not modified. Resource failures halve
-the affected target's adapter limits and global LLM semaphore on retry.
+timing and interrupted attempt fragments in `attempt_journal.jsonl`. Resume an
+interrupted run in the same folder with the original `--run-id`:
+
+```bash
+.venv/bin/python scripts/run_index_matrix.py \
+  --run-id <run-id> --resume --target-attempts 3
+```
+
+Use `scripts/merge_index_matrix_runs.py` only when combining independent
+historical run folders. `--target-attempts 2` means two total pipeline
+attempts (one retry); `RAG_HOP_INTERNAL_RETRIES=2` means two total HopRAG
+official-call attempts (one internal retry). The default watch line is emitted
+hourly and includes the current strategy, completed/pending targets, and an
+ETA that includes estimated future barriers; on a cold run it uses
+strategy-specific durations from prior matrix result folders when available.
+If no prior sample exists, the snapshot reports the unknown target count
+instead of fabricating a duration. Use `--watch-interval 60` for a minute-level
+watch. SIGINT/SIGTERM create resumable attempt fragments; SIGKILL cannot be
+captured. Resource failures halve the affected target's adapter limits and
+global LLM semaphore on retry.
 Prehop's runtime stats also split document generation/embedding, final graph
 flush, HOP construction, and structural-audit time. Question coverage,
 direction coverage, provenance completeness, graph size, prompt-length
@@ -205,7 +227,11 @@ different accelerator servers; each receives its own `max_num_seqs=120`
 budget. `shared` combines their worst-case pressure under one budget, while
 `auto` conservatively infers sharing from URL equality. The calculation uses
 `--max-generation-parallel` for generation rather than dividing that budget by
-embedding-only matrix slots. Both queues are sampled.
+embedding-only matrix slots. Both queues are sampled. Official adapters retain
+the aggregate `official_pipeline_seconds` plus adapter-observed workflow/stage
+timings; timings are not fabricated for boundaries the upstream package does
+not expose. Naive has aggregate pipeline timing only. MS GraphRAG relationship
+drops caused by missing extracted entities are recorded as integrity warnings.
 
 OpenAI Batch judging is the default evaluation path. An interrupted submitted
 batch can be resumed without re-running retrieval:

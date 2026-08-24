@@ -64,6 +64,36 @@ def input_dir_for(corpus_tag: str) -> Path:
     return (_OUTPUT_ROOT / corpus_tag / "_input").resolve()
 
 
+class _WorkflowTiming:
+    """Record official GraphRAG workflow durations without changing upstream code."""
+
+    def __init__(self) -> None:
+        self._started: dict[str, float] = {}
+        self.timing: dict[str, float] = {}
+
+    def pipeline_start(self, names: list[str]) -> None:
+        del names
+
+    def pipeline_end(self, results) -> None:
+        del results
+
+    def workflow_start(self, name: str, instance: object) -> None:
+        del instance
+        self._started[name] = time.perf_counter()
+
+    def workflow_end(self, name: str, instance: object) -> None:
+        del instance
+        started = self._started.pop(name, None)
+        if started is not None:
+            self.timing[f"workflow_{name}_seconds"] = time.perf_counter() - started
+
+    def progress(self, progress) -> None:
+        del progress
+
+    def pipeline_error(self, error: BaseException) -> None:
+        del error
+
+
 def _stage_input_files(
     dataset_path: str,
     corpus_tag: str,
@@ -348,7 +378,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
 async def run_official_index(
     dataset_path: str,
     corpus_tag: str,
-) -> None:
+) -> dict[str, float]:
     """Stage inputs, build config, run the standard MS pipeline."""
     from graphrag.api.index import build_index
     from graphrag.config.enums import IndexingMethod
@@ -367,9 +397,11 @@ async def run_official_index(
         _EMBED_API_BASE,
     )
 
+    workflow_timing = _WorkflowTiming()
     results = await build_index(
         config=config,
         method=IndexingMethod.Standard,
+        callbacks=[workflow_timing],
         verbose=False,
     )
 
@@ -397,3 +429,4 @@ async def run_official_index(
             parts.append(f"missing artifacts: {missing}")
         raise RuntimeError("MS GraphRAG indexing incomplete: " + "; ".join(parts))
     logger.info("MS pipeline produced all expected parquet files at %s", out_dir)
+    return workflow_timing.timing

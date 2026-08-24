@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run and measure the complete dataset × indexing-strategy matrix.
 
-The runner clears Neo4j at most once, executes distinct corpus/strategy targets
-through a bounded parallel queue, samples host/vLLM pressure, and writes
-paper-ready JSON/CSV/Markdown artifacts under ``artifacts/indexing/<run-id>``.
+The runner clears Neo4j at most once, executes each strategy as a strict
+dataset barrier through a bounded parallel queue, samples host/vLLM pressure,
+and writes paper-ready JSON/CSV/Markdown artifacts under
+``artifacts/indexing/<run-id>``.
 It lowers the queue width for not-yet-started targets after sustained memory or
 vLLM-waiting pressure; already-running targets are allowed to finish cleanly.
 """
@@ -49,6 +50,7 @@ DATASETS = {
 EXPECTED_FILE_COUNTS = {"multihoprag": 609, "2wikimultihopqa": 54_957, "musique": 17_629}
 STRATEGIES = ("ms_graphrag", "hoprag", "naive", "prehop")
 GENERATION_HEAVY_STRATEGIES = frozenset({"prehop", "hoprag", "ms_graphrag"})
+PAPER_MAX_NUM_SEQS = 120
 
 
 @dataclass(frozen=True)
@@ -94,8 +96,8 @@ def _fit_inference_capacity(max_parallel: int, max_generation_parallel: int = 1)
     max_seqs = int(os.environ.get("VLLM_MAX_NUM_SEQS", "120"))
     generation_max_seqs = int(os.environ.get("VLLM_GENERATION_MAX_NUM_SEQS", str(max_seqs)))
     embedding_max_seqs = int(os.environ.get("VLLM_EMBED_MAX_NUM_SEQS", str(max_seqs)))
-    if max(max_seqs, generation_max_seqs, embedding_max_seqs) > 120:
-        raise ValueError("Paper matrix requires VLLM max_num_seqs values <= 120")
+    if max(max_seqs, generation_max_seqs, embedding_max_seqs) > PAPER_MAX_NUM_SEQS:
+        raise ValueError(f"Paper matrix requires VLLM max_num_seqs values <= {PAPER_MAX_NUM_SEQS}")
     generation = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
     embed_batch = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32"))
     embed_concurrency = int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2"))
@@ -120,6 +122,9 @@ def _fit_inference_capacity(max_parallel: int, max_generation_parallel: int = 1)
         "generation_concurrency_per_target": generation,
         "embedding_batch_size": embed_batch,
         "embedding_concurrency_per_target": embed_concurrency,
+        "hoprag_doc_workers": max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10"))),
+        "hoprag_chunk_threads": max(1, int(os.environ.get("RAG_HOP_MAX_THREADS", "4"))),
+        "ms_concurrent_requests": max(1, int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "48"))),
     }
     generation_url = _normalized_endpoint(os.environ.get("VLLM_URL", ""))
     embedding_url = _normalized_endpoint(os.environ.get("VLLM_EMBED_URL", ""))
@@ -180,6 +185,25 @@ def _fit_inference_capacity(max_parallel: int, max_generation_parallel: int = 1)
             "generation_capacity_upper_bound": generation_pressure,
             "embedding_capacity_upper_bound": embedding_pressure,
             "aggregate_capacity_upper_bound": effective_total,
+            # Every adapter receives these values explicitly.  In particular,
+            # the MS and HopRAG-specific worker knobs cannot bypass the matrix
+            # budget through inherited .env values.
+            "hoprag_chunk_threads": min(original["hoprag_chunk_threads"], generation),
+            "hoprag_doc_workers": max(
+                1,
+                min(
+                    original["hoprag_doc_workers"],
+                    generation // min(original["hoprag_chunk_threads"], generation),
+                ),
+            ),
+            "hoprag_generation_pressure_per_target": max(
+                1,
+                min(
+                    original["hoprag_doc_workers"],
+                    generation // min(original["hoprag_chunk_threads"], generation),
+                ),
+            ) * min(original["hoprag_chunk_threads"], generation),
+            "ms_concurrent_requests": min(original["ms_concurrent_requests"], generation),
         },
         "adjusted": generation != original["generation_concurrency_per_target"]
         or embed_concurrency != original["embedding_concurrency_per_target"],
@@ -946,6 +970,57 @@ async def _resource_sampler(run_dir: Path, state: dict[str, Any], stop: asyncio.
             continue
 
 
+async def _watch_progress(run_dir: Path, stop: asyncio.Event, interval: float) -> None:
+    """Print a human-readable progress/ETA line at the requested watch interval."""
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except TimeoutError:
+            progress_path = run_dir / "progress.json"
+            try:
+                snapshot = json.loads(progress_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            eta = snapshot.get("eta_seconds")
+            eta_text = "unknown" if eta is None else f"{float(eta) / 3600:.2f}h"
+            print(
+                "[matrix][watch] "
+                f"strategy={snapshot.get('current_strategy') or '-'} "
+                f"completed={snapshot.get('targets_completed', 0)}/{snapshot.get('targets_total', 0)} "
+                f"running={snapshot.get('targets_running', 0)} "
+                f"pending={snapshot.get('targets_pending', 0)} ETA={eta_text}",
+                flush=True,
+            )
+
+
+def _extract_integrity_warnings(strategy: str, log_text: str) -> list[dict[str, Any]]:
+    """Persist known adapter-level integrity warnings instead of hiding them.
+
+    MS GraphRAG intentionally drops relationships whose extracted endpoint
+    entity was absent.  That is not a process failure, but it is material to a
+    paper audit and must travel with the target result.
+    """
+    if strategy != "ms_graphrag":
+        return []
+    warnings: list[dict[str, Any]] = []
+    patterns = (
+        (
+            re.compile(r"Dropped (\d+) relationship\(s\) referencing non-existent entities", re.IGNORECASE),
+            "dropped_relationships_missing_entities",
+        ),
+    )
+    for pattern, warning_type in patterns:
+        for match in pattern.finditer(log_text):
+            warnings.append(
+                {
+                    "type": warning_type,
+                    "count": int(match.group(1)),
+                    "message": match.group(0),
+                }
+            )
+    return warnings
+
+
 def _parse_time_file(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -976,6 +1051,108 @@ def _aggregate_attempt_history(history: list[dict[str, Any]]) -> dict[str, float
         for phase, seconds in _phase_timing(item).items():
             totals[phase] = totals.get(phase, 0.0) + seconds
     return dict(sorted(totals.items()))
+
+
+def _read_attempt_journal(run_dir: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
+    """Load attempt fragments and the highest attempt number for continuation."""
+    histories: dict[str, list[dict[str, Any]]] = {}
+    highest_attempt: dict[str, int] = {}
+    path = run_dir / "attempt_journal.jsonl"
+    if not path.is_file():
+        return histories, highest_attempt
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        target = str(row.get("target") or row.get("result", {}).get("target") or "")
+        if not target:
+            continue
+        attempt = int(row.get("attempt", row.get("result", {}).get("attempt", 0)) or 0)
+        if attempt:
+            highest_attempt[target] = max(highest_attempt.get(target, 0), attempt)
+        if row.get("event") == "attempt_finished" and isinstance(row.get("result"), dict):
+            histories.setdefault(target, []).append(row["result"])
+    return histories, highest_attempt
+
+
+def _load_historical_strategy_samples(run_dir: Path) -> dict[str, list[float]]:
+    """Load completed target durations from prior matrix runs for cold ETA.
+
+    A first target in a strategy phase has no current-run sample yet.  Using
+    only current results made the ETA silently omit all future barriers on a
+    cold run.  Prior run artifacts are a transparent, strategy-specific prior;
+    if none exist, the ETA remains explicitly unknown instead of inventing a
+    number.
+    """
+    samples: dict[str, list[float]] = {}
+    root = ROOT / "artifacts" / "indexing"
+    if not root.is_dir():
+        return samples
+    for candidate in root.glob("*/results.json"):
+        if candidate.parent.resolve() == run_dir.resolve():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError):
+            continue
+        if not isinstance(payload, list):
+            continue
+        for item in payload:
+            if item.get("status") not in {"complete", "measurement_failed"}:
+                continue
+            try:
+                seconds = float(item.get("elapsed_seconds", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if seconds > 0 and item.get("strategy"):
+                samples.setdefault(str(item["strategy"]), []).append(seconds)
+    return samples
+
+
+def _estimate_matrix_eta(state: dict[str, Any], active_etas: list[float]) -> tuple[float | None, dict[str, Any]]:
+    """Estimate remaining wall time including pending strategy barriers."""
+    active_remaining = max(active_etas, default=0.0)
+    completed = [item for item in state.get("results", []) if item.get("status") in {"complete", "failed"}]
+    by_strategy: dict[str, list[float]] = {}
+    for item in completed:
+        seconds = float(item.get("elapsed_seconds", 0.0) or 0.0)
+        if seconds > 0:
+            by_strategy.setdefault(str(item.get("strategy")), []).append(seconds)
+
+    pending_targets = list(state.get("pending", []))
+    future_targets = list(state.get("future_targets", []))
+    targets_by_strategy: dict[str, list[Target]] = {}
+    for target in pending_targets + future_targets:
+        targets_by_strategy.setdefault(target.strategy, []).append(target)
+    pending_estimate = 0.0
+    unknown_targets = 0
+    historical = state.get("historical_strategy_samples", {})
+    historical_targets = 0
+    for strategy, phase_targets in targets_by_strategy.items():
+        samples = by_strategy.get(strategy, [])
+        if not samples:
+            samples = [float(value) for value in historical.get(strategy, []) if float(value) > 0]
+            historical_targets += len(phase_targets) if samples else 0
+        if samples:
+            average = sum(samples) / len(samples)
+            width = max(1, int(state.get("parallel_limit", 1)))
+            if strategy in GENERATION_HEAVY_STRATEGIES:
+                width = max(1, int(state.get("max_generation_parallel", width)))
+            pending_estimate += average * ((len(phase_targets) + width - 1) // width)
+        else:
+            unknown_targets += len(phase_targets)
+    components = {
+        "active_seconds": active_remaining,
+        "pending_estimated_seconds": pending_estimate,
+        "historical_estimated_targets": historical_targets,
+        "unknown_targets": unknown_targets,
+    }
+    if active_etas or pending_estimate > 0:
+        return active_remaining + pending_estimate, components
+    return None, components
 
 
 def _log_progress(log_path: Path) -> dict[str, Any]:
@@ -1043,6 +1220,8 @@ def _write_progress_snapshot(run_dir: Path, state: dict[str, Any]) -> None:
     failed = sum(item.get("status") in {"failed", "measurement_failed"} for item in targets.values())
     interrupted = sum(item.get("status") == "interrupted" for item in targets.values())
     running = sum(item.get("status") == "running" for item in targets.values())
+    active_etas = [item["eta_seconds"] for item in targets.values() if item.get("eta_seconds") is not None]
+    eta_seconds, eta_components = _estimate_matrix_eta(state, active_etas)
     snapshot = {
         "updated_at": now,
         "status": state.get("snapshot_status", "running"),
@@ -1052,10 +1231,10 @@ def _write_progress_snapshot(run_dir: Path, state: dict[str, Any]) -> None:
         "targets_interrupted": interrupted,
         "targets_running": running,
         "targets_pending": len(state.get("pending", [])),
-        "eta_seconds": max(
-            (item["eta_seconds"] for item in targets.values() if item.get("eta_seconds") is not None),
-            default=None,
-        ),
+        "current_strategy": state.get("current_strategy"),
+        "strategy_order": list(state.get("strategy_order", [])),
+        "eta_seconds": eta_seconds,
+        "eta_components": eta_components,
         "targets": targets,
     }
     _atomic_write_text(run_dir / "progress.json", json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n")
@@ -1142,6 +1321,7 @@ async def _run_target(
     save_intermediate: bool,
     attempt: int,
     concurrency_divisor: int,
+    capacity_plan: dict[str, Any],
     attempt_started_at: float | None = None,
 ) -> dict[str, Any]:
     attempt_suffix = f"__attempt_{attempt}" if attempt > 1 else ""
@@ -1174,15 +1354,27 @@ async def _run_target(
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     base_file_workers = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "16")))
     base_hop_doc_workers = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")))
-    base_ms_requests = max(1, int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "32")))
+    base_hop_threads = max(1, int(os.environ.get("RAG_HOP_MAX_THREADS", "4")))
+    base_ms_requests = max(1, int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "48")))
     base_llm_calls = max(1, int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30")))
+    effective = capacity_plan["effective"]
+    generation_budget = max(1, int(effective["generation_concurrency_per_target"]))
+    # Keep adapter-specific knobs under the same per-target budget.  These
+    # values are intentionally applied in the child environment before its
+    # adapter imports the official wrapper modules.
+    hop_threads = min(base_hop_threads, generation_budget)
+    hop_doc_workers = min(base_hop_doc_workers, max(1, generation_budget // hop_threads))
+    ms_requests = min(base_ms_requests, generation_budget)
     env["RAG_MAX_PARALLEL_FILES"] = str(max(1, base_file_workers // concurrency_divisor))
     env.setdefault("RAG_FILE_SCHEDULE_BATCH", "32")
     env.setdefault("RAG_PARSE_WORKERS", "8")
-    env["RAG_HOP_DOC_WORKERS"] = str(max(1, base_hop_doc_workers // concurrency_divisor))
-    env.setdefault("RAG_HOP_MAX_THREADS", "4")
-    env["RAG_MS_CONCURRENT_REQUESTS"] = str(max(1, base_ms_requests // concurrency_divisor))
-    env["MAX_CONCURRENT_LLM_CALLS"] = str(max(1, base_llm_calls // concurrency_divisor))
+    env["RAG_HOP_DOC_WORKERS"] = str(max(1, hop_doc_workers // concurrency_divisor))
+    env["RAG_HOP_MAX_THREADS"] = str(hop_threads)
+    env["RAG_MS_CONCURRENT_REQUESTS"] = str(max(1, ms_requests // concurrency_divisor))
+    env["MAX_CONCURRENT_LLM_CALLS"] = str(max(1, min(base_llm_calls, generation_budget) // concurrency_divisor))
+    env["RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS"] = str(
+        max(1, int(effective["embedding_concurrency_per_target"]))
+    )
     before = await asyncio.to_thread(_artifact_sizes, target)
     started = attempt_started_at if attempt_started_at is not None else time.time()
     await asyncio.to_thread(
@@ -1249,6 +1441,8 @@ async def _run_target(
             "hoprag_chunk_threads": int(env["RAG_HOP_MAX_THREADS"]),
             "ms_requests": int(env["RAG_MS_CONCURRENT_REQUESTS"]),
             "max_concurrent_llm_calls": int(env["MAX_CONCURRENT_LLM_CALLS"]),
+            "generation_budget_per_target": generation_budget,
+            "aggregate_generation_budget": int(capacity_plan["max_generation_parallel"]) * generation_budget,
         },
         "started_at": started,
         "finished_at": finished,
@@ -1264,6 +1458,7 @@ async def _run_target(
     }
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
     result["hoprag_skipped_question_groups"] = log_text.count("using the official empty-list skip")
+    result["integrity_warnings"] = _extract_integrity_warnings(target.strategy, log_text)
     failure_path = ROOT / "data/index_failures" / f"{target.strategy}_{target.dataset}_{child_run_id}.json"
     if failure_path.is_file():
         failure_payload = json.loads(failure_path.read_text(encoding="utf-8"))
@@ -1299,6 +1494,7 @@ async def _interrupted_attempt_result(
     attempt: int,
     started_at: float,
     concurrency_divisor: int,
+    artifact_before: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Materialize a partial fragment when Ctrl-C stops a live child."""
     suffix = f"__attempt_{attempt}" if attempt > 1 else ""
@@ -1307,6 +1503,7 @@ async def _interrupted_attempt_result(
     time_path = run_dir / "time" / f"{target.key}{suffix}.txt"
     finished_at = time.time()
     after = await asyncio.to_thread(_artifact_sizes, target)
+    before = artifact_before or after
     result: dict[str, Any] = {
         "target": target.key,
         "dataset": target.dataset,
@@ -1324,10 +1521,16 @@ async def _interrupted_attempt_result(
         "status": "interrupted",
         "log_path": str(log_path),
         "time_path": str(time_path),
+        "artifact_before": before,
         "artifact_after": after,
-        "artifact_growth_bytes": 0,
+        "artifact_growth_bytes": after["artifact_total_bytes"] - before["artifact_total_bytes"],
         **(await asyncio.to_thread(_parse_time_file, time_path)),
     }
+    if log_path.is_file():
+        result["integrity_warnings"] = _extract_integrity_warnings(
+            target.strategy,
+            log_path.read_text(encoding="utf-8", errors="replace"),
+        )
     runtime_stats_path = ROOT / "data/index_stats" / f"{target.strategy}_{target.dataset}_{child_run_id}.json"
     if runtime_stats_path.is_file():
         try:
@@ -1541,14 +1744,46 @@ async def _verify_external_inference(run_dir: Path) -> None:
 async def _main(args: argparse.Namespace) -> int:
     matrix_id = args.run_id or time.strftime("%Y%m%d_%H%M%S")
     run_dir = (ROOT / "artifacts/indexing" / _safe_token(matrix_id)).resolve()
-    run_dir.mkdir(parents=True, exist_ok=False)
-    selected_datasets = list(DATASETS) if args.datasets == ["all"] else args.datasets
-    selected_strategies = list(STRATEGIES) if args.strategies == ["all"] else args.strategies
+    if args.resume:
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"Cannot resume missing matrix run directory: {run_dir}")
+        if args.clear_graph:
+            raise ValueError("--resume cannot be combined with --clear-graph")
+        manifest_path = run_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Cannot resume without manifest.json: {run_dir}")
+        previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        selected_datasets = list(previous_manifest.get("datasets", []))
+        selected_strategies = list(previous_manifest.get("strategies", []))
+        if args.datasets != ["all"] and list(args.datasets) != selected_datasets:
+            raise ValueError("--resume dataset selection does not match the original run manifest")
+        if args.strategies != ["all"] and list(args.strategies) != selected_strategies:
+            raise ValueError("--resume strategy selection does not match the original run manifest")
+        if not selected_datasets or not selected_strategies:
+            raise ValueError("Original matrix manifest has no dataset/strategy selection")
+        matrix_id = str(previous_manifest.get("run_id") or matrix_id)
+    else:
+        run_dir.mkdir(parents=True, exist_ok=False)
+        selected_datasets = list(DATASETS) if args.datasets == ["all"] else args.datasets
+        selected_strategies = list(STRATEGIES) if args.strategies == ["all"] else args.strategies
+    if len(selected_datasets) > args.max_parallel:
+        raise ValueError(
+            "Each strategy phase must run all selected datasets concurrently; "
+            f"--max-parallel={args.max_parallel} is smaller than {len(selected_datasets)} datasets"
+        )
+    if any(strategy in GENERATION_HEAVY_STRATEGIES for strategy in selected_strategies) and len(
+        selected_datasets
+    ) > args.max_generation_parallel:
+        raise ValueError(
+            "Each generation-heavy strategy phase must run all selected datasets concurrently; "
+            f"--max-generation-parallel={args.max_generation_parallel} is smaller than "
+            f"{len(selected_datasets)} datasets"
+        )
     capacity_plan = _fit_inference_capacity(args.max_parallel, args.max_generation_parallel)
     targets = [
         Target(dataset, strategy, DATASETS[dataset])
-        for dataset in selected_datasets
         for strategy in selected_strategies
+        for dataset in selected_datasets
     ]
     missing = [str(target.corpus_path) for target in targets if not target.corpus_path.is_dir()]
     if missing:
@@ -1558,11 +1793,15 @@ async def _main(args: argparse.Namespace) -> int:
         expected = EXPECTED_FILE_COUNTS[dataset]
         if observed != expected:
             raise ValueError(f"Corpus {dataset} has {observed} files; expected full dataset count {expected}")
+    base_manifest = previous_manifest if args.resume else {}
     manifest = {
+        **base_manifest,
         "run_id": matrix_id,
-        "created_at": time.time(),
-        "cold_graph": bool(args.clear_graph),
-        "cold_artifacts": bool(args.clear_graph),
+        "created_at": base_manifest.get("created_at", time.time()),
+        "resumed_at": time.time() if args.resume else base_manifest.get("resumed_at"),
+        "resume_count": int(base_manifest.get("resume_count", 0)) + (1 if args.resume else 0),
+        "cold_graph": bool(base_manifest.get("cold_graph", args.clear_graph)),
+        "cold_artifacts": bool(base_manifest.get("cold_artifacts", args.clear_graph)),
         "initial_parallelism": args.max_parallel,
         "max_generation_parallelism": args.max_generation_parallel,
         "target_attempts": args.target_attempts,
@@ -1597,6 +1836,8 @@ async def _main(args: argparse.Namespace) -> int:
             "ms_concurrent_requests": int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "32")),
         },
         "inference_capacity_plan": capacity_plan,
+        "watch_interval_seconds": args.watch_interval,
+        "resume_supported": True,
         "inference": {
             "generation_url": os.environ.get("VLLM_URL", ""),
             "embedding_url": os.environ.get("VLLM_EMBED_URL", ""),
@@ -1641,28 +1882,122 @@ async def _main(args: argparse.Namespace) -> int:
         await _clear_graph(run_dir)
         await asyncio.to_thread(_clear_cold_artifacts, targets, run_dir)
 
+    prior_results: list[dict[str, Any]] = []
+    attempt_history: dict[str, list[dict[str, Any]]] = {target.key: [] for target in targets}
+    attempts_by_target: dict[str, int] = {target.key: 0 for target in targets}
+    if args.resume:
+        journal_history, journal_attempts = _read_attempt_journal(run_dir)
+        for target in targets:
+            attempt_history[target.key] = list(journal_history.get(target.key, []))
+            attempts_by_target[target.key] = journal_attempts.get(target.key, 0)
+        results_path = run_dir / "results.json"
+        if results_path.is_file():
+            payload = json.loads(results_path.read_text(encoding="utf-8"))
+            if isinstance(payload, list):
+                # Interrupted fragments are historical evidence, not terminal
+                # results. They are retained in the journal and retried below.
+                prior_results = [
+                    item
+                    for item in payload
+                    if item.get("status") in {"complete", "measurement_failed"}
+                    or (
+                        item.get("status") == "failed"
+                        and int(item.get("attempt", 0) or 0) >= args.target_attempts
+                    )
+                ]
+        for target in targets:
+            attempts_by_target[target.key] = max(
+                attempts_by_target[target.key],
+                max((int(item.get("attempt", 0)) for item in attempt_history[target.key]), default=0),
+            )
+
     state: dict[str, Any] = {
         "parallel_limit": args.max_parallel,
+        "max_generation_parallel": args.max_generation_parallel,
         "active": set(),
         "samples": [],
+        "historical_strategy_samples": _load_historical_strategy_samples(run_dir),
         "events": [],
         "all_targets": targets,
         "pending": [],
         "attempts": {},
-        "results": [],
+        "results": list(prior_results),
+        "current_strategy": None,
+        "strategy_order": list(selected_strategies),
+        "future_targets": list(targets),
     }
     stop = asyncio.Event()
     sampler = asyncio.create_task(_resource_sampler(run_dir, state, stop, args.sample_seconds))
-    pending = list(targets)
-    state["pending"] = pending
+    watcher = asyncio.create_task(_watch_progress(run_dir, stop, args.watch_interval))
+    pending: list[Target] = []
     running: dict[asyncio.Task, Target] = {}
-    attempts_by_target: dict[str, int] = {target.key: 0 for target in targets}
     concurrency_divisors: dict[str, int] = {target.key: 1 for target in targets}
-    attempt_history: dict[str, list[dict[str, Any]]] = {target.key: [] for target in targets}
     active_attempts: dict[str, dict[str, Any]] = {}
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = list(prior_results)
+    terminal_by_target = {item["target"]: item for item in prior_results}
+    strategy_cursor = 0
+    loop = asyncio.get_running_loop()
+    matrix_task = asyncio.current_task()
+    installed_signals: list[signal.Signals] = []
+
+    def request_graceful_stop() -> None:
+        if matrix_task is not None and not matrix_task.done():
+            matrix_task.cancel()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signum, request_graceful_stop)
+            installed_signals.append(signum)
+        except (NotImplementedError, RuntimeError):
+            # Windows and non-main event loops may not support signal handlers;
+            # asyncio.run still provides normal Ctrl-C cancellation there.
+            continue
+
+    def load_next_strategy_phase() -> None:
+        nonlocal pending, strategy_cursor
+        if pending or running:
+            return
+        while strategy_cursor < len(selected_strategies):
+            strategy = selected_strategies[strategy_cursor]
+            strategy_cursor += 1
+            phase_targets: list[Target] = []
+            for target in targets:
+                if target.strategy != strategy:
+                    continue
+                terminal = terminal_by_target.get(target.key)
+                if terminal is not None:
+                    # A prior terminal failure is not retried after its
+                    # configured attempt budget, but it must not block later
+                    # strategy phases.
+                    if terminal.get("status") in {"complete", "measurement_failed"}:
+                        continue
+                    if attempts_by_target[target.key] >= args.target_attempts:
+                        continue
+                phase_targets.append(target)
+            state["current_strategy"] = strategy
+            state["pending"] = phase_targets
+            state["future_targets"] = [
+                item
+                for item in targets
+                if item.strategy != strategy and item.key not in terminal_by_target
+            ]
+            state["events"].append(
+                {
+                    "timestamp": time.time(),
+                    "event": "strategy_phase_started",
+                    "strategy": strategy,
+                    "datasets": [target.dataset for target in phase_targets],
+                }
+            )
+            pending = phase_targets
+            return
+        state["current_strategy"] = None
+        state["pending"] = []
+        state["future_targets"] = []
+
     try:
-        while pending or running:
+        while pending or running or strategy_cursor < len(selected_strategies):
+            load_next_strategy_phase()
             while pending and len(running) < state["parallel_limit"]:
                 pending_index = _next_compatible_target_index(
                     pending,
@@ -1685,6 +2020,7 @@ async def _main(args: argparse.Namespace) -> int:
                         run_dir / "logs" / f"{target.key}{f'__attempt_{attempt}' if attempt > 1 else ''}.log"
                     ),
                     "strategy": target.strategy,
+                    "artifact_before": await asyncio.to_thread(_artifact_sizes, target),
                 }
                 state["attempts"] = active_attempts
                 task = asyncio.create_task(
@@ -1695,6 +2031,7 @@ async def _main(args: argparse.Namespace) -> int:
                         args.save_prehop_intermediate,
                         attempt,
                         concurrency_divisors[target.key],
+                        capacity_plan,
                         attempt_started_at,
                     )
                 )
@@ -1744,6 +2081,7 @@ async def _main(args: argparse.Namespace) -> int:
                     )
                     await asyncio.to_thread(_append_jsonl, run_dir / "failed_attempts.jsonl", result)
                     pending.append(target)
+                    state["pending"] = pending
                     continue
                 history = attempt_history[target.key]
                 if len(history) > 1:
@@ -1776,11 +2114,12 @@ async def _main(args: argparse.Namespace) -> int:
                         },
                     )
                 results.append(result)
+                terminal_by_target[target.key] = result
                 state["results"] = results
                 results.sort(
                     key=lambda item: (
-                        selected_datasets.index(item["dataset"]),
                         selected_strategies.index(item["strategy"]),
+                        selected_datasets.index(item["dataset"]),
                     )
                 )
                 _write_json(run_dir / "results.json", results)
@@ -1804,6 +2143,7 @@ async def _main(args: argparse.Namespace) -> int:
                 info["attempt"],
                 info["started_at"],
                 info["concurrency_divisor"],
+                info.get("artifact_before"),
             )
             attempt_history[target_key].append(partial)
             _snapshot_attempt_sidecars(run_dir, partial)
@@ -1827,6 +2167,9 @@ async def _main(args: argparse.Namespace) -> int:
     finally:
         stop.set()
         await sampler
+        await watcher
+        for signum in installed_signals:
+            loop.remove_signal_handler(signum)
 
     _add_target_pressure_peaks(results, state["samples"])
     _write_json(run_dir / "results.json", results)
@@ -1854,18 +2197,34 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--datasets", nargs="+", choices=["all", *DATASETS], default=["all"])
     parser.add_argument("--strategies", nargs="+", choices=["all", *STRATEGIES], default=["all"])
-    parser.add_argument("--max-parallel", type=int, default=2)
+    parser.add_argument(
+        "--max-parallel",
+        type=int,
+        default=3,
+        help="Targets concurrently within each strategy phase (default: all three datasets)",
+    )
     parser.add_argument(
         "--max-generation-parallel",
         type=int,
-        default=1,
-        help="Maximum generation-heavy targets in flight; embedding-only Naive work can fill remaining slots.",
+        default=3,
+        help="Generation-heavy targets concurrently within a strategy phase (default: all three datasets).",
     )
     parser.add_argument("--sample-seconds", type=float, default=5.0)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue an interrupted run in the existing artifacts/indexing/<run-id> directory.",
+    )
     parser.add_argument("--clear-graph", action="store_true")
     parser.add_argument("--save-prehop-intermediate", action="store_true")
     parser.add_argument("--target-attempts", type=int, default=2)
+    parser.add_argument(
+        "--watch-interval",
+        type=float,
+        default=3600.0,
+        help="Print a progress/ETA watch line every N seconds (default: 3600).",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.max_parallel < 1:
@@ -1874,8 +2233,12 @@ def main() -> int:
         parser.error("--max-generation-parallel must be between 1 and --max-parallel")
     if args.sample_seconds <= 0:
         parser.error("--sample-seconds must be > 0")
+    if args.watch_interval <= 0:
+        parser.error("--watch-interval must be > 0")
     if args.target_attempts < 1:
         parser.error("--target-attempts must be >= 1")
+    if args.resume and not args.run_id:
+        parser.error("--resume requires --run-id")
     return asyncio.run(_main(args))
 
 

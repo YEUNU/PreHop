@@ -268,15 +268,16 @@ async def _run_indexing_unlocked(
         timing = {}
         official_status = "complete"
         try:
-            await run_ms_index(
+            adapter_timing = await run_ms_index(
                 dataset_path=dataset_path,
                 corpus_tag=corpus_tag or "default",
             )
+            timing.update(adapter_timing or {})
         except BaseException:
             official_status = "failed"
             raise
         finally:
-            timing["official_index_seconds"] = time.perf_counter() - official_started
+            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
             _write_runtime_stage_stats(
                 strategy,
                 corpus_tag or "default",
@@ -297,15 +298,16 @@ async def _run_indexing_unlocked(
         timing = {}
         official_status = "complete"
         try:
-            await run_hop_index(
+            adapter_timing = await run_hop_index(
                 dataset_path=dataset_path,
                 corpus_tag=corpus_tag or "default",
             )
+            timing.update(adapter_timing or {})
         except BaseException:
             official_status = "failed"
             raise
         finally:
-            timing["official_index_seconds"] = time.perf_counter() - official_started
+            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
             _write_runtime_stage_stats(
                 strategy,
                 corpus_tag or "default",

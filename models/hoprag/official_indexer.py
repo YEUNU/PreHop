@@ -665,7 +665,7 @@ def _patch_create_nodes_offline_parallel() -> None:
     levels of parallelism stack:
         total concurrent LLM calls ≈ _DOC_WORKERS × max_thread_num
         e.g. DOC_WORKERS=10 × CHUNK_THREADS=4 → at most 40 calls on the
-        shared 128-sequence endpoint.
+        shared 120-sequence paper endpoint.
 
     Thread-safety notes:
     - Node-ID assignment uses a lock-protected counter.  IDs only need to be
@@ -1202,13 +1202,15 @@ def _patch_create_edge_batched() -> None:
 
         pending2answerable_batch = (
             f"UNWIND $rows AS row "
-            f"MATCH (a), (b) WHERE id(a) = row.id1 AND id(b) = row.id2 "
+            f"MATCH (a) WHERE id(a) = row.id1 "
+            f"WITH a, row MATCH (b) WHERE id(b) = row.id2 "
             f"CREATE (a)-[r:{edge_name} {{keywords: row.keywords, embed: row.embed, "
             f"question: row.question}}]->(b)"
         )
         abstract2answerable_batch = (
             f"UNWIND $rows AS row "
-            f"MATCH (a), (b) WHERE id(a) = row.abstract_id AND id(b) = row.id2 "
+            f"MATCH (a) WHERE id(a) = row.abstract_id "
+            f"WITH a, row MATCH (b) WHERE id(b) = row.id2 "
             f"CREATE (a)-[r:{edge_name} {{keywords: row.keywords, embed: row.embed, "
             f"question: row.question}}]->(b)"
         )
@@ -1538,7 +1540,7 @@ def _run_stage2_group_streaming(
 def _run_official_index_blocking(
     dataset_path: str,
     corpus_tag: str,
-) -> None:
+) -> dict[str, float]:
     """Synchronous driver — HopBuilder is sync, so we call it directly and
     let the orchestrator wrap us in run_in_executor."""
     _setup_hoprag_modules(corpus_tag)
@@ -1564,6 +1566,7 @@ def _run_official_index_blocking(
         _EMBED_API_BASE,
     )
 
+    stage_started = time.perf_counter()
     HopBuilder.main_nodes(
         cache_dir=str(cache_dir),
         docs_dir=str(staged_input),
@@ -1572,6 +1575,7 @@ def _run_official_index_blocking(
         span=len(staged_files) + 100,
         offline=True,
     )
+    timing = {"stage1_node_generation_seconds": time.perf_counter() - stage_started}
 
     # Stage 2: insert nodes once, then build edges one official group at a time.
     # Avoids loading all 324 docs × ~168 MB = ~54 GB into RAM at once.
@@ -1580,23 +1584,28 @@ def _run_official_index_blocking(
         raise RuntimeError(f"HopRAG per-doc cache missing at {per_doc_dir}; Stage 1 produced no usable output")
 
     builder = HopBuilder.QABuilder(done=set(), label=config.node_name)
+    stage_started = time.perf_counter()
     _run_stage2_group_streaming(builder, per_doc_dir, staged_files, config)
+    timing["stage2_edge_build_seconds"] = time.perf_counter() - stage_started
 
     # Stage 3: vector + fulltext indices.
+    stage_started = time.perf_counter()
     builder.create_index()
+    timing["stage3_index_creation_seconds"] = time.perf_counter() - stage_started
     if builder.driver is not None:
         builder.driver.close()
         builder.driver = None
     logger.info("HopRAG official indexing complete for %s", corpus_tag)
+    return timing
 
 
 async def run_official_index(
     dataset_path: str,
     corpus_tag: str,
-) -> None:
+) -> dict[str, float]:
     """Async wrapper around the sync HopBuilder driver."""
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
+    return await loop.run_in_executor(
         None,
         _run_official_index_blocking,
         dataset_path,

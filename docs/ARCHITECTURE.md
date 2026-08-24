@@ -285,9 +285,34 @@ prompts are baseline algorithms, not hidden Prehop gates.
 - MS GraphRAG keeps its official context-budget search configuration.
 
 Because these retrieval budgets are intentionally method-official rather than
-identical, paper tables and captions must state them. If a separate controlled
-retrieval-only study is desired, add it as a clearly named ablation instead of
-silently changing an official baseline.
+identical, paper tables and captions must state them. A separate controlled
+retrieval-only study is a clearly named ablation and never silently changes an
+official baseline.
+
+## Evaluation output contract
+
+The benchmark emits deterministic normalized answer EM/F1 as the primary
+answer signal. MuSiQue uses answer aliases. The LLM-as-a-judge `score` is a
+supplemental semantic-correctness field for aliases and equivalent wording;
+`groundedness` and `hallucination` are separate context-directed diagnostics.
+None replaces deterministic answer scoring.
+
+Evidence metrics follow the prepared gold unit for each dataset:
+
+- MultiHop-RAG reports fact recall at `k` on non-null queries; null queries
+  report refusal and attempted-answer hallucination separately and do not
+  enter retrieval denominators.
+- 2WikiMultiHopQA reports deduplicated supporting-title precision, recall, and
+  F1. The current chunk output is not an official title–sentence prediction,
+  so this field is named as a repository-level title metric.
+- MuSiQue reports supporting-paragraph/title precision, recall, and F1. Its
+  paragraph-level gold evidence is not compared with the six-sentence fact
+  matcher.
+
+Missing gold units are emitted as `-1`, while an evaluated query with no match
+is zero. Paper aggregates exclude failed, incomplete, and unreconciled rows.
+The exact metric definitions and official evaluator references are maintained
+in `docs/prehop_paper.md`.
 
 ## Measured full matrix
 
@@ -307,23 +332,23 @@ sequence budgets, `shared` combines worst-case pressure, and `auto` infers from
 URL equality. Generation pressure is multiplied by
 `--max-generation-parallel`, not by embedding-only matrix slots.
 Generation and embedding queues are sampled separately, and sustained pressure
-still lowers target width for later work.
-The scheduler additionally caps generation-heavy targets at one in flight
-(`--max-generation-parallel 1`). It scans ahead for an embedding-only Naive
-target to occupy the remaining width. This policy was selected after a cold
-run showed Prehop throughput fall from roughly 7 to 2–3 documents/minute when
-official HopRAG began generating concurrently on the generation server.
+still lowers target width for later work. The scheduler enforces a strict
+strategy barrier: all selected datasets finish for MS GraphRAG before HopRAG
+starts, then Naive, then Prehop. Within a strategy phase, adapter limits are
+clamped so active generation-heavy targets cannot exceed the configured
+120-sequence budget in aggregate.
 Naive uses document batches of 32: it parses every source, flattens all chunks
 into one external embedding request stream, validates every vector, and
 atomically replaces the batch's source nodes in one Neo4j transaction. This
 turns short-document datasets into real embedding batches instead of thousands
 of one-item requests. Live progress markers, current phase, and ETA are written
 to `progress.json`.
-The generation-heavy baselines then use the safe capacity left by serialization:
-HopRAG runs 10 document workers with 4 chunk threads (at most 40 generation
-calls), while MS GraphRAG runs 32 concurrent requests. The matrix previously
-overrode MS's own 48-request default down to 8 and HopRAG down to 4, which
-needlessly under-used the configured sequence budget once cross-method overlap was gone.
+The generation-heavy baselines receive a per-target budget calculated from the
+active phase width. With three targets and a 120-sequence generation server,
+each target receives at most 40 calls; HopRAG's worker/thread product and MS
+GraphRAG's request semaphore are both clamped to that value. Progress snapshots
+include active, pending, and future-barrier ETA components; the default watch
+line is hourly and can be changed with `--watch-interval`.
 
 The measurement set directly addresses the indexing-time tradeoff: overall
 and Prehop phase latency, logical storage, document/chunk/question/edge counts,
@@ -331,6 +356,14 @@ Q-/Q+ and Q+-direction coverage, provenance completeness, exact NEXT topology,
 cross-document HOP invariants, and observed endpoint pressure. Retrieval and
 answer-quality attribution remains a separate benchmark/ablation concern; an
 index with valid topology is not reported as evidence that HOP improves QA.
+For official MS GraphRAG and HopRAG adapters, the stored timing includes the
+explicit aggregate `official_pipeline_seconds` plus adapter-observed workflow
+or stage timings; the runner does not fabricate boundaries that the upstream
+package does not expose. Prehop retains its finer adapter phase timings;
+Naive reports its aggregate pipeline and measurement timing only.
+MS GraphRAG relationship drops caused by missing extracted entities are
+recorded as integrity warnings in the target result rather than silently
+treated as a clean graph.
 For the semantic middle layer, the runner resolves every full-query evidence
 title against indexed documents, then reports the fraction of fully resolved
 gold queries and gold document pairs connected by at least one `HOP_ANSWER`.

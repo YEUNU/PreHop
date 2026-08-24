@@ -1,7 +1,10 @@
 MULTIHOPRAG_JUDGE_PROMPT = """
-### Task: Score a Model Prediction for a multi-hop question-answering query
-on (a) correctness vs Ground Truth and (b) hallucination — in a SINGLE LLM
-call so the two judgements stay internally consistent.
+### Task: Evaluate a model prediction for a multi-hop question-answering query
+in two independent directions during a SINGLE LLM call:
+
+(a) answer correctness, directed from the prediction to the Ground Truth; and
+(b) evidence groundedness, directed from the prediction to the Retrieved
+Context. Do not use one judgement as a substitute for the other.
 
 Answers are short factual spans such as an entity, person, organization,
 source, date, number, or yes/no comparison result. Judge factual equivalence
@@ -11,6 +14,8 @@ and accept harmless formatting differences that do not change the answer.
 **Question:** {query}
 **Ground Truth Answer:** {ground_truth}
 **Model Prediction:** {response}
+**Retrieved Context:**
+{retrieved_context}
 
 ### Instructions
 1. Locate the FINAL answer in the Model Prediction (typically after
@@ -29,21 +34,35 @@ and accept harmless formatting differences that do not change the answer.
      answer is wrong (score 0.0).
    - any other question type: judge factual equivalence to the Ground Truth
      directly, using the same score/hallucination rules below.
-3. score:
+3. `score` is answer correctness against the Ground Truth:
    - 1.0 if the final answer is factually equivalent to the Ground Truth
-     (minor wording / alias / casing differences ok).
+     (minor wording / alias / casing differences ok). Treat an answer alias
+     as semantic equivalence, not as permission to add unsupported facts.
    - 0.0 if it names the wrong entity/date/outcome, or — for a non-null
      question — abstains when a substantive Ground Truth exists.
-4. hallucination:
-   - 1.0 if the final answer asserts a concrete but factually wrong entity,
-     date, or comparison outcome (including a fabricated answer to a
-     null_query).
-   - 0.0 if it is factually consistent with the Ground Truth, or is an
-     honest abstention.
-5. Internal consistency: hallucination=1.0 implies score=0.0; score=1.0
-   implies hallucination=0.0; score=0.0 with hallucination=0.0 is the
-   honest-abstain case.
+4. `groundedness` is support by the Retrieved Context:
+   - 1.0 if the context entails or directly supports the final substantive
+     answer, allowing a short multi-hop synthesis from statements present in
+     the context.
+   - 0.0 if the final substantive answer is unsupported, contradicted, or
+     requires information absent from the context.
+   - For an honest abstention or empty prediction, return 0.0; the evaluator
+     records abstention as not applicable for groundedness.
+   - If the Retrieved Context is empty, every substantive answer is
+     unsupported.
+5. `hallucination` is a context-groundedness label, not another correctness
+   label:
+   - 1.0 for a substantive answer when groundedness=0.0.
+   - 0.0 for a substantive answer when groundedness=1.0, and for an honest
+     abstention.
+   - For `null_query`, an honest abstention has score=1.0 and
+     hallucination=0.0; a concrete answer is a hallucination even if it is
+     plausible from outside the retrieved context.
+6. Keep the axes independent. A wrong answer supported by the retrieved
+   context has score=0.0, groundedness=1.0, hallucination=0.0. A correct
+   answer not supported by the retrieved context has score=1.0,
+   groundedness=0.0, hallucination=1.0.
 
 Respond ONLY in JSON format:
-{{"score": 1.0 or 0.0, "hallucination": 1.0 or 0.0, "reason": "brief explanation covering both judgements"}}
+{{"score": 1.0 or 0.0, "groundedness": 1.0 or 0.0, "hallucination": 1.0 or 0.0, "reason": "brief explanation covering correctness and context support"}}
 """
