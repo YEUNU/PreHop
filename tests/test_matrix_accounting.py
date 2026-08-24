@@ -2,6 +2,7 @@ import json
 
 from scripts.merge_index_matrix_runs import merge
 from scripts.run_index_matrix import (
+    DATASETS,
     _aggregate_attempt_history,
     _estimate_matrix_eta,
     _log_progress,
@@ -9,10 +10,14 @@ from scripts.run_index_matrix import (
 )
 
 
+def test_active_matrix_contains_only_two_datasets():
+    assert tuple(DATASETS) == ("multihoprag", "musique")
+
+
 def _result(run_id: str, status: str, elapsed: float, phase: float) -> dict:
     return {
-        "target": "2wikimultihopqa__prehop",
-        "dataset": "2wikimultihopqa",
+        "target": "musique__prehop",
+        "dataset": "musique",
         "strategy": "prehop",
         "run_id": run_id,
         "attempt": 1,

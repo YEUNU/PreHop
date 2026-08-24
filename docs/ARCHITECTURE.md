@@ -57,8 +57,8 @@ anything else
 ```
 
 All `.txt` and `.md` files are selected. There is no company/sample filter and
-no unsupported-dataset fallback grouping. HopRAG accepts only the three known
-corpus tags (`multihoprag`, `2wikimultihopqa`, `musique`) because each needs its
+no unsupported-dataset fallback grouping. HopRAG accepts only the active known
+corpus tags (`multihoprag`, `musique`) because each needs its
 official problem-context grouping; another tag fails explicitly.
 
 The in-repo path limits simultaneously active files with
@@ -141,8 +141,8 @@ a complete index.
 
 - Stages every corpus file, routes both model types externally, and preserves
   upstream node/question generation.
-- Edges are constructed inside official problem contexts: 2WikiMultiHopQA raw
-  contexts, MuSiQue paragraph groups, or MultiHop-RAG evidence lists.
+- Edges are constructed inside official problem contexts: MuSiQue paragraph
+  groups or MultiHop-RAG evidence lists.
 - Per-document caches and stage markers support safe resume for ordinary runs;
   the measured cold runner removes them first.
 - Stage 2 inserts each document once and then streams each problem group to
@@ -302,9 +302,6 @@ Evidence metrics follow the prepared gold unit for each dataset:
 - MultiHop-RAG reports fact recall at `k` on non-null queries; null queries
   report refusal and attempted-answer hallucination separately and do not
   enter retrieval denominators.
-- 2WikiMultiHopQA reports deduplicated supporting-title precision, recall, and
-  F1. The current chunk output is not an official title–sentence prediction,
-  so this field is named as a repository-level title metric.
 - MuSiQue reports supporting-paragraph/title precision, recall, and F1. Its
   paragraph-level gold evidence is not compared with the six-sentence fact
   matcher.
@@ -316,8 +313,8 @@ in `docs/prehop_paper.md`.
 
 ## Measured full matrix
 
-`scripts/run_index_matrix.py --clear-graph --max-parallel 3
---max-generation-parallel 3` runs all three datasets by four strategies in the
+`scripts/run_index_matrix.py --clear-graph --max-parallel 2
+--max-generation-parallel 2` runs both active datasets by four strategies in the
 order `ms_graphrag → hoprag → naive → prehop`. It records per-target wall time, CPU, peak RSS,
 structural integrity counts, payload estimates, endpoint/host pressure, and
 failure logs beneath `artifacts/indexing/<run-id>`. It begins with bounded

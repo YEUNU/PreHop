@@ -240,7 +240,7 @@ def _validate_benchmark_data(benchmark_data: Any, source: str) -> list[dict[str,
         raise TypeError(f"Benchmark file must contain a JSON list: {source}")
     if not benchmark_data:
         raise ValueError(f"Benchmark file contains no queries: {source}")
-    supported = {"multihoprag", "2wikimultihopqa", "musique"}
+    supported = {"multihoprag", "musique"}
     validated: list[dict[str, Any]] = []
     dataset_markers: set[str] = set()
     for idx, item in enumerate(benchmark_data):
@@ -499,14 +499,13 @@ async def run_benchmark(
     if not benchmark_data:
         raise ValueError("Benchmark query selection is empty after filtering/limit")
 
-    # Dataset dispatch via the per-query `dataset` marker. MultiHop-RAG,
-    # 2WikiMultiHopQA, and MuSiQue share one query schema, but their evidence
+    # Dataset dispatch via the per-query `dataset` marker. MultiHop-RAG and
+    # MuSiQue share one query schema, but their evidence
     # units differ. The evaluator keeps deterministic answer EM/F1 primary,
     # uses title-level evidence P/R/F1 across datasets, and only runs
     # sentence/fact ranking metrics where the gold unit is aligned.
     _MULTIHOP_DATASET_NAMES = {
         "multihoprag": "MultiHop-RAG",
-        "2wikimultihopqa": "2WikiMultiHopQA",
         "musique": "MuSiQue",
     }
     dataset_marker = (benchmark_data[0].get("dataset", "") if benchmark_data else "").strip().lower()

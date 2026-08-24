@@ -16,7 +16,7 @@ loop, no reflection, no refinement.
 
 ## What this repository is
 
-Core indexing-time design, currently evaluated on MultiHop-RAG, 2WikiMultiHopQA, and MuSiQue:
+Core indexing-time design, currently evaluated on MultiHop-RAG and MuSiQue:
 
 1. **Predictive Knowledge Mapping** — every chunk receives dual hypothetical-query annotations ($Q^-$ for self-contained facts, $Q^+$ for outgoing dependencies), indexed separately. This is the structural precondition for HOP edges below, not a standalone feature.
 2. **Rank-Fused HOP Edges Pre-Built Offline** — every Q+ independently searches cross-document Q-, body, and Q+ representations. Q+/Q- or Q+/body is required for a traversable edge; Q+/Q+ can only support its rank. There is no learned cross-encoder or cosine threshold.
@@ -35,8 +35,7 @@ single LLM synthesis call.
 The repository fixes dataset-specific evaluation rather than using one pooled
 retrieval score. Deterministic normalized answer EM/F1 is primary, with
 alias-aware matching for MuSiQue. MultiHop-RAG uses non-null fact recall and a
-separate null-refusal slice; 2WikiMultiHopQA uses supporting-title P/R/F1;
-MuSiQue uses supporting-paragraph/title P/R/F1 because its gold evidence is
+separate null-refusal slice; MuSiQue uses supporting-paragraph/title P/R/F1 because its gold evidence is
 paragraph-level. The LLM judge is supplemental: semantic correctness and
 context groundedness are separate fields, and it is never the sole answer
 metric. See [the local paper specification](docs/prehop_paper.md) and
@@ -73,7 +72,6 @@ prehop/
 │   └── io.py / formatters.py / parsers.py / reporting.py
 ├── data/                            # datasets and generated local indices (gitignored)
 │   ├── prepare_multihoprag.py       # download/build the MultiHop-RAG corpus + queries
-│   ├── prepare_2wikimultihopqa.py   # build the official 2WikiMultiHopQA dev corpus + queries
 │   ├── prepare_musique.py           # download/build the MuSiQue (answerable dev) corpus + queries
 │   └── make_sample.py               # stratified query samples for the supported datasets
 ├── scripts/                         # analysis, judge reconciliation, and measured matrix runs
@@ -81,7 +79,7 @@ prehop/
 ├── run_servers.sh                   # validate/start Neo4j + generation/embedding endpoints
 ├── run_index.sh / run_benchmark.sh  # low-level, dataset-agnostic
 ├── run_multihoprag.sh               # per-dataset entry: index|benchmark|all
-├── run_dataset.sh                   # per-dataset entry for 2wikimultihopqa|musique
+├── run_dataset.sh                   # per-dataset entry for MuSiQue
 ├── pyproject.toml                   # canonical dependency list (uv-managed)
 └── README.md
 ```
@@ -152,16 +150,10 @@ python3 data/prepare_multihoprag.py            # downloads corpus + full queries
 ./run_multihoprag.sh all                       # index all 4 + benchmark (sample200)
 ./run_multihoprag.sh benchmark --queries full  # or the full 2556-query set
 
-# 2WikiMultiHopQA / MuSiQue
-python3 data/prepare_2wikimultihopqa.py && python3 data/make_sample.py --dataset 2wikimultihopqa --per-type 50
+# MuSiQue
 python3 data/prepare_musique.py && python3 data/make_sample.py --dataset musique --per-type 67
-./run_dataset.sh 2wikimultihopqa all
 ./run_dataset.sh musique all
 ```
-
-If `data/2wikimultihop_raw/dev.json` is absent, the 2Wiki preparation script
-downloads the official archive and extracts only the development split needed
-for this closed-corpus experiment.
 
 See `CLAUDE.md` "Multi-hop dataset suite" for corpus/query file details per dataset.
 
@@ -169,14 +161,14 @@ See `CLAUDE.md` "Multi-hop dataset suite" for corpus/query file details per data
 
 After starting generation and embedding services, the following command clears
 Neo4j once and runs the matrix in four strategy barriers. Each barrier runs the
-three datasets concurrently, then advances to the next strategy:
+two datasets concurrently, then advances to the next strategy:
 
 ```bash
 VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=120 \
 .venv/bin/python scripts/run_index_matrix.py \
-  --datasets multihoprag 2wikimultihopqa musique \
+  --datasets multihoprag musique \
   --strategies ms_graphrag hoprag naive prehop \
-  --clear-graph --max-parallel 3 --max-generation-parallel 3 \
+  --clear-graph --max-parallel 2 --max-generation-parallel 2 \
   --save-prehop-intermediate
 ```
 
@@ -189,7 +181,7 @@ worker count on retry. `logical_payload_bytes_estimate` is a cross-strategy repr
 payload estimate; it is not Neo4j's physical store-file size.
 The runner applies one per-target generation budget to `MAX_CONCURRENT_LLM_CALLS`,
 `RAG_MS_CONCURRENT_REQUESTS`, and HopRAG's
-`RAG_HOP_DOC_WORKERS × RAG_HOP_MAX_THREADS`. With three generation targets and
+`RAG_HOP_DOC_WORKERS × RAG_HOP_MAX_THREADS`. With two generation targets and
 `max_num_seqs=120`, the aggregate generation upper bound is at most 120.
 Naive flattens 32 source documents into each embedding/write batch, which is
 important for one-chunk corpora. Matrix runs also preserve per-target phase

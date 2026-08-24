@@ -6,7 +6,7 @@ Official repository for **HopRAG: Multi-hop Reasoning for Logic-Aware Retrieval-
 
 HopRAG is a novel Retrieval-Augmented Generation (RAG) framework that leverages graph databases to enhance multi-hop reasoning. Instead of treating documents as a flat collection, HopRAG models them as a graph of interconnected text chunks (nodes) within a **Neo4j** database. This structure allows for more sophisticated, logic-aware retrieval paths, enabling Large Language Models (LLMs) to answer complex questions that require synthesizing information from multiple sources.
 
-We provide demonstration datasets from **HotpotQA**, **2WikiMultiHop**, and **MuSiQue** to get you started quickly.
+We provide demonstration datasets from **HotpotQA** and **MuSiQue** to get you started quickly.
 
 -----
 
@@ -134,7 +134,7 @@ Next, connect the nodes with edges and create the vector and keyword indices nee
       * `edge_dense_index_name`
       * `node_sparse_index_name`
       * `edge_sparse_index_name`
-  * **Run the script:** The `main_edges_index` function uses dataset-specific logic (e.g., `create_edges_hotpot` or `create_edges_musique`) to create edges based on the different data format. `create_edges_hotpot` can be used for both hotpot and 2wiki dataset.
+  * **Run the script:** The `main_edges_index` function uses dataset-specific logic (e.g., `create_edges_hotpot` or `create_edges_musique`) to create edges based on the different data format.
 
 After this step, your graph is fully built and indexed, ready for retrieval\!
 

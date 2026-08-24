@@ -64,7 +64,7 @@ async def test_graph_clear_uses_bounded_delete_transactions(monkeypatch):
 
 def test_benchmark_schema_rejects_missing_query():
     with pytest.raises(ValueError, match="non-empty 'query'"):
-        _validate_benchmark_data([{"dataset": "2wikimultihopqa"}], "queries.json")
+        _validate_benchmark_data([{"dataset": "removed_dataset"}], "queries.json")
 
 
 def test_removed_optional_routes_are_not_configurable():
@@ -228,7 +228,7 @@ def test_matrix_scheduler_fills_spare_slot_with_embedding_only_target():
     pending = [
         Target("multihoprag", "hoprag", DATASETS["multihoprag"]),
         Target("multihoprag", "ms_graphrag", DATASETS["multihoprag"]),
-        Target("2wikimultihopqa", "naive", DATASETS["2wikimultihopqa"]),
+        Target("musique", "naive", DATASETS["musique"]),
     ]
 
     assert _next_compatible_target_index(pending, active, max_generation_parallel=1) == 2

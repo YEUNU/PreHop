@@ -44,10 +44,9 @@ load_dotenv(ROOT / ".env")
 
 DATASETS = {
     "multihoprag": ROOT / "data/multihoprag_corpus",
-    "2wikimultihopqa": ROOT / "data/2wikimultihopqa_corpus",
     "musique": ROOT / "data/musique_corpus",
 }
-EXPECTED_FILE_COUNTS = {"multihoprag": 609, "2wikimultihopqa": 54_957, "musique": 17_629}
+EXPECTED_FILE_COUNTS = {"multihoprag": 609, "musique": 17_629}
 STRATEGIES = ("ms_graphrag", "hoprag", "naive", "prehop")
 GENERATION_HEAVY_STRATEGIES = frozenset({"prehop", "hoprag", "ms_graphrag"})
 PAPER_MAX_NUM_SEQS = 120
@@ -2206,14 +2205,14 @@ def main() -> int:
     parser.add_argument(
         "--max-parallel",
         type=int,
-        default=3,
-        help="Targets concurrently within each strategy phase (default: all three datasets)",
+        default=2,
+        help="Targets concurrently within each strategy phase (default: both active datasets)",
     )
     parser.add_argument(
         "--max-generation-parallel",
         type=int,
-        default=3,
-        help="Generation-heavy targets concurrently within a strategy phase (default: all three datasets).",
+        default=2,
+        help="Generation-heavy targets concurrently within a strategy phase (default: both active datasets).",
     )
     parser.add_argument("--sample-seconds", type=float, default=5.0)
     parser.add_argument("--run-id", default=None)

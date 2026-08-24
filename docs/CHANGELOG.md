@@ -25,13 +25,11 @@ sequential node matches to avoid Neo4j cartesian-product warnings. Naive timing
 is documented as aggregate-only because its adapter does not expose finer
 phase boundaries.
 
-## 2026-08-24 — 2WikiMultiHopQA replacement and resumable matrix accounting
+## 2026-08-24 — Dataset suite selection and resumable matrix accounting
 
-The paper indexing matrix now uses MultiHop-RAG, 2WikiMultiHopQA, and MuSiQue;
-HotpotQA was removed from the active dataset suite because its closed-corpus
-indexing cost was disproportionate to the comparison. The official 2Wiki
-development split is normalized into the shared query/evidence schema, and
-HopRAG's adapter uses each question's supplied context group for edge building.
+The paper indexing matrix uses MultiHop-RAG and MuSiQue. The larger auxiliary
+QA corpus was removed from the repository and active experiment because its
+closed-corpus indexing cost was disproportionate to the comparison.
 
 The measured runner now enforces a 120-sequence capacity, records live
 `progress.json` snapshots with phase and ETA information, persists interrupted

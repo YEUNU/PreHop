@@ -392,7 +392,7 @@ def _format_judge_context(retrieved_sources: list[Any] | None) -> str:
     return format_context_from_nodes(nodes) if nodes else "(empty retrieved context)"
 
 
-# --- Multi-hop dataset metrics (MultiHop-RAG, 2WikiMultiHopQA, MuSiQue) ---
+# --- Multi-hop dataset metrics (MultiHop-RAG, MuSiQue) ---
 
 
 def _fact_matches_chunk(fact_norm: str, chunk_norm: str) -> bool:
@@ -434,7 +434,7 @@ def calculate_retrieval_ranking_metrics(
 ) -> dict:
     """Fact-level ranking metrics for sentence-aligned evidence.
 
-    The current implementation is used for MultiHop-RAG and 2WikiMultiHopQA;
+    The current implementation is used for MultiHop-RAG;
     paragraph-level MuSiQue evidence is intentionally excluded by the caller.
     The returned ``hits@k`` values are fact-recall fractions, not binary
     query-level hit rates. Relevance is `_fact_matches_chunk` against the
@@ -523,7 +523,7 @@ def calculate_evidence_doc_metrics(
 ) -> dict[str, float]:
     """Compute title-level evidence precision/recall/F1 over unique sources.
 
-    This is the common evidence unit for the three datasets. It is deliberately
+    This is the common evidence unit for the active datasets. It is deliberately
     separate from sentence/fact ranking metrics because MuSiQue stores full
     supporting paragraphs while the retriever returns chunks.
     """

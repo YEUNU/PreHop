@@ -1,6 +1,6 @@
 """Shared abstain-phrase detection and 3-way answer labeling.
 
-Every benchmarked dataset (MultiHop-RAG, 2WikiMultiHopQA, MuSiQue) is scored with
+Every benchmarked dataset (MultiHop-RAG, MuSiQue) is scored with
 the same human-taxonomy-style 3-way label `Correct Answer | Incorrect Answer
 | Refusal`, originally adopted from FinanceBench (Islam et al.,
 arXiv:2311.11944; see the `label` field of the official result JSONLs at

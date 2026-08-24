@@ -1330,16 +1330,6 @@ def _build_official_edge_groups(
             docs = _resolve_titles(evidence.get("title") for evidence in (row.get("evidence_list") or []))
             if docs:
                 groups[str(idx)] = docs
-    elif tag == "2wikimultihopqa":
-        raw_path = Path("data/2wikimultihop_raw/dev.json")
-        if not raw_path.is_file():
-            raise FileNotFoundError(f"2WikiMultiHopQA source is required for official HopRAG edges: {raw_path}")
-        with open(raw_path, "r", encoding="utf-8") as handle:
-            rows = json.load(handle)
-        for row in rows:
-            docs = _resolve_titles(item[0] for item in (row.get("context") or []) if isinstance(item, list) and item)
-            if docs:
-                groups[str(row.get("_id"))] = docs
     else:
         raise ValueError(f"HopRAG has no official edge grouping for unsupported corpus={corpus_tag!r}")
 
@@ -1370,7 +1360,7 @@ def _run_stage2_group_streaming(
     """Insert nodes per document, then build edges per official problem group.
 
     The split keeps memory bounded and supports documents shared by many
-    2WikiMultiHopQA/MuSiQue problems. Source of truth is the content-addressed per-doc
+    MuSiQue problems. Source of truth is the content-addressed per-doc
     cache produced by Stage 1.
     """
     import gc

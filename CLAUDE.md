@@ -1,7 +1,7 @@
 # Prehop repository guide
 
 The current system evaluates Prehop, Naive RAG, official HopRAG, and official
-MS GraphRAG on MultiHop-RAG, 2WikiMultiHopQA, and MuSiQue. The detailed module and
+MS GraphRAG on MultiHop-RAG and MuSiQue. The detailed module and
 branch map is in `docs/ARCHITECTURE.md`.
 
 ## Supported state
@@ -51,7 +51,6 @@ branch map is in `docs/ARCHITECTURE.md`.
 | Tag | Corpus directory | Full query file |
 |---|---|---|
 | `multihoprag` | `data/multihoprag_corpus` | `data/multihoprag_queries.json` |
-| `2wikimultihopqa` | `data/2wikimultihopqa_corpus` | `data/2wikimultihopqa_queries.json` |
 | `musique` | `data/musique_corpus` | `data/musique_queries.json` |
 
 Corpus files use `Title: ...`, optional `--- Page N ---` markers, then raw
@@ -81,9 +80,9 @@ chunker. Raw pipe text remains raw.
 # Full cold measured matrix (aggregate sequence bound 120)
 VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=120 \
 .venv/bin/python scripts/run_index_matrix.py \
-  --datasets multihoprag 2wikimultihopqa musique \
+  --datasets multihoprag musique \
   --strategies ms_graphrag hoprag naive prehop \
-  --clear-graph --max-parallel 3 --max-generation-parallel 3
+  --clear-graph --max-parallel 2 --max-generation-parallel 2
 
 # Combine stopped/resumed matrix fragments into cumulative phase timings
 .venv/bin/python scripts/merge_index_matrix_runs.py \
@@ -108,9 +107,8 @@ model id is missing/unreachable, indexing and benchmarking fail before work.
 
 ## Full matrix behavior
 
-`scripts/run_index_matrix.py` runs 12 targets: MultiHop-RAG, 2WikiMultiHopQA,
-and MuSiQue by four strategies in the order
-`ms_graphrag → hoprag → naive → prehop`. It starts with at most three targets concurrently, samples host and
+`scripts/run_index_matrix.py` runs 8 targets: MultiHop-RAG and MuSiQue by four strategies in the order
+`ms_graphrag → hoprag → naive → prehop`. It starts with at most two targets concurrently, samples host and
 inference pressure, and reduces the remaining width when pressure is sustained.
 It does not increase width again within the same run. Each child is a separate
 process group, so interruption terminates descendants and prevents overlapping
@@ -124,7 +122,7 @@ outer in-flight file cap defaults to 16; its generation semaphore remains 30,
 so short one-chunk corpora can use the endpoint without making long-document
 fan-out unbounded.
 Official HopRAG and MS GraphRAG receive adapter-specific limits derived from
-the same phase budget. With three generation targets and a 120 sequence
+the same phase budget. With two generation targets and a 120 sequence
 server, each target is capped at 40 generation calls; HopRAG's worker/thread
 product and MS GraphRAG's request semaphore are both clamped to that value.
 The runner writes pending-phase ETA components to `progress.json` and emits a

@@ -3,14 +3,12 @@
 # run_dataset.sh — run a multi-hop QA dataset end to end.
 #
 # Generalized version of run_multihoprag.sh's wrapper pattern for datasets
-# added after MultiHop-RAG (2WikiMultiHopQA, MuSiQue) — same corpus/tag/queries
+# added after MultiHop-RAG (MuSiQue) — same corpus/tag/queries
 # convention, one script instead of two near-duplicates. MultiHop-RAG keeps
 # its own dedicated run_multihoprag.sh (unchanged, already documented).
 # All are plain text, so there is no OCR stage.
 #
 # Usage:
-#   ./run_dataset.sh 2wikimultihopqa index                   # index all 4 strategies
-#   ./run_dataset.sh 2wikimultihopqa benchmark --queries sample200
 #   ./run_dataset.sh musique all --model prehop              # index + benchmark, one strategy
 #
 # Options:
@@ -42,8 +40,8 @@ while [ $# -gt 0 ]; do
 done
 
 case "$DATASET" in
-    2wikimultihopqa|musique) ;;
-    *) echo "Unknown dataset '$DATASET' (use 2wikimultihopqa|musique)"; exit 1 ;;
+    musique) ;;
+    *) echo "Unknown dataset '$DATASET' (use musique)"; exit 1 ;;
 esac
 
 CORPUS_DIR="data/${DATASET}_corpus"
@@ -95,5 +93,5 @@ case "$STAGE" in
     index)           do_index ;;
     benchmark|bench) do_benchmark ;;
     all)             do_index; do_benchmark ;;
-    *) echo "Usage: $0 <2wikimultihopqa|musique> <index|benchmark|all> [--model all|<strategy>] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
+    *) echo "Usage: $0 <musique> <index|benchmark|all> [--model all|<strategy>] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
 esac
