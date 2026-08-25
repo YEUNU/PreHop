@@ -323,19 +323,10 @@ class MSGraphRAGAdapter:
 
     async def run_workflow(self, query: str, history: list[dict] | None = None) -> tuple[str, list, list]:
         _ = history
-        abstract_keywords = [
-            "overall",
-            "summary",
-            "main themes",
-            "in general",
-            "relationship between",
-            "high-level",
-            "broadly",
-            "across documents",
-        ]
-        is_global = any(kw in query.lower() for kw in abstract_keywords)
-        if is_global:
-            logger.info("MS GraphRAG API GlobalSearch path")
-            return await self.global_search(query)
+        # This benchmark asks entity-grounded questions over source passages,
+        # which is the official LocalSearch use case. Do not route between
+        # official APIs with adapter-owned keywords: that silently changes the
+        # baseline based on surface phrasing and introduces an undocumented
+        # query classifier unrelated to the published method.
         logger.info("MS GraphRAG API LocalSearch path")
         return await self.local_search(query)

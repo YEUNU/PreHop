@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
@@ -195,3 +196,16 @@ def test_ms_source_uses_integrity_sidecar_title_after_header_removal():
     source = adapter._extract_sources({"sources": pd.DataFrame([{"id": 7, "text": "Clean evidence."}])})[0]
 
     assert source["doc"] == "Mapped Display Title"
+
+
+@pytest.mark.asyncio
+async def test_ms_workflow_uses_fixed_official_local_search_without_keyword_router():
+    adapter = object.__new__(MSGraphRAGAdapter)
+    adapter.local_search = AsyncMock(return_value=("answer", [], []))
+    adapter.global_search = AsyncMock(return_value=("global", [], []))
+
+    result = await adapter.run_workflow("Give an overall summary across documents")
+
+    assert result == ("answer", [], [])
+    adapter.local_search.assert_awaited_once()
+    adapter.global_search.assert_not_awaited()
