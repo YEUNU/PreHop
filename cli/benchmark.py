@@ -299,11 +299,11 @@ def _build_benchmark_query(query: str, item: dict[str, Any]) -> str:
 
 
 def _extract_stage_timing(trace: Any) -> dict[str, float]:
-    """Pull retrieve_ms/traversal_ms/synthesis_ms out of a prehop-style
+    """Pull rewrite/retrieve/traversal/synthesis timing out of a prehop-style
     `interaction_trace` (see models/prehop/graphrag.py's `run_workflow`),
     if present, so they land as top-level numeric fields on `result_item`
-    and get auto-averaged into `avg_retrieve_ms`/`avg_traversal_ms`/
-    `avg_synthesis_ms` by `_recompute_aggregates`. This keeps the stage split
+    and get auto-averaged into the corresponding ``avg_*`` fields by
+    `_recompute_aggregates`. This keeps the stage split
     rather than only the aggregate `latency`.
 
     Other strategies' traces don't carry these keys, so this returns {} for
@@ -316,7 +316,10 @@ def _extract_stage_timing(trace: Any) -> dict[str, float]:
     for step in trace:
         if not isinstance(step, dict):
             continue
-        if step.get("step") == "retrieve":
+        if step.get("step") == "query_rewrite":
+            if "rewrite_ms" in step:
+                timing["rewrite_ms"] = float(step.get("rewrite_ms") or 0.0)
+        elif step.get("step") == "retrieve":
             if "retrieve_ms" in step:
                 timing["retrieve_ms"] = float(step.get("retrieve_ms") or 0.0)
             if "traversal_ms" in step:
@@ -998,6 +1001,7 @@ async def run_benchmark(
                 "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
                 "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
                 "graph_edge_variant": RAGConfig.GRAPH_EDGE_VARIANT,
+                "query_rewrite_variant": RAGConfig.QUERY_REWRITE_VARIANT,
                 "default_top_k": RAGConfig.DEFAULT_TOP_K,
                 "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
                 "hypo_channel_variant": RAGConfig.HYPO_CHANNEL_VARIANT,

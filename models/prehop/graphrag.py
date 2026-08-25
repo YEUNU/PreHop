@@ -16,7 +16,9 @@ from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
+from models.prehop.llm_json import generate_json_or_raise
 from models.prehop.retrieval import RetrievalPipeline
+from utils.prompts.query_rewrite import build_role_aligned_query_prompt
 from utils.prompts.shared import build_answer_prompt as build_shared_answer_prompt
 
 _ANSWER_PREFIX = "@@ANSWER:"
@@ -141,6 +143,46 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             accepted.append(node)
         return self._build_context_from_nodes(accepted)
 
+    @staticmethod
+    def _validate_role_queries(payload: dict[str, Any]) -> dict[str, list[str]]:
+        validated: dict[str, list[str]] = {}
+        for role in ("q_minus", "q_plus"):
+            values = payload.get(role)
+            if not isinstance(values, list):
+                raise TypeError(f"Role-aligned query rewrite field {role!r} must be a list")
+            questions: list[str] = []
+            seen: set[str] = set()
+            for value in values:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"Role-aligned query rewrite field {role!r} contains a blank or non-string item")
+                question = " ".join(value.split())
+                identity = question.casefold()
+                if identity not in seen:
+                    seen.add(identity)
+                    questions.append(question)
+            if not questions or len(questions) > RAGConfig.QUESTIONS_PER_DIRECTION:
+                raise ValueError(
+                    f"Role-aligned query rewrite field {role!r} must contain between 1 and "
+                    f"{RAGConfig.QUESTIONS_PER_DIRECTION} unique questions"
+                )
+            validated[role] = questions
+        return validated
+
+    async def _rewrite_query_roles(self, query: str) -> dict[str, list[str]] | None:
+        if RAGConfig.QUERY_REWRITE_VARIANT == "none":
+            return None
+        prompt = build_role_aligned_query_prompt(query, RAGConfig.QUESTIONS_PER_DIRECTION)
+        payload = await generate_json_or_raise(
+            self.llm,
+            [{"role": "user", "content": prompt}],
+            "role-aligned query rewrite",
+            f"query={query!r}",
+            required_fields={"q_minus": list, "q_plus": list},
+            temperature=0.0,
+            max_tokens=512,
+        )
+        return self._validate_role_queries(payload)
+
     # ---------- main entry ----------
     async def run_workflow(
         self,
@@ -159,16 +201,34 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         _ = history
         retrieval_query = self._strip_format_instruction(user_query)
         graph_depth = RAGConfig.GRAPH_HOP_DEPTH
+        rewrite_started = time.perf_counter()
+        role_queries = await self._rewrite_query_roles(retrieval_query)
+        rewrite_ms = (time.perf_counter() - rewrite_started) * 1000 if role_queries is not None else 0.0
+        channel_queries = None
+        if role_queries is not None:
+            channel_queries = {
+                "q_minus": role_queries["q_minus"],
+                "q_plus": role_queries["q_plus"],
+                "body": [retrieval_query],
+            }
 
         if graph_depth > 0:
             context, nodes, timing = await self.graph_search(
                 entities=[retrieval_query],
                 depth=graph_depth,
                 top_k=RAGConfig.DEFAULT_TOP_K,
+                channel_queries=channel_queries,
             )
         else:
             t_retrieve0 = time.perf_counter()
-            context, nodes = await self.retrieve(retrieval_query, top_k=RAGConfig.DEFAULT_TOP_K)
+            if channel_queries is None:
+                context, nodes = await self.retrieve(retrieval_query, top_k=RAGConfig.DEFAULT_TOP_K)
+            else:
+                context, nodes = await self.retrieve_with_views(
+                    retrieval_query,
+                    top_k=RAGConfig.DEFAULT_TOP_K,
+                    channel_queries=channel_queries,
+                )
             timing = {"retrieve_ms": (time.perf_counter() - t_retrieve0) * 1000, "traversal_ms": 0.0}
 
         retrieved_nodes = nodes if isinstance(nodes, list) else []
@@ -181,7 +241,17 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 label = f"{kind}:{channel}" if channel else kind
                 path_counts[label] = path_counts.get(label, 0) + 1
 
-        trace: list[dict[str, Any]] = [
+        trace: list[dict[str, Any]] = []
+        if role_queries is not None:
+            trace.append(
+                {
+                    "step": "query_rewrite",
+                    "input": {"query": retrieval_query, "variant": RAGConfig.QUERY_REWRITE_VARIANT},
+                    "output": role_queries,
+                    "rewrite_ms": rewrite_ms,
+                }
+            )
+        trace.append(
             {
                 "step": "retrieve",
                 "input": {"query": user_query, "top_k": RAGConfig.DEFAULT_TOP_K, "graph_depth": graph_depth},
@@ -189,7 +259,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 "retrieve_ms": timing.get("retrieve_ms", 0.0),
                 "traversal_ms": timing.get("traversal_ms", 0.0),
             }
-        ]
+        )
 
         if not context:
             answer = self._ensure_answer_prefix("Insufficient evidence.")

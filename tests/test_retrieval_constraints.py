@@ -172,9 +172,29 @@ async def test_retrieval_records_every_direct_representation_path():
     _, pool = await rag._retrieve_with_candidate_pool("query", top_k=1)
 
     assert pool[0]["retrieval_paths"] == [
-        {"kind": "direct", "channel": "q_minus", "depth": 0},
-        {"kind": "direct", "channel": "q_plus", "depth": 0},
+        {"kind": "direct", "channel": "q_minus", "query_view": "query", "depth": 0},
+        {"kind": "direct", "channel": "q_plus", "query_view": "query", "depth": 0},
     ]
+
+
+@pytest.mark.asyncio
+async def test_role_aligned_views_search_only_their_matching_channels(monkeypatch):
+    rag = GraphRAG(strategy="prehop")
+    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "single_combined")
+    rag.llm.get_embeddings = AsyncMock(return_value=[[1.0], [0.9], [0.8], [0.7]])
+    rag._hybrid_rrf_candidates = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    await rag._retrieve_with_candidate_pool(
+        "original",
+        top_k=12,
+        channel_queries={"q_minus": ["minus one", "minus two"], "q_plus": ["plus one"]},
+    )
+
+    assert rag.llm.get_embeddings.await_args.args[0] == ["original", "minus one", "minus two", "plus one"]
+    assert [
+        (call.args[0], call.kwargs["channel"])
+        for call in rag._hybrid_rrf_candidates.await_args_list
+    ] == [("minus one", "q_minus"), ("minus two", "q_minus"), ("plus one", "q_plus")]
 
 
 @pytest.mark.asyncio

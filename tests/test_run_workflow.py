@@ -103,6 +103,44 @@ def test_build_answer_prompt_contains_context_and_query():
     assert "respond exactly: Insufficient evidence." in prompt
 
 
+def test_role_query_validation_deduplicates_without_silently_truncating():
+    payload = {
+        "q_minus": ["What did A report?", "  What did A report?  ", "What did B report?"],
+        "q_plus": ["Were the reports consistent?"],
+    }
+
+    assert GraphRAG._validate_role_queries(payload) == {
+        "q_minus": ["What did A report?", "What did B report?"],
+        "q_plus": ["Were the reports consistent?"],
+    }
+
+
+def test_role_query_validation_rejects_missing_or_excessive_roles():
+    with pytest.raises(ValueError, match="between 1 and"):
+        GraphRAG._validate_role_queries({"q_minus": [], "q_plus": ["bridge?"]})
+    with pytest.raises(ValueError, match="between 1 and"):
+        GraphRAG._validate_role_queries(
+            {"q_minus": ["one?"], "q_plus": ["one?", "two?", "three?", "four?"]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_role_aligned_rewrite_is_schema_constrained(monkeypatch):
+    rag = GraphRAG(strategy="prehop")
+    monkeypatch.setattr("core.config.RAGConfig.QUERY_REWRITE_VARIANT", "role_aligned")
+    rag.llm.generate_json = AsyncMock(
+        return_value={"q_minus": ["What did A report?", "What did B report?"], "q_plus": ["Were they consistent?"]}
+    )
+
+    rewritten = await rag._rewrite_query_roles("Was report A consistent with report B?")
+
+    assert rewritten == {
+        "q_minus": ["What did A report?", "What did B report?"],
+        "q_plus": ["Were they consistent?"],
+    }
+    assert rag.llm.generate_json.await_args.kwargs["temperature"] == 0.0
+
+
 # ---------------------------------------------------------------------------
 # run_workflow — full path with mocked retrieve + LLM
 # ---------------------------------------------------------------------------

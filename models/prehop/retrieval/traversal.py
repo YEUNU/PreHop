@@ -20,6 +20,7 @@ class TraversalMixin:
         depth: int,
         top_k: int,
         excluded_chunk_ids: set[str] | None = None,
+        channel_queries: dict[str, list[str]] | None = None,
     ) -> tuple:
         """Retrieve evidence through level-batched, duplicate-free graph expansion."""
         t0 = time.perf_counter()
@@ -40,6 +41,7 @@ class TraversalMixin:
             seed_query,
             top_k=top_k,
             query_embedding=query_embedding,
+            channel_queries=channel_queries,
         )
         retrieve_ms = (time.perf_counter() - t_retrieve0) * 1000
 

@@ -83,6 +83,7 @@ class RAGConfig:
     # bidirectional NEXT and outgoing HOP_ANSWER expansion.
     GRAPH_HOP_DEPTH = int(os.environ.get("RAG_GRAPH_HOP_DEPTH", "1"))
     GRAPH_EDGE_VARIANT = os.environ.get("RAG_GRAPH_EDGE_VARIANT", "full").strip().lower() or "full"
+    QUERY_REWRITE_VARIANT = os.environ.get("RAG_QUERY_REWRITE_VARIANT", "none").strip().lower() or "none"
 
     # --- Ablation & Experimental Toggles ---
     # Q-/Q+ channel ablations.
@@ -141,6 +142,8 @@ class RAGConfig:
             raise ValueError("RAG_GRAPH_HOP_DEPTH must be 0 or 1")
         if cls.GRAPH_EDGE_VARIANT not in {"full", "hop_only", "next_only"}:
             raise ValueError("RAG_GRAPH_EDGE_VARIANT must be full, hop_only, or next_only")
+        if cls.QUERY_REWRITE_VARIANT not in {"none", "role_aligned"}:
+            raise ValueError("RAG_QUERY_REWRITE_VARIANT must be none or role_aligned")
         if not cls.EMBEDDING_QUERY_INSTRUCTION:
             raise ValueError("EMBEDDING_QUERY_INSTRUCTION must not be empty")
 

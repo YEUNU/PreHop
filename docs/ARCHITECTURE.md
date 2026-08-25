@@ -170,6 +170,10 @@ format suffix and then:
 RAG_GRAPH_HOP_DEPTH == 0
   -> retrieve(query, top_k=12)
 
+RAG_QUERY_REWRITE_VARIANT == role_aligned
+  -> one schema-constrained query-time rewrite into Q-/Q+ retrieval views
+  -> each view searches only its matching representation channel
+
 RAG_GRAPH_HOP_DEPTH == 1 (default)
   -> retrieve(query) for seeds
   -> deterministic NEXT/HOP expansion for the configured depth
