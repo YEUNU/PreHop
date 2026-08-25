@@ -189,6 +189,8 @@ async def _verify_active_neo4j_snapshot(
         raise RuntimeError(f"Active {strategy} index snapshot fingerprint does not match corpus manifest")
     if metadata.get("paragraph_count") != corpus_manifest["paragraph_count"]:
         raise RuntimeError(f"Active {strategy} index snapshot paragraph count does not match corpus manifest")
+    if strategy == "hoprag" and metadata.get("snapshot_version") != 2:
+        raise RuntimeError("Active hoprag index snapshot uses stale parsing semantics")
     rows = await engine.neo4j.execute_query(
         f"""
         MATCH (c:{engine.chunk_label})

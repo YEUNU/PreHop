@@ -29,6 +29,7 @@ import itertools
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -70,7 +71,81 @@ _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
 
 _OUTPUT_ROOT = Path(os.environ.get("RAG_HOP_OUTPUT_ROOT", "data/hoprag_output"))
 _SNAPSHOT_LABEL = "RAGIndexSnapshot"
-_SNAPSHOT_VERSION = 1
+_SNAPSHOT_VERSION = 2
+_CACHE_FORMAT_VERSION = 2
+_PAGE_MARKER_RE = re.compile(r"^-+\s*Page\s+\d+\s*-+$", re.IGNORECASE)
+
+
+def _hoprag_indexable_text(content: str) -> str:
+    """Remove repository metadata while retaining HopRAG's own chunker.
+
+    Prepared corpora carry title, paragraph-identity, and optional page-marker
+    lines for provenance. They are not evidence and must not be embedded or
+    sent to HopRAG's question generator. Paragraph boundaries and all body
+    text otherwise remain unchanged for the official ``\n\n`` chunker.
+    """
+    if not isinstance(content, str):
+        raise TypeError(f"HopRAG document content must be str, got {type(content).__name__}")
+    lines = content.removeprefix("\ufeff").splitlines()
+    if lines and lines[0].startswith("Title: "):
+        lines = lines[1:]
+    while lines and not lines[0].strip():
+        lines = lines[1:]
+    if lines and lines[0].startswith("Paragraph-ID: "):
+        lines = lines[1:]
+    lines = [line for line in lines if not _PAGE_MARKER_RE.fullmatch(line.strip())]
+    body = "\n".join(lines).strip()
+    if not body:
+        raise ValueError("HopRAG document has no evidence text after metadata removal")
+    return body
+
+
+def _document_cache_digest(path: Path) -> str:
+    """Bind a per-document cache to both source bytes and parser semantics."""
+    digest = hashlib.sha256()
+    digest.update(f"hoprag-cache-v{_CACHE_FORMAT_VERSION}\0".encode("ascii"))
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _validate_cached_node(
+    doc_id: str,
+    node: object,
+    questiondict: object,
+    display_title: str | None = None,
+) -> None:
+    """Fail closed on stale or structurally corrupt Stage-1 cache entries."""
+    if not isinstance(node, dict) or not isinstance(questiondict, dict):
+        raise TypeError(f"HopRAG cache entry has an invalid shape for {doc_id}")
+    text = node.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError(f"HopRAG cache entry has empty text for {doc_id}")
+    text_lines = text.splitlines()
+    leaked_title = f"Title: {display_title}" if display_title else None
+    if (leaked_title and text.strip() == leaked_title) or any(
+        line.startswith("Paragraph-ID: ") or _PAGE_MARKER_RE.fullmatch(line.strip()) for line in text_lines
+    ):
+        raise RuntimeError(f"HopRAG cache entry contains corpus metadata for {doc_id}")
+
+    keywords = node.get("keywords")
+    if not isinstance(keywords, list) or not keywords or any(not isinstance(item, str) or not item for item in keywords):
+        raise RuntimeError(f"HopRAG cache entry has invalid keywords for {doc_id}")
+    embedding = np.asarray(node.get("embed"))
+    if embedding.shape != (_EMBED_DIM,) or not np.isfinite(embedding).all():
+        raise RuntimeError(f"HopRAG cache entry has an invalid node embedding for {doc_id}")
+
+    if set(questiondict) != {"answerable", "pending"}:
+        raise RuntimeError(f"HopRAG cache entry has invalid question roles for {doc_id}")
+    for role in ("answerable", "pending"):
+        questions = questiondict[role]
+        if not isinstance(questions, list) or not questions:
+            raise RuntimeError(f"HopRAG cache entry has no {role} questions for {doc_id}")
+        for item in questions:
+            if not isinstance(item, tuple) or len(item) != 3 or not isinstance(item[0], str) or not item[0].strip():
+                raise RuntimeError(f"HopRAG cache entry has an invalid {role} question for {doc_id}")
+            question_embedding = np.asarray(item[2])
+            if question_embedding.shape != (_EMBED_DIM,) or not np.isfinite(question_embedding).all():
+                raise RuntimeError(f"HopRAG cache entry has an invalid {role} embedding for {doc_id}")
 
 
 def _validated_question_list(result) -> list[str]:
@@ -810,7 +885,7 @@ def _patch_create_nodes_offline_parallel() -> None:
             digest_file = per_doc_dir / (doc_id + ".sha256")
             if not source_file.is_file() or not digest_file.is_file():
                 continue
-            expected_digest = hashlib.sha256(source_file.read_bytes()).hexdigest()
+            expected_digest = _document_cache_digest(source_file)
             if digest_file.read_text(encoding="utf-8").strip() != expected_digest:
                 logger.info("HopRAG cache invalidated for changed document: %s", doc_id)
                 continue
@@ -842,9 +917,11 @@ def _patch_create_nodes_offline_parallel() -> None:
                 )
                 pkl_file.unlink(missing_ok=True)
 
-        # Skip docs already in the main cache (self.done) OR per-doc cache.
+        # The upstream aggregate ``docid2nodes.json`` has no parser/version
+        # binding. Only a per-document cache that passed the versioned digest
+        # check is safe to resume.
         docs_to_process = [
-            d for d in docs_pool[start_index : start_index + span] if d not in self.done and d not in cached_doc_ids
+            d for d in docs_pool[start_index : start_index + span] if d not in cached_doc_ids
         ]
 
         import config as _cfg
@@ -854,7 +931,7 @@ def _patch_create_nodes_offline_parallel() -> None:
             "%d in main cache | doc_workers=%d chunk_threads=%d",
             len(docs_to_process),
             len(cached_doc_ids),
-            len(self.done),
+                    len(self.done),
             _doc_workers,
             _cfg.max_thread_num,
         )
@@ -868,7 +945,7 @@ def _patch_create_nodes_offline_parallel() -> None:
             doc_path = os.path.join(docs_dir, doc_id)
             try:
                 with open(doc_path, "r") as fh:
-                    doc = fh.read()
+                    doc = _hoprag_indexable_text(fh.read())
                 sentence2node = self.get_single_doc_qa(doc)
                 if not sentence2node:
                     raise RuntimeError("HopRAG produced no indexable nodes for the document")
@@ -898,7 +975,7 @@ def _patch_create_nodes_offline_parallel() -> None:
                 _write_json(ids_file, local_nodes)
                 digest_file = per_doc_dir / (doc_id + ".sha256")
                 digest_file.write_text(
-                    hashlib.sha256(Path(doc_path).read_bytes()).hexdigest(),
+                    _document_cache_digest(Path(doc_path)),
                     encoding="utf-8",
                 )
 
@@ -1641,6 +1718,7 @@ def _run_stage2_group_streaming(
 
         rows = []
         for node, _questiondict in local_n2q.values():
+            _validate_cached_node(doc_id, node, _questiondict, staged_titles[stem])
             embed = node["embed"]
             if hasattr(embed, "tolist"):
                 embed = embed.tolist()

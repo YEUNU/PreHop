@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -54,7 +55,33 @@ _EMBED_DIM = int(os.environ.get("RAG_MS_EMBED_DIM", os.environ.get("NEO4J_VECTOR
 # Where parquet artifacts land. corpus_tag-scoped so different runs don't clobber.
 _OUTPUT_ROOT = Path(os.environ.get("RAG_MS_OUTPUT_ROOT", "data/ms_graphrag_output"))
 SNAPSHOT_METADATA_FILENAME = "index_snapshot_metadata.json"
-_SNAPSHOT_VERSION = 1
+_SNAPSHOT_VERSION = 2
+_PAGE_MARKER_RE = re.compile(r"^-+\s*Page\s+\d+\s*-+$", re.IGNORECASE)
+
+
+def _configure_litellm_client_lifecycle() -> None:
+    """Keep async HTTP clients alive for a long indexing run.
+
+    LiteLLM's client cache defaults to a ten-minute TTL and intentionally does
+    not close clients when they are evicted. MS GraphRAG workflows routinely
+    run longer than that, so an evicted aiohttp-backed client otherwise emits
+    ``Unclosed client session`` while the next workflow is starting. The
+    explicit shutdown in :func:`run_official_index` closes the retained clients.
+    """
+    import litellm
+
+    requested_ttl = int(os.environ.get("RAG_MS_LITELLM_CLIENT_TTL_SECONDS", "86400"))
+    if requested_ttl <= 0:
+        raise ValueError("RAG_MS_LITELLM_CLIENT_TTL_SECONDS must be a positive integer")
+    client_cache = litellm.in_memory_llm_clients_cache
+    client_cache.default_ttl = max(client_cache.default_ttl, requested_ttl)
+
+
+async def _close_litellm_async_clients() -> None:
+    """Close LiteLLM-owned async transports before the indexing loop exits."""
+    import litellm
+
+    await litellm.close_litellm_async_clients()
 
 
 def output_dir_for(corpus_tag: str) -> Path:
@@ -75,6 +102,33 @@ def snapshot_metadata_path(corpus_tag: str) -> Path:
 
 def _source_set_sha256(source_ids: list[str]) -> str:
     return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
+
+
+def _source_titles_sha256(source_titles: dict[str, str]) -> str:
+    canonical = json.dumps(source_titles, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _ms_indexable_text(filename: str, content: str) -> tuple[str, str]:
+    """Return display title and metadata-free body for the official chunker."""
+    if not isinstance(content, str):
+        raise TypeError(f"MS GraphRAG document content must be str, got {type(content).__name__}")
+    lines = content.removeprefix("\ufeff").splitlines()
+    display_title = Path(filename).stem
+    if lines and lines[0].startswith("Title: "):
+        display_title = lines[0].removeprefix("Title: ").strip()
+        lines = lines[1:]
+    if not display_title:
+        raise ValueError(f"MS GraphRAG document has an empty display title: {filename}")
+    while lines and not lines[0].strip():
+        lines = lines[1:]
+    if lines and lines[0].startswith("Paragraph-ID: "):
+        lines = lines[1:]
+    lines = [line for line in lines if not _PAGE_MARKER_RE.fullmatch(line.strip())]
+    body = "\n".join(lines).strip()
+    if not body:
+        raise ValueError(f"MS GraphRAG document has no evidence text after metadata removal: {filename}")
+    return display_title, body
 
 
 def _expected_source_ids(staged_input: Path, corpus_manifest: dict | None) -> list[str]:
@@ -125,6 +179,7 @@ def _verify_and_publish_snapshot(
     corpus_tag: str,
     source_ids: list[str],
     corpus_manifest: dict | None,
+    source_titles: dict[str, str] | None = None,
 ) -> dict:
     """Compare actual ``documents.parquet`` sources to the staged corpus."""
     import pandas as pd
@@ -133,13 +188,13 @@ def _verify_and_publish_snapshot(
     documents = pd.read_parquet(documents_path)
     if "title" not in documents.columns:
         raise RuntimeError(f"MS GraphRAG documents artifact lacks title column: {documents_path}")
-    actual_ids = sorted(
-        {
-            Path(str(title)).stem
-            for title in documents["title"].tolist()
-            if isinstance(title, str) and title.strip()
-        }
-    )
+    titles = documents["title"].tolist()
+    if any(not isinstance(title, str) or not title.strip() for title in titles):
+        raise RuntimeError("MS GraphRAG documents.parquet contains an empty or non-string title")
+    actual_ids = [Path(title).stem for title in titles]
+    if len(actual_ids) != len(set(actual_ids)):
+        raise RuntimeError("MS GraphRAG documents.parquet contains duplicate source identities")
+    actual_ids.sort()
     expected = sorted(source_ids)
     if actual_ids != expected:
         missing = sorted(set(expected) - set(actual_ids))
@@ -149,6 +204,11 @@ def _verify_and_publish_snapshot(
             f"expected={len(expected)} actual={len(actual_ids)} "
             f"missing={missing[:5]} unexpected={unexpected[:5]}"
         )
+    source_titles = dict(source_titles or {})
+    if sorted(source_titles) != expected or any(
+        not isinstance(title, str) or not title.strip() for title in source_titles.values()
+    ):
+        raise RuntimeError("MS GraphRAG source-title metadata does not match the staged corpus")
     source_digest = _source_set_sha256(actual_ids)
     payload = {
         "strategy": "ms_graphrag",
@@ -159,6 +219,8 @@ def _verify_and_publish_snapshot(
         "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
         "source_count": len(actual_ids),
         "source_set_sha256": source_digest,
+        "source_titles": source_titles,
+        "source_titles_sha256": _source_titles_sha256(source_titles),
         "completed_at_epoch": time.time(),
     }
     _write_snapshot_metadata(corpus_tag, payload)
@@ -198,7 +260,7 @@ class _WorkflowTiming:
 def _stage_input_files(
     dataset_path: str,
     corpus_tag: str,
-) -> Path:
+) -> tuple[Path, dict[str, str]]:
     """Copy/link every corpus file into a tag-scoped input dir.
 
     MS pipeline reads from one directory via input_storage.base_dir. We can't
@@ -220,15 +282,15 @@ def _stage_input_files(
         shutil.rmtree(staged)
     staged.mkdir(parents=True)
 
+    source_titles: dict[str, str] = {}
     for fp in files:
         dest = staged / fp.name
-        try:
-            os.link(fp, dest)
-        except OSError:
-            shutil.copy2(fp, dest)
+        display_title, body = _ms_indexable_text(fp.name, fp.read_text(encoding="utf-8"))
+        source_titles[fp.stem] = display_title
+        dest.write_text(body, encoding="utf-8")
 
     logger.info("MS staging: %d files materialized at %s", len(files), staged)
-    return staged
+    return staged, source_titles
 
 
 def _register_external_models_with_litellm() -> None:
@@ -436,7 +498,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
                 call_args={"encoding_format": "float"},
             ),
         },
-        input=InputConfig(file_pattern=r".*\.txt$"),
+        input=InputConfig(file_pattern=r".*\.(txt|md)$"),
         input_storage=StorageConfig(
             type=StorageType.File,
             base_dir=str(staged_input_dir),
@@ -488,12 +550,13 @@ async def run_official_index(
     from graphrag.api.index import build_index
     from graphrag.config.enums import IndexingMethod
 
-    staged_input = _stage_input_files(dataset_path, corpus_tag)
+    staged_input, source_titles = _stage_input_files(dataset_path, corpus_tag)
     source_ids = _expected_source_ids(staged_input, corpus_manifest)
     # Mark the snapshot incomplete before replacing artifacts so interrupted
     # builds cannot pass the benchmark provenance gate.
     _set_snapshot_in_progress(corpus_tag, corpus_manifest)
 
+    _configure_litellm_client_lifecycle()
     config = build_config(corpus_tag, staged_input)
     out_dir = output_dir_for(corpus_tag)
 
@@ -507,12 +570,15 @@ async def run_official_index(
     )
 
     workflow_timing = _WorkflowTiming()
-    results = await build_index(
-        config=config,
-        method=IndexingMethod.Standard,
-        callbacks=[workflow_timing],
-        verbose=False,
-    )
+    try:
+        results = await build_index(
+            config=config,
+            method=IndexingMethod.Standard,
+            callbacks=[workflow_timing],
+            verbose=False,
+        )
+    finally:
+        await _close_litellm_async_clients()
 
     failures = [r for r in results if getattr(r, "errors", None)]
     if failures:
@@ -537,7 +603,7 @@ async def run_official_index(
         if missing:
             parts.append(f"missing artifacts: {missing}")
         raise RuntimeError("MS GraphRAG indexing incomplete: " + "; ".join(parts))
-    snapshot = _verify_and_publish_snapshot(corpus_tag, source_ids, corpus_manifest)
+    snapshot = _verify_and_publish_snapshot(corpus_tag, source_ids, corpus_manifest, source_titles)
     workflow_timing.timing["active_snapshot_verified"] = 1.0
     workflow_timing.timing["active_snapshot_source_count"] = float(snapshot["source_count"])
     logger.info("MS pipeline produced all expected parquet files at %s", out_dir)

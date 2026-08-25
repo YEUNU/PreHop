@@ -21,8 +21,8 @@ from cli.benchmark import (
     _verify_active_index_snapshot,
 )
 from cli.index import _load_corpus_manifest, _verify_and_publish_neo4j_snapshot
-from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.hoprag import official_indexer as hop_official_indexer
+from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
 from scripts.datasets import prepare_musique
 from scripts.paired_bootstrap import _load, _paired, _validate_artifact_pair
@@ -255,7 +255,7 @@ async def test_hoprag_active_readback_preserves_periods_in_stored_stems(tmp_path
                         "paragraph_count": 1,
                         "source_count": 1,
                         "source_set_sha256": digest,
-                        "snapshot_version": 1,
+                        "snapshot_version": 2,
                     }
                 ]
             return [{"source": source}]
@@ -282,11 +282,13 @@ def test_ms_snapshot_metadata_is_sidecar_and_requires_actual_document_sources(tm
         "musique",
         ["musique_alpha", "musique_beta"],
         {"fingerprint": "fp", "paragraph_count": 2},
+        {"musique_alpha": "Alpha", "musique_beta": "Beta"},
     )
 
     assert payload["status"] == "complete"
     persisted = json.loads(ms_official_indexer.snapshot_metadata_path("musique").read_text(encoding="utf-8"))
     assert persisted["source_set_sha256"] == payload["source_set_sha256"]
+    assert persisted["source_titles_sha256"] == payload["source_titles_sha256"]
 
 
 def test_hoprag_snapshot_preserves_periods_in_stored_source_ids():

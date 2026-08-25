@@ -267,7 +267,14 @@ class HopRAGAdapter:
         context_texts, _ = await asyncio.to_thread(self._retriever.search_docs, query)
         if not isinstance(context_texts, list):
             raise TypeError(f"Official HopRetriever returned {type(context_texts).__name__}, expected list")
-        return [str(t) for t in context_texts if isinstance(t, str) and t.strip()]
+        for idx, text in enumerate(context_texts):
+            if not isinstance(text, str):
+                raise TypeError(
+                    f"Official HopRetriever result at index {idx} is {type(text).__name__}, expected str"
+                )
+            if not text.strip():
+                raise ValueError(f"Official HopRetriever result at index {idx} is blank")
+        return context_texts
 
     async def _lookup_nodes_by_text(self, texts: list[str]) -> list[dict[str, Any]]:
         if not texts:

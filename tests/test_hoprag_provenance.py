@@ -2,10 +2,18 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
+from models.hoprag import official_indexer as hop_official_indexer
 from models.hoprag.hoprag_adapter import HopRAGAdapter
-from models.hoprag.official_indexer import _build_official_edge_groups, _prune_stale_hoprag_sources
+from models.hoprag.official_indexer import (
+    _build_official_edge_groups,
+    _document_cache_digest,
+    _hoprag_indexable_text,
+    _prune_stale_hoprag_sources,
+    _validate_cached_node,
+)
 from scripts.datasets.prepare_musique import paragraph_identity
 
 
@@ -35,6 +43,100 @@ def _adapter_with_rows(rows):
     adapter.neo4j = MagicMock()
     adapter.neo4j.driver.session.return_value = context
     return adapter, session
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "Title: Display\nParagraph-ID: musique:abc\n\n--- Page 1 ---\nFirst.\n\n--- Page 2 ---\nSecond.",
+            "First.\n\nSecond.",
+        ),
+        ("Title: Display\n\nBody keeps, commas, exactly.", "Body keeps, commas, exactly."),
+        ("Paragraph-ID: musique:abc\n\nBody only.", "Body only."),
+        ("No metadata.\n\nTitle: this body line is evidence.", "No metadata.\n\nTitle: this body line is evidence."),
+        ("\ufeffTitle: BOM title\r\n\r\nBody.\r\n", "Body."),
+    ],
+)
+def test_hoprag_parser_removes_only_corpus_metadata(content, expected):
+    assert _hoprag_indexable_text(content) == expected
+
+
+@pytest.mark.parametrize("content", ["", "Title: Only", "Title: Only\nParagraph-ID: musique:abc"])
+def test_hoprag_parser_rejects_metadata_only_documents(content):
+    with pytest.raises(ValueError, match="no evidence text"):
+        _hoprag_indexable_text(content)
+
+
+def test_hoprag_cache_digest_changes_with_parser_version(tmp_path, monkeypatch):
+    source = tmp_path / "doc.txt"
+    source.write_text("Title: T\n\nBody", encoding="utf-8")
+    first = _document_cache_digest(source)
+
+    monkeypatch.setattr(hop_official_indexer, "_CACHE_FORMAT_VERSION", 999)
+
+    assert _document_cache_digest(source) != first
+
+
+def _valid_cached_node(dim: int = 2):
+    vector = np.ones(dim, dtype=np.float32)
+    node = {"text": "Evidence.", "keywords": ["evidence"], "embed": vector}
+    questions = {
+        "answerable": [("What is stated?", {"evidence"}, vector)],
+        "pending": [("What is needed next?", {"evidence"}, vector)],
+    }
+    return node, questions
+
+
+def test_hoprag_cache_validator_accepts_complete_entry(monkeypatch):
+    monkeypatch.setattr(hop_official_indexer, "_EMBED_DIM", 2)
+    node, questions = _valid_cached_node()
+
+    _validate_cached_node("doc.txt", node, questions)
+
+    node["text"] = "Title: a body label that is not the document title"
+    _validate_cached_node("doc.txt", node, questions, "Document title")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda node, _q: node.update(text="Title: leaked"), "contains corpus metadata"),
+        (lambda node, _q: node.update(text="--- Page 3 ---"), "contains corpus metadata"),
+        (lambda node, _q: node.update(keywords=[]), "invalid keywords"),
+        (lambda node, _q: node.update(embed=[1.0]), "invalid node embedding"),
+        (lambda node, _q: node.update(embed=[1.0, float("nan")]), "invalid node embedding"),
+        (lambda _node, q: q.pop("pending"), "invalid question roles"),
+        (lambda _node, q: q.update(pending=[]), "no pending questions"),
+        (lambda _node, q: q.update(pending=[("", {"x"}, [1.0, 1.0])]), "invalid pending question"),
+        (lambda _node, q: q.update(pending=[("Valid?", {"x"}, [1.0])]), "invalid pending embedding"),
+    ],
+)
+def test_hoprag_cache_validator_rejects_corruption(monkeypatch, mutation, message):
+    monkeypatch.setattr(hop_official_indexer, "_EMBED_DIM", 2)
+    node, questions = _valid_cached_node()
+    mutation(node, questions)
+
+    with pytest.raises(RuntimeError, match=message):
+        _validate_cached_node("doc.txt", node, questions, "leaked")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "error", "message"),
+    [
+        (("not-a-list", []), TypeError, "expected list"),
+        ((["valid", None], []), TypeError, "index 1.*expected str"),
+        ((["valid", "  "], []), ValueError, "index 1 is blank"),
+    ],
+)
+async def test_hoprag_retriever_contract_rejects_malformed_results(payload, error, message):
+    adapter = object.__new__(HopRAGAdapter)
+    adapter._retriever = MagicMock()
+    adapter._retriever.search_docs.return_value = payload
+
+    with pytest.raises(error, match=message):
+        await adapter._run_official_retrieval("query")
 
 
 @pytest.mark.asyncio
