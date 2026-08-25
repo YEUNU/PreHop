@@ -12,25 +12,6 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _escape_md(text: Any) -> str:
-    raw = str(text or "").replace("\n", " ").strip()
-    return raw.replace("|", "\\|")
-
-
-def _to_markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
-    head = "| " + " | ".join(headers) + " |"
-    sep = "| " + " | ".join(["---"] * len(headers)) + " |"
-    body = ["| " + " | ".join(_escape_md(col) for col in row) + " |" for row in rows]
-    return "\n".join([head, sep] + body)
-
-
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)

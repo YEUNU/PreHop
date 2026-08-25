@@ -3,8 +3,8 @@
 MultiHop-RAG/HotpotQA(`prepare_multihoprag.py`/`prepare_hotpotqa.py`)와 동일한
 산출물 규약을 따른다:
   1. data/musique_corpus/*.txt   — Wikipedia 문단(paragraph) 1개 = 문서 1개
-     (인덱싱 입력). 여러 질문에서 같은 제목의 문단이 반복 등장하면 제목
-     기준으로 중복 제거한다.
+     (인덱싱 입력). 제목이 아니라 안정적인 문단 콘텐츠 식별자로 중복
+     제거하므로 같은 제목의 서로 다른 문단도 모두 보존한다.
   2. data/musique_queries.json   — 벤치마크가 읽는 쿼리 포맷 (dataset 마커
      "musique", id 접두사(2hop/3hop/4hop)를 category로 사용, is_supporting
      문단 증거)
@@ -18,9 +18,14 @@ HuggingFace 미러(dgslibisey/MuSiQue)에서 직접 받는다. 회사/페이지 
 """
 
 import argparse
+import hashlib
 import html
 import json
+import os
 import re
+import shutil
+import tempfile
+import uuid
 from pathlib import Path
 
 import requests
@@ -31,12 +36,8 @@ DATA_DIR = Path("data")
 CORPUS_DIR = DATA_DIR / "musique_corpus"
 QUERIES_PATH = DATA_DIR / "musique_queries.json"
 RAW_QUERIES_PATH = DATA_DIR / "musique_ans_v1.0_dev.jsonl"
-
-
-def sanitize_filename(name: str) -> str:
-    cleaned = re.sub(r'[\\/*?:"<>|]', "_", name).strip()
-    cleaned = re.sub(r"\s+", "_", cleaned)
-    return cleaned[:150] or "untitled"
+DEFAULT_LIMIT = 0  # Full official answerable dev split; sampling belongs in make_sample.py.
+CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
 
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
@@ -63,6 +64,32 @@ def clean_wiki_markup(text: str) -> str:
     return text
 
 
+def paragraph_identity(title: str, body: str) -> str:
+    """Return a corpus-wide stable identity for one MuSiQue paragraph.
+
+    MuSiQue's ``idx`` is query-local.  A title/body digest survives rows and
+    lets every retrieval backend report an unambiguous global paragraph unit.
+    The original local ``idx`` is retained separately in query metadata.
+    """
+    digest = hashlib.sha256(f"{title}\0{body}".encode()).hexdigest()
+    return f"musique:{digest}"
+
+
+def query_ids_sha256(rows: list[dict]) -> str:
+    """Digest sorted prepared ``_id`` values with newline separators."""
+    query_ids: list[str] = []
+    for row in rows:
+        if row.get("answerable") is False:
+            continue
+        raw_id = str(row.get("id") or "").strip()
+        if not raw_id:
+            raise ValueError("Answerable MuSiQue row has no stable id")
+        query_ids.append(f"musique_{raw_id}")
+    if len(query_ids) != len(set(query_ids)):
+        raise ValueError("MuSiQue query ids are not unique")
+    return hashlib.sha256("\n".join(sorted(query_ids)).encode()).hexdigest()
+
+
 def _download_jsonl(url: str, dest: Path, limit: int) -> list[dict]:
     if dest.exists():
         print(f"Already exists: {dest}")
@@ -85,40 +112,156 @@ def _download_jsonl(url: str, dest: Path, limit: int) -> list[dict]:
     return rows
 
 
-def build_corpus(rows: list[dict]) -> dict[str, str]:
-    """질문마다 딸려오는 후보 문단들을 data/musique_corpus/*.txt로 저장.
+def _safe_corpus_target(target: Path) -> Path:
+    """Validate the narrow, explicitly configured corpus replacement target."""
+    resolved = target.resolve()
+    if not resolved.name or resolved == resolved.parent:
+        raise ValueError(f"Unsafe corpus target: {target}")
+    if target.is_symlink():
+        raise ValueError(f"Refusing to replace symlinked corpus target: {target}")
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return resolved
 
-    Returns: {paragraph_title: filename} 매핑 (참고용).
-    """
-    if CORPUS_DIR.exists():
-        import shutil
 
-        shutil.rmtree(CORPUS_DIR)
-    CORPUS_DIR.mkdir(parents=True, exist_ok=True)
+def _gold_supporting_paragraph_ids(rows: list[dict]) -> set[str]:
+    """Return all answerable-query gold paragraphs that must exist in corpus."""
+    gold_ids: set[str] = set()
+    for row in rows:
+        if row.get("answerable") is False:
+            continue
+        for para in row.get("paragraphs") or []:
+            if not para.get("is_supporting"):
+                continue
+            title = clean_wiki_markup((para.get("title") or "").strip())
+            body = clean_wiki_markup((para.get("paragraph_text") or "").strip())
+            if not title or not body:
+                raise ValueError("Answerable MuSiQue gold paragraph has no title or body")
+            gold_ids.add(paragraph_identity(title, body))
+    return gold_ids
 
-    used_names: set[str] = set()
-    title_to_file: dict[str, str] = {}
+
+def _all_paragraph_ids(rows: list[dict]) -> set[str]:
+    """Return every valid source paragraph identity represented by the corpus."""
+    identities: set[str] = set()
     for row in rows:
         for para in row.get("paragraphs") or []:
             title = clean_wiki_markup((para.get("title") or "").strip())
             body = clean_wiki_markup((para.get("paragraph_text") or "").strip())
-            if not title or not body or title in title_to_file:
+            if title and body:
+                identities.add(paragraph_identity(title, body))
+    return identities
+
+
+def build_corpus_integrity(rows: list[dict], identity_to_file: dict[str, str], corpus_dir: Path) -> dict:
+    """Validate generated corpus coverage and return a reproducible manifest.
+
+    No expected document count is hard-coded: every invariant is derived from
+    the input rows.  The resulting fingerprint is stable for equivalent input
+    rows and can be retained with an indexing run to identify its corpus.
+    """
+    corpus_ids = set(identity_to_file)
+    if len(corpus_ids) != len(identity_to_file):  # defensive even though dict keys are unique
+        raise ValueError("MuSiQue paragraph identity mapping is not unique")
+
+    filenames = list(identity_to_file.values())
+    if len(filenames) != len(set(filenames)):
+        raise ValueError("MuSiQue paragraph filenames are not unique")
+    expected_corpus_ids = _all_paragraph_ids(rows)
+    if corpus_ids != expected_corpus_ids:
+        raise ValueError("Generated MuSiQue paragraph identities do not match source rows")
+    missing_files = [name for name in filenames if not (corpus_dir / f"{name}.txt").is_file()]
+    if missing_files:
+        raise ValueError(f"Generated MuSiQue corpus is missing {len(missing_files)} paragraph file(s)")
+
+    gold_ids = _gold_supporting_paragraph_ids(rows)
+    missing_gold = gold_ids - corpus_ids
+    if missing_gold:
+        raise ValueError(f"Generated MuSiQue corpus misses {len(missing_gold)} gold supporting paragraph(s)")
+
+    payload = {
+        "schema_version": 1,
+        "paragraph_count": len(corpus_ids),
+        "gold_supporting_paragraph_count": len(gold_ids),
+        "gold_supporting_paragraph_coverage": 1.0,
+        "paragraph_ids_sha256": hashlib.sha256("\n".join(sorted(corpus_ids)).encode()).hexdigest(),
+        "query_ids_sha256": query_ids_sha256(rows),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return {**payload, "fingerprint": fingerprint}
+
+
+def _replace_corpus_safely(temp_dir: Path, target: Path) -> None:
+    """Atomically publish a validated sibling directory and preserve rollback."""
+    target = _safe_corpus_target(target)
+    if temp_dir.parent.resolve() != target.parent:
+        raise ValueError("Temporary corpus must be a sibling of the target corpus")
+    if not temp_dir.is_dir() or temp_dir.is_symlink():
+        raise ValueError(f"Invalid temporary corpus directory: {temp_dir}")
+
+    backup = target.parent / f".{target.name}.backup-{uuid.uuid4().hex}"
+    moved_existing = False
+    try:
+        if target.exists():
+            if not target.is_dir():
+                raise ValueError(f"Corpus target is not a directory: {target}")
+            os.replace(target, backup)
+            moved_existing = True
+        os.replace(temp_dir, target)
+    except Exception:
+        if moved_existing and backup.exists() and not target.exists():
+            os.replace(backup, target)
+        raise
+    else:
+        if backup.exists():
+            shutil.rmtree(backup)
+
+
+def build_corpus(rows: list[dict]) -> dict[str, str]:
+    """Build and validate corpus in a temporary sibling before safe publish.
+
+    Returns the established ``{stable_paragraph_id: filename}`` mapping.  A
+    deterministic ``corpus_manifest.json`` is published next to the generated
+    paragraph files and supplies a reusable integrity fingerprint.
+    """
+    target = _safe_corpus_target(CORPUS_DIR)
+    temp_dir = Path(tempfile.mkdtemp(prefix=f".{target.name}.tmp-", dir=target.parent))
+    identity_to_file: dict[str, str] = {}
+    try:
+        _build_corpus_files(rows, temp_dir, identity_to_file)
+        integrity = build_corpus_integrity(rows, identity_to_file, temp_dir)
+        (temp_dir / CORPUS_MANIFEST_FILENAME).write_text(
+            json.dumps(integrity, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        _replace_corpus_safely(temp_dir, target)
+    except Exception:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        raise
+
+    print(f"Created {len(identity_to_file)} corpus files in {target} (fingerprint={integrity['fingerprint'][:12]})")
+    return identity_to_file
+
+
+def _build_corpus_files(rows: list[dict], corpus_dir: Path, identity_to_file: dict[str, str]) -> None:
+    """Materialize unique paragraphs only inside an unpublished temp directory."""
+    for row in rows:
+        for para in row.get("paragraphs") or []:
+            title = clean_wiki_markup((para.get("title") or "").strip())
+            body = clean_wiki_markup((para.get("paragraph_text") or "").strip())
+            if not title or not body:
                 continue
-
-            base = sanitize_filename(title)
-            name = base
-            counter = 1
-            while name in used_names:
-                name = f"{base}_{counter}"
-                counter += 1
-            used_names.add(name)
-
-            header = f"Title: {title}\n"
-            (CORPUS_DIR / f"{name}.txt").write_text(f"{header}\n{body}", encoding="utf-8")
-            title_to_file[title] = name
-
-    print(f"Created {len(used_names)} corpus files in {CORPUS_DIR}")
-    return title_to_file
+            identity = paragraph_identity(title, body)
+            if identity in identity_to_file:
+                continue
+            # Keep original title user-facing; use the hash for the filename
+            # rather than a title suffix so it remains machine-identifiable.
+            name = f"musique_{identity.removeprefix('musique:')}"
+            header = f"Title: {title}\nParagraph-ID: {identity}\n"
+            (corpus_dir / f"{name}.txt").write_text(f"{header}\n{body}", encoding="utf-8")
+            identity_to_file[identity] = name
 
 
 def _hop_category(row_id: str) -> str:
@@ -142,6 +285,9 @@ def build_queries(rows: list[dict]) -> list[dict]:
 
         evidence_docs: list[str] = []
         evidence_facts: list[str] = []
+        evidence_paragraph_ids: list[str] = []
+        evidence_paragraph_indices: list[int | str] = []
+        evidence_paragraphs: list[dict[str, int | str]] = []
         for para in row.get("paragraphs") or []:
             if not para.get("is_supporting"):
                 continue
@@ -151,6 +297,14 @@ def build_queries(rows: list[dict]) -> list[dict]:
                 evidence_docs.append(title)
             if body:
                 evidence_facts.append(body)
+                identity = paragraph_identity(title, body)
+                if identity not in evidence_paragraph_ids:
+                    evidence_paragraph_ids.append(identity)
+                    # The official idx is query-local. Preserve it for audit,
+                    # but evaluate retrieval with the global stable identity.
+                    if para.get("idx") is not None:
+                        evidence_paragraph_indices.append(para["idx"])
+                        evidence_paragraphs.append({"idx": para["idx"], "paragraph_id": identity})
 
         answer = (row.get("answer") or "").strip()
         qtype = _hop_category(row.get("id", ""))
@@ -162,6 +316,9 @@ def build_queries(rows: list[dict]) -> list[dict]:
                 "answer_aliases": row.get("answer_aliases") or [],
                 "evidence_docs": evidence_docs,
                 "evidence_facts": evidence_facts,
+                "evidence_paragraph_ids": evidence_paragraph_ids,
+                "evidence_paragraph_indices": evidence_paragraph_indices,
+                "evidence_paragraphs": evidence_paragraphs,
                 "evidence_doc": evidence_docs[0] if evidence_docs else "",
                 "evidence_page": None,
                 "evidence_text": evidence_facts[0] if evidence_facts else "",
@@ -191,7 +348,12 @@ def print_stats(queries: list[dict]):
 def main():
     parser = argparse.ArgumentParser(description="MuSiQue(answerable, dev) 데이터셋 준비")
     parser.add_argument("--skip-corpus", action="store_true", help="코퍼스 디렉토리 생성 건너뛰기 (쿼리만 갱신)")
-    parser.add_argument("--limit", type=int, default=2000, help="가져올 dev row 수 (기본 2000; 0=전체 ~2400개)")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_LIMIT,
+        help="가져올 dev row 수 (기본 0=official answerable dev 전체 2417개; 샘플은 make_sample.py 사용)",
+    )
     args = parser.parse_args()
 
     DATA_DIR.mkdir(exist_ok=True)

@@ -1,8 +1,8 @@
+import json
 import logging
 import re
 import string
 from collections import Counter
-from difflib import SequenceMatcher
 from typing import Any
 
 from core.config import RAGConfig
@@ -98,6 +98,12 @@ def calculate_answer_metrics(
             "answer_precision": UNJUDGED_SCORE,
             "answer_recall": UNJUDGED_SCORE,
             "null_refusal": 1.0 if _is_insufficient_text(final_answer) else 0.0,
+            "official_answer_em": UNJUDGED_SCORE,
+            "official_answer_f1": UNJUDGED_SCORE,
+            # Unlike the custom answer EM/F1 policy, MultiHop-RAG's official
+            # QA evaluator scores null questions against its supplied
+            # "Insufficient information." gold answer.
+            "official_qa_accuracy": _official_multihoprag_qa_accuracy(final_answer, ground_truth),
         }
 
     references = [str(ground_truth or "").strip()]
@@ -111,6 +117,9 @@ def calculate_answer_metrics(
             "answer_precision": UNJUDGED_SCORE,
             "answer_recall": UNJUDGED_SCORE,
             "null_refusal": UNJUDGED_SCORE,
+            "official_answer_em": UNJUDGED_SCORE,
+            "official_answer_f1": UNJUDGED_SCORE,
+            "official_qa_accuracy": UNJUDGED_SCORE,
         }
 
     scores = [_answer_overlap_metrics(final_answer, reference) for reference in references]
@@ -122,101 +131,29 @@ def calculate_answer_metrics(
         "answer_precision": best[2],
         "answer_recall": best[3],
         "null_refusal": UNJUDGED_SCORE,
+        # MuSiQue's AnswerMetric uses this normalized EM/F1 and takes the
+        # maximum over aliases.  Keep the official names beside the shared
+        # primary fields so an artifact can state exactly what it reports.
+        "official_answer_em": best[0],
+        "official_answer_f1": best[1],
+        # MultiHop-RAG's published QA script treats any shared whitespace
+        # token as correct.  This deliberately permissive score is retained
+        # only for protocol comparison; normalized EM/F1 remains primary.
+        "official_qa_accuracy": _official_multihoprag_qa_accuracy(final_answer, ground_truth),
     }
 
 
-def calculate_evidence_match(retrieved_sources: list[Any], expected_doc: str, expected_page: int | None = None) -> dict:
+def _official_multihoprag_qa_accuracy(prediction: str, reference: str) -> float:
+    """Reproduce MultiHop-RAG QA's any-token-intersection decision rule.
+
+    The benchmark harness scores the extracted final answer rather than a
+    model rationale.  Apart from that shared output-boundary policy, this
+    intentionally uses only lowercase whitespace tokenization: it is not the
+    repository's normalized EM/F1 metric.
     """
-    증거 매칭 - 문서/페이지 레벨. `calculate_multihop_doc_recall`이
-    (page 없이) 재사용한다.
-    Supports both string filenames and structured [title, page, ...] lists.
-
-    Args:
-        retrieved_sources: List of strings or lists [title, page, sent_id]
-        expected_doc: 예상 문서명 (e.g., "3M_2018_10K")
-        expected_page: 예상 페이지 번호 (optional)
-
-    Returns:
-        dict with 'doc_match', 'page_match'
-    """
-    if not retrieved_sources or not expected_doc:
-        return {"doc_match": 0.0, "page_match": 0.0}
-
-    doc_match = 0.0
-    page_match = 0.0
-
-    def normalize_doc_id(value: str) -> str:
-        if not value:
-            return ""
-        lowered = str(value).lower().strip()
-        lowered = re.sub(r"\.(pdf|txt|md|json)$", "", lowered)
-        lowered = lowered.replace("10-k", "10k").replace("10-q", "10q")
-        lowered = re.sub(r"[^a-z0-9]+", "", lowered)
-        return lowered
-
-    def tokenize_doc_id(value: str) -> set[str]:
-        if not value:
-            return set()
-        lowered = str(value).lower()
-        lowered = lowered.replace("10-k", "10k").replace("10-q", "10q")
-        lowered = re.sub(r"[^a-z0-9]+", " ", lowered)
-        return {tok for tok in lowered.split() if tok}
-
-    expected_doc_norm = normalize_doc_id(expected_doc)
-    expected_doc_tokens = tokenize_doc_id(expected_doc)
-
-    for source in retrieved_sources:
-        src_title = ""
-        src_page = None
-
-        # Dict Source: {"doc": ..., "page": ..., "text": ...}
-        if isinstance(source, dict):
-            src_title = str(source.get("doc", "")).lower()
-            src_page = source.get("page")
-
-        # Structured Source: [title, page, sent_id]
-        elif isinstance(source, (list, tuple)) and len(source) >= 2:
-            src_title = str(source[0]).lower()
-            src_page = source[1]
-
-        # String Source: "Title" or "Title_page_5"
-        elif isinstance(source, str):
-            src_title = source
-
-        src_doc_norm = normalize_doc_id(src_title)
-        src_doc_tokens = tokenize_doc_id(src_title)
-
-        is_doc_match = False
-        if expected_doc_norm and src_doc_norm:
-            if expected_doc_norm in src_doc_norm or src_doc_norm in expected_doc_norm:
-                is_doc_match = True
-            else:
-                sim = SequenceMatcher(None, expected_doc_norm, src_doc_norm).ratio()
-                if sim >= 0.92:
-                    is_doc_match = True
-
-        if not is_doc_match and expected_doc_tokens and src_doc_tokens:
-            overlap = len(expected_doc_tokens.intersection(src_doc_tokens))
-            min_required = max(1, int(len(expected_doc_tokens) * 0.6))
-            if overlap >= min_required:
-                is_doc_match = True
-
-        if is_doc_match:
-            doc_match = 1.0
-            if expected_page is not None:
-                if isinstance(src_page, (int, float)) and int(src_page) == expected_page:
-                    page_match = 1.0
-                    break
-                if isinstance(source, str):
-                    source_lower = source.lower()
-                    page_pattern = (
-                        f"page_{expected_page:03d}" if isinstance(expected_page, int) else f"page_{expected_page}"
-                    )
-                    if page_pattern in source_lower or f"_page_{expected_page}" in source_lower:
-                        page_match = 1.0
-                        break
-
-    return {"doc_match": doc_match, "page_match": page_match}
+    pred_tokens = {token for token in str(prediction or "").lower().split() if token}
+    gold_tokens = {token for token in str(reference or "").lower().split() if token}
+    return 1.0 if pred_tokens & gold_tokens else 0.0
 
 
 def _parse_unit_score(raw: Any) -> float | None:
@@ -249,12 +186,11 @@ async def _run_combined_judge(
     response: str,
     vllm_client,
 ) -> dict:
-    """Run the single-call judge with independent answer/context axes.
+    """Run the single-call supplemental judge with answer/context axes.
 
-    The judge returns answer correctness (`score`), context support
-    (`groundedness`), and context-based hallucination. A wrong answer can be
-    grounded, and a correct answer can be unsupported; the resolver preserves
-    that distinction.
+    The judge returns answer correctness (`score`) and context support
+    (`groundedness`). Hallucination is derived from groundedness in the local
+    resolver, preventing two redundant LLM labels from disagreeing.
     """
     judge_model, judge_payload = await _call_judge_llm(judge_prompt, vllm_client)
     return _resolve_judge_fields(judge_payload, response, judge_model)
@@ -296,7 +232,6 @@ def _resolve_judge_fields(
     """
     parsed_score = _parse_unit_score((judge_payload or {}).get("score"))
     parsed_groundedness = _parse_unit_score((judge_payload or {}).get("groundedness"))
-    parsed_hallu = _parse_unit_score((judge_payload or {}).get("hallucination"))
 
     if parsed_score is not None:
         judge_score = parsed_score
@@ -320,9 +255,10 @@ def _resolve_judge_fields(
         groundedness = UNJUDGED_SCORE
         groundedness_source = "unjudged"
 
-    # Honest-abstain is deterministic. For substantive answers hallucination
-    # requires the explicit context-directed field; it is never derived from
-    # answer correctness alone.
+    # Honest abstention is not a substantive hallucination claim.  For a
+    # substantive answer, hallucination is exactly the complement of the
+    # independently judged context-groundedness field.  Keep the legacy field
+    # name for artifact compatibility, but never trust a model-supplied value.
     if _is_insufficient_text(final_answer):
         hallucination = 0.0
         hallucination_reason = "non_answer_insufficient"
@@ -331,13 +267,13 @@ def _resolve_judge_fields(
         hallucination = 0.0
         hallucination_reason = "non_answer_empty"
         hallucination_source = "rule_non_answer"
-    elif parsed_hallu is not None:
-        hallucination = 1.0 if parsed_hallu >= 0.5 else 0.0
-        hallucination_reason = str((judge_payload or {}).get("reason", "")) or "combined_judge"
-        hallucination_source = "combined_judge"
+    elif groundedness >= 0:
+        hallucination = 1.0 - groundedness
+        hallucination_reason = "derived_from_groundedness"
+        hallucination_source = "derived_from_groundedness"
     else:
         hallucination = UNJUDGED_SCORE
-        hallucination_reason = "unjudged_no_hallucination_field"
+        hallucination_reason = "unjudged_no_groundedness_field"
         hallucination_source = "unjudged"
 
     return {
@@ -427,77 +363,69 @@ def _source_chunk_text(source: Any) -> str:
     return ""
 
 
+def _official_multihoprag_fact_match(fact: str, chunk: str) -> bool:
+    """Official MultiHop-RAG retrieval matching: whitespace/newline substring.
+
+    Do not normalize punctuation, case, or token overlap here.  Those looser
+    rules belong to the repository's diagnostic fact-coverage metric.
+    """
+    fact_compact = str(fact or "").replace(" ", "").replace("\n", "")
+    chunk_compact = str(chunk or "").replace(" ", "").replace("\n", "")
+    return bool(fact_compact and fact_compact in chunk_compact)
+
+
 def calculate_retrieval_ranking_metrics(
     retrieved_sources: list[Any],
     gold_facts: list[str],
     ks: tuple[int, ...] = (4, 10),
 ) -> dict:
-    """Fact-level ranking metrics for sentence-aligned evidence.
+    """Emit official MultiHop-RAG retrieval metrics and separate fact recall.
 
-    The current implementation is used for MultiHop-RAG;
-    paragraph-level MuSiQue evidence is intentionally excluded by the caller.
-    The returned ``hits@k`` values are fact-recall fractions, not binary
-    query-level hit rates. Relevance is `_fact_matches_chunk` against the
-    ranked retrieved chunk texts.
-
-    - hits@k : recall of distinct gold facts within the top-k chunks.
-    - mrr@10 : reciprocal rank of the first chunk covering ANY gold fact.
-    - map@10 : average precision over the ranked chunks (a chunk is
-               "relevant" when it covers a not-yet-covered gold fact),
-               normalized by the gold-fact count.
+    ``official_hits@k`` is query-level any-hit, while
+    ``evidence_fact_recall@k`` is this project's more informative fraction of
+    gold facts recovered.  They must never share a field name.
     """
-    gold_norm = [g for g in (normalize_answer(f) for f in (gold_facts or []) if f) if g]
-    empty_value = UNJUDGED_SCORE if not gold_norm else 0.0
-    result: dict[str, float] = {f"hits@{k}": empty_value for k in ks}
-    result["mrr@10"] = empty_value
-    result["map@10"] = empty_value
-    if not gold_norm or not retrieved_sources:
+    gold_raw = [str(f) for f in (gold_facts or []) if str(f).strip()]
+    gold_norm = [normalize_answer(f) for f in gold_raw]
+    empty_value = UNJUDGED_SCORE if not gold_raw else 0.0
+    result: dict[str, float] = {
+        **{f"official_hits@{k}": empty_value for k in ks},
+        **{f"evidence_fact_recall@{k}": empty_value for k in ks},
+        "official_mrr@10": empty_value,
+        "official_map@10": empty_value,
+    }
+    if not gold_raw or not retrieved_sources:
         return result
 
-    chunk_norms = [normalize_answer(_source_chunk_text(s)) for s in retrieved_sources]
-    total_gold = len(gold_norm)
+    chunks = [_source_chunk_text(source) for source in retrieved_sources]
+    chunk_norms = [normalize_answer(chunk) for chunk in chunks]
+    total_gold = len(gold_raw)
 
-    # MRR / MAP over the ranked list (count a gold fact once, at first cover).
+    # Exact translation of the official ranking evaluator: a rank contributes
+    # each *new* matched fact divided by its 1-based rank.  Multiple newly
+    # found facts in one chunk all contribute at that rank.
     covered: set[int] = set()
     first_hit_rank: int | None = None
-    relevant_count = 0
     ap_sum = 0.0
-    for rank, cn in enumerate(chunk_norms, start=1):
-        newly = {gi for gi, g in enumerate(gold_norm) if gi not in covered and _fact_matches_chunk(g, cn)}
-        if not newly:
-            continue
-        covered |= newly
-        relevant_count += 1
-        if first_hit_rank is None:
-            first_hit_rank = rank
-        if rank <= 10:
-            ap_sum += relevant_count / rank
+    for rank, chunk in enumerate(chunks[:10], start=1):
+        newly = {idx for idx, fact in enumerate(gold_raw) if idx not in covered and _official_multihoprag_fact_match(fact, chunk)}
+        if newly:
+            if first_hit_rank is None:
+                first_hit_rank = rank
+            covered |= newly
+            ap_sum += len(newly) / rank
+    result["official_mrr@10"] = 1.0 / first_hit_rank if first_hit_rank else 0.0
+    result["official_map@10"] = ap_sum / total_gold
 
-    result["mrr@10"] = (1.0 / first_hit_rank) if (first_hit_rank and first_hit_rank <= 10) else 0.0
-    result["map@10"] = ap_sum / total_gold
-
-    # Hits@k: distinct gold facts recalled within the top-k chunks.
     for k in ks:
-        top_k = chunk_norms[:k]
-        hit = sum(1 for g in gold_norm if any(_fact_matches_chunk(g, cn) for cn in top_k))
-        result[f"hits@{k}"] = hit / total_gold
-
+        top_raw = chunks[:k]
+        result[f"official_hits@{k}"] = float(
+            any(_official_multihoprag_fact_match(fact, chunk) for fact in gold_raw for chunk in top_raw)
+        )
+        top_norm = chunk_norms[:k]
+        recalled = sum(1 for fact in gold_norm if any(_fact_matches_chunk(fact, chunk) for chunk in top_norm))
+        result[f"evidence_fact_recall@{k}"] = recalled / total_gold
     return result
-
-
-def calculate_multihop_doc_recall(retrieved_sources: list[Any], gold_docs: list[str]) -> float:
-    """Coarse doc-level recall: fraction of gold articles (by title) that
-    appear among the retrieved sources. Complements the fact-level ranking
-    metrics with a title-match view robust to chunk reflow."""
-    gold = [d for d in (gold_docs or []) if d and str(d).strip()]
-    if not gold:
-        return UNJUDGED_SCORE
-    hit = 0
-    for doc in gold:
-        m = calculate_evidence_match(retrieved_sources, doc, expected_page=None)
-        if m["doc_match"] >= 1.0:
-            hit += 1
-    return hit / len(gold)
 
 
 def _source_doc_title(source: Any) -> str:
@@ -508,6 +436,66 @@ def _source_doc_title(source: Any) -> str:
     if isinstance(source, str):
         return source
     return ""
+
+
+_MUSIQUE_PARAGRAPH_ID_RE = re.compile(
+    r"(?:paragraph[-_ ]?id\s*:\s*|musique_)(musique:[a-f0-9]{12,64}|[a-f0-9]{12,64})",
+    re.IGNORECASE,
+)
+
+
+def _source_paragraph_identity(source: Any) -> str:
+    """Find the stable MuSiQue paragraph identity exposed by every adapter.
+
+    Corpus filenames carry the hash identity, and the corpus body repeats it
+    as a metadata header.  The two routes cover adapters that expose only a
+    source filename or only retrieved text.
+    """
+    candidates: list[str] = []
+    if isinstance(source, dict):
+        candidates.extend(str(source.get(key) or "") for key in ("paragraph_id", "source", "doc", "text"))
+    elif isinstance(source, (list, tuple)):
+        candidates.extend(str(value or "") for value in source)
+    else:
+        candidates.append(str(source or ""))
+    for candidate in candidates:
+        direct = candidate.strip()
+        if direct.startswith("musique:"):
+            return direct.lower()
+        match = _MUSIQUE_PARAGRAPH_ID_RE.search(candidate)
+        if match:
+            value = match.group(1).lower()
+            return value if value.startswith("musique:") else f"musique:{value}"
+    return ""
+
+
+def calculate_musique_support_metrics(retrieved_sources: list[Any], gold_paragraph_ids: list[str]) -> dict[str, float]:
+    """SupportMetric formula over global paragraph identities, not titles.
+
+    MuSiQue's official evaluator receives query-local paragraph ``idx``
+    predictions.  This global RAG corpus instead retrieves source documents,
+    so these are deliberately named ``paragraph_support_*`` rather than
+    ``official_support_*`` despite using the same set P/R/F1 formula.
+    """
+    gold = {str(value).strip().lower() for value in (gold_paragraph_ids or []) if str(value).strip()}
+    retrieved = {_source_paragraph_identity(source) for source in (retrieved_sources or [])}
+    retrieved.discard("")
+    if not gold:
+        value = UNJUDGED_SCORE
+        return {
+            "paragraph_support_precision": value,
+            "paragraph_support_recall": value,
+            "paragraph_support_f1": value,
+        }
+    true_positive = len(gold & retrieved)
+    precision = true_positive / len(retrieved) if retrieved else 0.0
+    recall = true_positive / len(gold)
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {
+        "paragraph_support_precision": precision,
+        "paragraph_support_recall": recall,
+        "paragraph_support_f1": f1,
+    }
 
 
 def _normalize_doc_key(value: Any) -> str:
@@ -521,11 +509,10 @@ def calculate_evidence_doc_metrics(
     retrieved_sources: list[Any],
     gold_docs: list[str],
 ) -> dict[str, float]:
-    """Compute title-level evidence precision/recall/F1 over unique sources.
+    """Compute title-level evidence P/R/F1 as a diagnostic-only view.
 
-    This is the common evidence unit for the active datasets. It is deliberately
-    separate from sentence/fact ranking metrics because MuSiQue stores full
-    supporting paragraphs while the retriever returns chunks.
+    It remains useful for MultiHop-RAG article inspection, but it is not
+    MuSiQue's official support metric: a title can name multiple paragraphs.
     """
     gold_keys = {_normalize_doc_key(doc) for doc in (gold_docs or []) if _normalize_doc_key(doc)}
     retrieved_keys = {
@@ -564,12 +551,14 @@ async def evaluate_multihoprag_response(
     retrieved_sources: list[Any],
     evidence_facts: list[str] | None = None,
     evidence_docs: list[str] | None = None,
+    evidence_paragraph_ids: list[str] | None = None,
     question_type: str = "",
     dataset: str = "",
     answer_aliases: list[str] | None = None,
     vllm_client=None,
     batch_collector=None,
     custom_id: str | None = None,
+    judge_enabled: bool = False,
 ) -> dict:
     """Evaluate answer quality and dataset-appropriate evidence quality.
 
@@ -579,14 +568,28 @@ async def evaluate_multihoprag_response(
     because its gold evidence is paragraph-level, while title-level evidence
     precision/recall/F1 is reported for every dataset.
     """
-    judge_prompt = MULTIHOPRAG_JUDGE_PROMPT.format(
-        question_type=question_type or "unknown",
-        query=query,
-        ground_truth=ground_truth,
-        response=response,
-        retrieved_context=_format_judge_context(retrieved_sources),
-    )
-    judge = await _judge_or_defer(judge_prompt, response, vllm_client, batch_collector, custom_id)
+    if judge_enabled:
+        aliases = [str(alias).strip() for alias in (answer_aliases or []) if str(alias).strip()]
+        judge_prompt = MULTIHOPRAG_JUDGE_PROMPT.format(
+            question_type=question_type or "unknown",
+            query=query,
+            ground_truth=ground_truth,
+            answer_aliases=json.dumps(aliases, ensure_ascii=False) if aliases else "(none)",
+            response=response,
+            retrieved_context=_format_judge_context(retrieved_sources),
+        )
+        judge = await _judge_or_defer(judge_prompt, response, vllm_client, batch_collector, custom_id)
+    else:
+        judge = {
+            "llm_judge_score": UNJUDGED_SCORE,
+            "llm_judge_reason": "judge_disabled",
+            "groundedness": UNJUDGED_SCORE,
+            "groundedness_source": "judge_disabled",
+            "hallucination": UNJUDGED_SCORE,
+            "hallucination_reason": "judge_disabled",
+            "hallucination_source": "judge_disabled",
+            "hallucination_model": "",
+        }
 
     answer_metrics = calculate_answer_metrics(
         response,
@@ -596,20 +599,36 @@ async def evaluate_multihoprag_response(
     )
     dataset_marker = str(dataset or "").strip().lower()
     if dataset_marker == "musique":
+        # MuSiQue officially supports alias-aware EM/F1.  It does not use
+        # MultiHop-RAG's permissive token-intersection QA decision.
+        answer_metrics["official_qa_accuracy"] = UNJUDGED_SCORE
         ranking = {
-            "hits@4": UNJUDGED_SCORE,
-            "hits@10": UNJUDGED_SCORE,
-            "mrr@10": UNJUDGED_SCORE,
-            "map@10": UNJUDGED_SCORE,
+            "official_hits@4": UNJUDGED_SCORE,
+            "official_hits@10": UNJUDGED_SCORE,
+            "official_mrr@10": UNJUDGED_SCORE,
+            "official_map@10": UNJUDGED_SCORE,
+            "evidence_fact_recall@4": UNJUDGED_SCORE,
+            "evidence_fact_recall@10": UNJUDGED_SCORE,
         }
+        support_metrics = calculate_musique_support_metrics(retrieved_sources, evidence_paragraph_ids or [])
     else:
+        # MultiHop-RAG officially supports its any-token QA accuracy, not
+        # MuSiQue's alias-aware answer evaluator.
+        answer_metrics["official_answer_em"] = UNJUDGED_SCORE
+        answer_metrics["official_answer_f1"] = UNJUDGED_SCORE
         ranking = calculate_retrieval_ranking_metrics(retrieved_sources, evidence_facts or [])
+        support_metrics = {
+            "paragraph_support_precision": UNJUDGED_SCORE,
+            "paragraph_support_recall": UNJUDGED_SCORE,
+            "paragraph_support_f1": UNJUDGED_SCORE,
+        }
     evidence_docs_metrics = calculate_evidence_doc_metrics(retrieved_sources, evidence_docs or [])
 
     return {
         **judge,
         **answer_metrics,
         **ranking,
+        **support_metrics,
         # Coarse view of doc_recall (1.0 if any gold article surfaced).
         **evidence_docs_metrics,
         "doc_match": (

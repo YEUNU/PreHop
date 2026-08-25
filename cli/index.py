@@ -1,5 +1,7 @@
 import asyncio
 import fcntl
+import hashlib
+import json
 import logging
 import multiprocessing as _mp
 import os
@@ -22,11 +24,145 @@ _PARSE_MP_CTX = _mp.get_context("spawn")
 
 
 logger = logging.getLogger("Prehop")
+_CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
+_SNAPSHOT_LABEL = "RAGIndexSnapshot"
+_SNAPSHOT_VERSION = 1
 
 
 def _artifact_run_id() -> str:
     raw = os.environ.get("RAG_RUN_ID") or time.strftime("%Y%m%d_%H%M%S")
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._-") or "run"
+
+
+def _load_corpus_manifest(dataset_path: str | Path) -> dict | None:
+    """Read the optional immutable corpus identity without changing old corpora."""
+    manifest_path = Path(dataset_path) / _CORPUS_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid corpus manifest: {manifest_path}: {exc}") from exc
+    fingerprint = payload.get("fingerprint")
+    paragraph_count = payload.get("paragraph_count")
+    if not isinstance(fingerprint, str) or not fingerprint.strip():
+        raise ValueError(f"Corpus manifest has no fingerprint: {manifest_path}")
+    if not isinstance(paragraph_count, int) or paragraph_count < 0:
+        raise ValueError(f"Corpus manifest has invalid paragraph_count: {manifest_path}")
+    return {"fingerprint": fingerprint, "paragraph_count": paragraph_count}
+
+
+def _source_ids_from_filenames(filenames: list[str]) -> list[str]:
+    """Return the exact staged-document identity set used by every indexer.
+
+    The corpus filename (without extension) is the durable source identity.
+    Reject ambiguous ``foo.txt``/``foo.md`` pairs instead of silently merging
+    them in a graph index whose source property is extension-independent.
+    """
+    source_ids = sorted(Path(filename).stem for filename in filenames)
+    if len(set(source_ids)) != len(source_ids):
+        raise ValueError("Corpus has duplicate .txt/.md filename stems; source identity would be ambiguous")
+    return source_ids
+
+
+def _source_set_sha256(source_ids: list[str]) -> str:
+    return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
+
+
+def _validate_staged_snapshot(files: list[str], corpus_manifest: dict | None) -> list[str]:
+    source_ids = _source_ids_from_filenames(files)
+    if corpus_manifest is not None and corpus_manifest["paragraph_count"] != len(source_ids):
+        raise ValueError(
+            "Corpus manifest paragraph_count does not match staged .txt/.md files: "
+            f"{corpus_manifest['paragraph_count']} != {len(source_ids)}"
+        )
+    return source_ids
+
+
+async def _set_neo4j_snapshot_state(
+    engine,
+    strategy: str,
+    corpus_tag: str,
+    corpus_manifest: dict | None,
+    status: str,
+) -> None:
+    """Invalidate or publish metadata outside all retrieval labels.
+
+    The node is deliberately unconnected and uses a fixed generic label, so
+    it cannot participate in vector/full-text retrieval or alter an upstream
+    strategy's scoring, ranking, top-k, or traversal.
+    """
+    await engine.neo4j.execute_query(
+        f"""
+        MERGE (m:{_SNAPSHOT_LABEL} {{strategy: $strategy, corpus_tag: $corpus_tag}})
+        SET m.status = $status,
+            m.snapshot_version = $_version,
+            m.corpus_manifest_fingerprint = $fingerprint,
+            m.corpus_manifest_paragraph_count = $paragraph_count,
+            m.updated_at_epoch = $updated_at
+        """,
+        {
+            "strategy": strategy,
+            "corpus_tag": corpus_tag,
+            "status": status,
+            "_version": _SNAPSHOT_VERSION,
+            "fingerprint": (corpus_manifest or {}).get("fingerprint"),
+            "paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+            "updated_at": time.time(),
+        },
+    )
+
+
+async def _verify_and_publish_neo4j_snapshot(
+    engine,
+    strategy: str,
+    corpus_tag: str,
+    source_ids: list[str],
+    corpus_manifest: dict | None,
+) -> dict[str, object]:
+    """Verify the active graph itself, then and only then mark it complete."""
+    rows = await engine.neo4j.execute_query(
+        f"""
+        MATCH (c:{engine.chunk_label})
+        WHERE coalesce(c.source, '') <> ''
+        RETURN DISTINCT c.source AS source
+        """
+    )
+    actual_ids = sorted({Path(str(row.get("source") or "")).stem for row in rows})
+    expected = sorted(source_ids)
+    if actual_ids != expected:
+        missing = sorted(set(expected) - set(actual_ids))
+        unexpected = sorted(set(actual_ids) - set(expected))
+        raise RuntimeError(
+            "Active Neo4j source snapshot does not match staged corpus: "
+            f"expected={len(expected)} actual={len(actual_ids)} "
+            f"missing={missing[:5]} unexpected={unexpected[:5]}"
+        )
+    source_digest = _source_set_sha256(actual_ids)
+    await engine.neo4j.execute_query(
+        f"""
+        MERGE (m:{_SNAPSHOT_LABEL} {{strategy: $strategy, corpus_tag: $corpus_tag}})
+        SET m.status = 'complete',
+            m.snapshot_version = $_version,
+            m.corpus_manifest_fingerprint = $fingerprint,
+            m.corpus_manifest_paragraph_count = $paragraph_count,
+            m.source_count = $source_count,
+            m.source_set_sha256 = $source_digest,
+            m.completed_at_epoch = $completed_at,
+            m.updated_at_epoch = $completed_at
+        """,
+        {
+            "strategy": strategy,
+            "corpus_tag": corpus_tag,
+            "_version": _SNAPSHOT_VERSION,
+            "fingerprint": (corpus_manifest or {}).get("fingerprint"),
+            "paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+            "source_count": len(actual_ids),
+            "source_digest": source_digest,
+            "completed_at": time.time(),
+        },
+    )
+    return {"status": "complete", "source_count": len(actual_ids), "source_set_sha256": source_digest}
 
 
 def _write_runtime_stage_stats(
@@ -35,6 +171,7 @@ def _write_runtime_stage_stats(
     dataset_path: str,
     timing_seconds: dict[str, float],
     status: str,
+    corpus_manifest: dict | None = None,
 ) -> None:
     """Persist timing even for official adapters that do not use our graph stats."""
     stats_dir = Path("data/index_stats")
@@ -48,6 +185,8 @@ def _write_runtime_stage_stats(
             "dataset_path": dataset_path,
             "timing_seconds": dict(timing_seconds),
             "status": status,
+            "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
+            "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
         },
     )
 
@@ -252,10 +391,12 @@ async def _run_indexing_unlocked(
     )
     if not os.path.isdir(dataset_path):
         raise FileNotFoundError(f"Dataset directory not found: {dataset_path}")
+    corpus_manifest = _load_corpus_manifest(dataset_path)
 
     files = sorted(file for file in os.listdir(dataset_path) if file.endswith((".txt", ".md")))
     if not files:
         raise ValueError(f"Dataset contains no supported .txt/.md files: {dataset_path}")
+    source_ids = _validate_staged_snapshot(files, corpus_manifest)
 
     if strategy == "ms_graphrag":
         # Official MS GraphRAG pipeline (extract_graph + Leiden + community
@@ -271,6 +412,7 @@ async def _run_indexing_unlocked(
             adapter_timing = await run_ms_index(
                 dataset_path=dataset_path,
                 corpus_tag=corpus_tag or "default",
+                corpus_manifest=corpus_manifest,
             )
             timing.update(adapter_timing or {})
         except BaseException:
@@ -284,6 +426,7 @@ async def _run_indexing_unlocked(
                 dataset_path,
                 timing,
                 official_status,
+                corpus_manifest,
             )
         return
 
@@ -301,6 +444,7 @@ async def _run_indexing_unlocked(
             adapter_timing = await run_hop_index(
                 dataset_path=dataset_path,
                 corpus_tag=corpus_tag or "default",
+                corpus_manifest=corpus_manifest,
             )
             timing.update(adapter_timing or {})
         except BaseException:
@@ -314,6 +458,7 @@ async def _run_indexing_unlocked(
                 dataset_path,
                 timing,
                 official_status,
+                corpus_manifest,
             )
         return
 
@@ -330,6 +475,17 @@ async def _run_indexing_unlocked(
         is_graph = False
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
+
+    # A previous completed marker must never authorize a benchmark while this
+    # target is being rebuilt. Completion is published only after a direct
+    # source-set query over the active graph below.
+    await _set_neo4j_snapshot_state(
+        engine,
+        strategy,
+        corpus_tag or "default",
+        corpus_manifest,
+        "in_progress",
+    )
 
     # A successful run represents the current directory snapshot exactly.
     # Prune documents removed since an earlier run of the same corpus tag;
@@ -531,6 +687,20 @@ async def _run_indexing_unlocked(
     global_failure = any(item["stage"] in {"graph_flush", "hop_edges"} for item in failed_files)
     finalized_successes = 0 if global_failure else stats["succeeded"]
 
+    snapshot_metadata = None
+    if not failed_files:
+        try:
+            snapshot_metadata = await _verify_and_publish_neo4j_snapshot(
+                engine,
+                strategy,
+                corpus_tag or "default",
+                source_ids,
+                corpus_manifest,
+            )
+        except Exception as exc:  # noqa: BLE001 - integrity mismatch must invalidate paper output
+            logger.error("Active index snapshot validation failed: %s", exc)
+            failed_files.append({"item": "__active_snapshot__", "stage": "active_snapshot", "error": str(exc)})
+
     logger.info(
         "Indexing complete for %d files. Success: %d | Failed: %d",
         len(files),
@@ -591,12 +761,39 @@ async def _run_indexing_unlocked(
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
+                    "status": "complete" if not failed_files else "failed",
+                    "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
+                    "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+                    "active_snapshot": snapshot_metadata,
                     **graph_stats,
                 },
             )
             logger.info("Graph stats written to %s", stats_path)
         except (OSError, TypeError, ValueError) as exc:
             logger.error("Could not write graph stats to %s: %s", stats_path, exc)
+    elif strategy == "naive":
+        # Naive has no Prehop structural graph statistics, but it still needs
+        # a strategy-scoped corpus identity artifact for benchmark provenance.
+        stats_dir = Path("data/index_stats")
+        stats_dir.mkdir(parents=True, exist_ok=True)
+        stats_path = stats_dir / f"{strategy}_{corpus_tag or 'default'}_{_artifact_run_id()}.json"
+        try:
+            _write_json(
+                stats_path,
+                {
+                    "strategy": strategy,
+                    "corpus_tag": corpus_tag or "default",
+                    "dataset_path": dataset_path,
+                    "status": "complete" if not failed_files else "failed",
+                    "timing_seconds": dict(stage_timing),
+                    "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
+                    "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+                    "active_snapshot": snapshot_metadata,
+                },
+            )
+            logger.info("Index provenance stats written to %s", stats_path)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.error("Could not write index provenance stats to %s: %s", stats_path, exc)
 
     elapsed_seconds = time.perf_counter() - started_at
     logger.info(

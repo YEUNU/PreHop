@@ -34,12 +34,22 @@ single LLM synthesis call.
 
 The repository fixes dataset-specific evaluation rather than using one pooled
 retrieval score. Deterministic normalized answer EM/F1 is primary, with
-alias-aware matching for MuSiQue. MultiHop-RAG uses non-null fact recall and a
-separate null-refusal slice; MuSiQue uses supporting-paragraph/title P/R/F1 because its gold evidence is
-paragraph-level. The LLM judge is supplemental: semantic correctness and
+alias-aware matching for MuSiQue. MultiHop-RAG reports official-compatible
+any-hit/MRR/MAP fields separately from custom `evidence_fact_recall@k` and a
+null-refusal slice. MuSiQue reports `paragraph_support_*` using the official
+SupportMetric formula over stable global paragraph identities; this is not an
+official query-local-`idx` submission (titles remain diagnostic-only). The
+LLM judge is supplemental: semantic correctness and
 context groundedness are separate fields, and it is never the sole answer
-metric. See [the local paper specification](docs/prehop_paper.md) and
+metric. It is disabled by default; set `RAG_JUDGE_ENABLED=true` only for a
+separately labelled supplemental analysis. See [the local paper specification](docs/prehop_paper.md) and
 `CLAUDE.md` for the complete protocol.
+
+The judge model must differ from both the run's generation model and
+`VLLM_SERVED_MODEL_NAME`. `RAG_JUDGE_ALLOW_SELF=true` exists only for explicit
+non-paper debugging and is recorded in result metadata. Paired bootstrap uses
+stable query IDs and rejects incomplete, scope-mismatched, or corpus/index
+fingerprint-incompatible artifacts; legacy/exploratory overrides are opt-in.
 
 ---
 
@@ -131,11 +141,16 @@ python3 data/prepare_multihoprag.py
 ```
 
 Result JSON is written to `data/results/<timestamp>/prehop/<corpus_tag>/*.json`
-and includes per-query deterministic answer EM/F1, evidence metrics,
+and includes per-query deterministic answer EM/F1, official-compatible and
+custom evidence metrics,
 category breakdowns, the shared 3-way answer label (Correct / Incorrect /
 Refusal), supplemental LLM-judge fields, and aggregate metrics. Missing gold
-units are excluded with `-1`; evaluated misses are zero. Incomplete or failed
-runs are not paper-eligible.
+units are excluded with `-1`; evaluated misses are zero. Aggregates print an
+eligible-row denominator and exclude runtime-error rows. Sample manifests are
+explicitly exploratory; only complete official splits with a rebuilt index can
+be described as official-compatible runs. MuSiQue corpus metadata headers are
+removed before indexing and are used only to audit source identity. Incomplete or failed runs are not
+paper-eligible.
 
 ### Per-dataset entrypoints
 
@@ -150,7 +165,8 @@ python3 data/prepare_multihoprag.py            # downloads corpus + full queries
 ./run_multihoprag.sh all                       # index all 4 + benchmark (sample200)
 ./run_multihoprag.sh benchmark --queries full  # or the full 2556-query set
 
-# MuSiQue
+# MuSiQue: preparation defaults to all 2,417 answerable dev rows.
+# Create exploratory samples only with make_sample.py.
 python3 data/prepare_musique.py && python3 data/make_sample.py --dataset musique --per-type 67
 ./run_dataset.sh musique all
 ```
@@ -166,10 +182,11 @@ two datasets concurrently, then advances to the next strategy:
 ```bash
 VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=120 \
 .venv/bin/python scripts/run_index_matrix.py \
+  --run-id <unique-paper-run-id> \
   --datasets multihoprag musique \
   --strategies ms_graphrag hoprag naive prehop \
   --clear-graph --max-parallel 2 --max-generation-parallel 2 \
-  --save-prehop-intermediate
+  --target-attempts 2 --save-prehop-intermediate
 ```
 
 Results are isolated under `artifacts/indexing/<run-id>/`: per-target logs,
@@ -179,6 +196,9 @@ vLLM queue pressure automatically reduces the parallel width for remaining
 targets; a resource/rate-limit failure also halves that target's internal
 worker count on retry. `logical_payload_bytes_estimate` is a cross-strategy reproducible
 payload estimate; it is not Neo4j's physical store-file size.
+Use a new, explicit run ID for every paper run. Dry runs and interrupted
+partial runs are not paper results and must not share an artifact directory
+with the replacement cold run.
 The runner applies one per-target generation budget to `MAX_CONCURRENT_LLM_CALLS`,
 `RAG_MS_CONCURRENT_REQUESTS`, and HopRAG's
 `RAG_HOP_DOC_WORKERS × RAG_HOP_MAX_THREADS`. With two generation targets and
@@ -232,10 +252,12 @@ batch can be resumed without re-running retrieval:
 .venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
 ```
 
-Batch payloads must contain valid explicit `score` and `hallucination` fields;
-partial or malformed output keeps its reconciliation manifest and is never
-converted into a paper metric. Post-hoc `kfold_analysis.py` and
-`paired_bootstrap.py` produce uncertainty and paired-difference artifacts.
+Batch payloads must contain valid explicit `score` and `groundedness` fields;
+`hallucination` is derived locally from groundedness.
+Partial or malformed output keeps its reconciliation manifest and is never
+converted into a paper metric. Query-level `paired_bootstrap.py` produces
+uncertainty intervals for paired strategy differences over the same evaluated
+questions.
 
 ---
 

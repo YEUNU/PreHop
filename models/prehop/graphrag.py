@@ -95,17 +95,24 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             doc = row.get("title") or row.get("doc") or "Unknown"
             page = row.get("page", 0)
             sent_id = row.get("sent_id", 0)
-            key = (doc, page, sent_id)
+            # Corpus filenames are the stable identity (including MuSiQue's
+            # paragraph hash).  Only source-less legacy/mock rows retain the
+            # historical display-title/page/sentence deduplication behavior.
+            source = row.get("source")
+            key = ("source", source, page, sent_id) if source else ("legacy", doc, page, sent_id)
             if key in seen:
                 continue
-            unique.append(
-                {
-                    "doc": doc,
-                    "page": page,
-                    "text": row.get("text", ""),
-                    "sent_id": sent_id,
-                }
-            )
+            source_record = {
+                "doc": doc,
+                "page": page,
+                "text": row.get("text", ""),
+                "sent_id": sent_id,
+            }
+            # Preserve the filename only when present; unit-test/mocked
+            # source shapes retain their established public representation.
+            if source:
+                source_record["source"] = source
+            unique.append(source_record)
             seen.add(key)
         return unique
 

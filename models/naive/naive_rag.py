@@ -203,7 +203,8 @@ class NaiveRAG:
             cypher_query = f"""
                 CALL db.index.vector.queryNodes('{self.vector_index}', $k, $embedding)
                 YIELD node, score
-                RETURN node.text as text, node.title as title, node.sent_id as sent_id, node.page as page, score
+                RETURN node.text as text, node.title as title, node.source as source,
+                       node.sent_id as sent_id, node.page as page, score
             """
             result = await session.run(
                 cypher_query,
@@ -234,9 +235,17 @@ class NaiveRAG:
         answer = await self.vllm.generate_response(messages)
         if not str(answer or "").strip():
             raise ValueError("Answer synthesis returned an empty response")
-        # Format sources for metric evaluation: {"doc": title, "page": page, "text": text, "sent_id": sent_id}
+        # Preserve source filename as an opaque identity; MuSiQue uses it to
+        # distinguish different paragraphs with the same Wikipedia title.
         trace = [{"step": "naive_qa", "input": messages, "output": answer}]
         sources = [
-            {"doc": n["title"], "page": n.get("page", 0), "text": n["text"], "sent_id": n["sent_id"]} for n in nodes
+            {
+                "doc": n["title"],
+                "source": n.get("source", ""),
+                "page": n.get("page", 0),
+                "text": n["text"],
+                "sent_id": n["sent_id"],
+            }
+            for n in nodes
         ]
         return answer, sources, trace

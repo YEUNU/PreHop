@@ -69,6 +69,8 @@ _NODE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_NODE_BATCH", "200")))
 _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
 
 _OUTPUT_ROOT = Path(os.environ.get("RAG_HOP_OUTPUT_ROOT", "data/hoprag_output"))
+_SNAPSHOT_LABEL = "RAGIndexSnapshot"
+_SNAPSHOT_VERSION = 1
 
 
 def _validated_question_list(result) -> list[str]:
@@ -112,6 +114,99 @@ def cache_dir_for(corpus_tag: str) -> Path:
 
 def input_dir_for(corpus_tag: str) -> Path:
     return (_OUTPUT_ROOT / corpus_tag / "_input").resolve()
+
+
+def _source_set_sha256(source_ids: list[str]) -> str:
+    return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
+
+
+def _expected_source_ids(staged_files: list[str], corpus_manifest: dict | None) -> list[str]:
+    source_ids = sorted(Path(name).stem for name in staged_files)
+    if len(source_ids) != len(set(source_ids)):
+        raise ValueError("HopRAG staged corpus has duplicate filename stems")
+    if corpus_manifest is not None and corpus_manifest.get("paragraph_count") != len(source_ids):
+        raise ValueError("HopRAG corpus manifest paragraph_count does not match staged file count")
+    return source_ids
+
+
+def _set_snapshot_state(config, corpus_tag: str, corpus_manifest: dict | None, status: str) -> None:
+    """Keep an unconnected metadata node out of upstream HopRAG traversal."""
+    from neo4j import GraphDatabase
+
+    driver = GraphDatabase.driver(
+        config.neo4j_url,
+        auth=(config.neo4j_user, config.neo4j_password),
+    )
+    try:
+        with driver.session(database=config.neo4j_dbname) as session:
+            session.run(
+                f"""
+                MERGE (m:{_SNAPSHOT_LABEL} {{strategy: 'hoprag', corpus_tag: $corpus_tag}})
+                SET m.status = $status,
+                    m.snapshot_version = $_version,
+                    m.corpus_manifest_fingerprint = $fingerprint,
+                    m.corpus_manifest_paragraph_count = $paragraph_count,
+                    m.updated_at_epoch = $updated_at
+                """,
+                {
+                    "corpus_tag": corpus_tag,
+                    "status": status,
+                    "_version": _SNAPSHOT_VERSION,
+                    "fingerprint": (corpus_manifest or {}).get("fingerprint"),
+                    "paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+                    "updated_at": time.time(),
+                },
+            ).consume()
+    finally:
+        driver.close()
+
+
+def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str], corpus_manifest: dict | None) -> dict:
+    """Prove the active HopRAG label contains exactly the staged sources."""
+    if builder.driver is None:
+        raise RuntimeError("HopRAG active snapshot cannot be verified without its Neo4j driver")
+    with builder.driver.session() as session:
+        rows = session.run(
+            f"""
+            MATCH (n:{builder.label})
+            WHERE coalesce(n.source, '') <> ''
+            RETURN DISTINCT n.source AS source
+            """
+        )
+        actual_ids = sorted({Path(str(row["source"] or "")).stem for row in rows})
+        expected = sorted(source_ids)
+        if actual_ids != expected:
+            missing = sorted(set(expected) - set(actual_ids))
+            unexpected = sorted(set(actual_ids) - set(expected))
+            raise RuntimeError(
+                "HopRAG active Neo4j source snapshot does not match staged corpus: "
+                f"expected={len(expected)} actual={len(actual_ids)} "
+                f"missing={missing[:5]} unexpected={unexpected[:5]}"
+            )
+        source_digest = _source_set_sha256(actual_ids)
+        session.run(
+            f"""
+            MERGE (m:{_SNAPSHOT_LABEL} {{strategy: 'hoprag', corpus_tag: $corpus_tag}})
+            SET m.status = 'complete',
+                m.snapshot_version = $_version,
+                m.corpus_manifest_fingerprint = $fingerprint,
+                m.corpus_manifest_paragraph_count = $paragraph_count,
+                m.source_count = $source_count,
+                m.source_set_sha256 = $source_digest,
+                m.completed_at_epoch = $completed_at,
+                m.updated_at_epoch = $completed_at
+            """,
+            {
+                "corpus_tag": corpus_tag,
+                "_version": _SNAPSHOT_VERSION,
+                "fingerprint": (corpus_manifest or {}).get("fingerprint"),
+                "paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+                "source_count": len(actual_ids),
+                "source_digest": source_digest,
+                "completed_at": time.time(),
+            },
+        ).consume()
+    return {"status": "complete", "source_count": len(actual_ids), "source_set_sha256": source_digest}
 
 
 # ---------------------------------------------------------------- file staging
@@ -1279,21 +1374,34 @@ def _build_official_edge_groups(
     """
     import html
 
-    title_to_file: dict[str, str] = {}
-    for path in staged_dir.iterdir():
+    title_to_files: dict[str, list[str]] = {}
+    paragraph_id_to_file: dict[str, str] = {}
+    for filename in staged_files:
+        path = staged_dir / filename
         if not path.is_file():
             continue
         with open(path, "r", encoding="utf-8") as handle:
             first_line = handle.readline().strip()
+            second_line = handle.readline().strip()
         title = first_line.removeprefix("Title: ").strip()
         if title:
-            title_to_file[title] = path.name
+            title_to_files.setdefault(title, []).append(path.name)
+        paragraph_id = second_line.removeprefix("Paragraph-ID: ").strip() if second_line.startswith("Paragraph-ID: ") else ""
+        if paragraph_id:
+            previous = paragraph_id_to_file.setdefault(paragraph_id, path.name)
+            if previous != path.name:
+                raise RuntimeError(f"HopRAG staged paragraph identity is duplicated: {paragraph_id}")
 
     def _resolve_titles(titles) -> list[str]:
         resolved = []
         for raw_title in titles or []:
             title = html.unescape(str(raw_title or "").strip())
-            filename = title_to_file.get(title)
+            matches = title_to_files.get(title, [])
+            if len(matches) > 1:
+                raise RuntimeError(
+                    f"HopRAG cannot resolve title-only evidence with multiple staged documents: {title!r}"
+                )
+            filename = matches[0] if matches else None
             if filename is None:
                 import re
 
@@ -1303,6 +1411,27 @@ def _build_official_edge_groups(
                 if (staged_dir / candidate).is_file():
                     filename = candidate
             if filename and filename not in resolved:
+                resolved.append(filename)
+        return resolved
+
+    def _resolve_musique_paragraphs(paragraphs) -> list[str]:
+        from data.prepare_musique import clean_wiki_markup, paragraph_identity
+
+        resolved = []
+        for paragraph in paragraphs or []:
+            title = clean_wiki_markup(str(paragraph.get("title") or "").strip())
+            body = clean_wiki_markup(str(paragraph.get("paragraph_text") or "").strip())
+            if not title or not body:
+                continue
+            identity = paragraph_identity(title, body)
+            filename = paragraph_id_to_file.get(identity)
+            if filename is None:
+                candidate = f"musique_{identity.removeprefix('musique:')}.txt"
+                if (staged_dir / candidate).is_file():
+                    filename = candidate
+            if filename is None:
+                raise RuntimeError(f"HopRAG cannot resolve MuSiQue paragraph identity: {identity}")
+            if filename not in resolved:
                 resolved.append(filename)
         return resolved
 
@@ -1317,7 +1446,7 @@ def _build_official_edge_groups(
                 row = json.loads(line)
                 if row.get("answerable") is False:
                     continue
-                docs = _resolve_titles(paragraph.get("title") for paragraph in (row.get("paragraphs") or []))
+                docs = _resolve_musique_paragraphs(row.get("paragraphs") or [])
                 if docs:
                     groups[str(row.get("id"))] = docs
     elif tag == "multihoprag":
@@ -1351,6 +1480,38 @@ def _build_official_edge_groups(
     return groups
 
 
+def _prune_stale_hoprag_sources(builder, staged_files: list[str], edge_type: str) -> bool:
+    """Remove nodes outside the active snapshot and invalidate all old edges.
+
+    The node label and relationship type are corpus-tag scoped. When any stale
+    or unowned node exists, all remaining relationships of this corpus are
+    cleared so edge groups can be rebuilt without retaining partial old state.
+    """
+    active_sources = sorted({Path(doc_id).stem for doc_id in staged_files})
+    stale_where = "n.source IS NULL OR NOT n.source IN $active_sources"
+    with builder.driver.session() as session:
+        result = session.run(
+            f"MATCH (n:{builder.label}) WHERE {stale_where} RETURN count(n) AS stale_count",
+            {"active_sources": active_sources},
+        )
+        record = result.single()
+        stale_count = int(record["stale_count"]) if record else 0
+        if not stale_count:
+            return False
+        session.run(
+            f"MATCH (n:{builder.label}) WHERE {stale_where} DETACH DELETE n",
+            {"active_sources": active_sources},
+        ).consume()
+        session.run(
+            f"MATCH (a:{builder.label})-[r:{edge_type}]-(b:{builder.label}) WITH DISTINCT r DELETE r"
+        ).consume()
+    logger.info(
+        "HopRAG snapshot reconciliation: pruned %d stale nodes and cleared corpus edges for rebuild",
+        stale_count,
+    )
+    return True
+
+
 def _run_stage2_group_streaming(
     builder,
     per_doc_dir: Path,
@@ -1378,10 +1539,13 @@ def _run_stage2_group_streaming(
     unwind_insert = (
         f"UNWIND $rows AS row "
         f"CREATE (n:{builder.label} {{text: row.text, keywords: row.keywords, "
-        f"embed: row.embed}}) "
+        f"embed: row.embed, title: row.title}}) "
         f"RETURN id(n)"
     )
-    backfill_cypher = "UNWIND $rows AS row MATCH (n) WHERE id(n) = row.id SET n.source = row.source"
+    backfill_cypher = (
+        "UNWIND $rows AS row MATCH (n) WHERE id(n) = row.id "
+        "SET n.source = row.source, n.title = row.title"
+    )
 
     # Derive the staged directory from the per-doc cache layout.
     staged_dir = per_doc_dir.parents[1] / "_input"
@@ -1390,6 +1554,11 @@ def _run_stage2_group_streaming(
         staged_dir,
         staged_files,
     )
+    staged_titles: dict[str, str] = {}
+    for doc_id in staged_files:
+        with open(staged_dir / doc_id, "r", encoding="utf-8") as handle:
+            first_line = handle.readline().strip()
+        staged_titles[Path(doc_id).stem] = first_line.removeprefix("Title: ").strip()
 
     # Resume support: load tracking sets from cache dir sibling of per_doc_dir.
     cache_dir = per_doc_dir.parent
@@ -1405,8 +1574,21 @@ def _run_stage2_group_streaming(
         with open(edges_done_path, "rb") as fh:
             edges_done = pickle.load(fh)
 
+    nodes_done &= set(staged_files)
+    if _prune_stale_hoprag_sources(builder, staged_files, config.edge_name):
+        # Stale-node deletion invalidates any edge group that included it.
+        # Remaining corpus edges were cleared too, so every group must rerun.
+        edges_done.clear()
+    _atomic_pickle_dump(nodes_done_path, nodes_done)
+    _atomic_pickle_dump(edges_done_path, edges_done)
+
     existing_by_source: dict[str, list[int]] = {}
     with builder.driver.session() as s:
+        title_rows = [{"source": source, "title": title} for source, title in sorted(staged_titles.items())]
+        s.run(
+            f"UNWIND $rows AS row MATCH (n:{builder.label}) WHERE n.source = row.source SET n.title = row.title",
+            {"rows": title_rows},
+        ).consume()
         res = s.run(
             f"MATCH (n:{builder.label}) WHERE n.source IS NOT NULL RETURN n.source AS source, collect(id(n)) AS ids"
         )
@@ -1460,7 +1642,14 @@ def _run_stage2_group_streaming(
             embed = node["embed"]
             if hasattr(embed, "tolist"):
                 embed = embed.tolist()
-            rows.append({"text": node["text"], "keywords": node["keywords"], "embed": embed})
+            rows.append(
+                {
+                    "text": node["text"],
+                    "keywords": node["keywords"],
+                    "embed": embed,
+                    "title": staged_titles[stem],
+                }
+            )
 
         real_ids: list[int] = []
         with builder.driver.session() as session:
@@ -1471,7 +1660,9 @@ def _run_stage2_group_streaming(
                 if len(batch_ids) != len(batch):
                     raise RuntimeError(f"HopRAG UNWIND returned {len(batch_ids)} IDs for {len(batch)} nodes")
                 real_ids.extend(batch_ids)
-            backfill = [{"id": int(real_id), "source": stem} for real_id in real_ids]
+            backfill = [
+                {"id": int(real_id), "source": stem, "title": staged_titles[stem]} for real_id in real_ids
+            ]
             session.run(backfill_cypher, {"rows": backfill})
         existing_by_source[stem] = real_ids
         nodes_done.add(doc_id)
@@ -1530,6 +1721,7 @@ def _run_stage2_group_streaming(
 def _run_official_index_blocking(
     dataset_path: str,
     corpus_tag: str,
+    corpus_manifest: dict | None = None,
 ) -> dict[str, float]:
     """Synchronous driver — HopBuilder is sync, so we call it directly and
     let the orchestrator wrap us in run_in_executor."""
@@ -1540,6 +1732,11 @@ def _run_official_index_blocking(
     import HopBuilder
 
     staged_input, staged_files = _stage_input_files(dataset_path, corpus_tag)
+    source_ids = _expected_source_ids(staged_files, corpus_manifest)
+    # This invalidates any prior completion marker before mutating the active
+    # corpus-tagged label.  A crash/failure therefore cannot leave a stale
+    # `complete` marker behind for a full benchmark to consume.
+    _set_snapshot_state(config, corpus_tag, corpus_manifest, "in_progress")
     cache_dir = cache_dir_for(corpus_tag)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1582,6 +1779,9 @@ def _run_official_index_blocking(
     stage_started = time.perf_counter()
     builder.create_index()
     timing["stage3_index_creation_seconds"] = time.perf_counter() - stage_started
+    snapshot = _verify_and_publish_snapshot(builder, corpus_tag, source_ids, corpus_manifest)
+    timing["active_snapshot_verified"] = 1.0
+    timing["active_snapshot_source_count"] = float(snapshot["source_count"])
     if builder.driver is not None:
         builder.driver.close()
         builder.driver = None
@@ -1592,6 +1792,7 @@ def _run_official_index_blocking(
 async def run_official_index(
     dataset_path: str,
     corpus_tag: str,
+    corpus_manifest: dict | None = None,
 ) -> dict[str, float]:
     """Async wrapper around the sync HopBuilder driver."""
     loop = asyncio.get_event_loop()
@@ -1600,4 +1801,5 @@ async def run_official_index(
         _run_official_index_blocking,
         dataset_path,
         corpus_tag,
+        corpus_manifest,
     )

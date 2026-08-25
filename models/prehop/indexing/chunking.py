@@ -127,6 +127,17 @@ def parse_pages_offline(filename: str, content: str) -> dict[str, Any]:
     if lines and lines[0].startswith("Title: "):
         title = lines[0].replace("Title: ", "").strip()
 
+    # MuSiQue preparation writes a stable paragraph identity for evaluation.
+    # It is source metadata, not evidence text: remove it before splitting,
+    # embedding, or prompting while retaining it for callers that need audit
+    # metadata. Every benchmark adapter exposes the filename identity instead.
+    paragraph_id = ""
+    body_lines = lines
+    if len(lines) > 1 and lines[1].startswith("Paragraph-ID: "):
+        paragraph_id = lines[1].replace("Paragraph-ID: ", "").strip()
+        body_lines = [lines[0], *lines[2:]]
+        content = "\n".join(body_lines)
+
     matches = list(_PAGE_RE.finditer(content))
     pages: list[dict[str, Any]] = []
     if matches:
@@ -142,13 +153,13 @@ def parse_pages_offline(filename: str, content: str) -> dict[str, Any]:
         # The prepared corpora may omit page markers. Such input is one page;
         # this is a supported input form, not a model-generated conversion.
         start_idx = 0
-        if lines and lines[0].startswith("Title: "):
+        if body_lines and body_lines[0].startswith("Title: "):
             start_idx = 1
-        body = "\n".join(lines[start_idx:]).strip()
+        body = "\n".join(body_lines[start_idx:]).strip()
         if body:
             pages = [{"num": 1, "content": body}]
 
-    return {"filename": filename, "title": title, "pages": pages}
+    return {"filename": filename, "title": title, "paragraph_id": paragraph_id, "pages": pages}
 
 
 def split_fixed_sentence_windows(

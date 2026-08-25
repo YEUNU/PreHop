@@ -13,6 +13,7 @@ and accept harmless formatting differences that do not change the answer.
 **Question Type:** {question_type}
 **Question:** {query}
 **Ground Truth Answer:** {ground_truth}
+**Official Answer Aliases:** {answer_aliases}
 **Model Prediction:** {response}
 **Retrieved Context:**
 {retrieved_context}
@@ -33,7 +34,7 @@ and accept harmless formatting differences that do not change the answer.
      determined") is the CORRECT answer (score 1.0); fabricating a concrete
      answer is wrong (score 0.0).
    - any other question type: judge factual equivalence to the Ground Truth
-     directly, using the same score/hallucination rules below.
+     directly, using the same correctness and groundedness rules below.
 3. `score` is answer correctness against the Ground Truth:
    - 1.0 if the final answer is factually equivalent to the Ground Truth
      (minor wording / alias / casing differences ok). Treat an answer alias
@@ -50,19 +51,14 @@ and accept harmless formatting differences that do not change the answer.
      records abstention as not applicable for groundedness.
    - If the Retrieved Context is empty, every substantive answer is
      unsupported.
-5. `hallucination` is a context-groundedness label, not another correctness
-   label:
-   - 1.0 for a substantive answer when groundedness=0.0.
-   - 0.0 for a substantive answer when groundedness=1.0, and for an honest
-     abstention.
-   - For `null_query`, an honest abstention has score=1.0 and
-     hallucination=0.0; a concrete answer is a hallucination even if it is
-     plausible from outside the retrieved context.
-6. Keep the axes independent. A wrong answer supported by the retrieved
-   context has score=0.0, groundedness=1.0, hallucination=0.0. A correct
-   answer not supported by the retrieved context has score=1.0,
-   groundedness=0.0, hallucination=1.0.
+5. Keep the axes independent. A wrong answer supported by the retrieved
+   context has score=0.0 and groundedness=1.0. A correct answer not supported
+   by the retrieved context has score=1.0 and groundedness=0.0.
+
+The evaluator derives `hallucination` deterministically from `groundedness`
+(1-groundedness for substantive answers; 0.0 for abstentions). Do NOT return
+or reason about a separate hallucination field.
 
 Respond ONLY in JSON format:
-{{"score": 1.0 or 0.0, "groundedness": 1.0 or 0.0, "hallucination": 1.0 or 0.0, "reason": "brief explanation covering correctness and context support"}}
+{{"score": 1.0 or 0.0, "groundedness": 1.0 or 0.0, "reason": "brief explanation covering correctness and context support"}}
 """

@@ -46,7 +46,9 @@ DATASETS = {
     "multihoprag": ROOT / "data/multihoprag_corpus",
     "musique": ROOT / "data/musique_corpus",
 }
-EXPECTED_FILE_COUNTS = {"multihoprag": 609, "musique": 17_629}
+# Exact prepared paper corpora. MuSiQue uses stable title/body paragraph
+# identities, so same-title/different-body paragraphs are all retained.
+EXPECTED_FILE_COUNTS = {"multihoprag": 609, "musique": 21_099}
 STRATEGIES = ("ms_graphrag", "hoprag", "naive", "prehop")
 GENERATION_HEAVY_STRATEGIES = frozenset({"prehop", "hoprag", "ms_graphrag"})
 PAPER_MAX_NUM_SEQS = 120

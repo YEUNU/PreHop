@@ -1,22 +1,21 @@
 """Query-level paired bootstrap: prehop vs each baseline, on the active
 multi-hop datasets (MultiHop-RAG / MuSiQue).
 
-Per-fold CIs from a single run (see kfold_analysis.py) overlap across
-strategies, so they cannot establish whether prehop's lead over a given
-baseline is real. This script pairs the per-query scores by query string (all
-strategies ran the identical sample file for a dataset), computes the paired
+This script pairs per-query scores by stable query ID, computes the paired
 difference (prehop - baseline) per query, and bootstraps the mean diff to a
 95% CI. A diff whose CI excludes 0 is a statistically separated win/loss.
 
-- Judge / hallucination: computed over judged rows (sentinel -1 dropped); both
-  sides of a pair must be valid. hallucination is lower-is-better.
-- Retrieval metrics (mrr@10/map@10/hits@4/hits@10/evidence_doc_recall): a
-  query with no gold evidence (e.g. MultiHop-RAG's null_query category, where
-  every strategy scores 0 by construction) is excluded — the diff is over
-  gold-bearing queries only. Gold-lessness is detected from the row's
+- Judge / hallucination are excluded from the primary bootstrap by default.
+  Pass ``--include-judge`` to emit a clearly labelled supplemental analysis;
+  judged rows only (sentinel -1 dropped), and hallucination is lower-is-better.
+- Dataset-specific metrics are selected from the result artifact: official
+  MultiHop-RAG ranking/custom fact recall or MuSiQue answer/support metrics.
+  A query with no gold evidence (e.g. MultiHop-RAG's null_query category) is
+  excluded from retrieval comparisons. Gold-lessness is detected from the row's
   `expected_sources` (docs/facts) rather than a dataset-specific category
   name, so this works for the active datasets (every MuSiQue query carries gold
-  evidence, so the exclusion never fires there).
+  evidence, so the exclusion never fires there). Runtime errors and every
+  negative sentinel are excluded for all metric families.
 
 The dataset name/tag is read from each result file's own `dataset`/
 `corpus_tag` fields — nothing dataset-specific needs to be passed in.
@@ -41,24 +40,120 @@ from pathlib import Path
 
 import numpy as np
 
-JUDGE_METRICS = ["llm_judge_score", "hallucination"]
-RETRIEVAL_METRICS = ["mrr@10", "map@10", "hits@4", "hits@10", "evidence_doc_recall"]
+SUPPLEMENTAL_JUDGE_METRICS = ["llm_judge_score", "groundedness", "hallucination"]
+MULTIHOPRAG_METRICS = [
+    "answer_em",
+    "answer_f1",
+    "official_qa_accuracy",
+    "official_mrr@10",
+    "official_map@10",
+    "official_hits@4",
+    "official_hits@10",
+    "evidence_fact_recall@4",
+    "evidence_fact_recall@10",
+    "evidence_doc_recall",
+]
+MUSIQUE_METRICS = [
+    "answer_em",
+    "answer_f1",
+    "official_answer_em",
+    "official_answer_f1",
+    "paragraph_support_precision",
+    "paragraph_support_recall",
+    "paragraph_support_f1",
+    "evidence_doc_recall",
+]
+RETRIEVAL_METRICS = set(MULTIHOPRAG_METRICS[3:] + MUSIQUE_METRICS[4:])
 LOWER_IS_BETTER = {"hallucination"}
 N_BOOT = 10000
 SEED = 42
 
 
-def _load(path: str) -> tuple[str, str, dict[str, dict]]:
+def _load(path: str, *, allow_legacy: bool = False) -> tuple[str, str, dict, dict[str, dict]]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     strat = data["strategy"]
     corpus_tag = data.get("corpus_tag") or "unknown"
-    by_query = {r["query"]: r for r in data["details"] if isinstance(r, dict)}
-    return strat, corpus_tag, by_query
+    rows = [row for row in data["details"] if isinstance(row, dict)]
+    by_query: dict[str, dict] = {}
+    for row in rows:
+        query_id = row.get("query_id")
+        if not isinstance(query_id, str) or not query_id.strip():
+            if not allow_legacy:
+                raise ValueError(
+                    f"{path}: result row lacks stable query_id; pass --allow-legacy-exploratory only for exploratory analysis"
+                )
+            query_id = f"legacy-query:{row.get('query', '')}"
+        if query_id in by_query:
+            raise ValueError(f"{path}: duplicate query identity {query_id!r}")
+        by_query[query_id] = row
+    return strat, corpus_tag, data, by_query
+
+
+def _validate_artifact_pair(
+    treatment: dict,
+    baseline: dict,
+    *,
+    allow_exploratory: bool = False,
+    allow_legacy: bool = False,
+) -> None:
+    """Fail fast unless two result artifacts are scientifically comparable."""
+    for label, artifact in (("treatment", treatment), ("baseline", baseline)):
+        if artifact.get("status") != "completed":
+            raise ValueError(f"{label} artifact status must be 'completed', got {artifact.get('status')!r}")
+        scope = artifact.get("evaluation_scope")
+        if scope != "full_benchmark" and not allow_exploratory:
+            raise ValueError(
+                f"{label} artifact scope is {scope!r}; pass --allow-exploratory for an explicitly exploratory comparison"
+            )
+        required_identity = {
+            "corpus_manifest_fingerprint",
+            "index_manifest_fingerprint",
+            "corpus_index_fingerprint_status",
+        }
+        if not required_identity.issubset(artifact) and not allow_legacy:
+            raise ValueError(
+                f"{label} artifact lacks corpus/index identity metadata; "
+                "pass --allow-legacy-exploratory only for non-paper analysis"
+            )
+
+    for key in (
+        "dataset",
+        "corpus_tag",
+        "evaluation_scope",
+        "corpus_manifest_fingerprint",
+        "index_manifest_fingerprint",
+        "corpus_index_fingerprint_status",
+    ):
+        if treatment.get(key) != baseline.get(key):
+            raise ValueError(
+                f"Incompatible artifacts: {key} differs ({treatment.get(key)!r} != {baseline.get(key)!r})"
+            )
+
+    def _pair_ids(artifact: dict) -> set[str]:
+        identities: set[str] = set()
+        for row in artifact.get("details") or []:
+            if not isinstance(row, dict):
+                continue
+            query_id = row.get("query_id")
+            if not isinstance(query_id, str) or not query_id.strip():
+                if not allow_legacy:
+                    raise ValueError("Artifact row lacks stable query_id")
+                query_id = f"legacy-query:{row.get('query', '')}"
+            identities.add(query_id)
+        return identities
+
+    treatment_ids = _pair_ids(treatment)
+    baseline_ids = _pair_ids(baseline)
+    if treatment_ids != baseline_ids:
+        raise ValueError(
+            "Incompatible artifacts: stable query ID sets differ "
+            f"({len(treatment_ids)} treatment vs {len(baseline_ids)} baseline)"
+        )
 
 
 def _has_gold(row: dict) -> bool:
     expected = row.get("expected_sources") or {}
-    return bool(expected.get("docs")) or bool(expected.get("facts"))
+    return bool(expected.get("docs")) or bool(expected.get("facts")) or bool(expected.get("paragraph_ids"))
 
 
 def _paired(prehop: dict[str, dict], base: dict[str, dict], metric: str) -> np.ndarray:
@@ -68,14 +163,23 @@ def _paired(prehop: dict[str, dict], base: dict[str, dict], metric: str) -> np.n
         ba = base.get(q)
         if ba is None:
             continue
+        if pr.get("error") or ba.get("error"):
+            continue
         if retrieval and not _has_gold(pr):
             continue  # gold-less (e.g. MultiHop-RAG null_query)
         pv, bv = pr.get(metric), ba.get(metric)
         if pv is None or bv is None:
             continue
-        if metric in JUDGE_METRICS and (pv < 0 or bv < 0):
-            continue  # unjudged sentinel
-        diffs.append(float(pv) - float(bv))
+        try:
+            pv, bv = float(pv), float(bv)
+        except (TypeError, ValueError):
+            continue
+        # Every negative value is an ineligible sentinel, irrespective of
+        # metric family.  This prevents MuSiQue's N/A retrieval fields from
+        # becoming a spurious all-zero paired sample.
+        if pv < 0 or bv < 0:
+            continue
+        diffs.append(pv - bv)
     return np.asarray(diffs, dtype=float)
 
 
@@ -101,27 +205,63 @@ def main() -> None:
     ap.add_argument("--baselines", nargs="+", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--fig", default=None, help="default: fig/<corpus_tag>_bootstrap_forest.png")
+    ap.add_argument("--include-judge", action="store_true", help="also run supplemental LLM-judge bootstrap metrics")
+    ap.add_argument("--allow-exploratory", action="store_true", help="allow non-full but otherwise compatible artifacts")
+    ap.add_argument(
+        "--allow-legacy-exploratory",
+        action="store_true",
+        help="allow old artifacts without query IDs/fingerprint metadata; never use for paper claims",
+    )
     args = ap.parse_args()
 
     rng = np.random.default_rng(SEED)
-    treatment_strat, corpus_tag, prehop = _load(args.prehop)
+    treatment_strat, corpus_tag, treatment_artifact, prehop = _load(
+        args.prehop,
+        allow_legacy=args.allow_legacy_exploratory,
+    )
     baselines = {}
     for p in args.baselines:
-        strat, _, rows = _load(p)
+        strat, _, baseline_artifact, rows = _load(p, allow_legacy=args.allow_legacy_exploratory)
+        _validate_artifact_pair(
+            treatment_artifact,
+            baseline_artifact,
+            allow_exploratory=args.allow_exploratory or args.allow_legacy_exploratory,
+            allow_legacy=args.allow_legacy_exploratory,
+        )
         baselines[strat] = rows
 
     fig_path = Path(args.fig) if args.fig else Path(f"fig/{corpus_tag}_bootstrap_forest.png")
 
-    metrics = JUDGE_METRICS + RETRIEVAL_METRICS
-    results: dict[str, dict[str, dict]] = {m: {} for m in metrics}
-    for m in metrics:
+    dataset_marker = str(corpus_tag).lower()
+    if dataset_marker == "multihoprag":
+        metrics = MULTIHOPRAG_METRICS
+    elif dataset_marker == "musique":
+        metrics = MUSIQUE_METRICS
+    else:
+        # Unknown artifacts are still safely processed, but no dataset-only
+        # metric is silently claimed to be applicable.
+        metrics = []
+    judge_metrics = SUPPLEMENTAL_JUDGE_METRICS if args.include_judge else []
+    all_metrics = metrics + judge_metrics
+    results: dict[str, dict[str, dict]] = {m: {} for m in all_metrics}
+    for m in all_metrics:
         for strat, base in baselines.items():
             results[m][strat] = _bootstrap(_paired(prehop, base, m), rng)
 
     out_dir = Path(args.out_dir)
     (out_dir / f"{corpus_tag}_paired_bootstrap.json").write_text(
         json.dumps(
-            {"dataset": corpus_tag, "treatment": treatment_strat, "n_boot": N_BOOT, "seed": SEED, "results": results},
+            {
+                "dataset": corpus_tag,
+                "treatment": treatment_strat,
+                "n_boot": N_BOOT,
+                "seed": SEED,
+                "pair_key": "legacy_query_text" if args.allow_legacy_exploratory else "query_id",
+                "exploratory_override": bool(args.allow_exploratory or args.allow_legacy_exploratory),
+                "primary_metrics": metrics,
+                "supplemental_judge_metrics": judge_metrics,
+                "results": results,
+            },
             indent=2,
         ),
         encoding="utf-8",
@@ -129,7 +269,7 @@ def main() -> None:
     with (out_dir / f"{corpus_tag}_paired_bootstrap.csv").open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["metric", "baseline", "n", "mean_diff", "ci95_low", "ci95_high", "significant"])
-        for m in metrics:
+        for m in all_metrics:
             for strat, st in results[m].items():
                 if st.get("n", 0):
                     w.writerow(
@@ -144,12 +284,12 @@ def main() -> None:
                         ]
                     )
 
-    _plot(results, metrics, fig_path, treatment_strat, corpus_tag)
+    _plot(results, all_metrics, fig_path, treatment_strat, corpus_tag)
 
     # console
     print(f"{treatment_strat} vs baselines on {corpus_tag} — paired bootstrap (N={N_BOOT}, seed={SEED})")
     print(f"  diff = {treatment_strat} - baseline; * = 95% CI excludes 0 (significant)")
-    for m in metrics:
+    for m in all_metrics:
         arrow = " (lower better)" if m in LOWER_IS_BETTER else ""
         print(f"\n{m}{arrow}:")
         for strat, st in results[m].items():

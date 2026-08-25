@@ -127,7 +127,7 @@ async def test_reconcile_preserves_manifest_when_hallucination_field_is_missing(
         },
     )
 
-    with pytest.raises(RuntimeError, match="missing valid score, groundedness, or hallucination"):
+    with pytest.raises(RuntimeError, match="missing valid score or groundedness"):
         await benchmark.reconcile_pending_judges(run_dir)
 
     assert result_file.read_text(encoding="utf-8") == before

@@ -4,9 +4,9 @@ any active multi-hop-shaped dataset (multihoprag, musique).
 
 Uses one implementation for MultiHop-RAG and MuSiQue so the
 datasets do not need near-duplicate sampling scripts. Graph baselines are slow
-(hoprag ~160s/query), so k-fold figures run on a balanced sample instead of
-the full query set. Equal count per category with a fixed seed keeps the
-sample reproducible and each fold/category balanced.
+(hoprag ~160s/query), so exploratory comparisons can run on a balanced sample
+instead of the full query set. Equal count per category with a fixed seed keeps
+the sample reproducible and category-balanced.
 
     python data/make_sample.py --dataset musique --per-type 50    # n=150 (3 hop counts)
     python data/make_sample.py --dataset multihoprag --per-type 50 --seed 42

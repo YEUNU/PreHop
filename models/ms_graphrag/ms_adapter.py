@@ -9,8 +9,10 @@ Parquet + lancedb artifacts are read from data/ms_graphrag_output/<corpus_tag>/
 as built by official_indexer.py. No re-indexing needed.
 """
 
+import json
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -19,6 +21,7 @@ from models.ms_graphrag.official_indexer import (
     build_config,
     input_dir_for,
     output_dir_for,
+    snapshot_metadata_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,48 @@ class MSGraphRAGAdapter:
         self._documents: pd.DataFrame | None = None
         self._doc_id_to_title: dict[str, str] | None = None
         self._short_id_to_doc_id: dict[str, str] | None = None
+
+    def verify_active_snapshot(self, expected_source_ids: list[str], corpus_manifest: dict | None) -> dict:
+        """Read-only proof that the live parquet snapshot matches its marker.
+
+        This is intentionally independent of MS GraphRAG's official search
+        API. It reads only ``documents.parquet`` and an unconnected sidecar
+        JSON before any query, so it cannot alter official retrieval behavior.
+        """
+        metadata_file = snapshot_metadata_path(self.corpus_tag)
+        try:
+            metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"MS GraphRAG active snapshot metadata is unreadable: {metadata_file}") from exc
+        if not isinstance(metadata, dict) or metadata.get("status") != "complete":
+            raise RuntimeError("MS GraphRAG active snapshot is not marked complete")
+        if corpus_manifest is not None:
+            if metadata.get("corpus_manifest_fingerprint") != corpus_manifest.get("fingerprint"):
+                raise RuntimeError("MS GraphRAG active snapshot fingerprint does not match corpus manifest")
+            if metadata.get("corpus_manifest_paragraph_count") != corpus_manifest.get("paragraph_count"):
+                raise RuntimeError("MS GraphRAG active snapshot paragraph count does not match corpus manifest")
+        documents = self._read_parquet("documents")
+        if "title" not in documents.columns:
+            raise RuntimeError("MS GraphRAG documents.parquet lacks title column")
+        actual_ids = sorted(
+            {
+                Path(str(title)).stem
+                for title in documents["title"].tolist()
+                if isinstance(title, str) and title.strip()
+            }
+        )
+        expected = sorted(expected_source_ids)
+        if actual_ids != expected:
+            raise RuntimeError(
+                "MS GraphRAG active documents.parquet does not match prepared corpus "
+                f"(expected={len(expected)}, actual={len(actual_ids)})"
+            )
+        import hashlib
+
+        source_digest = hashlib.sha256("\n".join(actual_ids).encode("utf-8")).hexdigest()
+        if metadata.get("source_count") != len(actual_ids) or metadata.get("source_set_sha256") != source_digest:
+            raise RuntimeError("MS GraphRAG active metadata does not match its documents.parquet snapshot")
+        return metadata
 
     # ------------------------------------------------------------------ parquet I/O
 
@@ -81,6 +126,21 @@ class MSGraphRAGAdapter:
 
     # ------------------------------------------------------------------ source extraction
 
+    @staticmethod
+    def _display_title(source_text: str, source_filename: str) -> str:
+        """Return the human-facing document title without losing provenance.
+
+        GraphRAG 3.0.1 assigns an opaque content hash to ``documents.id`` and
+        retains the staged input filename in ``documents.title``.  Prepared
+        corpora put the original title in their first ``Title:`` header, so
+        use that for citations while retaining the filename separately as the
+        stable retrieval identity.
+        """
+        first_line = str(source_text or "").splitlines()[0].strip() if source_text else ""
+        if first_line.startswith("Title: "):
+            return first_line.removeprefix("Title: ").strip()
+        return re.sub(r"\.(pdf|txt|md|json)$", "", str(source_filename or ""), flags=re.IGNORECASE)
+
     def _extract_sources(self, context_data: Any) -> list[dict[str, Any]]:
         """Extract source nodes from local_search context_records for doc_match metrics.
 
@@ -102,13 +162,21 @@ class MSGraphRAGAdapter:
         for _, row in src_df.iterrows():
             unit_id = str(row.get("id", "") or "")
             doc_id = short_id_map.get(unit_id, "")
-            title = doc_map.get(doc_id, doc_id)
-            title = re.sub(r"\.(pdf|txt|md|json)$", "", title, flags=re.IGNORECASE)
+            # In GraphRAG 3.0.1, document_id is an opaque content hash; the
+            # staged filename lives in documents.title.  Never use the opaque
+            # id as the source identity, or MuSiQue paragraph provenance
+            # becomes dependent on the diagnostic ``doc`` fallback.
+            source_filename = str(doc_map.get(doc_id, "") or "")
+            source_text = str(row.get("text", "") or "")
+            title = self._display_title(source_text, source_filename)
             sources.append(
                 {
                     "doc": title,
+                    "source": source_filename,
+                    "source_filename": source_filename,
+                    "document_id": doc_id,
                     "page": 0,
-                    "text": str(row.get("text", "") or ""),
+                    "text": source_text,
                     "sent_id": 0,
                 }
             )

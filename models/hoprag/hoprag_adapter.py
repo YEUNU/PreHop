@@ -274,37 +274,46 @@ class HopRAGAdapter:
     async def _lookup_nodes_by_text(self, texts: list[str]) -> list[dict[str, Any]]:
         if not texts:
             return []
-        # Treat the indexer-backfilled `source` (corpus document stem) as the
-        # title for inline citations. HopRAG-native nodes have no page
-        # or chunk index, so those stay 0.
+        # Official HopRetriever returns only text, so provenance can be
+        # recovered safely only when that text identifies exactly one node.
+        # Never pick an arbitrary row when different nodes share the text.
+        # HopRAG-native nodes have no page or chunk index, so those stay 0.
         query = f"""
             UNWIND range(0, size($texts) - 1) AS idx
             WITH idx, $texts[idx] AS target_text
             MATCH (n:{self.chunk_label})
             WHERE n.text = target_text
-            RETURN idx, id(n) AS id, coalesce(n.source, '') AS title,
+            RETURN idx, id(n) AS id, coalesce(n.title, '') AS title,
                    0 AS sent_id, 0 AS page,
                    n.text AS text, n.embed AS embedding,
                    coalesce(n.source, '') AS source
-            ORDER BY idx ASC
+            ORDER BY idx ASC, id ASC
         """
         async with self.neo4j.driver.session() as session:
             result = await session.run(query, {"texts": texts})  # type: ignore
             rows = [dict(r) async for r in result]
 
-        by_idx: dict[int, dict[str, Any]] = {}
+        by_idx: dict[int, list[dict[str, Any]]] = {}
         for row in rows:
             idx = int(row.get("idx", -1))
-            if idx < 0 or idx in by_idx:
+            if idx < 0:
                 continue
-            by_idx[idx] = row
+            by_idx.setdefault(idx, []).append(row)
 
         ordered: list[dict[str, Any]] = []
-        for idx in range(len(texts)):
-            if idx in by_idx:
-                node = by_idx[idx]
-                node.pop("idx", None)
-                ordered.append(node)
+        for idx, text in enumerate(texts):
+            matches = by_idx.get(idx, [])
+            if not matches:
+                raise RuntimeError(f"HopRAG provenance lookup found no node for official result at index {idx}")
+            if len(matches) != 1:
+                identities = [f"id={row.get('id')},source={row.get('source', '')!r}" for row in matches]
+                raise RuntimeError(
+                    "HopRAG provenance is ambiguous for official result "
+                    f"at index {idx} ({text!r}): {', '.join(identities)}"
+                )
+            node = matches[0]
+            node.pop("idx", None)
+            ordered.append(node)
         return ordered
 
     async def retrieve(self, query: str, top_k: int | None = None) -> tuple[str, list[dict[str, Any]]]:
@@ -338,7 +347,8 @@ class HopRAGAdapter:
         trace = [{"step": "hoprag_official_hopretriever_qa", "input": messages, "output": answer}]
         sources = [
             {
-                "doc": n.get("source") or n.get("title", ""),
+                "doc": n.get("title") or n.get("source", ""),
+                "source": n.get("source", ""),
                 "page": n.get("page", 0),
                 "text": n.get("text", ""),
                 "sent_id": n.get("sent_id", 0),

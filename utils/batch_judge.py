@@ -1,10 +1,11 @@
 """OpenAI Batch API collector for the benchmark LLM-as-a-judge call.
 
-Enabled by default with an OpenAI ``EVAL_MODEL`` and ``OPENAI_API_KEY``. The
-benchmark registers every judge prompt during its first pass, then submits a
-single batch to the ``/v1/chat/completions`` endpoint. Batch creation or
-resolution failures propagate; the benchmark never silently switches to the
-more expensive synchronous path.
+When the supplemental judge is explicitly enabled with an OpenAI
+``EVAL_MODEL`` and ``OPENAI_API_KEY``, the benchmark registers every judge
+prompt during its first pass, then submits a single batch to the
+``/v1/chat/completions`` endpoint. Batch creation or resolution failures
+propagate; the benchmark never silently switches to the more expensive
+synchronous path.
 
 The OpenAI SDK calls are synchronous, so they run in worker threads via
 ``asyncio.to_thread`` to avoid blocking the event loop.

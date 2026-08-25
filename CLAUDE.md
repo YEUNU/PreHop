@@ -38,13 +38,17 @@ branch map is in `docs/ARCHITECTURE.md`.
   this is documented baseline behavior and is routed to the external endpoint.
 - Benchmark LLM judging uses OpenAI Batch by default and never silently falls
   back to synchronous paid calls. Disable it only for an explicit debug run.
-- Benchmark answer quality now emits deterministic normalized EM/F1 (including
+- Benchmark answer quality emits deterministic normalized EM/F1 (including
   MuSiQue aliases) as the primary signal and keeps LLM-judge semantic
-  correctness and context groundedness as separate diagnostic fields. Evidence
-  metrics are dataset-aware: null
-  MultiHop-RAG queries are excluded from retrieval averages, sentence/fact
-  ranking metrics are skipped for paragraph-level MuSiQue gold evidence, and
-  title-level evidence precision/recall/F1 is reported separately.
+  correctness and context groundedness as separate diagnostic fields.
+  MultiHop-RAG emits official-compatible `official_hits@k`, `official_mrr@10`,
+  and `official_map@10` separately from custom `evidence_fact_recall@k`.
+  MuSiQue support uses the official formula over stable global paragraph
+  identities and is named `paragraph_support_*`, not official query-local
+  `idx` support; title-level evidence precision/recall/F1 is diagnostic only.
+  Paragraph-ID headers are stripped before indexing. Negative sentinels and
+  runtime-error rows are excluded from aggregates, whose eligible counts are
+  recorded. Sample manifests are exploratory rather than full benchmark runs.
 
 ## Data and tags
 
@@ -80,9 +84,11 @@ chunker. Raw pipe text remains raw.
 # Full cold measured matrix (aggregate sequence bound 120)
 VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=120 \
 .venv/bin/python scripts/run_index_matrix.py \
+  --run-id <unique-paper-run-id> \
   --datasets multihoprag musique \
   --strategies ms_graphrag hoprag naive prehop \
-  --clear-graph --max-parallel 2 --max-generation-parallel 2
+  --clear-graph --max-parallel 2 --max-generation-parallel 2 \
+  --target-attempts 2 --save-prehop-intermediate
 
 # Combine stopped/resumed matrix fragments into cumulative phase timings
 .venv/bin/python scripts/merge_index_matrix_runs.py \
@@ -95,6 +101,14 @@ VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=1
 
 # Resume an already submitted OpenAI Batch judge after interruption
 .venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
+
+# Optional supplemental LLM-judge analysis (off by default)
+RAG_JUDGE_ENABLED=true EVAL_MODEL=<independent-judge-model> \
+  .venv/bin/python main.py benchmark ...
+
+# Non-paper debugging only; recorded as judge_independent=false
+RAG_JUDGE_ALLOW_SELF=true RAG_JUDGE_ENABLED=true EVAL_MODEL=<generation-model> \
+  .venv/bin/python main.py benchmark ...
 
 # Verification
 uv run --extra dev ruff check .
@@ -122,8 +136,9 @@ outer in-flight file cap defaults to 16; its generation semaphore remains 30,
 so short one-chunk corpora can use the endpoint without making long-document
 fan-out unbounded.
 Official HopRAG and MS GraphRAG receive adapter-specific limits derived from
-the same phase budget. With two generation targets and a 120 sequence
-server, each target is capped at 40 generation calls; HopRAG's worker/thread
+the same phase budget. With two generation targets, separate generation and
+embedding capacity, and a 120-sequence server, each target is capped at 60
+generation calls; HopRAG's worker/thread
 product and MS GraphRAG's request semaphore are both clamped to that value.
 The runner writes pending-phase ETA components to `progress.json` and emits a
 watch line hourly by default (`--watch-interval` changes this).
@@ -188,7 +203,8 @@ reporting decisions; it is not a source of benchmark results. When editing it:
 - Record the exact run ID, git revision, environment/model settings, dataset
   split, seed, judge status, and artifact path for every reported number. A
   result is paper-eligible only when the target completed without integrity or
-  measurement failures and the judge output is complete.
+  measurement failures. Optional judge output must be complete only when it is
+  reported as a separately labelled supplemental analysis.
 - Keep official-baseline behavior and Prehop ablations clearly distinct. Do
   not silently equalize top-k/context budgets or alter upstream HopRAG/MS
   GraphRAG behavior; label any controlled comparison separately.

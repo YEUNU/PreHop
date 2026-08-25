@@ -69,6 +69,19 @@ def test_build_unique_sources_uses_unknown_when_doc_missing():
     assert out[0]["doc"] == "Unknown"
 
 
+def test_build_unique_sources_uses_source_identity_before_display_title():
+    rag = GraphRAG(strategy="prehop")
+    rows = [
+        {"title": "Repeated", "source": "musique_first.txt", "page": 1, "sent_id": 0, "text": "first"},
+        {"title": "Repeated", "source": "musique_second.txt", "page": 1, "sent_id": 0, "text": "second"},
+        {"title": "Repeated", "source": "musique_first.txt", "page": 1, "sent_id": 0, "text": "duplicate"},
+    ]
+
+    out = rag._build_unique_sources(rows)
+
+    assert [source["source"] for source in out] == ["musique_first.txt", "musique_second.txt"]
+
+
 def test_build_answer_prompt_contains_context_and_query():
     prompt = GraphRAG._build_answer_prompt("CTX_BLOCK", "QUESTION_TEXT")
     assert "CTX_BLOCK" in prompt

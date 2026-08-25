@@ -70,16 +70,10 @@ def _compute_stage_diagnostics(details: list[dict[str, Any]]) -> dict[str, Any]:
             if not is_error:
                 answer_attempt_count += 1
                 hallucination_value = item.get("hallucination", None)
-                if isinstance(hallucination_value, (int, float)):
+                if isinstance(hallucination_value, (int, float)) and hallucination_value >= 0:
                     hallucination_eligible_count += 1
                     if _safe_float(hallucination_value, 0.0) >= 0.5:
                         hallucination_count += 1
-                else:
-                    score_value = item.get("llm_judge_score", None)
-                    if isinstance(score_value, (int, float)):
-                        hallucination_eligible_count += 1
-                        if _safe_float(score_value, 0.0) < 1.0:
-                            hallucination_count += 1
 
         trace = item.get("interaction_trace", [])
         if not isinstance(trace, list):
@@ -138,10 +132,11 @@ def _build_failure_records(details: list[dict[str, Any]], top_k: int = 30) -> li
     failures: list[dict[str, Any]] = []
     for idx, item in enumerate(details, start=1):
         score = item.get("llm_judge_score", None)
+        primary_score = item.get("primary_answer_score", item.get("answer_em", None))
         has_error = bool(item.get("error"))
         is_failure = has_error
-        if score is not None:
-            is_failure = is_failure or (_safe_float(score, 0.0) < 1.0)
+        if primary_score is not None:
+            is_failure = is_failure or (_safe_float(primary_score, 0.0) < 1.0)
         if not is_failure:
             continue
         failures.append(
@@ -149,6 +144,8 @@ def _build_failure_records(details: list[dict[str, Any]], top_k: int = 30) -> li
                 "rank_hint": idx,
                 "query": item.get("query", ""),
                 "category": item.get("category", ""),
+                "primary_answer_score": _safe_float(primary_score, -1.0),
+                "primary_answer_label": item.get("answer_label", "Unscored"),
                 "llm_judge_score": _safe_float(score, 0.0),
                 "hallucination": _safe_float(item.get("hallucination", 0.0)),
                 "hallucination_reason": item.get("hallucination_reason", ""),
@@ -164,7 +161,7 @@ def _build_failure_records(details: list[dict[str, Any]], top_k: int = 30) -> li
             }
         )
     failures.sort(
-        key=lambda item: (item.get("llm_judge_score", 0.0), -item.get("doc_match", 0.0), -item.get("latency", 0.0))
+        key=lambda item: (item.get("primary_answer_score", -1.0), -item.get("doc_match", 0.0), -item.get("latency", 0.0))
     )
     return failures[: max(1, top_k)]
 
@@ -185,7 +182,7 @@ def _write_model_report_artifacts(
       <stem>.details.jsonl          — one detail per line (no full trace)
       <stem>.traces.jsonl           — per-query interaction_trace, one per
                                       line; join key = idx
-      <stem>.failures_topk.jsonl    — bottom 30 by judge score
+      <stem>.failures_topk.jsonl    — bottom 30 by deterministic primary score
       <stem>.stage_diagnostics.json — execution-stage call rates
 
     Markdown variants (.summary.md / .failures_topk.md / .stage_diagnostics.md)
@@ -222,6 +219,9 @@ def _write_model_report_artifacts(
                 "answer_f1": _safe_float(item.get("answer_f1", -1.0), -1.0),
                 "answer_precision": _safe_float(item.get("answer_precision", -1.0), -1.0),
                 "answer_recall": _safe_float(item.get("answer_recall", -1.0), -1.0),
+                "official_answer_em": _safe_float(item.get("official_answer_em", -1.0), -1.0),
+                "official_answer_f1": _safe_float(item.get("official_answer_f1", -1.0), -1.0),
+                "official_qa_accuracy": _safe_float(item.get("official_qa_accuracy", -1.0), -1.0),
                 "null_refusal": _safe_float(item.get("null_refusal", -1.0), -1.0),
                 "llm_judge_score": _safe_float(item.get("llm_judge_score", 0.0)),
                 "groundedness": _safe_float(item.get("groundedness", -1.0), -1.0),
@@ -237,10 +237,15 @@ def _write_model_report_artifacts(
                 "evidence_doc_precision": _safe_float(item.get("evidence_doc_precision", -1.0), -1.0),
                 "evidence_doc_recall": _safe_float(item.get("evidence_doc_recall", -1.0), -1.0),
                 "evidence_doc_f1": _safe_float(item.get("evidence_doc_f1", -1.0), -1.0),
-                "hits@4": _safe_float(item.get("hits@4", -1.0), -1.0),
-                "hits@10": _safe_float(item.get("hits@10", -1.0), -1.0),
-                "mrr@10": _safe_float(item.get("mrr@10", -1.0), -1.0),
-                "map@10": _safe_float(item.get("map@10", -1.0), -1.0),
+                "official_hits@4": _safe_float(item.get("official_hits@4", -1.0), -1.0),
+                "official_hits@10": _safe_float(item.get("official_hits@10", -1.0), -1.0),
+                "official_mrr@10": _safe_float(item.get("official_mrr@10", -1.0), -1.0),
+                "official_map@10": _safe_float(item.get("official_map@10", -1.0), -1.0),
+                "evidence_fact_recall@4": _safe_float(item.get("evidence_fact_recall@4", -1.0), -1.0),
+                "evidence_fact_recall@10": _safe_float(item.get("evidence_fact_recall@10", -1.0), -1.0),
+                "paragraph_support_precision": _safe_float(item.get("paragraph_support_precision", -1.0), -1.0),
+                "paragraph_support_recall": _safe_float(item.get("paragraph_support_recall", -1.0), -1.0),
+                "paragraph_support_f1": _safe_float(item.get("paragraph_support_f1", -1.0), -1.0),
                 "latency": _safe_float(item.get("latency", 0.0)),
                 "error": item.get("error", ""),
                 "trace_steps": _collect_trace_steps(trace),

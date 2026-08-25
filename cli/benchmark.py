@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -17,6 +18,19 @@ from utils.reporting import _write_model_report_artifacts
 
 logger = logging.getLogger("Prehop")
 
+# Expected row counts for the exact official splits prepared by this
+# repository.  Scope is determined from the rows actually evaluated, never
+# merely from a filename.
+OFFICIAL_SPLIT_QUERY_COUNTS = {"multihoprag": 2556, "musique": 2417}
+# Canonical official prepared-manifest identity.  Each value is
+# SHA256("\n".join(sorted(row["_id"] for row in official_rows))).
+OFFICIAL_QUERY_ID_DIGESTS = {
+    "multihoprag": "e683a5bf5807edf5f06612066f2ad5fa0b0b08f61a726a71ec28afd8e66177b0",
+    "musique": "a66b2c776f9b9777123da3bb2317a29cd5d30e4085e6c758142187d83c23a8bc",
+}
+CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
+INDEX_STATS_DIR = Path("data/index_stats")
+
 
 _BOXED_RE = re.compile(r"\\boxed\{([^{}]+(?:\{[^{}]*\}[^{}]*)*)\}")
 _FINAL_LABEL_RE = re.compile(r"(?is)(?:final\s+answer|@@ANSWER|answer)\s*:?\s*(.+?)(?:\n\n|\Z)")
@@ -25,6 +39,217 @@ _FINAL_LABEL_RE = re.compile(r"(?is)(?:final\s+answer|@@ANSWER|answer)\s*:?\s*(.
 def _read_json_file(path: Path | str) -> Any:
     with open(path, "r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def _load_benchmark_corpus_manifest(dataset: str, queries_file: str | Path) -> dict | None:
+    """Load optional corpus identity beside a prepared query manifest."""
+    manifest_path = Path(queries_file).parent / f"{dataset}_corpus" / CORPUS_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = _read_json_file(manifest_path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid corpus manifest: {manifest_path}: {exc}") from exc
+    fingerprint = manifest.get("fingerprint") if isinstance(manifest, dict) else None
+    paragraph_count = manifest.get("paragraph_count") if isinstance(manifest, dict) else None
+    query_digest = manifest.get("query_ids_sha256") if isinstance(manifest, dict) else None
+    if not isinstance(fingerprint, str) or not fingerprint.strip():
+        raise ValueError(f"Corpus manifest has no fingerprint: {manifest_path}")
+    if not isinstance(paragraph_count, int) or paragraph_count < 0:
+        raise ValueError(f"Corpus manifest has invalid paragraph_count: {manifest_path}")
+    return {
+        "path": str(manifest_path),
+        "fingerprint": fingerprint,
+        "paragraph_count": paragraph_count,
+        "query_ids_sha256": query_digest,
+    }
+
+
+def _latest_index_manifest_metadata(strategy: str, corpus_tag: str, stats_dir: Path = INDEX_STATS_DIR) -> dict | None:
+    """Read the newest artifact, including failed/incomplete status.
+
+    Never skip a newer failed attempt in favor of an older completed index;
+    doing so would make provenance depend on convenient artifact selection.
+    """
+    candidates = sorted(
+        stats_dir.glob(f"{strategy}_{corpus_tag}_*.json"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    if not candidates:
+        return None
+    path = candidates[0]
+    try:
+        payload = _read_json_file(path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {"path": str(path), "status": "invalid", "fingerprint": None, "paragraph_count": None}
+    if not isinstance(payload, dict):
+        return {"path": str(path), "status": "invalid", "fingerprint": None, "paragraph_count": None}
+    return {
+        "path": str(path),
+        "status": payload.get("status"),
+        "fingerprint": payload.get("corpus_manifest_fingerprint"),
+        "paragraph_count": payload.get("corpus_manifest_paragraph_count"),
+    }
+
+
+def _validate_corpus_index_fingerprint(
+    dataset: str,
+    evaluation_scope: str,
+    corpus_manifest: dict | None,
+    index_manifest: dict | None,
+    evaluated_query_ids_sha256: str,
+) -> str:
+    """Protect full benchmarks from a MuSiQue corpus/index identity mismatch."""
+    if corpus_manifest is None:
+        if evaluation_scope == "full_benchmark" and dataset == "musique":
+            raise RuntimeError("Full MuSiQue benchmark requires corpus_manifest.json")
+        return "manifest_absent"
+    if (
+        evaluation_scope == "full_benchmark"
+        and dataset == "musique"
+        and corpus_manifest.get("query_ids_sha256") != evaluated_query_ids_sha256
+    ):
+        raise RuntimeError("MuSiQue corpus manifest query-id digest does not match evaluated queries")
+    if (
+        index_manifest is None
+        or index_manifest.get("status") != "complete"
+        or not isinstance(index_manifest.get("fingerprint"), str)
+    ):
+        if evaluation_scope == "full_benchmark":
+            raise RuntimeError("Full benchmark requires a completed index artifact with corpus manifest fingerprint")
+        return "index_fingerprint_missing"
+    if index_manifest["fingerprint"] != corpus_manifest["fingerprint"]:
+        if evaluation_scope == "full_benchmark":
+            raise RuntimeError("Corpus manifest fingerprint does not match completed index artifact")
+        return "mismatch_exploratory"
+    return "matched"
+
+
+def _query_ids_sha256(rows: list[dict[str, Any]]) -> str:
+    return hashlib.sha256("\n".join(sorted(str(row["_id"]) for row in rows)).encode()).hexdigest()
+
+
+def _manifest_source_ids(corpus_manifest: dict | None) -> list[str] | None:
+    """Read the prepared corpus identity set without touching an index.
+
+    Legacy MultiHop-RAG manifests are optional; only a manifest-bearing corpus
+    can be checked against an active source snapshot.
+    """
+    if corpus_manifest is None:
+        return None
+    corpus_dir = Path(str(corpus_manifest["path"])).parent
+    source_ids = sorted(
+        path.stem for path in corpus_dir.iterdir() if path.is_file() and path.suffix in (".txt", ".md")
+    )
+    if len(source_ids) != len(set(source_ids)):
+        raise RuntimeError("Prepared corpus has duplicate filename stems; active source identity is ambiguous")
+    if len(source_ids) != corpus_manifest["paragraph_count"]:
+        raise RuntimeError(
+            "Prepared corpus file count does not match corpus manifest paragraph_count: "
+            f"{len(source_ids)} != {corpus_manifest['paragraph_count']}"
+        )
+    return source_ids
+
+
+def _source_set_sha256(source_ids: list[str]) -> str:
+    return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
+
+
+async def _verify_active_neo4j_snapshot(
+    engine,
+    strategy: str,
+    corpus_tag: str,
+    expected_source_ids: list[str],
+    corpus_manifest: dict,
+) -> dict[str, Any]:
+    """Read-only active-index integrity gate before the first benchmark query."""
+    metadata_rows = await engine.neo4j.execute_query(
+        """
+        MATCH (m:RAGIndexSnapshot {strategy: $strategy, corpus_tag: $corpus_tag})
+        RETURN m.status AS status,
+               m.corpus_manifest_fingerprint AS fingerprint,
+               m.corpus_manifest_paragraph_count AS paragraph_count,
+               m.source_count AS source_count,
+               m.source_set_sha256 AS source_set_sha256,
+               m.snapshot_version AS snapshot_version
+        ORDER BY m.completed_at_epoch DESC
+        LIMIT 1
+        """,
+        {"strategy": strategy, "corpus_tag": corpus_tag},
+    )
+    metadata = dict(metadata_rows[0]) if metadata_rows else {}
+    if metadata.get("status") != "complete":
+        raise RuntimeError(f"Active {strategy} index snapshot is not marked complete")
+    if metadata.get("fingerprint") != corpus_manifest["fingerprint"]:
+        raise RuntimeError(f"Active {strategy} index snapshot fingerprint does not match corpus manifest")
+    if metadata.get("paragraph_count") != corpus_manifest["paragraph_count"]:
+        raise RuntimeError(f"Active {strategy} index snapshot paragraph count does not match corpus manifest")
+    rows = await engine.neo4j.execute_query(
+        f"""
+        MATCH (c:{engine.chunk_label})
+        WHERE coalesce(c.source, '') <> ''
+        RETURN DISTINCT c.source AS source
+        """
+    )
+    actual_source_ids = sorted({Path(str(row.get("source") or "")).stem for row in rows})
+    if actual_source_ids != sorted(expected_source_ids):
+        raise RuntimeError(
+            f"Active {strategy} source snapshot does not match prepared corpus "
+            f"(expected={len(expected_source_ids)}, actual={len(actual_source_ids)})"
+        )
+    source_digest = _source_set_sha256(actual_source_ids)
+    if metadata.get("source_count") != len(actual_source_ids) or metadata.get("source_set_sha256") != source_digest:
+        raise RuntimeError(f"Active {strategy} metadata does not match its live source snapshot")
+    return {
+        "status": "matched",
+        "source_count": len(actual_source_ids),
+        "source_set_sha256": source_digest,
+        "snapshot_version": metadata.get("snapshot_version"),
+    }
+
+
+async def _verify_active_index_snapshot(
+    engine,
+    strategy: str,
+    corpus_tag: str,
+    corpus_manifest: dict | None,
+    strict: bool,
+) -> dict[str, Any]:
+    """Verify active metadata and content; subsets retain diagnostic state."""
+    source_ids = _manifest_source_ids(corpus_manifest)
+    if source_ids is None:
+        return {"status": "manifest_absent"}
+    try:
+        if strategy == "ms_graphrag":
+            metadata = await asyncio.to_thread(engine.verify_active_snapshot, source_ids, corpus_manifest)
+            return {
+                "status": "matched",
+                "source_count": metadata.get("source_count"),
+                "source_set_sha256": metadata.get("source_set_sha256"),
+                "snapshot_version": metadata.get("snapshot_version"),
+            }
+        return await _verify_active_neo4j_snapshot(engine, strategy, corpus_tag, source_ids, corpus_manifest)
+    except Exception as exc:
+        if strict:
+            raise RuntimeError(f"Active index integrity gate failed: {exc}") from exc
+        return {"status": "mismatch_exploratory", "error": str(exc)}
+
+
+def _judge_independence(eval_model: str, model_id: str, default_model: str, allow_self: bool) -> tuple[bool, bool]:
+    """Validate that a supplemental judge is independent of generation."""
+    evaluator = str(eval_model or "").strip().casefold()
+    if not evaluator:
+        raise RuntimeError("RAG_JUDGE_ENABLED=true requires EVAL_MODEL")
+    generation_models = {str(model_id or "").strip().casefold(), str(default_model or "").strip().casefold()}
+    is_independent = bool(evaluator) and evaluator not in generation_models
+    override_used = not is_independent and bool(allow_self)
+    if not is_independent and not override_used:
+        raise RuntimeError(
+            "Supplemental judge must be independent: EVAL_MODEL matches the generation model. "
+            "Use RAG_JUDGE_ALLOW_SELF=true only for explicitly non-paper debug output."
+        )
+    return is_independent, override_used
 
 
 def _extract_final_answer(answer_text: str) -> str:
@@ -88,7 +313,7 @@ def _extract_stage_timing(trace: Any) -> dict[str, float]:
 
 
 def _apply_judge_label(result_item: dict[str, Any]) -> None:
-    """Derive answer_attempted / answer_label from the LLM judge score."""
+    """Attach deterministic primary labels and separate supplemental labels."""
     from utils.abstain import answer_label, is_abstain
 
     answer_text = str(result_item.get("answer", "") or "")
@@ -97,27 +322,24 @@ def _apply_judge_label(result_item: dict[str, Any]) -> None:
     # not the full CoT body which often uses 'insufficient evidence' mid-reason.
     final_answer = _extract_final_answer(answer_text).lower()
     abstained = is_abstain(final_answer)
-    judge_score = _safe_float(result_item.get("llm_judge_score", 0.0), 0.0)
+    judge_score = _safe_float(result_item.get("llm_judge_score", -1.0), -1.0)
     result_item["final_answer_extracted"] = final_answer[:300]
 
-    # Unjudged row (score < 0, e.g. batch not yet resolved or judge failed):
-    # don't fabricate a label/attempt — leave it out of the 3-way tally.
-    if judge_score < 0.0:
-        result_item["answer_attempted"] = -1.0
-        result_item["answer_label"] = "Unjudged"
-        return
-
-    # Judge override: a score >= 0.5 means a usable answer regardless of phrasing.
-    if has_error:
-        answer_attempted = 0.0
-    elif judge_score >= 0.5:
-        answer_attempted = 1.0
+    # The headline correctness/label is deterministic.  A null query uses its
+    # explicit refusal metric; other rows use EM (MuSiQue's EM is alias-aware).
+    primary = result_item.get("null_refusal") if result_item.get("question_type") == "null_query" else result_item.get("answer_em")
+    primary_score = _safe_float(primary, -1.0)
+    result_item["primary_answer_score"] = primary_score
+    if has_error or primary_score < 0:
+        answer_attempted = -1.0 if not has_error else 0.0
+        primary_label = "Unscored"
     else:
         answer_attempted = 0.0 if abstained else 1.0
+        primary_label = "Correct Answer" if primary_score >= 0.5 else ("Refusal" if abstained else "Incorrect Answer")
     result_item["answer_attempted"] = answer_attempted
-    if not isinstance(result_item.get("hallucination"), (int, float)):
-        result_item["hallucination"] = 1.0 if (answer_attempted > 0.0 and judge_score < 1.0) else 0.0
-    result_item["answer_label"] = answer_label(judge_score, final_answer)
+    result_item["answer_label"] = primary_label
+    # Kept only for optional judge analysis; never drives correct_rate.
+    result_item["judge_answer_label"] = answer_label(judge_score, final_answer) if judge_score >= 0 else "Unjudged"
 
 
 def _recompute_aggregates(s: dict[str, Any]) -> None:
@@ -128,12 +350,24 @@ def _recompute_aggregates(s: dict[str, Any]) -> None:
     """
     rows = s.get("details") or []
 
-    def _avg(subset: list[dict], key: str) -> float:
-        vals = [
-            r[key]
+    def _eligible_values(subset: list[dict], key: str) -> list[float]:
+        """Paper aggregates contain only successfully evaluated rows.
+
+        A runtime error may carry placeholder numeric fields for schema
+        stability, but those values are neither failures-as-zero nor valid
+        observations.  Negative values are the common unjudged/N/A sentinel.
+        """
+        return [
+            float(r[key])
             for r in subset
-            if isinstance(r.get(key), (int, float)) and not isinstance(r.get(key), bool) and r[key] >= 0
+            if not r.get("error")
+            and isinstance(r.get(key), (int, float))
+            and not isinstance(r.get(key), bool)
+            and r[key] >= 0
         ]
+
+    def _avg(subset: list[dict], key: str) -> float:
+        vals = _eligible_values(subset, key)
         return sum(vals) / len(vals) if vals else 0.0
 
     numeric_keys = sorted(
@@ -146,6 +380,7 @@ def _recompute_aggregates(s: dict[str, Any]) -> None:
     )
     for key in numeric_keys:
         s[f"avg_{key}"] = _avg(rows, key)
+        s[f"eligible_{key}_count"] = len(_eligible_values(rows, key))
 
     cats: dict[str, list] = {}
     for r in rows:
@@ -155,6 +390,7 @@ def _recompute_aggregates(s: dict[str, Any]) -> None:
         cat_sum: dict[str, Any] = {"count": len(cat_list)}
         for key in numeric_keys:
             cat_sum[f"avg_{key}"] = _avg(cat_list, key)
+            cat_sum[f"eligible_{key}_count"] = len(_eligible_values(cat_list, key))
         cat_summaries[cat] = cat_sum
     s["category_summaries"] = cat_summaries
 
@@ -163,7 +399,7 @@ def _recompute_aggregates(s: dict[str, Any]) -> None:
         label = r.get("answer_label")
         if label in label_counts:
             label_counts[label] += 1
-    total = sum(label_counts.values()) or 1  # judged rows only ("Unjudged" excluded)
+    total = sum(label_counts.values()) or 1  # deterministically scored rows only
     s["correct_count"] = label_counts["Correct Answer"]
     s["incorrect_count"] = label_counts["Incorrect Answer"]
     s["refusal_count"] = label_counts["Refusal"]
@@ -210,7 +446,9 @@ def _update_summary_status(summary: dict[str, Any]) -> None:
         summary["status"] = "pending_judge"
     elif any(row.get("error") for row in rows):
         summary["status"] = "completed_with_errors"
-    elif _unjudged_count(rows) or _unjudged_count(rows, "hallucination") or _unjudged_groundedness_count(rows):
+    elif summary.get("judge_enabled") and (
+        _unjudged_count(rows) or _unjudged_count(rows, "hallucination") or _unjudged_groundedness_count(rows)
+    ):
         summary["status"] = "completed_with_unjudged"
     else:
         summary["status"] = "completed"
@@ -219,9 +457,10 @@ def _update_summary_status(summary: dict[str, Any]) -> None:
 def _assert_benchmark_complete(summary: dict[str, Any], result_file: Path) -> None:
     rows = summary.get("details") or []
     runtime_errors = sum(1 for row in rows if row.get("error"))
-    unjudged = _unjudged_count(rows)
-    unjudged_hallucination = _unjudged_count(rows, "hallucination")
-    unjudged_groundedness = _unjudged_groundedness_count(rows)
+    judge_enabled = bool(summary.get("judge_enabled"))
+    unjudged = _unjudged_count(rows) if judge_enabled else 0
+    unjudged_hallucination = _unjudged_count(rows, "hallucination") if judge_enabled else 0
+    unjudged_groundedness = _unjudged_groundedness_count(rows) if judge_enabled else 0
     failures = []
     if runtime_errors:
         failures.append(f"{runtime_errors} runtime error(s)")
@@ -231,6 +470,24 @@ def _assert_benchmark_complete(summary: dict[str, Any], result_file: Path) -> No
         failures.append(f"{unjudged_hallucination} row(s) without hallucination judgement")
     if unjudged_groundedness:
         failures.append(f"{unjudged_groundedness} substantive row(s) without groundedness judgement")
+    if summary.get("evaluation_scope") == "full_benchmark":
+        expected = int(summary.get("official_split_expected_queries") or 0)
+        if expected and len(rows) != expected:
+            failures.append(f"full scope has {len(rows)}/{expected} rows")
+        if summary.get("eligible_primary_answer_score_count") != len(rows):
+            failures.append("not every full-scope row has an eligible deterministic primary answer score")
+        dataset = str(summary.get("dataset", "")).lower()
+        if dataset == "musique":
+            if any(not (row.get("expected_sources") or {}).get("paragraph_ids") for row in rows):
+                failures.append("MuSiQue row(s) missing evidence_paragraph_ids")
+            if summary.get("eligible_paragraph_support_f1_count") != len(rows):
+                failures.append("MuSiQue paragraph support is ineligible for one or more rows")
+        elif dataset == "multihop-rag":
+            for row in rows:
+                facts = (row.get("expected_sources") or {}).get("facts") or []
+                if facts and _safe_float(row.get("official_mrr@10"), -1.0) < 0:
+                    failures.append("MultiHop-RAG row(s) with gold facts lack official retrieval metrics")
+                    break
     if failures:
         raise RuntimeError(f"Benchmark incomplete ({', '.join(failures)}); results saved to {result_file}")
 
@@ -243,22 +500,70 @@ def _validate_benchmark_data(benchmark_data: Any, source: str) -> list[dict[str,
     supported = {"multihoprag", "musique"}
     validated: list[dict[str, Any]] = []
     dataset_markers: set[str] = set()
+    query_ids: set[str] = set()
     for idx, item in enumerate(benchmark_data):
         if not isinstance(item, dict):
             raise TypeError(f"Benchmark row {idx} must be an object, got {type(item).__name__}")
         query = item.get("query")
         if not isinstance(query, str) or not query.strip():
             raise ValueError(f"Benchmark row {idx} has no non-empty 'query'")
+        query_id = item.get("_id")
+        if not isinstance(query_id, str) or not query_id.strip():
+            raise ValueError(f"Benchmark row {idx} has no stable non-empty '_id'")
+        if query_id in query_ids:
+            raise ValueError(f"Benchmark row {idx} duplicates query _id {query_id!r}")
+        query_ids.add(query_id)
         marker = item.get("dataset")
         if not isinstance(marker, str) or marker.strip().lower() not in supported:
             raise ValueError(
                 f"Benchmark row {idx} has unsupported dataset marker {marker!r}; expected one of {sorted(supported)}"
             )
         dataset_markers.add(marker.strip().lower())
+        ground_truth = item.get("ground_truth")
+        if not isinstance(ground_truth, str) or not ground_truth.strip():
+            raise ValueError(f"Benchmark row {idx} has no non-empty 'ground_truth'")
+        if marker.strip().lower() == "musique":
+            paragraph_ids = item.get("evidence_paragraph_ids")
+            if not isinstance(paragraph_ids, list) or not paragraph_ids or any(not isinstance(v, str) or not v.strip() for v in paragraph_ids):
+                raise ValueError(
+                    f"MuSiQue row {idx} lacks non-empty evidence_paragraph_ids; regenerate with data/prepare_musique.py and reindex"
+                )
+        else:
+            for field in ("evidence_facts", "evidence_docs"):
+                if not isinstance(item.get(field), list):
+                    raise TypeError(f"MultiHop-RAG row {idx} has invalid '{field}'; regenerate the official query manifest")
+            if str(item.get("question_type", "")).strip().lower() != "null_query" and not item["evidence_facts"]:
+                raise ValueError(f"MultiHop-RAG row {idx} has no gold evidence_facts for a non-null question")
         validated.append(item)
     if len(dataset_markers) != 1:
         raise ValueError(f"Benchmark file mixes dataset markers: {sorted(dataset_markers)}")
     return validated
+
+
+def _evaluation_scope(
+    dataset: str,
+    evaluated_count: int,
+    source: str,
+    evaluated_query_ids_sha256: str,
+) -> tuple[str, int | None]:
+    """Classify an artifact from its actual evaluated row count.
+
+    A complete expected split is ``full_benchmark`` even if its filename is
+    unconventional.  Incomplete files explicitly named as samples remain
+    ``sample_exploratory``; all other incomplete selections (including CLI
+    ``--limit``) are ``subset_exploratory``.
+    """
+    expected = OFFICIAL_SPLIT_QUERY_COUNTS.get(str(dataset).lower())
+    if expected is not None and evaluated_count == expected:
+        expected_digest = OFFICIAL_QUERY_ID_DIGESTS.get(str(dataset).lower())
+        if evaluated_query_ids_sha256 != expected_digest:
+            raise ValueError(
+                f"{dataset} has the official row count but a non-official query-id digest; refusing invalid full benchmark"
+            )
+        return "full_benchmark", expected
+    if "sample" in Path(source).name.lower():
+        return "sample_exploratory", expected
+    return "subset_exploratory", expected
 
 
 def _slim_details(details: list | None) -> list:
@@ -409,13 +714,12 @@ async def reconcile_pending_judges(run_dir: Path) -> int:
             if (
                 resolved_fields["llm_judge_score"] < 0
                 or resolved_fields["groundedness"] < 0
-                or resolved_fields["hallucination"] < 0
             ):
                 invalid_payloads.append(str(custom_id))
         if invalid_payloads:
             unresolved.append(
                 f"{batch_id}: {len(invalid_payloads)}/{len(expected_ids)} payload(s) "
-                "missing valid score, groundedness, or hallucination"
+                "missing valid score or groundedness"
             )
             continue
 
@@ -465,33 +769,27 @@ async def run_benchmark(
     if not os.path.isfile(queries_file):
         raise FileNotFoundError(f"Queries file not found: {queries_file}")
 
-    if seed is not None:
-        RAGConfig.LLM_SEED = int(seed)
-
-    try:
-        if strategy == "prehop":
-            engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
-        elif strategy == "naive":
-            engine = NaiveRAG(strategy=strategy, corpus_tag=corpus_tag)
-        elif strategy == "hoprag":
-            from models.hoprag.hoprag_adapter import HopRAGAdapter
-
-            engine = HopRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
-        elif strategy == "ms_graphrag":
-            from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter
-
-            engine = MSGraphRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
-        else:
-            raise ValueError(f"Unknown strategy: {strategy}")
-
-        vllm = get_llm_client(model_id)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to initialize engine for {strategy}: {exc}") from exc
-
+    # Validate the immutable evaluation manifest before creating engines or
+    # contacting inference services. This makes stale MuSiQue manifests fail
+    # immediately instead of consuming a benchmark run with ineligible rows.
     benchmark_data = _validate_benchmark_data(
         await asyncio.to_thread(_read_json_file, queries_file),
         queries_file,
     )
+    manifest_queries_count = len(benchmark_data)
+    judge_enabled = bool(RAGConfig.JUDGE_ENABLED)
+    judge_independent: bool | None = None
+    judge_self_override = False
+    if judge_enabled:
+        judge_independent, judge_self_override = _judge_independence(
+            RAGConfig.EVAL_MODEL,
+            model_id,
+            RAGConfig.DEFAULT_MODEL,
+            RAGConfig.JUDGE_ALLOW_SELF,
+        )
+
+    if seed is not None:
+        RAGConfig.LLM_SEED = int(seed)
 
     if limit is not None:
         benchmark_data = benchmark_data[: max(0, int(limit))]
@@ -515,6 +813,54 @@ async def run_benchmark(
             f"a 'dataset' field set to one of {sorted(_MULTIHOP_DATASET_NAMES)}."
         )
     dataset_name = _MULTIHOP_DATASET_NAMES[dataset_marker]
+    evaluated_query_ids_sha256 = _query_ids_sha256(benchmark_data)
+    evaluation_scope, official_split_expected_queries = _evaluation_scope(
+        dataset_marker,
+        len(benchmark_data),
+        queries_file,
+        evaluated_query_ids_sha256,
+    )
+    corpus_manifest = _load_benchmark_corpus_manifest(dataset_marker, queries_file)
+    index_manifest = _latest_index_manifest_metadata(strategy, corpus_tag)
+    corpus_index_fingerprint_status = _validate_corpus_index_fingerprint(
+        dataset_marker,
+        evaluation_scope,
+        corpus_manifest,
+        index_manifest,
+        evaluated_query_ids_sha256,
+    )
+    # Identity validation runs before constructing adapters, some of which
+    # open external-service clients during initialization.
+    try:
+        if strategy == "prehop":
+            engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
+        elif strategy == "naive":
+            engine = NaiveRAG(strategy=strategy, corpus_tag=corpus_tag)
+        elif strategy == "hoprag":
+            from models.hoprag.hoprag_adapter import HopRAGAdapter
+
+            engine = HopRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
+        elif strategy == "ms_graphrag":
+            from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter
+
+            engine = MSGraphRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+
+        vllm = get_llm_client(model_id)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to initialize engine for {strategy}: {exc}") from exc
+    # Stats artifacts are only a report of what indexing intended to build.
+    # Before query execution, prove the currently active graph/parquet snapshot
+    # still matches the prepared corpus. Full benchmarks fail closed; subsets
+    # retain the diagnostic state for exploratory debugging.
+    active_index_snapshot = await _verify_active_index_snapshot(
+        engine,
+        strategy,
+        corpus_tag,
+        corpus_manifest,
+        strict=evaluation_scope == "full_benchmark",
+    )
     results = []
     category_results = {}
 
@@ -547,18 +893,16 @@ async def run_benchmark(
     summary: dict[str, Any] = {}
 
     batch_collector = None
-    if RAGConfig.JUDGE_BATCH:
+    if judge_enabled and RAGConfig.JUDGE_BATCH:
         eval_model = str(RAGConfig.EVAL_MODEL or "").strip()
         if not eval_model:
             raise RuntimeError(
-                "Batch judge is enabled by default, but EVAL_MODEL is missing. "
-                "Configure an OpenAI Batch-compatible judge model or explicitly set "
-                "RAG_JUDGE_BATCH=false for debugging."
+                "RAG_JUDGE_ENABLED=true requires EVAL_MODEL. Configure an OpenAI Batch-compatible judge model "
+                "or set RAG_JUDGE_BATCH=false for an explicit synchronous judge run."
             )
         if not RAGConfig.OPENAI_API_KEY:
             raise RuntimeError(
-                "Batch judge is enabled by default, but OPENAI_API_KEY is missing. "
-                "Set the key or explicitly set RAG_JUDGE_BATCH=false for a synchronous debug run."
+                "RAG_JUDGE_ENABLED=true with RAG_JUDGE_BATCH=true requires OPENAI_API_KEY."
             )
         from utils.batch_judge import OpenAIBatchJudge
 
@@ -567,7 +911,13 @@ async def run_benchmark(
             RAGConfig.OPENAI_API_KEY,
             poll_seconds=RAGConfig.JUDGE_BATCH_POLL_SECONDS,
         )
-        logger.info("Judge: OpenAI Batch API (default), collecting %d requests", len(benchmark_data))
+        logger.info("Supplemental judge: OpenAI Batch API, collecting %d requests", len(benchmark_data))
+    elif judge_enabled:
+        if not str(RAGConfig.EVAL_MODEL or "").strip():
+            raise RuntimeError("RAG_JUDGE_ENABLED=true requires EVAL_MODEL")
+        logger.info("Supplemental judge: synchronous mode")
+    else:
+        logger.info("Supplemental judge: disabled (deterministic/official metrics only)")
 
     benchmark_concurrency = max(1, int(os.environ.get("RAG_BENCHMARK_CONCURRENCY", "4")))
     query_sem = asyncio.Semaphore(benchmark_concurrency)
@@ -583,6 +933,28 @@ async def run_benchmark(
             "strategy": strategy,
             "corpus_tag": corpus_tag,
             "dataset": dataset_name,
+            "evaluation_scope": evaluation_scope,
+            "official_split_expected_queries": official_split_expected_queries,
+            "manifest_queries_count": manifest_queries_count,
+            "evaluated_queries_count": total_queries,
+            "evaluated_query_ids_sha256": evaluated_query_ids_sha256,
+            "limit": limit,
+            "corpus_manifest_path": (corpus_manifest or {}).get("path"),
+            "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
+            "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+            "index_manifest_stats_path": (index_manifest or {}).get("path"),
+            "index_manifest_fingerprint": (index_manifest or {}).get("fingerprint"),
+            "index_manifest_status": (index_manifest or {}).get("status"),
+            "corpus_index_fingerprint_status": corpus_index_fingerprint_status,
+            "active_index_snapshot": active_index_snapshot,
+            "official_metric_note": (
+                "Official-compatible fields require the complete official split and a corpus/index rebuilt from this manifest; "
+                "any sample or subset artifact is exploratory only."
+            ),
+            "judge_enabled": judge_enabled,
+            "judge_policy": "supplemental_optional",
+            "judge_independent": judge_independent,
+            "judge_self_override": judge_self_override,
             "queries_count": len(results),
             "total_queries": total_queries,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -636,20 +1008,25 @@ async def run_benchmark(
                     retrieved_sources=retrieved_sources,
                     evidence_facts=item.get("evidence_facts", []),
                     evidence_docs=item.get("evidence_docs", []),
+                    evidence_paragraph_ids=item.get("evidence_paragraph_ids", []),
                     question_type=item.get("question_type", ""),
                     dataset=dataset_marker,
                     answer_aliases=item.get("answer_aliases", []),
                     vllm_client=vllm,
                     batch_collector=batch_collector,
                     custom_id=str(idx),
+                    judge_enabled=judge_enabled,
                 )
                 expected_sources = {
                     "docs": item.get("evidence_docs", []),
                     "facts": item.get("evidence_facts", []),
+                    "paragraph_ids": item.get("evidence_paragraph_ids", []),
                 }
                 result_item = {
+                    "query_id": str(item.get("_id", "")),
                     "query": original_query,
                     "category": category,
+                    "question_type": item.get("question_type", ""),
                     "answer": response,
                     "ground_truth": ground_truth,
                     "expected_sources": expected_sources,
@@ -668,11 +1045,11 @@ async def run_benchmark(
                 error_text = f"{type(exc).__name__}: {exc}"
 
                 metrics = {
-                    "llm_judge_score": 0.0,
+                    "llm_judge_score": -1.0,
                     "llm_judge_reason": "runtime_error",
                     "groundedness": -1.0,
                     "groundedness_source": "runtime_error",
-                    "hallucination": 0.0,
+                    "hallucination": -1.0,
                     "hallucination_reason": "runtime_error",
                     "hallucination_source": "runtime_error",
                     "hallucination_model": str(RAGConfig.EVAL_MODEL or ""),
@@ -680,25 +1057,36 @@ async def run_benchmark(
                     "answer_f1": -1.0,
                     "answer_precision": -1.0,
                     "answer_recall": -1.0,
+                    "official_answer_em": -1.0,
+                    "official_answer_f1": -1.0,
+                    "official_qa_accuracy": -1.0,
                     "null_refusal": -1.0,
-                    "doc_match": 0.0,
+                    "doc_match": -1.0,
                     # Keep the same numeric keys the success path emits so the
                     # summary auto-averaging stays consistent across queries.
-                    "mrr@10": 0.0,
-                    "map@10": 0.0,
-                    "hits@4": 0.0,
-                    "hits@10": 0.0,
-                    "evidence_doc_recall": 0.0,
-                    "evidence_doc_precision": 0.0,
-                    "evidence_doc_f1": 0.0,
+                    "official_mrr@10": -1.0,
+                    "official_map@10": -1.0,
+                    "official_hits@4": -1.0,
+                    "official_hits@10": -1.0,
+                    "evidence_fact_recall@4": -1.0,
+                    "evidence_fact_recall@10": -1.0,
+                    "evidence_doc_recall": -1.0,
+                    "evidence_doc_precision": -1.0,
+                    "evidence_doc_f1": -1.0,
+                    "paragraph_support_precision": -1.0,
+                    "paragraph_support_recall": -1.0,
+                    "paragraph_support_f1": -1.0,
                 }
                 expected_sources = {
                     "docs": item.get("evidence_docs", []),
                     "facts": item.get("evidence_facts", []),
+                    "paragraph_ids": item.get("evidence_paragraph_ids", []),
                 }
                 result_item = {
+                    "query_id": str(item.get("_id", "")),
                     "query": original_query,
                     "category": category,
+                    "question_type": item.get("question_type", ""),
                     "answer": f"@@ANSWER: ERROR - {error_text}",
                     "ground_truth": ground_truth,
                     "expected_sources": expected_sources,
@@ -713,8 +1101,8 @@ async def run_benchmark(
             if query != original_query:
                 result_item["benchmark_query"] = query
 
-            # Every dataset is LLM-judge scored, so the 3-way label /
-            # answer_attempted / abstain post-processing is shared.
+            # Primary labels/rates are deterministic; judge labels remain
+            # separately named supplemental analysis.
             _apply_judge_label(result_item)
 
             async with write_lock:
@@ -726,7 +1114,8 @@ async def run_benchmark(
                 error_suffix = " [ERROR]" if result_item.get("error") else ""
                 print(
                     f"[{strategy}] ({len(results)}/{total_queries}) [{category}]{error_suffix} "
-                    f"Judge: {metrics['llm_judge_score']:.1f} | Hallu: {result_item.get('hallucination', 0.0):.0f} "
+                    f"Primary: {result_item.get('primary_answer_score', -1.0):.1f} | "
+                    f"Judge: {metrics['llm_judge_score']:.1f} | Hallu: {result_item.get('hallucination', -1.0):.1f} "
                     f"| DocMatch: {metrics['doc_match']:.0f} | Latency: {latency:.1f}s"
                 )
 
@@ -832,8 +1221,14 @@ def _aggregate_seed_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]
     avg_keys = sorted({k for s in summaries for k in s if k.startswith("avg_")})
     overall: dict[str, Any] = {}
     for key in avg_keys:
-        vals = [_safe_float(s.get(key, 0.0), 0.0) for s in summaries if key in s]
-        overall[key] = _agg_keys(vals)
+        metric = key.removeprefix("avg_")
+        vals = [
+            _safe_float(s[key], 0.0)
+            for s in summaries
+            if key in s and _safe_float(s.get(f"eligible_{metric}_count"), 0.0) > 0
+        ]
+        if vals:
+            overall[key] = _agg_keys(vals)
 
     # Category-level aggregation: only categories that all seeds reported
     common_cats: set[str] | None = None
@@ -849,12 +1244,16 @@ def _aggregate_seed_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]
         )
         per_cat = {}
         for key in cat_keys:
+            metric = key.removeprefix("avg_")
             vals = [
-                _safe_float(s["category_summaries"][cat].get(key, 0.0), 0.0)
+                _safe_float(s["category_summaries"][cat][key], 0.0)
                 for s in summaries
                 if cat in (s.get("category_summaries") or {})
+                and key in s["category_summaries"][cat]
+                and _safe_float(s["category_summaries"][cat].get(f"eligible_{metric}_count"), 0.0) > 0
             ]
-            per_cat[key] = _agg_keys(vals)
+            if vals:
+                per_cat[key] = _agg_keys(vals)
         per_cat["count"] = int(summaries[0].get("category_summaries", {}).get(cat, {}).get("count", 0))
         categories[cat] = per_cat
 

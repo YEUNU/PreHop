@@ -247,6 +247,7 @@ def test_unjudged_benchmark_cannot_complete(tmp_path):
     summary = {
         "details": [{"llm_judge_score": -1.0}],
         "total_queries": 1,
+        "judge_enabled": True,
     }
     with pytest.raises(RuntimeError, match="1 unjudged row"):
         _assert_benchmark_complete(summary, tmp_path / "result.json")

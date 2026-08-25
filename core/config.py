@@ -15,8 +15,20 @@ class RAGConfig:
     # --- Evaluation (LLM-as-a-judge) ---
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
     EVAL_MODEL = os.environ.get("EVAL_MODEL", "").strip()
-    # OpenAI Batch is the paper/default path because it is cheaper than
-    # synchronous judge calls. Set false only for an explicit debug run.
+    # LLM-as-a-judge is optional, supplemental analysis.  Deterministic and
+    # official benchmark metrics must be runnable without an evaluator API.
+    # Enable it explicitly for a separately labelled judge analysis.
+    JUDGE_ENABLED = os.environ.get("RAG_JUDGE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # Debug-only escape hatch. Paper artifacts must use an evaluator distinct
+    # from both the requested generation model and DEFAULT_MODEL.
+    JUDGE_ALLOW_SELF = os.environ.get("RAG_JUDGE_ALLOW_SELF", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    # When the optional judge is enabled, Batch is preferred unless an
+    # explicit synchronous debugging run requests otherwise.
     JUDGE_BATCH = os.environ.get("RAG_JUDGE_BATCH", "true").strip().lower() in {"1", "true", "yes", "on"}
     JUDGE_BATCH_POLL_SECONDS = max(2, int(os.environ.get("RAG_JUDGE_BATCH_POLL_SECONDS", "15")))
 

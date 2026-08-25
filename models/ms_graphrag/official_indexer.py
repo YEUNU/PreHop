@@ -12,9 +12,12 @@ adapter reads these parquet files instead of expecting Neo4j Community nodes.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -50,6 +53,8 @@ _EMBED_DIM = int(os.environ.get("RAG_MS_EMBED_DIM", os.environ.get("NEO4J_VECTOR
 
 # Where parquet artifacts land. corpus_tag-scoped so different runs don't clobber.
 _OUTPUT_ROOT = Path(os.environ.get("RAG_MS_OUTPUT_ROOT", "data/ms_graphrag_output"))
+SNAPSHOT_METADATA_FILENAME = "index_snapshot_metadata.json"
+_SNAPSHOT_VERSION = 1
 
 
 def output_dir_for(corpus_tag: str) -> Path:
@@ -62,6 +67,102 @@ def cache_dir_for(corpus_tag: str) -> Path:
 
 def input_dir_for(corpus_tag: str) -> Path:
     return (_OUTPUT_ROOT / corpus_tag / "_input").resolve()
+
+
+def snapshot_metadata_path(corpus_tag: str) -> Path:
+    return output_dir_for(corpus_tag) / SNAPSHOT_METADATA_FILENAME
+
+
+def _source_set_sha256(source_ids: list[str]) -> str:
+    return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
+
+
+def _expected_source_ids(staged_input: Path, corpus_manifest: dict | None) -> list[str]:
+    source_ids = sorted(path.stem for path in staged_input.iterdir() if path.suffix in (".txt", ".md"))
+    if not source_ids or len(source_ids) != len(set(source_ids)):
+        raise ValueError("MS GraphRAG staged corpus has no files or duplicate filename stems")
+    if corpus_manifest is not None and corpus_manifest.get("paragraph_count") != len(source_ids):
+        raise ValueError("MS GraphRAG corpus manifest paragraph_count does not match staged file count")
+    return source_ids
+
+
+def _write_snapshot_metadata(corpus_tag: str, payload: dict) -> None:
+    """Atomically publish state only after the on-disk snapshot is known."""
+    path = snapshot_metadata_path(corpus_tag)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _set_snapshot_in_progress(corpus_tag: str, corpus_manifest: dict | None) -> None:
+    _write_snapshot_metadata(
+        corpus_tag,
+        {
+            "strategy": "ms_graphrag",
+            "corpus_tag": corpus_tag,
+            "status": "in_progress",
+            "snapshot_version": _SNAPSHOT_VERSION,
+            "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
+            "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+            "updated_at_epoch": time.time(),
+        },
+    )
+
+
+def _verify_and_publish_snapshot(
+    corpus_tag: str,
+    source_ids: list[str],
+    corpus_manifest: dict | None,
+) -> dict:
+    """Compare actual ``documents.parquet`` sources to the staged corpus."""
+    import pandas as pd
+
+    documents_path = output_dir_for(corpus_tag) / "documents.parquet"
+    documents = pd.read_parquet(documents_path)
+    if "title" not in documents.columns:
+        raise RuntimeError(f"MS GraphRAG documents artifact lacks title column: {documents_path}")
+    actual_ids = sorted(
+        {
+            Path(str(title)).stem
+            for title in documents["title"].tolist()
+            if isinstance(title, str) and title.strip()
+        }
+    )
+    expected = sorted(source_ids)
+    if actual_ids != expected:
+        missing = sorted(set(expected) - set(actual_ids))
+        unexpected = sorted(set(actual_ids) - set(expected))
+        raise RuntimeError(
+            "MS GraphRAG documents.parquet source snapshot does not match staged corpus: "
+            f"expected={len(expected)} actual={len(actual_ids)} "
+            f"missing={missing[:5]} unexpected={unexpected[:5]}"
+        )
+    source_digest = _source_set_sha256(actual_ids)
+    payload = {
+        "strategy": "ms_graphrag",
+        "corpus_tag": corpus_tag,
+        "status": "complete",
+        "snapshot_version": _SNAPSHOT_VERSION,
+        "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
+        "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+        "source_count": len(actual_ids),
+        "source_set_sha256": source_digest,
+        "completed_at_epoch": time.time(),
+    }
+    _write_snapshot_metadata(corpus_tag, payload)
+    return payload
 
 
 class _WorkflowTiming:
@@ -378,12 +479,18 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
 async def run_official_index(
     dataset_path: str,
     corpus_tag: str,
+    corpus_manifest: dict | None = None,
 ) -> dict[str, float]:
     """Stage inputs, build config, run the standard MS pipeline."""
     from graphrag.api.index import build_index
     from graphrag.config.enums import IndexingMethod
 
     staged_input = _stage_input_files(dataset_path, corpus_tag)
+    source_ids = _expected_source_ids(staged_input, corpus_manifest)
+    # Make an old complete marker unusable before the official pipeline starts
+    # replacing output artifacts. A failed/interrupted run therefore fails the
+    # later benchmark gate rather than inheriting stale provenance.
+    _set_snapshot_in_progress(corpus_tag, corpus_manifest)
 
     config = build_config(corpus_tag, staged_input)
     out_dir = output_dir_for(corpus_tag)
@@ -428,5 +535,8 @@ async def run_official_index(
         if missing:
             parts.append(f"missing artifacts: {missing}")
         raise RuntimeError("MS GraphRAG indexing incomplete: " + "; ".join(parts))
+    snapshot = _verify_and_publish_snapshot(corpus_tag, source_ids, corpus_manifest)
+    workflow_timing.timing["active_snapshot_verified"] = 1.0
+    workflow_timing.timing["active_snapshot_source_count"] = float(snapshot["source_count"])
     logger.info("MS pipeline produced all expected parquet files at %s", out_dir)
     return workflow_timing.timing

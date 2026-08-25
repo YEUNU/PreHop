@@ -211,6 +211,7 @@ __marimo__/
 *.out
 
 logs/
+exception_log.txt
 data/debug/
 data/results/
 data/tmp/
