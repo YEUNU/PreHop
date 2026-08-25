@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -6,7 +7,7 @@ import numpy as np
 import pytest
 
 from models.hoprag import official_indexer as hop_official_indexer
-from models.hoprag.hoprag_adapter import HopRAGAdapter
+from models.hoprag.hoprag_adapter import HopRAGAdapter, _run_coro_sync
 from models.hoprag.official_indexer import (
     _build_official_edge_groups,
     _document_cache_digest,
@@ -29,6 +30,16 @@ class _AsyncRows:
             return next(self._rows)
         except StopIteration as exc:
             raise StopAsyncIteration from exc
+
+
+def test_hoprag_sync_hook_reuses_one_worker_event_loop():
+    async def current_loop_id():
+        return id(asyncio.get_running_loop())
+
+    first = _run_coro_sync(current_loop_id())
+    second = _run_coro_sync(current_loop_id())
+
+    assert first == second
 
 
 def _adapter_with_rows(rows):

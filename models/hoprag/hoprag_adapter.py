@@ -22,6 +22,7 @@ from utils.formatters import format_context_from_nodes
 from utils.prompts.shared import build_answer_prompt
 
 logger = logging.getLogger(__name__)
+_SYNC_LOOP_STATE = threading.local()
 
 
 # The official HopRAG repository's end-to-end HopGenerator example uses
@@ -49,7 +50,17 @@ def _run_coro_sync(coro):
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(_guarded())
+        # Official HopRetriever invokes this hook repeatedly from a stable
+        # asyncio.to_thread worker. Creating a fresh loop for every node
+        # judgement leaves cached AsyncOpenAI transports attached to hundreds
+        # of dead loops and eventually exhausts file descriptors. Reuse one
+        # loop per worker thread; this changes only adapter resource ownership,
+        # not the upstream call sequence or responses.
+        loop = getattr(_SYNC_LOOP_STATE, "loop", None)
+        if loop is None or loop.is_closed():
+            loop = asyncio.new_event_loop()
+            _SYNC_LOOP_STATE.loop = loop
+        return loop.run_until_complete(_guarded())
 
     holder: dict[str, Any] = {}
     errors: dict[str, BaseException] = {}
