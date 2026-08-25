@@ -279,16 +279,19 @@ class HopRAGAdapter:
     async def _lookup_nodes_by_text(self, texts: list[str]) -> list[dict[str, Any]]:
         if not texts:
             return []
-        # Official HopRetriever returns only text, so provenance can be
-        # recovered safely only when that text identifies exactly one node.
-        # Never pick an arbitrary row when different nodes share the text.
+        # Official HopRetriever returns only text and internally keys its
+        # traversal state by that text. Exact duplicate text from different
+        # documents is therefore an upstream equivalence class, not a node
+        # whose single source can be recovered. Keep the retrieved evidence
+        # rank but expose ambiguous provenance explicitly; never choose one
+        # of the matching documents and accidentally award title-level credit.
         # HopRAG-native nodes have no page or chunk index, so those stay 0.
         query = f"""
             UNWIND range(0, size($texts) - 1) AS idx
             WITH idx, $texts[idx] AS target_text
             MATCH (n:{self.chunk_label})
             WHERE n.text = target_text
-            RETURN idx, id(n) AS id, coalesce(n.title, '') AS title,
+            RETURN idx, elementId(n) AS id, coalesce(n.title, '') AS title,
                    0 AS sent_id, 0 AS page,
                    n.text AS text, n.embed AS embedding,
                    coalesce(n.source, '') AS source
@@ -310,13 +313,30 @@ class HopRAGAdapter:
             matches = by_idx.get(idx, [])
             if not matches:
                 raise RuntimeError(f"HopRAG provenance lookup found no node for official result at index {idx}")
-            if len(matches) != 1:
-                identities = [f"id={row.get('id')},source={row.get('source', '')!r}" for row in matches]
-                raise RuntimeError(
-                    "HopRAG provenance is ambiguous for official result "
-                    f"at index {idx} ({text!r}): {', '.join(identities)}"
-                )
-            node = matches[0]
+            source_groups = {
+                (str(row.get("source") or ""), str(row.get("title") or "")) for row in matches
+            }
+            if len(source_groups) == 1:
+                node = matches[0]
+            else:
+                node = {
+                    "id": f"hoprag:ambiguous:{idx}",
+                    "title": "Ambiguous exact-text provenance",
+                    "source": "",
+                    "sent_id": 0,
+                    "page": 0,
+                    "text": text,
+                    "embedding": matches[0].get("embedding"),
+                    "provenance_status": "ambiguous_exact_text",
+                    "provenance_candidates": [
+                        {
+                            "id": row.get("id"),
+                            "title": row.get("title", ""),
+                            "source": row.get("source", ""),
+                        }
+                        for row in matches
+                    ],
+                }
             node.pop("idx", None)
             ordered.append(node)
         return ordered
@@ -361,6 +381,14 @@ class HopRAGAdapter:
                 "page": n.get("page", 0),
                 "text": n.get("text", ""),
                 "sent_id": n.get("sent_id", 0),
+                **(
+                    {
+                        "provenance_status": n["provenance_status"],
+                        "provenance_candidates": n["provenance_candidates"],
+                    }
+                    if n.get("provenance_status")
+                    else {}
+                ),
             }
             for n in nodes
         ]

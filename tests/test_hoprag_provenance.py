@@ -166,7 +166,7 @@ async def test_hoprag_provenance_keeps_title_and_source_separate():
 
 
 @pytest.mark.asyncio
-async def test_hoprag_provenance_rejects_same_text_from_different_sources():
+async def test_hoprag_provenance_marks_same_text_from_different_sources_ambiguous():
     adapter, _session = _adapter_with_rows(
         [
             {"idx": 0, "id": 17, "title": "First", "source": "first_doc", "text": "same text"},
@@ -174,8 +174,30 @@ async def test_hoprag_provenance_rejects_same_text_from_different_sources():
         ]
     )
 
-    with pytest.raises(RuntimeError, match=r"provenance is ambiguous.*first_doc.*second_doc"):
-        await adapter._lookup_nodes_by_text(["same text"])
+    nodes = await adapter._lookup_nodes_by_text(["same text"])
+
+    assert nodes[0]["title"] == "Ambiguous exact-text provenance"
+    assert nodes[0]["source"] == ""
+    assert nodes[0]["provenance_status"] == "ambiguous_exact_text"
+    assert [candidate["source"] for candidate in nodes[0]["provenance_candidates"]] == [
+        "first_doc",
+        "second_doc",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hoprag_provenance_collapses_duplicate_nodes_from_one_source():
+    adapter, _session = _adapter_with_rows(
+        [
+            {"idx": 0, "id": "17", "title": "First", "source": "one_doc", "text": "same text"},
+            {"idx": 0, "id": "23", "title": "First", "source": "one_doc", "text": "same text"},
+        ]
+    )
+
+    nodes = await adapter._lookup_nodes_by_text(["same text"])
+
+    assert nodes[0]["source"] == "one_doc"
+    assert "provenance_status" not in nodes[0]
 
 
 @pytest.mark.asyncio
