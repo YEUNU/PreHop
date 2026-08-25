@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from data.prepare_musique import paragraph_identity
 from models.hoprag.hoprag_adapter import HopRAGAdapter
 from models.hoprag.official_indexer import _build_official_edge_groups, _prune_stale_hoprag_sources
+from scripts.datasets.prepare_musique import paragraph_identity
 
 
 class _AsyncRows:

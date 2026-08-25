@@ -12,7 +12,7 @@ cd "$SCRIPT_DIR"
 . "$SCRIPT_DIR/scripts/lib.sh"
 load_project_env "$SCRIPT_DIR/.env"
 
-# [환경 설정] (.env values win over defaults; explicit shell exports win over .env)
+# Environment (.env values override defaults; exported values override .env).
 export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
 export NEO4J_VECTOR_DIMENSIONS="${NEO4J_VECTOR_DIMENSIONS:-1024}"
 export MAX_EMBEDDING_LENGTH="${MAX_EMBEDDING_LENGTH:-16384}"

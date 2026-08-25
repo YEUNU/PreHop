@@ -22,9 +22,9 @@ from cli.benchmark import (
     _verify_active_index_snapshot,
 )
 from cli.index import _load_corpus_manifest, _verify_and_publish_neo4j_snapshot
-from data import prepare_musique
 from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
+from scripts.datasets import prepare_musique
 from scripts.paired_bootstrap import _load, _paired, _validate_artifact_pair
 
 

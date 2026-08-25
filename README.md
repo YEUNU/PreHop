@@ -86,11 +86,10 @@ prehop/
 │   ├── similarity.py                # cosine similarity for final candidate ordering
 │   ├── prompts/                     # indexing, shared synthesis, and judge prompts
 │   └── io.py / formatters.py / parsers.py / reporting.py
-├── data/                            # datasets and generated local indices (gitignored)
-│   ├── prepare_multihoprag.py       # download/build the MultiHop-RAG corpus + queries
-│   ├── prepare_musique.py           # download/build the MuSiQue (answerable dev) corpus + queries
-│   └── make_sample.py               # stratified query samples for the supported datasets
-├── scripts/                         # analysis, judge reconciliation, and measured matrix runs
+├── data/                            # prepared datasets and generated local indices
+├── scripts/
+│   ├── datasets/                    # dataset download, normalization, and sampling
+│   └── *.py                         # experiment measurement and evaluation utilities
 ├── tests/                           # chunking / retrieval / live-integration
 ├── run_servers.sh                   # validate/start Neo4j + generation/embedding endpoints
 ├── run_index.sh / run_benchmark.sh  # low-level, dataset-agnostic
@@ -131,7 +130,7 @@ inference infra".
 
 ```bash
 # 0) Prepare a dataset (downloads + builds corpus + queries)
-python3 data/prepare_multihoprag.py
+python3 scripts/datasets/prepare_multihoprag.py
 
 # 1) Start Neo4j and validate external generation/embedding endpoints
 ./run_servers.sh all
@@ -167,13 +166,14 @@ dataset's corpus, queries, and tags so you don't pass them by hand:
 ./run_servers.sh all            # services first
 
 # MultiHop-RAG
-python3 data/prepare_multihoprag.py            # downloads corpus + full queries
+python3 scripts/datasets/prepare_multihoprag.py  # downloads corpus + full queries
 ./run_multihoprag.sh all                       # index all 4 + benchmark (sample200)
 ./run_multihoprag.sh benchmark --queries full  # or the full 2556-query set
 
 # MuSiQue: preparation defaults to all 2,417 answerable dev rows.
 # Create exploratory samples only with make_sample.py.
-python3 data/prepare_musique.py && python3 data/make_sample.py --dataset musique --per-type 67
+python3 scripts/datasets/prepare_musique.py
+python3 scripts/datasets/make_sample.py --dataset musique --per-type 67
 ./run_dataset.sh musique all
 ```
 

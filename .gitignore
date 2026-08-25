@@ -212,9 +212,6 @@ __marimo__/
 
 logs/
 exception_log.txt
-data/debug/
-data/results/
-data/tmp/
 # All run reports are reproducible and may contain very large per-target logs.
 artifacts/
 fig/
@@ -222,13 +219,16 @@ neo4j_data/
 data/enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2
 
 .claude/
-# Dataset corpora, index caches, failure records, and generated statistics.
-# Preparation scripts and curated tracked samples directly under data/ remain.
-data/*/
-
-# MS GraphRAG / HopRAG indexer artifacts (parquet + lancedb + pickle caches).
-# Already covered by `data/*/` above, but listing explicitly so it's obvious
-# these large generated trees shouldn't be committed.
+# Regenerable corpora, caches, intermediate records, and index statistics.
+data/multihoprag_corpus/
+data/musique_corpus/
+data/debug/
+data/results/
+data/tmp/
+data/embedding_cache/
+data/index_cache/
+data/index_locks/
+data/index_stats/
 data/ms_graphrag_output/
 data/hoprag_output/
 
@@ -239,9 +239,8 @@ output/
 # Local debug / one-off probe scripts under scripts/_test_*.py
 scripts/_test_*.py
 
-# Downloadable / regenerable dataset files — recreate with data/prepare_*.py.
-# The prep scripts and the small curated query subsets stay tracked; these
-# large raw/full files do not.
+# Downloadable dataset files; recreate them with scripts/datasets/prepare_*.py.
+# Small curated query subsets remain tracked.
 data/multihoprag_corpus.json
 data/MultiHopRAG.json
 data/multihoprag_queries.json

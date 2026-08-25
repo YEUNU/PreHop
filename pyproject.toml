@@ -17,7 +17,7 @@ dependencies = [
     "tqdm",
     "requests",
     "tiktoken",
-    "pyarrow",  # parses HuggingFace parquet dataset exports (data/prepare_*.py)
+    "pyarrow",  # parses HuggingFace parquet dataset exports
     "spacy",  # sentence/entity splitting for the hoprag baseline's official indexer
     "pandas",  # third_party/HopRAG/HopBuilder.py (official hoprag baseline);
                # also a dep of the ms_graphrag baseline

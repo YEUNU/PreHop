@@ -58,7 +58,7 @@ case "$QUERIES" in
 esac
 if { [ "$STAGE" = "benchmark" ] || [ "$STAGE" = "bench" ] || [ "$STAGE" = "all" ]; } \
    && { [ -z "$QUERIES_FILE" ] || [ ! -f "$QUERIES_FILE" ]; }; then
-    echo "Queries file for --queries $QUERIES not found. Run data/prepare_${DATASET}.py (and data/make_sample.py --dataset ${DATASET}) first."
+    echo "Queries file for --queries $QUERIES not found. Run scripts/datasets/prepare_${DATASET}.py (and scripts/datasets/make_sample.py --dataset ${DATASET}) first."
     exit 1
 fi
 

@@ -49,7 +49,8 @@ def _strip_scraper_boilerplate(body: str) -> str:
 CORPUS_URL = "https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/main/corpus.json"
 QUERIES_URL = "https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/main/MultiHopRAG.json"
 
-DATA_DIR = Path("data")
+ROOT_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = ROOT_DIR / "data"
 CORPUS_DIR = DATA_DIR / "multihoprag_corpus"
 QUERIES_PATH = DATA_DIR / "multihoprag_queries.json"
 RAW_CORPUS_PATH = DATA_DIR / "multihoprag_corpus.json"

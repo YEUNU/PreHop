@@ -11,7 +11,7 @@ cd "$SCRIPT_DIR"
 . "$SCRIPT_DIR/scripts/lib.sh"
 load_project_env "$SCRIPT_DIR/.env"
 
-# [환경 설정] (.env values win over defaults; explicit shell exports win over .env)
+# Environment (.env values override defaults; exported values override .env).
 export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
 export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"

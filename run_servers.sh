@@ -8,7 +8,7 @@
 
 set -e
 
-# [환경 설정]
+# Environment
 export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"

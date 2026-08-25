@@ -15,7 +15,8 @@ import requests
 
 QUERIES_URL = "https://huggingface.co/datasets/dgslibisey/MuSiQue/resolve/main/musique_ans_v1.0_dev.jsonl"
 
-DATA_DIR = Path("data")
+ROOT_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = ROOT_DIR / "data"
 CORPUS_DIR = DATA_DIR / "musique_corpus"
 QUERIES_PATH = DATA_DIR / "musique_queries.json"
 RAW_QUERIES_PATH = DATA_DIR / "musique_ans_v1.0_dev.jsonl"

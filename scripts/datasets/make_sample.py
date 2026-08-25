@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Build a stratified query sample (balanced by category/question_type) for
 any active multi-hop-shaped dataset (multihoprag, musique).
 
@@ -8,8 +7,8 @@ datasets do not need near-duplicate sampling scripts. Graph baselines are slow
 instead of the full query set. Equal count per category with a fixed seed keeps
 the sample reproducible and category-balanced.
 
-    python data/make_sample.py --dataset musique --per-type 50    # n=150 (3 hop counts)
-    python data/make_sample.py --dataset multihoprag --per-type 50 --seed 42
+    python scripts/datasets/make_sample.py --dataset musique --per-type 50
+    python scripts/datasets/make_sample.py --dataset multihoprag --per-type 50 --seed 42
 
 Output: data/<dataset>_sample<N>_queries.json (N = per_type * num_categories).
 """
@@ -20,7 +19,8 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = ROOT_DIR / "data"
 
 
 def main() -> int:
@@ -38,7 +38,7 @@ def main() -> int:
 
     full_path = DATA_DIR / f"{args.dataset}_queries.json"
     if not full_path.exists():
-        print(f"ERROR: {full_path} not found — run data/prepare_{args.dataset}.py first.")
+        print(f"ERROR: {full_path} not found — run scripts/datasets/prepare_{args.dataset}.py first.")
         return 2
 
     with open(full_path, "r", encoding="utf-8") as f:

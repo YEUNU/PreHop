@@ -74,8 +74,8 @@ Follow this pipeline to build the graph, run retrieval, and generate answers.
 ### Step 1: Prepare the Dataset
 
 This project prepares its three supported corpora with
-`data/prepare_multihoprag.py`, `data/prepare_hotpotqa.py`, and
-`data/prepare_musique.py`. The unused upstream standalone preprocessor was
+`scripts/datasets/prepare_multihoprag.py` and
+`scripts/datasets/prepare_musique.py`. The unused upstream standalone preprocessor was
 removed so there is one corpus contract.
 
 `models/hoprag/official_indexer.py` stages that shared corpus contract into the

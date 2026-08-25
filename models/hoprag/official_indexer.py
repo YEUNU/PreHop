@@ -1415,7 +1415,7 @@ def _build_official_edge_groups(
         return resolved
 
     def _resolve_musique_paragraphs(paragraphs) -> list[str]:
-        from data.prepare_musique import clean_wiki_markup, paragraph_identity
+        from scripts.datasets.prepare_musique import clean_wiki_markup, paragraph_identity
 
         resolved = []
         for paragraph in paragraphs or []:

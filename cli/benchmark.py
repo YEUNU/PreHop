@@ -562,7 +562,8 @@ def _validate_benchmark_data(benchmark_data: Any, source: str) -> list[dict[str,
                 or any(not isinstance(v, str) or not v.strip() for v in paragraph_ids)
             ):
                 raise ValueError(
-                    f"MuSiQue row {idx} lacks non-empty evidence_paragraph_ids; regenerate with data/prepare_musique.py and reindex"
+                    f"MuSiQue row {idx} lacks non-empty evidence_paragraph_ids; "
+                    "regenerate with scripts/datasets/prepare_musique.py and reindex"
                 )
         else:
             for field in ("evidence_facts", "evidence_docs"):
