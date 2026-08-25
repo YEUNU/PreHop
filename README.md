@@ -262,6 +262,7 @@ Query-only ablations do not require rebuilding the index:
 |---|---|---|
 | `RAG_HYPO_CHANNEL_VARIANT` | `full` | `qminus_only`, `qplus_only`, `single_combined` |
 | `RAG_GRAPH_HOP_DEPTH` | `1` | `0` disables graph expansion |
+| `RAG_GRAPH_EDGE_VARIANT` | `full` | `hop_only` or `next_only` isolates traversal-edge contributions |
 | `RAG_SOURCE_SELECTION_VARIANT` | `global` | `round_robin` enables source diversification as an ablation |
 
 The primary direction ablation is `{full, Q⁻-only, Q⁺-only}`. Source

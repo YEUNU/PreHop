@@ -173,6 +173,7 @@ RAG_GRAPH_HOP_DEPTH == 0
 RAG_GRAPH_HOP_DEPTH == 1 (default)
   -> retrieve(query) for seeds
   -> deterministic NEXT/HOP expansion for the configured depth
+  -> RAG_GRAPH_EDGE_VARIANT selects full, hop_only, or next_only for query-only ablation
 
 empty context
   -> fixed "Insufficient evidence" result, no synthesis call

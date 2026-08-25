@@ -22,6 +22,7 @@ from cli.benchmark import (
 )
 from cli.index import _load_corpus_manifest, _verify_and_publish_neo4j_snapshot
 from models.ms_graphrag import official_indexer as ms_official_indexer
+from models.hoprag import official_indexer as hop_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
 from scripts.datasets import prepare_musique
 from scripts.paired_bootstrap import _load, _paired, _validate_artifact_pair
@@ -232,6 +233,42 @@ async def test_full_active_snapshot_gate_checks_metadata_and_live_sources(tmp_pa
     assert exploratory["status"] == "mismatch_exploratory"
 
 
+@pytest.mark.asyncio
+async def test_hoprag_active_readback_preserves_periods_in_stored_stems(tmp_path):
+    source = "Article_about_the_U.S._economy"
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    corpus_dir = tmp_path / "multihoprag_corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / f"{source}.txt").write_text("evidence", encoding="utf-8")
+    manifest_path = corpus_dir / "corpus_manifest.json"
+    manifest_path.write_text(json.dumps({"fingerprint": "fp", "paragraph_count": 1}), encoding="utf-8")
+    manifest = {"path": str(manifest_path), "fingerprint": "fp", "paragraph_count": 1}
+
+    class Neo4j:
+        async def execute_query(self, query, parameters=None):
+            _ = parameters
+            if "RAGIndexSnapshot" in query:
+                return [
+                    {
+                        "status": "complete",
+                        "fingerprint": "fp",
+                        "paragraph_count": 1,
+                        "source_count": 1,
+                        "source_set_sha256": digest,
+                        "snapshot_version": 1,
+                    }
+                ]
+            return [{"source": source}]
+
+    class Engine:
+        chunk_label = "HO_multihoprag"
+        neo4j = Neo4j()
+
+    verified = await _verify_active_index_snapshot(Engine(), "hoprag", "multihoprag", manifest, strict=True)
+
+    assert verified["status"] == "matched"
+
+
 def test_ms_snapshot_metadata_is_sidecar_and_requires_actual_document_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(ms_official_indexer, "_OUTPUT_ROOT", tmp_path)
     output_dir = ms_official_indexer.output_dir_for("musique")
@@ -250,6 +287,41 @@ def test_ms_snapshot_metadata_is_sidecar_and_requires_actual_document_sources(tm
     assert payload["status"] == "complete"
     persisted = json.loads(ms_official_indexer.snapshot_metadata_path("musique").read_text(encoding="utf-8"))
     assert persisted["source_set_sha256"] == payload["source_set_sha256"]
+
+
+def test_hoprag_snapshot_preserves_periods_in_stored_source_ids():
+    class Result(list):
+        def consume(self):
+            return None
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def run(self, query, _parameters=None, **_kwargs):
+            if "RETURN DISTINCT n.source AS source" in query:
+                return Result([{"source": "Article_about_the_U.S._economy"}])
+            return Result()
+
+    class Driver:
+        def session(self):
+            return Session()
+
+    class Builder:
+        driver = Driver()
+        label = "HO_multihoprag"
+
+    payload = hop_official_indexer._verify_and_publish_snapshot(
+        Builder(),
+        "multihoprag",
+        ["Article_about_the_U.S._economy"],
+        {"fingerprint": "fp", "paragraph_count": 1},
+    )
+
+    assert payload["source_count"] == 1
 
 
 def test_musique_corpus_keeps_same_title_distinct_paragraphs(tmp_path, monkeypatch):

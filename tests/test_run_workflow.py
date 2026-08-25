@@ -82,6 +82,16 @@ def test_build_unique_sources_uses_source_identity_before_display_title():
     assert [source["source"] for source in out] == ["musique_first.txt", "musique_second.txt"]
 
 
+def test_build_unique_sources_preserves_retrieval_provenance():
+    paths = [{"kind": "hop", "source_chunk_id": "seed", "depth": 1, "edge_rank": 0}]
+    out = GraphRAG._build_unique_sources(
+        [{"id": "target", "title": "Doc", "source": "doc.txt", "sent_id": 2, "text": "evidence", "retrieval_paths": paths}]
+    )
+
+    assert out[0]["chunk_id"] == "target"
+    assert out[0]["retrieval_paths"] == paths
+
+
 def test_build_answer_prompt_contains_context_and_query():
     prompt = GraphRAG._build_answer_prompt("CTX_BLOCK", "QUESTION_TEXT")
     assert "CTX_BLOCK" in prompt

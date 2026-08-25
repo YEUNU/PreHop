@@ -62,6 +62,10 @@ class RetrieveMixin:
             for node in nodes:
                 node_id = self._node_identity(node)
                 merged.setdefault(node_id, dict(node))
+                paths = merged[node_id].setdefault("retrieval_paths", [])
+                direct_path = {"kind": "direct", "channel": channel, "depth": 0}
+                if direct_path not in paths:
+                    paths.append(direct_path)
                 if channel == "q_plus":
                     merged[node_id]["dependency_seed"] = True
         for node in merged.values():

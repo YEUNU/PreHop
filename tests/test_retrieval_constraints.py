@@ -157,6 +157,27 @@ async def test_retrieval_embeds_query_once_before_parallel_channels():
 
 
 @pytest.mark.asyncio
+async def test_retrieval_records_every_direct_representation_path():
+    rag = GraphRAG(strategy="prehop")
+    rag.llm.get_embedding = AsyncMock(return_value=[1.0])
+
+    async def candidates(_query, *, query_embedding, limit, channel):
+        _ = query_embedding, limit
+        if channel in {"q_minus", "q_plus"}:
+            return [{"id": "shared", "text": "evidence", "embedding": [1.0]}]
+        return []
+
+    rag._hybrid_rrf_candidates = AsyncMock(side_effect=candidates)  # type: ignore[method-assign]
+
+    _, pool = await rag._retrieve_with_candidate_pool("query", top_k=1)
+
+    assert pool[0]["retrieval_paths"] == [
+        {"kind": "direct", "channel": "q_minus", "depth": 0},
+        {"kind": "direct", "channel": "q_plus", "depth": 0},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_hybrid_search_derives_modality_width_from_owner_budget():
     rag = GraphRAG(strategy="prehop")
     rag._run_channel_query = AsyncMock(return_value=[])  # type: ignore[method-assign]

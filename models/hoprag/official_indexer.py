@@ -173,7 +173,10 @@ def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str]
             RETURN DISTINCT n.source AS source
             """
         )
-        actual_ids = sorted({Path(str(row["source"] or "")).stem for row in rows})
+        # Stage 2 stores the filename stem in ``n.source`` already. Applying
+        # Path.stem again corrupts legitimate identifiers containing periods
+        # (for example ``U.S._...``) by treating the tail as another suffix.
+        actual_ids = sorted({str(row["source"] or "") for row in rows})
         expected = sorted(source_ids)
         if actual_ids != expected:
             missing = sorted(set(expected) - set(actual_ids))

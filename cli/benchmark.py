@@ -196,7 +196,17 @@ async def _verify_active_neo4j_snapshot(
         RETURN DISTINCT c.source AS source
         """
     )
-    actual_source_ids = sorted({Path(str(row.get("source") or "")).stem for row in rows})
+    # Prehop/naive store source filenames, while the official HopRAG adapter
+    # stores filename stems. Reapplying Path.stem to a HopRAG source corrupts
+    # identifiers containing periods such as ``U.S._...``.
+    actual_source_ids = sorted(
+        {
+            str(row.get("source") or "")
+            if strategy == "hoprag"
+            else Path(str(row.get("source") or "")).stem
+            for row in rows
+        }
+    )
     if actual_source_ids != sorted(expected_source_ids):
         raise RuntimeError(
             f"Active {strategy} source snapshot does not match prepared corpus "
@@ -985,6 +995,7 @@ async def run_benchmark(
                 "chunk_sentences": RAGConfig.CHUNK_SENTENCES,
                 "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
                 "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
+                "graph_edge_variant": RAGConfig.GRAPH_EDGE_VARIANT,
                 "default_top_k": RAGConfig.DEFAULT_TOP_K,
                 "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
                 "hypo_channel_variant": RAGConfig.HYPO_CHANNEL_VARIANT,

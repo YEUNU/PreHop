@@ -82,6 +82,7 @@ class RAGConfig:
     # Zero disables graph expansion for ablation; one enables the fixed
     # bidirectional NEXT and outgoing HOP_ANSWER expansion.
     GRAPH_HOP_DEPTH = int(os.environ.get("RAG_GRAPH_HOP_DEPTH", "1"))
+    GRAPH_EDGE_VARIANT = os.environ.get("RAG_GRAPH_EDGE_VARIANT", "full").strip().lower() or "full"
 
     # --- Ablation & Experimental Toggles ---
     # Q-/Q+ channel ablations.
@@ -138,6 +139,8 @@ class RAGConfig:
             )
         if cls.GRAPH_HOP_DEPTH not in {0, 1}:
             raise ValueError("RAG_GRAPH_HOP_DEPTH must be 0 or 1")
+        if cls.GRAPH_EDGE_VARIANT not in {"full", "hop_only", "next_only"}:
+            raise ValueError("RAG_GRAPH_EDGE_VARIANT must be full, hop_only, or next_only")
         if not cls.EMBEDDING_QUERY_INSTRUCTION:
             raise ValueError("EMBEDDING_QUERY_INSTRUCTION must not be empty")
 

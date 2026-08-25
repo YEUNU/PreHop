@@ -110,6 +110,10 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             # source shapes retain their established public representation.
             if source:
                 source_record["source"] = source
+            if row.get("id"):
+                source_record["chunk_id"] = row["id"]
+            if row.get("retrieval_paths"):
+                source_record["retrieval_paths"] = row["retrieval_paths"]
             unique.append(source_record)
             seen.add(key)
         return unique
@@ -169,12 +173,19 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
 
         retrieved_nodes = nodes if isinstance(nodes, list) else []
         sources = self._build_unique_sources(retrieved_nodes)
+        path_counts: dict[str, int] = {}
+        for source in sources:
+            for path in source.get("retrieval_paths", []):
+                kind = str(path.get("kind") or "unknown")
+                channel = str(path.get("channel") or "")
+                label = f"{kind}:{channel}" if channel else kind
+                path_counts[label] = path_counts.get(label, 0) + 1
 
         trace: list[dict[str, Any]] = [
             {
                 "step": "retrieve",
                 "input": {"query": user_query, "top_k": RAGConfig.DEFAULT_TOP_K, "graph_depth": graph_depth},
-                "output": {"retrieved_sources": len(sources)},
+                "output": {"retrieved_sources": len(sources), "retrieval_path_counts": path_counts},
                 "retrieve_ms": timing.get("retrieve_ms", 0.0),
                 "traversal_ms": timing.get("traversal_ms", 0.0),
             }

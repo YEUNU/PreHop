@@ -147,6 +147,14 @@ def test_config_rejects_unknown_hypothetical_channel_variant(monkeypatch):
         RAGConfig.validate()
 
 
+def test_config_rejects_unknown_graph_edge_variant(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "GRAPH_EDGE_VARIANT", "typo")
+    with pytest.raises(ValueError, match="GRAPH_EDGE_VARIANT"):
+        RAGConfig.validate()
+
+
 def test_config_rejects_disabled_requested_channel(monkeypatch):
     from core.config import RAGConfig
 

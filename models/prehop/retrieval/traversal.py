@@ -10,6 +10,8 @@ import time
 from collections import defaultdict
 from typing import Any
 
+from core.config import RAGConfig
+
 
 class TraversalMixin:
     async def graph_search(
@@ -108,10 +110,11 @@ class TraversalMixin:
                 MATCH (src:{self.chunk_label} {{id: src_id}})
                 CALL (src) {{
                     MATCH (src)-[:NEXT]-(related:{self.chunk_label})
+                    WHERE $include_next
                     RETURN related, 'next' AS path_type, null AS bridge_embeddings
                     UNION ALL
                     MATCH (src)-[hop:HOP_ANSWER]->(related:{self.chunk_label})
-                    WHERE src.id IN $hop_source_ids
+                    WHERE $include_hop AND src.id IN $hop_source_ids
                     RETURN related, 'hop' AS path_type,
                            [(src)-[:HAS_Q_PLUS]->(q:{self.q_plus_label})
                             WHERE q.id IN coalesce(hop.source_question_ids, []) | q.embedding]
@@ -132,6 +135,8 @@ class TraversalMixin:
                     "frontier_ids": frontier_ids,
                     "discovered_ids": list(discovered_ids),
                     "hop_source_ids": list(hop_source_ids),
+                    "include_next": RAGConfig.GRAPH_EDGE_VARIANT in {"full", "next_only"},
+                    "include_hop": RAGConfig.GRAPH_EDGE_VARIANT in {"full", "hop_only"},
                 },
             )
             return [dict(record) async for record in result]
