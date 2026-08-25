@@ -1,16 +1,5 @@
-"""Build cross-document evidence edges from generated dependency questions.
+"""Build cross-document evidence edges from dependency questions."""
 
-Every generated Q+ is represented independently.  For each source Q+ the
-builder retrieves two cross-document candidate channels:
-
-* Q+ -> Q-: a target question that its owner chunk can answer;
-* Q+ -> body: direct passage-level answer evidence;
-Each Q+ retains one target supported by Q- or body retrieval. Direct-channel
-agreement ranks candidates without a fusion constant, channel weight, or score
-threshold.
-"""
-
-import asyncio
 import logging
 import os
 from typing import Any
@@ -48,10 +37,9 @@ class HopEdgeMixin:
                 YIELD node, score
                 WHERE node.source <> source_question.source
                 WITH source_question, node, score
-                ORDER BY source_question.id, score DESC
+                ORDER BY source_question.id, score DESC, node.id
                 WITH source_question, collect({
                     target_id: node.id,
-                    target_source: node.source,
                     target_question_id: null,
                     score: score
                 })[0..1] AS candidates
@@ -59,15 +47,14 @@ class HopEdgeMixin:
                 RETURN source_question.chunk_id AS source_chunk_id,
                        source_question.id AS source_question_id,
                        candidate.target_id AS target_id,
-                       candidate.target_source AS target_source,
                        candidate.target_question_id AS target_question_id,
                        candidate.score AS score
                 ORDER BY source_question_id, score DESC
             """
             index_name = self.body_vector_index
-        elif channel in {"q_minus", "q_plus"}:
-            relationship = "HAS_Q_MINUS" if channel == "q_minus" else "HAS_Q_PLUS"
-            index_name = self.q_minus_vector_index if channel == "q_minus" else self.q_plus_vector_index
+        elif channel == "q_minus":
+            relationship = "HAS_Q_MINUS"
+            index_name = self.q_minus_vector_index
             query = f"""
                 UNWIND $source_questions AS source_question
                 CALL db.index.vector.queryNodes($index, source_question.ann_pool, source_question.embed)
@@ -77,11 +64,11 @@ class HopEdgeMixin:
                 WITH source_question, target, node, score
                 ORDER BY source_question.id, target.id, score DESC
                 WITH source_question, target,
-                     collect({{target_question_id: node.id, score: score}})[0] AS best
-                ORDER BY source_question.id, best.score DESC
+                     collect({{target_question_id: node.id,
+                               score: score}})[0] AS best
+                ORDER BY source_question.id, best.score DESC, target.id
                 WITH source_question, collect({{
                     target_id: target.id,
-                    target_source: target.source,
                     target_question_id: best.target_question_id,
                     score: best.score
                 }})[0..1] AS candidates
@@ -89,7 +76,6 @@ class HopEdgeMixin:
                 RETURN source_question.chunk_id AS source_chunk_id,
                        source_question.id AS source_question_id,
                        candidate.target_id AS target_id,
-                       candidate.target_source AS target_source,
                        candidate.target_question_id AS target_question_id,
                        candidate.score AS score
                 ORDER BY source_question_id, score DESC
@@ -105,17 +91,13 @@ class HopEdgeMixin:
             },
         )
 
-    async def _process_hop_wave(
+    async def _collect_hop_wave_candidates(
         self,
         wave: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Fuse all individual Q+ directions for each source chunk."""
-        channels = ["body"]
-        if RAGConfig.ABLATION_Q_MINUS:
-            channels.insert(0, "q_minus")
-        channel_results = await asyncio.gather(
-            *(self._find_hop_candidates_batch(wave, channel) for channel in channels)
-        )
+    ) -> list[list[dict[str, Any]]]:
+        """Resolve each Q+ through one answer-bearing representation."""
+        channel = "q_minus" if RAGConfig.ABLATION_Q_MINUS else "body"
+        candidates = await self._find_hop_candidates_batch(wave, channel)
         source_states: dict[str, dict[str, dict[str, dict[str, Any]]]] = {
             item["id"]: {} for item in wave
         }
@@ -124,48 +106,46 @@ class HopEdgeMixin:
             for item in wave
             for question in item["questions"]
         }
-        for channel, candidates in zip(channels, channel_results):
-            for candidate in candidates:
-                source_chunk_id = str(candidate.get("source_chunk_id") or "").strip()
-                source_question_id = str(candidate.get("source_question_id") or "").strip()
-                if source_chunk_id not in source_states or source_question_id not in source_questions:
-                    continue
-                fused = source_states[source_chunk_id].setdefault(source_question_id, {})
-                target_id = str(candidate.get("target_id") or "").strip()
-                if not target_id or target_id == source_chunk_id:
-                    continue
-                state = fused.setdefault(
-                    target_id,
-                    {
-                        "src_id": source_chunk_id,
-                        "tgt_id": target_id,
-                        "score": 0.0,
-                        "direct_channels": set(),
-                        "best": {},
-                    },
-                )
-                state["score"] += 1.0
-                if channel in {"q_minus", "body"}:
-                    state["direct_channels"].add(channel)
+        for candidate in candidates:
+            source_chunk_id = str(candidate.get("source_chunk_id") or "").strip()
+            source_question_id = str(candidate.get("source_question_id") or "").strip()
+            if source_chunk_id not in source_states or source_question_id not in source_questions:
+                continue
+            fused = source_states[source_chunk_id].setdefault(source_question_id, {})
+            target_id = str(candidate.get("target_id") or "").strip()
+            if not target_id or target_id == source_chunk_id:
+                continue
+            state = fused.setdefault(
+                target_id,
+                {
+                    "src_id": source_chunk_id,
+                    "tgt_id": target_id,
+                    "direct_channels": set(),
+                    "best": {},
+                    "source_question_id": source_question_id,
+                    "source_question_text": source_questions[source_question_id].get("text", ""),
+                },
+            )
+            state["direct_channels"].add(channel)
 
-                raw_score = float(candidate.get("score") or 0.0)
-                previous = state["best"].get(channel)
-                if previous is None or raw_score > previous["raw_score"]:
-                    state["best"][channel] = {
-                        "raw_score": raw_score,
-                        "source_question_id": source_question_id,
-                        "source_question_text": source_questions[source_question_id].get("text", ""),
-                        "target_question_id": candidate.get("target_question_id"),
-                    }
+            raw_score = float(candidate.get("score") or 0.0)
+            previous = state["best"].get(channel)
+            if previous is None or raw_score > previous["raw_score"]:
+                state["best"][channel] = {
+                    "raw_score": raw_score,
+                    "source_question_id": source_question_id,
+                    "source_question_text": source_questions[source_question_id].get("text", ""),
+                    "target_question_id": candidate.get("target_question_id"),
+                }
 
-        def state_rank(state: dict[str, Any]) -> tuple[float, float, str]:
+        def state_rank(state: dict[str, Any]) -> tuple[float, str]:
             return (
-                -state["score"],
                 -max((item["raw_score"] for item in state["best"].values()), default=0.0),
                 state["tgt_id"],
             )
 
-        selected_edges: list[dict[str, Any]] = []
+        required_channels = {channel}
+        tentative_by_source: list[list[dict[str, Any]]] = []
         for source_item in wave:
             fused_by_question = source_states[source_item["id"]]
             eligible_by_question: dict[str, list[dict[str, Any]]] = {}
@@ -174,21 +154,29 @@ class HopEdgeMixin:
                 eligible = [
                     state
                     for state in fused_by_question.get(question_id, {}).values()
-                    if state["direct_channels"]
+                    if state["direct_channels"] == required_channels
                 ]
                 eligible.sort(key=state_rank)
                 eligible_by_question[question_id] = eligible
 
             chosen_pairs: list[dict[str, Any]] = []
-            selected_targets: set[str] = set()
             for question in source_item["questions"]:
                 eligible = eligible_by_question.get(question["id"], [])
                 if not eligible:
                     continue
-                if eligible[0]["tgt_id"] not in selected_targets:
-                    chosen_pairs.append(eligible[0])
-                    selected_targets.add(eligible[0]["tgt_id"])
+                chosen_pairs.append(eligible[0])
+            tentative_by_source.append(chosen_pairs)
 
+        return tentative_by_source
+
+    async def _merge_hop_candidates(
+        self,
+        tentative_by_source: list[list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        """Merge question-level resolutions into source-target edges."""
+
+        selected_edges: list[dict[str, Any]] = []
+        for chosen_pairs in tentative_by_source:
             merged: dict[str, dict[str, Any]] = {}
             for state in chosen_pairs:
                 best = state["best"]
@@ -197,13 +185,11 @@ class HopEdgeMixin:
                     {
                         "src_id": state["src_id"],
                         "tgt_id": state["tgt_id"],
-                        "score": 0.0,
                         "direct_channels": set(),
                         "q_minus_matches": [],
                         "body_matches": [],
                     },
                 )
-                edge["score"] = max(edge["score"], state["score"])
                 edge["direct_channels"].update(state["direct_channels"])
                 for channel, key in (
                     ("q_minus", "q_minus_matches"),
@@ -234,9 +220,20 @@ class HopEdgeMixin:
                         if str(match.get("source_question_text") or "").strip()
                     )
                 )
+                edge["construction_mode"] = (
+                    "qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation"
+                )
                 selected_edges.append(edge)
 
         return selected_edges
+
+    async def _process_hop_wave(
+        self,
+        wave: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Build answer-owner edges for one bounded collection wave."""
+        tentative_by_source = await self._collect_hop_wave_candidates(wave)
+        return await self._merge_hop_candidates(tentative_by_source)
 
     async def _flush_hop_edges(self, edges: list[dict[str, Any]]) -> None:
         if not edges:
@@ -250,13 +247,12 @@ class HopEdgeMixin:
                 MATCH (src:{self.chunk_label} {{id: edge.src_id}})
                 MATCH (tgt:{self.chunk_label} {{id: edge.tgt_id}})
                 MERGE (src)-[r:HOP_ANSWER]->(tgt)
-                SET r.score = edge.score,
-                    r.direct_channels = edge.direct_channels,
+                SET r.direct_channels = edge.direct_channels,
                     r.q_minus_score = edge.q_minus_match.raw_score,
                     r.body_score = edge.body_match.raw_score,
                     r.source_question_ids = edge.source_question_ids,
                     r.source_question_texts = edge.source_question_texts,
-                    r.type = 'direct_evidence_support'
+                    r.type = edge.construction_mode
                 RETURN count(r) AS hop_edges_written
             }}
             CALL (edges) {{
@@ -284,17 +280,7 @@ class HopEdgeMixin:
         )
 
     async def clear_hop_edges(self) -> None:
-        """Delete existing HOP/provenance edges before a rebuild.
-
-        build_all_hop_edges only ever adds/updates edges via MERGE keyed on
-        (src_id, tgt_id) or (question_id, question_id) pairs; it never
-        removes one. A one-shot build assumes it runs exactly once against a
-        fresh graph, but a retried target (a prior attempt already wrote a
-        full edge set before failing on an unrelated document) or an
-        explicit rebuild would otherwise leave edges from the previous
-        candidate selection stranded once regenerated Q-/Q+ text picks a
-        slightly different candidate set.
-        """
+        """Delete HOP and question-level provenance edges before rebuilding."""
         await self.retry_query(
             f"MATCH (:{self.chunk_label})-[r:HOP_ANSWER]->(:{self.chunk_label}) DELETE r"
         )
@@ -303,41 +289,39 @@ class HopEdgeMixin:
         )
 
     async def build_all_hop_edges(self) -> None:
-        """Build rank-fused HOP edges after the complete corpus is visible."""
+        """Build Q+-to-answer-owner HOP edges after the complete corpus is visible."""
         if not RAGConfig.ABLATION_Q_PLUS:
             logger.info("Skipping HOP edge construction because Q+ is disabled.")
             return
 
         await self.retry_query("CALL db.awaitIndexes($timeout_seconds)", {"timeout_seconds": 300})
 
-        body_rows = await self.retry_query(
-            f"""
-            MATCH (c:{self.chunk_label})
-            RETURN c.source AS source, count(c) AS count_per_source
-            """
-        )
-        q_minus_rows = await self.retry_query(
-            f"""
-            MATCH (c:{self.chunk_label})-[:HAS_Q_MINUS]->(q:{self.q_minus_label})
-            RETURN c.source AS source, count(q) AS count_per_source
-            """
-        )
+        if RAGConfig.ABLATION_Q_MINUS:
+            pool_rows = await self.retry_query(
+                f"""
+                MATCH (c:{self.chunk_label})-[:HAS_Q_MINUS]->(q:{self.q_minus_label})
+                RETURN c.source AS source, count(q) AS count_per_source
+                """
+            )
+            pool_channel = "q_minus"
+        else:
+            pool_rows = await self.retry_query(
+                f"""
+                MATCH (c:{self.chunk_label})
+                RETURN c.source AS source, count(c) AS count_per_source
+                """
+            )
+            pool_channel = "body"
         def cross_document_pools(rows: list[dict[str, Any]]) -> dict[str, int]:
-            # Neo4j applies the cross-document WHERE after ANN retrieval.  A
-            # source only needs to over-fetch its own representations plus L
-            # retained foreign candidates.  Using the corpus-wide maximum for
-            # every question made one unusually long document inflate all ANN
-            # requests, which is unnecessary and expensive on large corpora.
+            # Neo4j filters documents after ANN, so each source pool includes
+            # its own representations plus one foreign candidate.
             return {
                 str(row.get("source") or ""): int(row.get("count_per_source", 0) or 0)
                 + 1
                 for row in rows
             }
 
-        source_ann_pools = {
-            "body": cross_document_pools(body_rows),
-            "q_minus": cross_document_pools(q_minus_rows),
-        }
+        source_ann_pools = {pool_channel: cross_document_pools(pool_rows)}
 
         pool_maxima = {
             channel: max(pools.values(), default=1)
@@ -394,19 +378,24 @@ class HopEdgeMixin:
             page_count = len(page_items)
             if total_sources == 0:
                 logger.info(
-                    "build_all_hop_edges: direct-evidence rank fusion "
+                    "build_all_hop_edges: Q+ answer-owner resolution "
                     "(page=%d wave=%d per-source-ann-pool-maxima=%s).",
                     page_size,
                     wave_size,
                     pool_maxima,
                 )
 
+            tentative_by_source: list[list[dict[str, Any]]] = []
             for wave_start in range(0, page_count, wave_size):
-                edges = await self._process_hop_wave(
-                    page_items[wave_start : wave_start + wave_size],
+                tentative_by_source.extend(
+                    await self._collect_hop_wave_candidates(
+                        page_items[wave_start : wave_start + wave_size]
+                    )
                 )
-                await self._flush_hop_edges(edges)
-                total_edges += len(edges)
+            edges = await self._merge_hop_candidates(tentative_by_source)
+            for edge_start in range(0, len(edges), wave_size):
+                await self._flush_hop_edges(edges[edge_start : edge_start + wave_size])
+            total_edges += len(edges)
 
             total_sources += page_count
             logger.info(

@@ -88,42 +88,15 @@ def _latest_index_manifest_metadata(strategy: str, corpus_tag: str, stats_dir: P
         return {"path": str(path), "status": "invalid", "fingerprint": None, "paragraph_count": None}
     run_id = payload.get("run_id") or path.stem.removeprefix(f"{strategy}_{corpus_tag}_")
     index_code = payload.get("index_code_provenance")
-    if not isinstance(index_code, dict):
-        index_code = _matrix_index_code_provenance(str(run_id))
     return {
         "path": str(path),
         "run_id": run_id,
         "status": payload.get("status"),
         "fingerprint": payload.get("corpus_manifest_fingerprint"),
         "paragraph_count": payload.get("corpus_manifest_paragraph_count"),
-        "code_provenance": index_code,
+        "code_provenance": index_code if isinstance(index_code, dict) else None,
+        "index_policy": payload.get("index_policy") if isinstance(payload.get("index_policy"), dict) else None,
     }
-
-
-def _matrix_index_code_provenance(run_id: str, artifacts_dir: Path = Path("artifacts/indexing")) -> dict | None:
-    """Resolve a matrix child's indexing snapshot from its parent manifest."""
-    if not run_id or not artifacts_dir.is_dir():
-        return None
-    for manifest_path in sorted(artifacts_dir.glob("*/manifest.json"), reverse=True):
-        try:
-            manifest = _read_json_file(manifest_path)
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            continue
-        matrix_id = str(manifest.get("run_id") or "") if isinstance(manifest, dict) else ""
-        if not matrix_id or not (run_id == matrix_id or run_id.startswith(f"{matrix_id}_")):
-            continue
-        code = manifest.get("code")
-        if not isinstance(code, dict):
-            return None
-        source_tree = code.get("source_tree") if isinstance(code.get("source_tree"), dict) else {}
-        return {
-            "revision": code.get("revision"),
-            "dirty": code.get("dirty"),
-            "source_tree_sha256": source_tree.get("sha256"),
-            "file_count": source_tree.get("file_count"),
-            "matrix_manifest_path": str(manifest_path),
-        }
-    return None
 
 
 def _validate_corpus_index_fingerprint(
@@ -981,6 +954,7 @@ async def run_benchmark(
             "index_provenance": {
                 "run_id": (index_manifest or {}).get("run_id"),
                 "code": (index_manifest or {}).get("code_provenance"),
+                "policy": (index_manifest or {}).get("index_policy"),
             },
             "query_provenance": dict(benchmark_code),
             "evaluation_provenance": dict(benchmark_code),
@@ -1009,11 +983,12 @@ async def run_benchmark(
                 "q_minus": RAGConfig.ABLATION_Q_MINUS,
                 "q_plus": RAGConfig.ABLATION_Q_PLUS,
                 "chunk_sentences": RAGConfig.CHUNK_SENTENCES,
-                "hop_link_limit": RAGConfig.HOP_LINK_LIMIT,
-                "hop_candidate_limit": RAGConfig.HOP_CANDIDATE_LIMIT,
-                "hop_ann_pool": RAGConfig.HOP_ANN_POOL,
-                "hop_same_need_weight": RAGConfig.HOP_SAME_NEED_WEIGHT,
+                "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
+                "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
+                "default_top_k": RAGConfig.DEFAULT_TOP_K,
+                "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
                 "hypo_channel_variant": RAGConfig.HYPO_CHANNEL_VARIANT,
+                "source_selection_variant": RAGConfig.SOURCE_SELECTION_VARIANT,
             },
         }
         s["details"] = results

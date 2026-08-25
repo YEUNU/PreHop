@@ -10,15 +10,13 @@ import time
 from collections import defaultdict
 from typing import Any
 
-from core.config import RAGConfig
-
 
 class TraversalMixin:
     async def graph_search(
         self,
         entities: list[str],
-        depth: int = 1,
-        top_k: int = 5,
+        depth: int,
+        top_k: int,
         excluded_chunk_ids: set[str] | None = None,
     ) -> tuple:
         """Retrieve evidence through level-batched, duplicate-free graph expansion."""
@@ -104,32 +102,29 @@ class TraversalMixin:
         discovered_ids: set[str],
         hop_source_ids: set[str],
     ) -> list[dict[str, Any]]:
-        step_limit = len(frontier_ids) * (RAGConfig.QUESTIONS_PER_DIRECTION + 2)
         async with self.neo4j.driver.session() as session:
             query = f"""
                 UNWIND $frontier_ids AS src_id
                 MATCH (src:{self.chunk_label} {{id: src_id}})
                 CALL (src) {{
                     MATCH (src)-[:NEXT]-(related:{self.chunk_label})
-                    RETURN related, 'next' AS path_type, null AS edge_score,
-                           null AS bridge_embeddings
+                    RETURN related, 'next' AS path_type, null AS bridge_embeddings
                     UNION ALL
                     MATCH (src)-[hop:HOP_ANSWER]->(related:{self.chunk_label})
                     WHERE src.id IN $hop_source_ids
-                    RETURN related, 'hop' AS path_type, hop.score AS edge_score,
+                    RETURN related, 'hop' AS path_type,
                            [(src)-[:HAS_Q_PLUS]->(q:{self.q_plus_label})
                             WHERE q.id IN coalesce(hop.source_question_ids, []) | q.embedding]
                            AS bridge_embeddings
                 }}
-                WITH src, related, path_type, edge_score, bridge_embeddings
+                WITH src, related, path_type, bridge_embeddings
                 WHERE NOT related.id IN $discovered_ids
                 RETURN src.id AS source_id, related.id AS id,
                        related.title AS title, related.sent_id AS sent_id,
                        related.page AS page, related.text AS text,
                        related.source AS source, related.embedding AS embedding,
-                       path_type, edge_score, bridge_embeddings
-                ORDER BY source_id, path_type, edge_score DESC, id
-                LIMIT $limit
+                       path_type, bridge_embeddings
+                ORDER BY source_id, path_type, id
             """
             result = await session.run(
                 query,
@@ -137,7 +132,6 @@ class TraversalMixin:
                     "frontier_ids": frontier_ids,
                     "discovered_ids": list(discovered_ids),
                     "hop_source_ids": list(hop_source_ids),
-                    "limit": step_limit,
                 },
             )
             return [dict(record) async for record in result]
@@ -153,15 +147,9 @@ class TraversalMixin:
 
         ranked: list[tuple[dict[str, Any], int]] = []
         for key in sorted(grouped):
-            path_type = key[1]
             ordered = sorted(
                 grouped[key],
-                key=lambda row: (
-                    -(float(row.get("edge_score")) if row.get("edge_score") is not None else 0.0)
-                    if path_type == "hop"
-                    else 0.0,
-                    str(row.get("id") or ""),
-                ),
+                key=lambda row: str(row.get("id") or ""),
             )
             ranked.extend((row, rank) for rank, row in enumerate(ordered))
         return ranked

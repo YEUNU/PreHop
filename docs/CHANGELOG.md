@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-08-25 — Independent runs and answer-owner HOP construction
+
+Removed the aggregate matrix runner and its merge/accounting tests. Dataset
+and strategy targets now run independently with isolated logs and explicit run
+identities. Index artifacts record code provenance and resolved semantic
+settings, while throughput controls remain separate runtime controls.
+
+Prehop HOP construction now resolves each Q+ through its nearest
+cross-document Q− and follows that question's owner relation to the evidence
+chunk. This removes the redundant body ANN pass, top-1 channel intersection,
+constant aggregate edge score, and all HOP width/weight/threshold settings.
+The no-Q− indexing ablation resolves Q+ directly to a body chunk. Query-time
+selection uses global cosine order by default; source round-robin remains an
+explicit ablation. The integrated index gate verifies the corresponding
+question-level provenance before publishing a completed snapshot.
+
+Generation request limits are shared by clients using the same endpoint and
+event loop, with in-flight/peak logging. Prehop bounds generation fan-out by
+processing chunks in source order within each concurrently active file.
+
 ## 2026-08-24 — Matrix barrier, capacity, and continuation correction
 
 The paper matrix runner now executes strict strategy barriers in the requested

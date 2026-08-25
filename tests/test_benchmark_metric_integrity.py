@@ -14,7 +14,6 @@ from cli.benchmark import (
     _judge_independence,
     _latest_index_manifest_metadata,
     _load_benchmark_corpus_manifest,
-    _matrix_index_code_provenance,
     _recompute_aggregates,
     _update_summary_status,
     _validate_benchmark_data,
@@ -127,34 +126,6 @@ def test_latest_failed_index_artifact_is_not_bypassed_by_older_completed(tmp_pat
             latest,
             OFFICIAL_QUERY_ID_DIGESTS["musique"],
         )
-
-
-def test_matrix_child_resolves_separate_index_code_provenance(tmp_path):
-    artifacts_dir = tmp_path / "indexing"
-    run_dir = artifacts_dir / "paper-run"
-    run_dir.mkdir(parents=True)
-    (run_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "run_id": "paper-run",
-                "code": {
-                    "revision": "index-revision",
-                    "dirty": False,
-                    "source_tree": {"sha256": "index-tree", "file_count": 88},
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    provenance = _matrix_index_code_provenance(
-        "paper-run_musique__prehop",
-        artifacts_dir,
-    )
-
-    assert provenance["revision"] == "index-revision"
-    assert provenance["source_tree_sha256"] == "index-tree"
-    assert provenance["matrix_manifest_path"].endswith("paper-run/manifest.json")
 
 
 @pytest.mark.asyncio

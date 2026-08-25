@@ -11,6 +11,7 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from core.config import RAGConfig
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing.chunking import parse_pages_offline
@@ -33,6 +34,47 @@ _SNAPSHOT_VERSION = 1
 def _artifact_run_id() -> str:
     raw = os.environ.get("RAG_RUN_ID") or time.strftime("%Y%m%d_%H%M%S")
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._-") or "run"
+
+
+def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
+    """Record semantic index settings separately from throughput controls."""
+    if strategy == "prehop":
+        resolved_generation_model = (
+            RAGConfig.DEFAULT_MODEL if indexing_model_id == "default" else indexing_model_id
+        )
+    elif strategy in {"hoprag", "ms_graphrag"}:
+        resolved_generation_model = RAGConfig.DEFAULT_MODEL
+    else:
+        resolved_generation_model = None
+    embedding_model = (
+        os.environ.get("RAG_HOP_EMBED_MODEL_NAME", RAGConfig.EMBEDDING_MODEL)
+        if strategy == "hoprag"
+        else RAGConfig.EMBEDDING_MODEL
+    )
+    policy = {
+        "strategy": strategy,
+        "indexing_model": resolved_generation_model,
+        "embedding_model": embedding_model,
+        "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
+        "embedding_query_instruction": RAGConfig.EMBEDDING_QUERY_INSTRUCTION,
+        "embedding_dimensions": RAGConfig.EMBEDDING_DIMENSIONS,
+        "embedding_max_input_tokens": RAGConfig.MAX_EMBEDDING_LENGTH,
+        "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
+    }
+    if strategy in {"prehop", "naive"}:
+        policy["chunk_sentences"] = RAGConfig.CHUNK_SENTENCES
+    if strategy == "prehop":
+        policy.update(
+            {
+                "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
+                "q_minus_enabled": RAGConfig.ABLATION_Q_MINUS,
+                "q_plus_enabled": RAGConfig.ABLATION_Q_PLUS,
+                "hop_construction": (
+                    "qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation"
+                ),
+            }
+        )
+    return policy
 
 
 def _load_corpus_manifest(dataset_path: str | Path) -> dict | None:
@@ -103,8 +145,6 @@ async def _set_neo4j_snapshot_state(
             m.updated_at_epoch = $updated_at
         """,
         {
-            "run_id": _artifact_run_id(),
-            "index_code_provenance": code_provenance(),
             "strategy": strategy,
             "corpus_tag": corpus_tag,
             "status": status,
@@ -175,6 +215,7 @@ def _write_runtime_stage_stats(
     timing_seconds: dict[str, float],
     status: str,
     corpus_manifest: dict | None = None,
+    indexing_model_id: str = "default",
 ) -> None:
     """Persist timing even for official adapters that do not use our graph stats."""
     stats_dir = Path("data/index_stats")
@@ -183,6 +224,9 @@ def _write_runtime_stage_stats(
     _write_json(
         stats_path,
         {
+            "run_id": _artifact_run_id(),
+            "index_code_provenance": code_provenance(),
+            "index_policy": _resolved_index_policy(strategy, indexing_model_id),
             "strategy": strategy,
             "corpus_tag": corpus_tag,
             "dataset_path": dataset_path,
@@ -192,6 +236,169 @@ def _write_runtime_stage_stats(
             "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
         },
     )
+
+
+async def _collect_prehop_integrity(engine) -> dict[str, object]:
+    chunk = engine.chunk_label
+    doc = engine.doc_label
+    q_minus = engine.q_minus_label
+    q_plus = engine.q_plus_label
+
+    representation_rows = await engine.neo4j.execute_query(f"""
+        CALL () {{
+            MATCH (c:{chunk})
+            RETURN count(CASE WHEN c.embedding IS NULL THEN 1 END) AS missing_embeddings,
+                   count(CASE WHEN NOT (:{doc})-[:CONTAINS]->(c) THEN 1 END) AS orphan_nodes
+            UNION ALL
+            MATCH (q:{q_minus})
+            RETURN count(CASE WHEN q.embedding IS NULL THEN 1 END) AS missing_embeddings,
+                   count(CASE WHEN NOT (:{chunk})-[:HAS_Q_MINUS]->(q) THEN 1 END) AS orphan_nodes
+            UNION ALL
+            MATCH (q:{q_plus})
+            RETURN count(CASE WHEN q.embedding IS NULL OR q.query_embedding IS NULL THEN 1 END) AS missing_embeddings,
+                   count(CASE WHEN NOT (:{chunk})-[:HAS_Q_PLUS]->(q) THEN 1 END) AS orphan_nodes
+        }}
+        RETURN sum(missing_embeddings) AS missing_embeddings,
+               sum(orphan_nodes) AS orphan_nodes
+    """)
+    representation = representation_rows[0] if representation_rows else {}
+
+    question_rows = await engine.neo4j.execute_query(f"""
+        CALL () {{
+            MATCH (c:{chunk})-[:HAS_Q_MINUS]->(q:{q_minus})
+            WITH c, toLower(trim(q.text)) AS text, count(*) AS copies
+            RETURN count(CASE WHEN text = '' THEN 1 END) AS empty_questions,
+                   count(CASE WHEN text =~ '.*(provided text|given text|this chunk|the passage).*' THEN 1 END) AS source_relative,
+                   count(CASE WHEN copies > 1 THEN 1 END) AS duplicate_groups
+            UNION ALL
+            MATCH (c:{chunk})-[:HAS_Q_PLUS]->(q:{q_plus})
+            WITH c, toLower(trim(q.text)) AS text, count(*) AS copies
+            RETURN count(CASE WHEN text = '' THEN 1 END) AS empty_questions,
+                   count(CASE WHEN text =~ '.*(provided text|given text|this chunk|the passage).*' THEN 1 END) AS source_relative,
+                   count(CASE WHEN copies > 1 THEN 1 END) AS duplicate_groups
+        }}
+        RETURN sum(empty_questions) AS empty_questions,
+               sum(source_relative) AS source_relative_questions,
+               sum(duplicate_groups) AS duplicate_question_groups
+    """)
+    questions = question_rows[0] if question_rows else {}
+    cross_channel_rows = await engine.neo4j.execute_query(f"""
+        MATCH (c:{chunk})-[:HAS_Q_MINUS]->(qm:{q_minus}),
+              (c)-[:HAS_Q_PLUS]->(qp:{q_plus})
+        WHERE toLower(trim(qm.text)) = toLower(trim(qp.text))
+        RETURN count(*) AS identical_cross_channel_questions
+    """)
+    cross_channel = cross_channel_rows[0] if cross_channel_rows else {}
+    q_plus_count_rows = await engine.neo4j.execute_query(
+        f"MATCH (q:{q_plus}) RETURN count(q) AS count"
+    )
+    q_plus_count = int((q_plus_count_rows[0] if q_plus_count_rows else {}).get("count", 0) or 0)
+
+    next_rows = await engine.neo4j.execute_query(f"""
+        CALL () {{
+            MATCH (d:{doc})-[:CONTAINS]->(c:{chunk})
+            WITH d, count(c) AS chunks
+            RETURN sum(CASE WHEN chunks > 0 THEN chunks - 1 ELSE 0 END) AS expected,
+                   0 AS actual, 0 AS invalid, 0 AS missing
+            UNION ALL
+            MATCH (source:{chunk})-[r:NEXT]->(target:{chunk})
+            RETURN 0 AS expected, count(r) AS actual,
+                   count(CASE WHEN source.source <> target.source OR
+                                   target.sent_id <> source.sent_id + 1 THEN 1 END) AS invalid,
+                   0 AS missing
+            UNION ALL
+            MATCH (source:{chunk})
+            MATCH (target:{chunk} {{source: source.source, sent_id: source.sent_id + 1}})
+            WHERE NOT (source)-[:NEXT]->(target)
+            RETURN 0 AS expected, 0 AS actual, 0 AS invalid, count(*) AS missing
+        }}
+        RETURN sum(expected) AS expected, sum(actual) AS actual,
+               sum(invalid) AS invalid, sum(missing) AS missing
+    """)
+    next_topology = next_rows[0] if next_rows else {}
+
+    hop_rows = await engine.neo4j.execute_query(f"""
+        MATCH (source:{chunk})-[h:HOP_ANSWER]->(target:{chunk})
+        RETURN source.id AS source_id, source.source AS source_document,
+               target.id AS target_id, target.source AS target_document,
+               h.direct_channels AS direct_channels,
+               h.source_question_ids AS source_question_ids,
+               h.source_question_texts AS source_question_texts,
+               h.type AS edge_type
+    """)
+    expected_channels = {"q_minus"} if RAGConfig.ABLATION_Q_MINUS else {"body"}
+    expected_edge_type = "qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation"
+    invalid_hop_edges = 0
+    for row in hop_rows:
+        invalid_hop_edges += int(
+            row.get("source_document") == row.get("target_document")
+            or set(row.get("direct_channels") or []) != expected_channels
+            or not row.get("source_question_ids")
+            or not row.get("source_question_texts")
+            or row.get("edge_type") != expected_edge_type
+        )
+
+    provenance_rows = await engine.neo4j.execute_query(f"""
+        MATCH (source:{chunk})-[h:HOP_ANSWER]->(target:{chunk})
+        UNWIND coalesce(h.source_question_ids, []) AS question_id
+        OPTIONAL MATCH (source)-[:HAS_Q_PLUS]->(q:{q_plus} {{id: question_id}})
+        RETURN count(CASE WHEN q IS NULL THEN 1 END) AS missing_source_questions,
+               count(CASE WHEN q IS NOT NULL AND NOT EXISTS {{
+                   MATCH (q)-[:ANSWERED_BY]->(:{q_minus})<-[:HAS_Q_MINUS]-(target)
+               }} THEN 1 END) AS missing_answered_by,
+               count(CASE WHEN q IS NOT NULL AND NOT EXISTS {{
+                   MATCH (q)-[:SUPPORTED_BY]->(target)
+               }} THEN 1 END) AS missing_supported_by
+    """)
+    provenance = provenance_rows[0] if provenance_rows else {}
+    provenance_mismatches = (
+        int(provenance.get("missing_answered_by", 0) or 0)
+        if RAGConfig.ABLATION_Q_MINUS
+        else int(provenance.get("missing_supported_by", 0) or 0)
+    )
+    degree_rows = await engine.neo4j.execute_query(f"""
+        MATCH (source:{chunk})-[h:HOP_ANSWER]->()
+        WITH source, count(h) AS degree
+        RETURN max(degree) AS max_out_degree
+    """)
+    degree = degree_rows[0] if degree_rows else {}
+    index_rows = await engine.neo4j.execute_query(
+        f"SHOW INDEXES YIELD name, state WHERE name STARTS WITH 'prehop_{engine._safe_corpus}' RETURN name, state"
+    )
+
+    checks = {
+        "complete_embeddings": int(representation.get("missing_embeddings", 0) or 0) == 0,
+        "complete_ownership": int(representation.get("orphan_nodes", 0) or 0) == 0,
+        "valid_questions": int(questions.get("empty_questions", 0) or 0) == 0
+        and int(questions.get("source_relative_questions", 0) or 0) == 0,
+        "unique_questions_per_channel": int(questions.get("duplicate_question_groups", 0) or 0) == 0,
+        "distinct_question_roles": int(cross_channel.get("identical_cross_channel_questions", 0) or 0) == 0,
+        "exact_next_topology": int(next_topology.get("expected", 0) or 0)
+        == int(next_topology.get("actual", 0) or 0)
+        and int(next_topology.get("invalid", 0) or 0) == 0
+        and int(next_topology.get("missing", 0) or 0) == 0,
+        "valid_hop_edges": invalid_hop_edges == 0,
+        "hop_graph_available": not RAGConfig.ABLATION_Q_PLUS or q_plus_count == 0 or bool(hop_rows),
+        "consistent_hop_provenance": int(provenance.get("missing_source_questions", 0) or 0) == 0
+        and provenance_mismatches == 0,
+        "bounded_hop_out_degree": int(degree.get("max_out_degree", 0) or 0)
+        <= RAGConfig.QUESTIONS_PER_DIRECTION,
+        "search_indexes_online": bool(index_rows) and all(row.get("state") == "ONLINE" for row in index_rows),
+    }
+    return {
+        "pass": all(checks.values()),
+        "checks": checks,
+        "diagnostics": {
+            "representation": representation,
+            "questions": questions,
+            "cross_channel": cross_channel,
+            "next_topology": next_topology,
+            "hop_edges": len(hop_rows),
+            "invalid_hop_edges": invalid_hop_edges,
+            "provenance": provenance,
+            "max_hop_out_degree": int(degree.get("max_out_degree", 0) or 0),
+        },
+    }
 
 
 async def _collect_graph_stats(engine, strategy: str) -> dict | None:
@@ -238,26 +445,10 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
         WITH count(hop) AS total_hop_edges
         OPTIONAL MATCH (:{q_plus_label})-[answer:ANSWERED_BY]->(:{q_minus_label})
         WITH total_hop_edges, count(answer) AS answered_by_edges
-        OPTIONAL MATCH (:{q_plus_label})-[same:SAME_NEED]->(:{q_plus_label})
-        WITH total_hop_edges, answered_by_edges, count(same) AS same_need_edges
         OPTIONAL MATCH (:{q_plus_label})-[body:SUPPORTED_BY]->(:{chunk_label})
-        RETURN total_hop_edges, answered_by_edges, same_need_edges,
-               count(body) AS supported_by_edges
+        RETURN total_hop_edges, answered_by_edges, count(body) AS supported_by_edges
     """)
     edge_stats = edge_rows[0] if edge_rows else {}
-
-    quality_rows = await engine.neo4j.execute_query(f"""
-        MATCH (c:{chunk_label})
-        OPTIONAL MATCH (c)-[:HAS_Q_MINUS]->(qm:{q_minus_label})
-        OPTIONAL MATCH (c)-[:HAS_Q_PLUS]->(qp:{q_plus_label})
-        RETURN count(DISTINCT CASE WHEN size(split(trim(coalesce(qm.text, '')), ' ')) > 22
-                                   THEN qm END) AS q_minus_over_22_words,
-               count(DISTINCT CASE WHEN size(split(trim(coalesce(qp.text, '')), ' ')) > 22
-                                   THEN qp END) AS q_plus_over_22_words,
-               count(DISTINCT CASE WHEN size(split(trim(coalesce(c.chunk_summary, '')), ' ')) > 35
-                                   THEN c END) AS summary_over_35_words
-    """)
-    quality_stats = quality_rows[0] if quality_rows else {}
     direction_rows = await engine.neo4j.execute_query(f"""
         MATCH (q:{q_plus_label})
         RETURN count(q) AS total_q_plus,
@@ -281,8 +472,10 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     q_minus_questions = question_stats.get("q_minus_questions", 0) or 0
     q_plus_questions = question_stats.get("q_plus_questions", 0) or 0
     total_hop_edges = edge_stats.get("total_hop_edges", 0) or 0
+    integrity = await _collect_prehop_integrity(engine)
 
     return {
+        "index_quality": integrity,
         "total_documents": total_docs,
         "total_chunks": total_chunks,
         "avg_chunks_per_doc": (total_chunks / total_docs) if total_docs else 0.0,
@@ -294,11 +487,7 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
         "avg_q_plus_per_covered_chunk": (q_plus_questions / q_plus_chunks) if q_plus_chunks else 0.0,
         "total_hop_edges": total_hop_edges,
         "answered_by_edges": edge_stats.get("answered_by_edges", 0) or 0,
-        "same_need_edges": edge_stats.get("same_need_edges", 0) or 0,
         "supported_by_edges": edge_stats.get("supported_by_edges", 0) or 0,
-        "q_minus_over_22_words": quality_stats.get("q_minus_over_22_words", 0) or 0,
-        "q_plus_over_22_words": quality_stats.get("q_plus_over_22_words", 0) or 0,
-        "summary_over_35_words": quality_stats.get("summary_over_35_words", 0) or 0,
         "linked_q_plus_questions": direction_stats.get("linked_q_plus", 0) or 0,
         "q_plus_direction_coverage": (
             (direction_stats.get("linked_q_plus", 0) or 0) / (direction_stats.get("total_q_plus", 0) or 1)
@@ -315,18 +504,15 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
 
 
 async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> dict | None:
-    """Delete and rebuild question-level HOP/provenance edges for one corpus.
-
-    Chunk and individual Q-/Q+ nodes are untouched. The rebuild is a
-    rank-fusion post-process over their stored embeddings, so it remains much
-    cheaper than regenerating questions or document vectors.
-    """
+    """Rebuild HOP and provenance edges without changing chunks or questions."""
     if strategy != "prehop":
         raise ValueError(f"rebuild_hop_edges only supports strategy=prehop (got {strategy})")
     engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
     await engine.clear_hop_edges()
     await engine.build_all_hop_edges()
     stats = await _collect_graph_stats(engine, strategy)
+    if stats is not None and not bool(stats.get("index_quality", {}).get("pass")):
+        raise RuntimeError(f"Prehop index quality checks failed: {stats['index_quality']['checks']}")
     logger.info("HOP rebuild complete for corpus_tag=%s: %s", corpus_tag, stats)
     return stats
 
@@ -427,6 +613,7 @@ async def _run_indexing_unlocked(
                 timing,
                 official_status,
                 corpus_manifest,
+                model_id,
             )
         return
 
@@ -459,6 +646,7 @@ async def _run_indexing_unlocked(
                 timing,
                 official_status,
                 corpus_manifest,
+                model_id,
             )
         return
 
@@ -476,9 +664,8 @@ async def _run_indexing_unlocked(
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
-    # A previous completed marker must never authorize a benchmark while this
-    # target is being rebuilt. Completion is published only after a direct
-    # source-set query over the active graph below.
+    # Keep the benchmark gate closed until the rebuilt graph passes its direct
+    # source-set check.
     await _set_neo4j_snapshot_state(
         engine,
         strategy,
@@ -487,9 +674,8 @@ async def _run_indexing_unlocked(
         "in_progress",
     )
 
-    # A successful run represents the current directory snapshot exactly.
-    # Prune documents removed since an earlier run of the same corpus tag;
-    # per-document writes below atomically replace changed/shortened files.
+    # Reconcile the graph to the current directory; per-document writes
+    # atomically replace changed or shortened files.
     if hasattr(engine, "reconcile_dataset_files"):
         await engine.reconcile_dataset_files(files)
 
@@ -553,10 +739,8 @@ async def _run_indexing_unlocked(
                     progress["completed"] += 1
             await _log_progress("done", filename)
 
-    # Bound both resident file contents and scheduled coroutines. The old
-    # implementation loaded and scheduled every file at once, which inflated
-    # memory and event-loop overhead before useful
-    # work started.
+    # Bound resident file contents and scheduled coroutines independently from
+    # the active file-processing limit.
     default_schedule_batch = 32 if not is_graph else file_concurrency * 2
     schedule_batch = max(
         file_concurrency,
@@ -669,11 +853,8 @@ async def _run_indexing_unlocked(
             hop_started = time.perf_counter()
             try:
                 if hasattr(engine, "clear_hop_edges"):
-                    # A retried target (RAG_TARGET_ATTEMPTS > 1) may already
-                    # have a full edge set from a prior attempt that failed
-                    # on an unrelated document; without this, the rebuild
-                    # below would only add/update edges, never remove ones
-                    # the previous attempt's Q-/Q+ text no longer supports.
+                    # Remove the complete edge set before rebuilding so stale
+                    # Q-/Q+ provenance cannot survive changed documents.
                     await engine.clear_hop_edges()
                 await engine.build_all_hop_edges()
             except Exception as exc:  # noqa: BLE001 - aggregate post-index HOP failure
@@ -681,7 +862,29 @@ async def _run_indexing_unlocked(
                 failed_files.append({"item": "__hop_edges__", "stage": "hop_edges", "error": str(exc)})
             stage_timing["hop_build_seconds"] = time.perf_counter() - hop_started
 
-    global_failure = any(item["stage"] in {"graph_flush", "hop_edges"} for item in failed_files)
+    graph_stats = None
+    graph_stats_started = time.perf_counter()
+    try:
+        graph_stats = await _collect_graph_stats(engine, strategy)
+    except Exception as exc:  # noqa: BLE001 - Neo4j driver exposes heterogeneous errors
+        logger.error("Graph stats collection failed: %s", exc)
+        failed_files.append({"item": "__graph_stats__", "stage": "graph_stats", "error": str(exc)})
+    stage_timing["graph_stats_seconds"] = time.perf_counter() - graph_stats_started
+    if graph_stats is not None:
+        quality = graph_stats.get("index_quality")
+        if quality is not None and not bool(quality.get("pass")):
+            failed_files.append(
+                {
+                    "item": "__index_quality__",
+                    "stage": "index_quality",
+                    "error": f"Prehop index quality checks failed: {quality.get('checks')}",
+                }
+            )
+
+    global_failure = any(
+        item["stage"] in {"graph_flush", "hop_edges", "graph_stats", "index_quality"}
+        for item in failed_files
+    )
     finalized_successes = 0 if global_failure else stats["succeeded"]
 
     snapshot_metadata = None
@@ -720,6 +923,7 @@ async def _run_indexing_unlocked(
                 {
                     "run_id": _artifact_run_id(),
                     "index_code_provenance": code_provenance(),
+                    "index_policy": _resolved_index_policy(strategy, model_id),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
@@ -739,14 +943,6 @@ async def _run_indexing_unlocked(
     # graph so it's always consistent with what actually landed in Neo4j.
     # Measurement failures make the run incomplete; result tables must not
     # silently report an index whose structural statistics were never read.
-    graph_stats = None
-    graph_stats_started = time.perf_counter()
-    try:
-        graph_stats = await _collect_graph_stats(engine, strategy)
-    except Exception as exc:  # noqa: BLE001 - Neo4j driver exposes heterogeneous errors
-        logger.error("Graph stats collection failed: %s", exc)
-        failed_files.append({"item": "__graph_stats__", "stage": "graph_stats", "error": str(exc)})
-    stage_timing["graph_stats_seconds"] = time.perf_counter() - graph_stats_started
     if graph_stats is not None:
         graph_stats["timing_seconds"] = dict(stage_timing)
         logger.info("Graph stats: %s", graph_stats)
@@ -759,6 +955,7 @@ async def _run_indexing_unlocked(
                 {
                     "run_id": _artifact_run_id(),
                     "index_code_provenance": code_provenance(),
+                    "index_policy": _resolved_index_policy(strategy, model_id),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
@@ -782,6 +979,9 @@ async def _run_indexing_unlocked(
             _write_json(
                 stats_path,
                 {
+                    "run_id": _artifact_run_id(),
+                    "index_code_provenance": code_provenance(),
+                    "index_policy": _resolved_index_policy(strategy, model_id),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,

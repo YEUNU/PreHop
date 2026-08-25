@@ -374,6 +374,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     _install_litellm_router_for_gen()
 
     from graphrag.config.models.graph_rag_config import GraphRagConfig
+    from graphrag.config.models.reporting_config import ReportingConfig
     from graphrag_cache import CacheConfig
     from graphrag_input import InputConfig
     from graphrag_llm.config.model_config import ModelConfig
@@ -382,6 +383,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
 
     out_dir = output_dir_for(corpus_tag)
     cache_dir = cache_dir_for(corpus_tag)
+    internal_log_dir = Path(os.environ.get("RAG_INDEX_LOG_DIR", str(out_dir / "_logs"))) / "internal"
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -446,6 +448,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
         cache=CacheConfig(
             storage=StorageConfig(type=StorageType.File, base_dir=str(cache_dir)),
         ),
+        reporting=ReportingConfig(base_dir=str(internal_log_dir)),
         # Must match the configured embedding model's real dim (_EMBED_DIM
         # above); default IndexSchema assumes 3072 (text-embedding-3-large).
         # Without the override, lancedb rejects the embedding parquet on a
@@ -487,9 +490,8 @@ async def run_official_index(
 
     staged_input = _stage_input_files(dataset_path, corpus_tag)
     source_ids = _expected_source_ids(staged_input, corpus_manifest)
-    # Make an old complete marker unusable before the official pipeline starts
-    # replacing output artifacts. A failed/interrupted run therefore fails the
-    # later benchmark gate rather than inheriting stale provenance.
+    # Mark the snapshot incomplete before replacing artifacts so interrupted
+    # builds cannot pass the benchmark provenance gate.
     _set_snapshot_in_progress(corpus_tag, corpus_manifest)
 
     config = build_config(corpus_tag, staged_input)

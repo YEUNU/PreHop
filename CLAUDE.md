@@ -13,18 +13,17 @@ branch map is in `docs/ARCHITECTURE.md`.
 - The embedding dimension in `NEO4J_VECTOR_DIMENSIONS` must equal the endpoint's
   actual vector length. Startup probes validate the configured model ids and
   dimensions.
-- The paper matrix server capacity is `VLLM_MAX_NUM_SEQS=120`. The matrix runner
-  clamps `MAX_CONCURRENT_LLM_CALLS`, `RAG_MS_CONCURRENT_REQUESTS`, and
-  `RAG_HOP_DOC_WORKERS × RAG_HOP_MAX_THREADS` under one per-target budget. The
-  budget is the configured generation capacity divided by the active
-  generation-heavy target width (60 calls per target for the current
-  two-dataset, 120-sequence matrix). Embeddings default to batches of 32 and
-  are budgeted separately when generation and embedding use separate
-  accelerator servers.
+- `EMBEDDING_MAX_NUM_SEQS=512` records the embedding endpoint's batch capacity.
+  The client uses one batch of up to 512 texts, independently from the
+  generation endpoint's `VLLM_MAX_NUM_SEQS` limit.
+- Paper runs execute one dataset/strategy target at a time with an explicit
+  run ID. `VLLM_MAX_NUM_SEQS` records endpoint capacity; each adapter's worker
+  controls must remain within that capacity. Embeddings default to batches of
+  512 and use the separately configured embedding endpoint.
 - A dedicated reranker is not used. Query-time scoring reuses body and Q+
   document embeddings stored during indexing; only the user query is embedded.
-  Final selection takes one ranked chunk per source per round until `top_k`,
-  avoiding a tunable per-source fraction.
+  Final selection uses global cosine order. Source round-robin is an explicit
+  query-only ablation rather than part of the primary method.
 - Query-time search is role-based and has no candidate-width multipliers. Q−
   and body provide direct-evidence candidates; Q+ provides dependency seeds
   for outgoing offline HOP traversal. Each enabled representation is searched
@@ -91,26 +90,12 @@ chunker. Raw pipe text remains raw.
 # Remove all graph data and application schema
 .venv/bin/python main.py --mode clear_graph
 
-# Rebuild only Prehop HOP/provenance edges after changing rank-fusion settings
+# Rebuild only Prehop HOP/provenance edges after changing HOP construction
 .venv/bin/python main.py --mode hop_rebuild --strategy prehop --corpus-tag multihoprag
 
-# Full cold measured matrix (aggregate sequence bound 120)
-VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=120 \
-.venv/bin/python scripts/run_index_matrix.py \
-  --run-id <unique-paper-run-id> \
-  --datasets multihoprag musique \
-  --strategies ms_graphrag hoprag naive prehop \
-  --clear-graph --max-parallel 2 --max-generation-parallel 2 \
-  --target-attempts 2 --save-prehop-intermediate
-
-# Combine stopped/resumed matrix fragments into cumulative phase timings
-.venv/bin/python scripts/merge_index_matrix_runs.py \
-  artifacts/indexing/<run-a> artifacts/indexing/<run-b> \
-  --out-dir artifacts/indexing/merged-paper-run
-
-# Continue an interrupted matrix in the same run folder
-.venv/bin/python scripts/run_index_matrix.py \
-  --run-id <run-id> --resume --target-attempts 3
+# Run each dataset and strategy independently. Use a new run id for each cold run.
+RAG_RUN_ID=<run-id> ./run_index.sh \
+  --model prehop --dataset data/multihoprag_corpus --corpus-tag multihoprag
 
 # Resume an already submitted OpenAI Batch judge after interruption
 .venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
@@ -132,45 +117,39 @@ uv run --extra dev pytest -q
 `run_servers.sh` never starts a model. If either inference endpoint or served
 model id is missing/unreachable, indexing and benchmarking fail before work.
 
-## Full matrix behavior
+## Independent indexing runs
 
-`scripts/run_index_matrix.py` runs 8 targets: MultiHop-RAG and MuSiQue by four strategies in the order
-`ms_graphrag → hoprag → naive → prehop`. It starts with at most two targets concurrently, samples host and
-inference pressure, and reduces the remaining width when pressure is sustained.
-It does not increase width again within the same run. Each child is a separate
-process group, so interruption terminates descendants and prevents overlapping
-debug/index jobs.
-The scheduler uses a strict strategy barrier: all selected datasets for
-`ms_graphrag` finish before `hoprag` starts, then `naive`, then `prehop`.
-Within a phase, selected datasets run concurrently when the parallel limits
-are at least the dataset count.
-Naive batches 32 source documents per embedding/write transaction. Prehop's
-outer in-flight file cap defaults to 16; its generation semaphore remains 30,
-so short one-chunk corpora can use the endpoint without making long-document
-fan-out unbounded.
-Official HopRAG and MS GraphRAG receive adapter-specific limits derived from
-the same phase budget. With two generation targets, separate generation and
-embedding capacity, and a 120-sequence server, each target is capped at 60
-generation calls; HopRAG's worker/thread
-product and MS GraphRAG's request semaphore are both clamped to that value.
-The runner writes pending-phase ETA components to `progress.json` and emits a
-watch line hourly by default (`--watch-interval` changes this).
+`run_index.sh`, `run_multihoprag.sh`, and `run_dataset.sh` accept exactly one
+strategy per invocation. Dataset/strategy targets are never scheduled as an
+implicit matrix. This makes the run ID, log, resource use, failure state, and
+graph mutation attributable to one target.
+
+Naive batches 32 source documents per embedding/write transaction. The paper
+environment allows 64 active Prehop files; each file generates one chunk at a
+time, and clients on the same endpoint/event loop share the 120-request
+generation limit. Official HopRAG and MS GraphRAG retain their
+adapter-specific worker limits.
 
 A measured cold run must:
 
-1. stop any prior matrix process;
+1. stop any prior indexing process;
 2. clear Neo4j nodes, constraints, and non-lookup indexes;
 3. remove prior `data/index_cache`, HopRAG outputs/caches, MS GraphRAG outputs,
    debug, failure, and stats artifacts for the selected targets;
-4. set `RAG_CHUNK_CACHE=off` and disable baseline resume reuse;
-5. use a new `RAG_RUN_ID` and artifact directory;
-6. run endpoint/model/dimension preflight before launching targets.
+4. set `RAG_CHUNK_CACHE=off` and disable baseline cache reuse;
+5. use a new `RAG_RUN_ID`;
+6. run endpoint/model/dimension preflight before launching the target.
 
-Each target writes an isolated stdout/stderr log and resource record. The final
-run directory includes `summary.csv`, a paper-ready Markdown table, pressure
-samples, manifest/settings, and integrity counts. A target with any document,
-workflow, graph-finalization, or measurement failure is failed, never silently
+Each target writes an isolated stdout/stderr log. A target with any document,
+workflow, graph-finalization, or integrity failure is failed, never silently
 classified as complete.
+
+For Prehop, completion also requires the live index-quality gate in
+`cli/index.py`. The gate checks representation ownership and embeddings,
+question sanitation and role separation, exact NEXT topology, HOP direction,
+Q+→Q−→owner provenance, bounded out-degree, and online
+indexes. Coverage and density are diagnostics; benchmark retrieval metrics are
+the evidence of effectiveness.
 
 ## Prehop inspection during indexing
 
@@ -182,8 +161,8 @@ than relying only on progress logs:
 - verify raw chunk text, title/page/sent_id ordering, grounded Q-, outward Q+,
   generated questions and absence of fabricated or converted text;
 - query total Documents/Chunks and Q-/Q+ coverage;
-- after the final pass, inspect HOP direct-channel provenance, per-source
-  out-degree, cross-source property, and representative Q+→Q-/body
+- after the final pass, inspect HOP question/owner provenance, per-source
+  out-degree, cross-source property, and representative Q+→Q−→owner
   source/target text;
 - compare source file count to indexed Document count and fail on any mismatch.
 
@@ -233,7 +212,7 @@ reporting decisions; it is not a source of benchmark results. When editing it:
 
 ## Generated files and repository hygiene
 
-Generated logs, caches, debug output, graphs, results, index outputs, and matrix
+Generated logs, caches, debug output, graphs, results, and index outputs
 artifacts are not source files and must remain ignored. Do not commit virtual
 environments, `__pycache__`, model weights, server logs, or partial indexes.
 Obsolete scripts should be removed instead of kept as compatibility wrappers.

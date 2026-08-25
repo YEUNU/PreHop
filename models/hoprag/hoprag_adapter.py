@@ -106,11 +106,8 @@ class HopRAGAdapter:
         self.vllm = VLLMClient(model_name=model_id)
         self.neo4j = Neo4jService()
 
-        # Namespace must match models/hoprag/official_indexer.py exactly:
-        # node label = HO_<safe>, edge type = HO_<safe>_p2a, vector index =
-        # HO_<safe>_node_dense_idx. The previous adapter assumed prehop's
-        # GraphRAG-engine schema (HO_<safe>_Chunk + hoprag_<safe>_vector_idx
-        # + NEXT/HOP edges); that's gone now.
+        # Match the labels, relationship type, and vector index written by the
+        # official indexer.
         import re as _re
 
         _safe_corpus = _re.sub(r"[^A-Za-z0-9_]", "_", self.corpus_tag)

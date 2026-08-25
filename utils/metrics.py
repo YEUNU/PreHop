@@ -257,8 +257,8 @@ def _resolve_judge_fields(
 
     # Honest abstention is not a substantive hallucination claim.  For a
     # substantive answer, hallucination is exactly the complement of the
-    # independently judged context-groundedness field.  Keep the legacy field
-    # name for artifact compatibility, but never trust a model-supplied value.
+    # independently judged context-groundedness field. The artifact field name
+    # is stable, and its value is always derived locally.
     if _is_insufficient_text(final_answer):
         hallucination = 0.0
         hallucination_reason = "non_answer_insufficient"

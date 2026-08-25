@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -73,6 +74,30 @@ async def test_trailing_window_is_retained(monkeypatch):
     assert chunks[0]["text"] == "Sentence 1. Sentence 2. Sentence 3."
     assert chunks[1]["text"] == "Sentence 4. Sentence 5. Sentence 6."
     assert chunks[2]["text"] == "Sentence 7."
+
+
+@pytest.mark.asyncio
+async def test_chunks_within_document_do_not_fan_out_generation(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "CHUNK_SENTENCES", 1)
+    rag = GraphRAG(strategy="prehop")
+    active = 0
+    peak = 0
+
+    async def extract(_chunk, _title):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return {"q_minus": [], "q_plus": []}
+
+    rag.extract_hoprag_queries = extract
+    content = "Title: Ordered\n--- Page 1 ---\nOne. Two. Three. Four."
+
+    knowledge = await rag.extract_knowledge(content, source="ordered")
+
+    assert len(knowledge["chunks"]) == 4
+    assert peak == 1
 
 
 @pytest.mark.asyncio

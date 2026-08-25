@@ -13,8 +13,8 @@ window splitter:
   `Title: ...` header and `--- Page N ---` markers.
 - If page markers are absent, the remaining body is one logical page. This is
   a supported corpus format, not an LLM fallback.
-- `split_fixed_sentence_windows(...)` sentence-splits each page, emits windows
-  of `RAG_CHUNK_SENTENCES` (default 6), and retains the final partial window.
+- `split_fixed_sentence_windows(...)` sentence-splits each page, emits fixed
+  six-sentence windows, and retains the final partial window.
 - Page boundaries are never crossed. Pipe-delimited text is preserved exactly;
   there is no table-to-text branch.
 - Prehop and Naive both call these functions, so their chunk synthesis
@@ -74,8 +74,8 @@ a complete index.
 
 - Owns the parser, shared splitter, optional content-addressed Q-/Q+
   cache, and run-namespaced debug output.
-- `RAG_CHUNK_CACHE=off` disables reuse. A measured cold matrix run forces it
-  off and clears prior artifacts.
+- `RAG_CHUNK_CACHE=off` disables reuse. A measured cold run sets it explicitly
+  and clears prior artifacts.
 - `--save-intermediate` writes only to
   `data/debug/<run-id>/<strategy>/<corpus>/<source>/`; normal logs and paper
   artifacts live elsewhere, so parallel debugging cannot overwrite them.
@@ -84,11 +84,14 @@ a complete index.
 
 - Makes one schema-validated external generation call per chunk using
   `HOPRAG_PROMPT`.
+- Uses greedy decoding (`temperature=0`) so indexing does not inherit a
+  deployment-specific sampling default.
 - Returns `q_minus` and `q_plus`; missing keys, invalid JSON,
   non-string list values, or more than three questions raise
   after client retries. Empty Q-/Q+ lists are intentional valid outputs.
-- Q+ output has no post-generation keyword, domain, or heuristic quality gate.
-  Only empty strings and exact duplicates are removed before storage.
+- Empty strings, within-channel duplicates, source-relative wording, and exact
+  Q−/Q+ duplicates are removed deterministically before storage. The filter
+  does not score semantic quality or introduce a dataset-tuned threshold.
 
 `indexing/embedding.py`
 
@@ -119,16 +122,21 @@ a complete index.
 `indexing/hop_edges.py`
 
 - Runs once after the complete Prehop corpus is flushed and indexes are online.
-- Every individual source Q+ retrieves the best cross-document Q- and body
-  candidates. Direct-channel agreement chooses one evidence target per Q+.
-  Provenance remains inspectable as `ANSWERED_BY` and `SUPPORTED_BY` relations.
+- Every individual source Q+ retrieves the best cross-document Q-. The matched
+  Q-'s owner chunk is the HOP target; no second body ANN search is needed.
+- Multiple Q+ questions from one source that resolve to the same target are merged
+  into one `HOP_ANSWER` edge while retaining every question.
+  `ANSWERED_BY` preserves the Q+→Q- link and Q- ownership preserves the
+  evidence target. In the no-Q- indexing ablation, Q+ retrieves body directly
+  and `SUPPORTED_BY` records that alternative path.
 - There are deliberately no Q-↔Q- edges. Documents with the same answer but
   different year/version remain alternative candidates rather than being
   asserted as semantic continuations. Cross-document scope is mandatory.
 - Neo4j filters source documents after ANN. Each source therefore requests its
   own channel count plus one foreign slot, without a fixed ANN floor.
 - There is no cosine threshold, same-company filter, runtime-HOP mode,
-  cross-encoder, domain rule, or LLM call. If Q+ is disabled, the pass skips.
+  cross-encoder, domain rule, or semantic verification call. If Q+ is disabled,
+  the pass skips.
 
 ### Official baseline modules
 
@@ -198,11 +206,9 @@ to every vector channel and final scoring call.
 during indexing and embeds only the user query. Cosine similarity orders
 candidates; there is no dedicated reranker model, rerank
 prompt, query rewrite, metadata boost, boilerplate penalty, company filter,
-or domain gate. Final top-k selection is parameter-free source round-robin:
-take the best remaining chunk from each source in rank order, repeat, and stop
-at `top_k`. A single source naturally backfills when few sources are present.
-`RAG_SOURCE_SELECTION_VARIANT=global` selects the global top-k and is reserved
-for the source-diversification ablation.
+or domain gate. Final top-k selection uses global cosine order by default.
+`RAG_SOURCE_SELECTION_VARIANT=round_robin` is an explicit ablation that takes
+one ranked chunk per source per round; it is not part of the primary method.
 
 Each representation retains at most `top_k` owner chunks, so the fused base
 pool is bounded by `top_k × active_representation_count` without a candidate
@@ -296,42 +302,16 @@ rules, and reporting decisions are maintained in the local, intentionally
 untracked `docs/prehop_paper.md`. This architecture document summarizes the
 implemented evaluation contract but does not replace that paper specification.
 
-## Measured full matrix
+## Measured independent runs
 
-`scripts/run_index_matrix.py --clear-graph --max-parallel 2
---max-generation-parallel 2` runs both active datasets by four strategies in the
-order `ms_graphrag → hoprag → naive → prehop`. It records per-target wall time, CPU, peak RSS,
-structural integrity counts, payload estimates, endpoint/host pressure, and
-failure logs beneath `artifacts/indexing/<run-id>`. It begins with bounded
-parallelism and reduces width when sustained host-memory or inference-queue
-pressure is observed. `VLLM_MAX_NUM_SEQS=120` is enforced and recorded as server capacity;
-generation concurrency is one global per-target/event-loop semaphore, not one
-limit per document. Embeddings default to two concurrent batches of 32 for one
-target. `RAG_INFERENCE_CAPACITY_MODE` records whether the model names share an
-accelerator scheduler. This matters when one gateway URL routes generation and
-embedding to different servers: `separate` preserves their independent 120
-sequence budgets, `shared` combines worst-case pressure, and `auto` infers from
-URL equality. Generation pressure is multiplied by
-`--max-generation-parallel`, not by embedding-only matrix slots.
-Generation and embedding queues are sampled separately, and sustained pressure
-still lowers target width for later work. The scheduler enforces a strict
-strategy barrier: all selected datasets finish for MS GraphRAG before HopRAG
-starts, then Naive, then Prehop. Within a strategy phase, adapter limits are
-clamped so active generation-heavy targets cannot exceed the configured
-120-sequence budget in aggregate.
-Naive uses document batches of 32: it parses every source, flattens all chunks
-into one external embedding request stream, validates every vector, and
-atomically replaces the batch's source nodes in one Neo4j transaction. This
-turns short-document datasets into real embedding batches instead of thousands
-of one-item requests. Live progress markers, current phase, and ETA are written
-to `progress.json`.
-The generation-heavy baselines receive a per-target budget calculated from the
-active generation-heavy phase width. With the current two-dataset matrix and a
-120-sequence generation server, each target receives at most 60 calls;
-HopRAG's worker/thread product and MS GraphRAG's request semaphore are both
-clamped to that value. Progress snapshots
-include active, pending, and future-barrier ETA components; the default watch
-line is hourly and can be changed with `--watch-interval`.
+Every paper run invokes one dataset/strategy target with a unique `RAG_RUN_ID`.
+The run records wall time, phase timings exposed by the adapter, structural
+integrity, and failures without an orchestration-level retry or resume policy.
+`VLLM_MAX_NUM_SEQS` records endpoint capacity. Clients that share a generation
+endpoint and event loop share one request semaphore, and Prehop processes at
+most one generation request per active file. Embeddings use bounded batches. Naive flattens 32
+source documents into each embedding/write batch. Official adapters report
+only timing boundaries their upstream implementations expose.
 
 The measurement set directly addresses the indexing-time tradeoff: overall
 and Prehop phase latency, logical storage, document/chunk/question/edge counts,
@@ -339,6 +319,16 @@ Q-/Q+ and Q+-direction coverage, provenance completeness, exact NEXT topology,
 cross-document HOP invariants, and observed endpoint pressure. Retrieval and
 answer-quality attribution remains a separate benchmark/ablation concern; an
 index with valid topology is not reported as evidence that HOP improves QA.
+Before publishing the corpus snapshot as complete, `cli/index.py` reads the
+live graph and enforces the index-quality contract: embeddings and ownership
+are complete; question representations are non-empty, source-independent,
+deduplicated, and role-distinct; NEXT is exactly consecutive within each
+document; every HOP is cross-document, channel-consistent, provenance-complete,
+within the schema out-degree bound, and has the expected Q+→Q-→owner
+provenance (or the explicit body-only ablation path); and all search indexes
+are online. Coverage, linkage rate, and graph density remain descriptive and
+do not become dataset-tuned pass thresholds. Held-out retrieval metrics test
+effectiveness separately.
 For official MS GraphRAG and HopRAG adapters, the stored timing includes the
 explicit aggregate `official_pipeline_seconds` plus adapter-observed workflow
 or stage timings; the runner does not fabricate boundaries that the upstream

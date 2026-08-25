@@ -796,9 +796,8 @@ def _patch_create_nodes_offline_parallel() -> None:
         per_doc_dir = Path(docs_dir).parent / "_cache" / "docs"
         per_doc_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load per-doc caches from any previous partial run.
-        # Only load the node-ID list (.ids companion) to avoid pulling ~168MB of
-        # embedding/question data per doc into RAM at startup (54GB for 324 docs).
+        # Load only cached node-ID companions to keep document embeddings and
+        # question payloads out of startup memory.
         docid2nodes: dict = {}
         cached_doc_ids: set = set()
 

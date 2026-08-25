@@ -12,7 +12,7 @@
 #   ./run_dataset.sh musique all --model prehop              # index + benchmark, one strategy
 #
 # Options:
-#   --model   {all|prehop|naive|hoprag|ms_graphrag}          default: all
+#   --model   {prehop|naive|hoprag|ms_graphrag}              default: prehop
 #   --queries {sample200|full}                                default: sample200
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
@@ -20,11 +20,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"; cd "$SCRIPT_DIR"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 
-STRATEGIES=(ms_graphrag hoprag naive prehop)
-
 DATASET="$1"; shift || true
 STAGE="${1:-all}"; shift || true
-MODEL="all"
+MODEL="prehop"
 QUERIES="sample200"
 COMMON_PASS=()
 INDEX_PASS=()
@@ -62,36 +60,24 @@ if { [ "$STAGE" = "benchmark" ] || [ "$STAGE" = "bench" ] || [ "$STAGE" = "all" 
     exit 1
 fi
 
-models_to_run() {
-    if [ "$MODEL" = "all" ]; then printf '%s\n' "${STRATEGIES[@]}"; else echo "$MODEL"; fi
-}
+case "$MODEL" in
+    prehop|naive|hoprag|ms_graphrag) ;;
+    *) echo "Unknown --model '$MODEL' (use prehop|naive|hoprag|ms_graphrag)" >&2; exit 1 ;;
+esac
 
 do_index() {
-    local first_model=true
-    for m in $(models_to_run); do
-        local model_index_pass=()
-        for flag in "${INDEX_PASS[@]}"; do
-            if [ "$flag" = "--clear-graph" ] && [ "$first_model" != true ]; then
-                continue
-            fi
-            model_index_pass+=("$flag")
-        done
-        echo ">>> [$DATASET index] $m  (dataset $CORPUS_DIR, corpus-tag $CORPUS_TAG)"
-        ./run_index.sh --model "$m" --dataset "$CORPUS_DIR" --corpus-tag "$CORPUS_TAG" "${COMMON_PASS[@]}" "${model_index_pass[@]}"
-        first_model=false
-    done
+    echo ">>> [$DATASET index] $MODEL  (dataset $CORPUS_DIR, corpus-tag $CORPUS_TAG)"
+    ./run_index.sh --model "$MODEL" --dataset "$CORPUS_DIR" --corpus-tag "$CORPUS_TAG" "${COMMON_PASS[@]}" "${INDEX_PASS[@]}"
 }
 
 do_benchmark() {
-    for m in $(models_to_run); do
-        echo ">>> [$DATASET benchmark] $m  (queries $QUERIES_FILE, corpus-tag $CORPUS_TAG)"
-        ./run_benchmark.sh --model "$m" --queries "$QUERIES_FILE" --corpus-tag "$CORPUS_TAG" "${COMMON_PASS[@]}" "${BENCH_PASS[@]}"
-    done
+    echo ">>> [$DATASET benchmark] $MODEL  (queries $QUERIES_FILE, corpus-tag $CORPUS_TAG)"
+    ./run_benchmark.sh --model "$MODEL" --queries "$QUERIES_FILE" --corpus-tag "$CORPUS_TAG" "${COMMON_PASS[@]}" "${BENCH_PASS[@]}"
 }
 
 case "$STAGE" in
     index)           do_index ;;
     benchmark|bench) do_benchmark ;;
     all)             do_index; do_benchmark ;;
-    *) echo "Usage: $0 <musique> <index|benchmark|all> [--model all|<strategy>] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
+    *) echo "Usage: $0 <musique> <index|benchmark|all> [--model prehop|naive|hoprag|ms_graphrag] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
 esac

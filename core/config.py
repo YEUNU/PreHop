@@ -52,12 +52,17 @@ class RAGConfig:
     # is shared by controlled answer-synthesis paths and is not swept.
     SYNTHESIS_MAX_OUTPUT_TOKENS = 128
     MAX_EMBEDDING_LENGTH = int(os.environ.get("MAX_EMBEDDING_LENGTH", "16384"))
+    EMBEDDING_QUERY_INSTRUCTION = os.environ.get(
+        "EMBEDDING_QUERY_INSTRUCTION",
+        "Given a web search query, retrieve relevant passages that answer the query",
+    ).strip()
 
     # --- RAG & Indexing Settings ---
     MAX_CONCURRENT_LLM_CALLS = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
-    MAX_CONCURRENT_EMBEDDING_REQUESTS = int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2"))
-    EMBEDDING_BATCH_SIZE = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32"))
+    MAX_CONCURRENT_EMBEDDING_REQUESTS = int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "1"))
+    EMBEDDING_BATCH_SIZE = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "512"))
     VLLM_MAX_NUM_SEQS = int(os.environ.get("VLLM_MAX_NUM_SEQS", "120"))
+    EMBEDDING_MAX_NUM_SEQS = int(os.environ.get("EMBEDDING_MAX_NUM_SEQS", "512"))
     EMBEDDING_DIMENSIONS = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024"))
     NEO4J_BATCH_SIZE = int(os.environ.get("NEO4J_BATCH_SIZE", "25"))
 
@@ -65,9 +70,8 @@ class RAGConfig:
     # Query-time channels use unweighted reciprocal rank, 1 / (rank + 1).
     # There is no dataset-tuned fusion constant or modality preference.
     # --- Indexing Pipeline Settings ---
-    # Fixed-size chunking (core-only rewrite — replaces adaptive/embedding-
-    # similarity chunk splitting). Each page is windowed into chunks of
-    # CHUNK_SENTENCES sentences, including the final partial window.
+    # Each page is split into fixed CHUNK_SENTENCES windows, including the
+    # final partial window.
     CHUNK_SENTENCES = 6
     QUESTIONS_PER_DIRECTION = 3
     # HOP ANN sends high-dimensional vectors and candidate rows through bounded waves.
@@ -99,7 +103,7 @@ class RAGConfig:
     # No re-indexing required; only retrieval-time channel selection changes.
     HYPO_CHANNEL_VARIANT = os.environ.get("RAG_HYPO_CHANNEL_VARIANT", "full").strip().lower() or "full"
     SOURCE_SELECTION_VARIANT = (
-        os.environ.get("RAG_SOURCE_SELECTION_VARIANT", "round_robin").strip().lower() or "round_robin"
+        os.environ.get("RAG_SOURCE_SELECTION_VARIANT", "global").strip().lower() or "global"
     )
 
     @classmethod
@@ -110,6 +114,7 @@ class RAGConfig:
             "MAX_CONCURRENT_EMBEDDING_REQUESTS": cls.MAX_CONCURRENT_EMBEDDING_REQUESTS,
             "EMBEDDING_BATCH_SIZE": cls.EMBEDDING_BATCH_SIZE,
             "VLLM_MAX_NUM_SEQS": cls.VLLM_MAX_NUM_SEQS,
+            "EMBEDDING_MAX_NUM_SEQS": cls.EMBEDDING_MAX_NUM_SEQS,
             "EMBEDDING_DIMENSIONS": cls.EMBEDDING_DIMENSIONS,
             "NEO4J_BATCH_SIZE": cls.NEO4J_BATCH_SIZE,
             "CHUNK_SENTENCES": cls.CHUNK_SENTENCES,
@@ -120,11 +125,11 @@ class RAGConfig:
         invalid = {name: value for name, value in positive.items() if value < 1}
         if invalid:
             raise ValueError(f"RAG configuration values must be positive: {invalid}")
-        if cls.EMBEDDING_BATCH_SIZE * cls.MAX_CONCURRENT_EMBEDDING_REQUESTS > cls.VLLM_MAX_NUM_SEQS:
+        if cls.EMBEDDING_BATCH_SIZE * cls.MAX_CONCURRENT_EMBEDDING_REQUESTS > cls.EMBEDDING_MAX_NUM_SEQS:
             raise ValueError(
-                "Embedding client can exceed VLLM_MAX_NUM_SEQS: "
+                "Embedding client can exceed EMBEDDING_MAX_NUM_SEQS: "
                 f"batch={cls.EMBEDDING_BATCH_SIZE} * concurrent_requests="
-                f"{cls.MAX_CONCURRENT_EMBEDDING_REQUESTS} > {cls.VLLM_MAX_NUM_SEQS}"
+                f"{cls.MAX_CONCURRENT_EMBEDDING_REQUESTS} > {cls.EMBEDDING_MAX_NUM_SEQS}"
             )
         if cls.MAX_CONCURRENT_LLM_CALLS > cls.VLLM_MAX_NUM_SEQS:
             raise ValueError(
@@ -133,6 +138,8 @@ class RAGConfig:
             )
         if cls.GRAPH_HOP_DEPTH not in {0, 1}:
             raise ValueError("RAG_GRAPH_HOP_DEPTH must be 0 or 1")
+        if not cls.EMBEDDING_QUERY_INSTRUCTION:
+            raise ValueError("EMBEDDING_QUERY_INSTRUCTION must not be empty")
 
         allowed_variants = {"full", "qminus_only", "qplus_only", "single_combined"}
         if cls.HYPO_CHANNEL_VARIANT not in allowed_variants:

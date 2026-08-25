@@ -229,6 +229,7 @@ data/embedding_cache/
 data/index_cache/
 data/index_locks/
 data/index_stats/
+data/index_failures/
 data/ms_graphrag_output/
 data/hoprag_output/
 

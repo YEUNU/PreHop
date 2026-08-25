@@ -1,3 +1,5 @@
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -7,7 +9,7 @@ from cli.benchmark import (
     _recompute_aggregates,
     _validate_benchmark_data,
 )
-from cli.index import run_indexing
+from cli.index import _collect_prehop_integrity, _resolved_index_policy, run_indexing
 from core.vllm_client import VLLMClient
 from models.hoprag.hoprag_adapter import HopRAGAdapter
 from models.naive.naive_rag import NaiveRAG
@@ -62,6 +64,62 @@ async def test_graph_clear_uses_bounded_delete_transactions(monkeypatch):
     assert all("SHOW" in query for query, _params in calls[:first_delete_index])
 
 
+@pytest.mark.asyncio
+async def test_prehop_integrity_requires_qminus_owner_provenance(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "ABLATION_Q_MINUS", True)
+    monkeypatch.setattr(RAGConfig, "ABLATION_Q_PLUS", True)
+
+    async def execute(query, parameters=None):
+        _ = parameters
+        if "sum(missing_embeddings)" in query:
+            return [{"missing_embeddings": 0, "orphan_nodes": 0}]
+        if "sum(empty_questions)" in query:
+            return [{"empty_questions": 0, "source_relative_questions": 0, "duplicate_question_groups": 0}]
+        if "identical_cross_channel_questions" in query:
+            return [{"identical_cross_channel_questions": 0}]
+        if "RETURN count(q) AS count" in query:
+            return [{"count": 1}]
+        if "sum(expected) AS expected" in query:
+            return [{"expected": 0, "actual": 0, "invalid": 0, "missing": 0}]
+        if "source.id AS source_id" in query:
+            return [
+                {
+                    "source_id": "source",
+                    "source_document": "a.txt",
+                    "target_id": "target",
+                    "target_document": "b.txt",
+                    "direct_channels": ["q_minus"],
+                    "source_question_ids": ["qp"],
+                    "source_question_texts": ["What evidence is needed?"],
+                    "edge_type": "qplus_to_qminus_owner",
+                }
+            ]
+        if "missing_source_questions" in query:
+            return [{"missing_source_questions": 0, "missing_answered_by": 1, "missing_supported_by": 0}]
+        if "max_out_degree" in query:
+            return [{"max_out_degree": 1}]
+        if "SHOW INDEXES" in query:
+            return [{"name": "prehop_test_vector_idx", "state": "ONLINE"}]
+        raise AssertionError(query)
+
+    engine = MagicMock(
+        chunk_label="PR_test_Chunk",
+        doc_label="PR_test_Document",
+        q_minus_label="PR_test_QMinus",
+        q_plus_label="PR_test_QPlus",
+        _safe_corpus="test",
+    )
+    engine.neo4j.execute_query = AsyncMock(side_effect=execute)
+
+    integrity = await _collect_prehop_integrity(engine)
+
+    assert integrity["checks"]["valid_hop_edges"] is True
+    assert integrity["checks"]["consistent_hop_provenance"] is False
+    assert integrity["pass"] is False
+
+
 def test_benchmark_schema_rejects_missing_query():
     with pytest.raises(ValueError, match="non-empty 'query'"):
         _validate_benchmark_data([{"dataset": "removed_dataset"}], "queries.json")
@@ -101,7 +159,7 @@ def test_config_rejects_embedding_pressure_above_server_capacity(monkeypatch):
 
     monkeypatch.setattr(RAGConfig, "EMBEDDING_BATCH_SIZE", 65)
     monkeypatch.setattr(RAGConfig, "MAX_CONCURRENT_EMBEDDING_REQUESTS", 2)
-    monkeypatch.setattr(RAGConfig, "VLLM_MAX_NUM_SEQS", 128)
+    monkeypatch.setattr(RAGConfig, "EMBEDDING_MAX_NUM_SEQS", 128)
     with pytest.raises(ValueError, match="Embedding client can exceed"):
         RAGConfig.validate()
 
@@ -115,132 +173,57 @@ def test_config_rejects_generation_pressure_above_server_capacity(monkeypatch):
         RAGConfig.validate()
 
 
-def test_matrix_capacity_plan_accounts_for_shared_endpoint(monkeypatch):
-    from scripts.run_index_matrix import _fit_inference_capacity
+def test_index_policy_records_semantic_embedding_and_hop_identity(monkeypatch):
+    from core.config import RAGConfig
 
-    monkeypatch.setenv("VLLM_URL", "http://inference.example/v1")
-    monkeypatch.setenv("VLLM_EMBED_URL", "http://inference.example/v1")
-    monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "shared")
-    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "30")
-    monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
-    monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
+    monkeypatch.setattr(RAGConfig, "ABLATION_Q_MINUS", True)
+    monkeypatch.setattr(RAGConfig, "EMBEDDING_QUERY_INSTRUCTION", "resolved instruction")
+    monkeypatch.setenv("RAG_EMBEDDING_REVISION", "revision-1")
 
-    plan = _fit_inference_capacity(max_parallel=2, max_generation_parallel=1)
+    policy = _resolved_index_policy("prehop", "default")
 
-    assert plan["generation_embedding_share_endpoint"] is True
-    assert plan["effective"]["embedding_concurrency_per_target"] == 1
-    assert plan["effective"]["aggregate_capacity_upper_bound"] == 94
+    assert policy["indexing_model"] == RAGConfig.DEFAULT_MODEL
+    assert policy["embedding_query_instruction"] == "resolved instruction"
+    assert policy["embedding_revision"] == "revision-1"
+    assert policy["hop_construction"] == "qplus_to_qminus_owner"
 
 
-def test_matrix_capacity_plan_keeps_independent_server_budgets(monkeypatch):
-    from scripts.run_index_matrix import _fit_inference_capacity
+@pytest.mark.asyncio
+async def test_generation_budget_is_shared_across_client_instances(monkeypatch):
+    from core.config import RAGConfig
 
-    monkeypatch.setenv("VLLM_URL", "http://generation.example/v1")
-    monkeypatch.setenv("VLLM_EMBED_URL", "http://embedding.example/v1")
-    monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "auto")
-    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "30")
-    monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
-    monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
+    monkeypatch.setattr(RAGConfig, "MAX_CONCURRENT_LLM_CALLS", 2)
+    VLLMClient._generation_semaphores.clear()
+    VLLMClient._generation_inflight.clear()
+    VLLMClient._generation_peak.clear()
 
-    plan = _fit_inference_capacity(max_parallel=2, max_generation_parallel=1)
+    active = 0
+    peak = 0
 
-    assert plan["generation_embedding_share_endpoint"] is False
-    assert plan["adjusted"] is True
-    assert plan["effective"]["aggregate_capacity_upper_bound"] == 64
+    async def create(**_params):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return object()
 
-
-def test_matrix_capacity_plan_supports_separate_servers_behind_one_gateway(monkeypatch):
-    from scripts.run_index_matrix import _fit_inference_capacity
-
-    monkeypatch.setenv("VLLM_URL", "http://gateway.example/v1")
-    monkeypatch.setenv("VLLM_EMBED_URL", "http://gateway.example/v1")
-    monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "separate")
-    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "120")
-    monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
-    monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
-
-    plan = _fit_inference_capacity(max_parallel=2, max_generation_parallel=1)
-
-    assert plan["generation_embedding_share_gateway"] is True
-    assert plan["generation_embedding_share_endpoint"] is False
-    assert plan["effective"]["generation_concurrency_per_target"] == 120
-    assert plan["effective"]["embedding_concurrency_per_target"] == 1
-    assert plan["effective"]["generation_capacity_upper_bound"] == 120
-    assert plan["effective"]["embedding_capacity_upper_bound"] == 64
-    assert plan["effective"]["aggregate_capacity_upper_bound"] == 120
-
-
-def test_matrix_capacity_clamps_ms_and_hoprag_adapter_settings(monkeypatch):
-    from scripts.run_index_matrix import _fit_inference_capacity
-
-    monkeypatch.setenv("VLLM_URL", "http://generation.example/v1")
-    monkeypatch.setenv("VLLM_EMBED_URL", "http://embedding.example/v1")
-    monkeypatch.setenv("RAG_INFERENCE_CAPACITY_MODE", "separate")
-    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("VLLM_GENERATION_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("VLLM_EMBED_MAX_NUM_SEQS", "120")
-    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "120")
-    monkeypatch.setenv("RAG_MS_CONCURRENT_REQUESTS", "120")
-    monkeypatch.setenv("RAG_HOP_DOC_WORKERS", "30")
-    monkeypatch.setenv("RAG_HOP_MAX_THREADS", "4")
-    monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "32")
-    monkeypatch.setenv("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")
-
-    plan = _fit_inference_capacity(max_parallel=3, max_generation_parallel=3)
-
-    assert plan["effective"]["generation_concurrency_per_target"] == 40
-    assert plan["effective"]["ms_concurrent_requests"] == 40
-    assert plan["effective"]["hoprag_doc_workers"] == 10
-    assert plan["effective"]["hoprag_generation_pressure_per_target"] == 40
-    assert plan["effective"]["aggregate_capacity_upper_bound"] == 120
-
-
-def test_matrix_records_ms_missing_entity_warnings():
-    from scripts.run_index_matrix import _extract_integrity_warnings
-
-    warnings = _extract_integrity_warnings(
-        "ms_graphrag",
-        "WARNING: Dropped 127 relationship(s) referencing non-existent entities.\n",
+    request_client = SimpleNamespace(
+        base_url="http://generation.test/v1/",
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
     )
-    assert warnings == [
-        {
-            "type": "dropped_relationships_missing_entities",
-            "count": 127,
-            "message": "Dropped 127 relationship(s) referencing non-existent entities",
-        }
-    ]
-    assert _extract_integrity_warnings("naive", "Dropped 127 relationship(s) referencing non-existent entities") == []
+    first = VLLMClient()
+    second = VLLMClient()
 
+    await asyncio.gather(
+        *[
+            client._create_generation_request(request_client, {"request": index})
+            for index, client in enumerate([first, second, first, second, first, second])
+        ]
+    )
 
-def test_matrix_scheduler_fills_spare_slot_with_embedding_only_target():
-    from scripts.run_index_matrix import DATASETS, Target, _next_compatible_target_index
-
-    active = [Target("multihoprag", "prehop", DATASETS["multihoprag"])]
-    pending = [
-        Target("multihoprag", "hoprag", DATASETS["multihoprag"]),
-        Target("multihoprag", "ms_graphrag", DATASETS["multihoprag"]),
-        Target("musique", "naive", DATASETS["musique"]),
-    ]
-
-    assert _next_compatible_target_index(pending, active, max_generation_parallel=1) == 2
-
-
-def test_matrix_scheduler_waits_when_only_generation_targets_remain():
-    from scripts.run_index_matrix import DATASETS, Target, _next_compatible_target_index
-
-    active = [Target("multihoprag", "prehop", DATASETS["multihoprag"])]
-    pending = [Target("multihoprag", "hoprag", DATASETS["multihoprag"])]
-
-    assert _next_compatible_target_index(pending, active, max_generation_parallel=1) is None
+    assert peak == 2
+    assert max(VLLMClient._generation_peak.values()) == 2
 
 
 def test_unjudged_benchmark_cannot_complete(tmp_path):
@@ -286,6 +269,31 @@ async def test_knowledge_mapping_rejects_malformed_inner_schema(payload, message
 
     with pytest.raises(ValueError, match=message):
         await rag.extract_hoprag_queries("chunk", "title")
+
+
+@pytest.mark.asyncio
+async def test_knowledge_mapping_removes_source_relative_and_conflicting_questions():
+    rag = GraphRAG(strategy="prehop")
+    rag.indexing_llm = AsyncMock()
+    rag.indexing_llm.generate_json.return_value = {
+        "q_minus": [
+            "What does the provided text report?",
+            "Who founded Acme?",
+            "  Who founded Acme?  ",
+        ],
+        "q_plus": [
+            "Who founded Acme?",
+            "Where was Acme incorporated?",
+            "What does this chunk omit?",
+        ],
+    }
+
+    result = await rag.extract_hoprag_queries("Acme was founded by Kim.", "Acme")
+
+    assert result == {
+        "q_minus": ["Who founded Acme?"],
+        "q_plus": ["Where was Acme incorporated?"],
+    }
 
 
 @pytest.mark.asyncio

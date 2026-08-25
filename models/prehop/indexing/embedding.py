@@ -28,10 +28,11 @@ class SparseEmbeddingMixin:
         identity = {
             "model": RAGConfig.EMBEDDING_MODEL,
             "dimensions": self.vector_dimensions,
+            "max_input_tokens": RAGConfig.MAX_EMBEDDING_LENGTH,
             "encoding_type": encoding_type,
             "endpoint": RAGConfig.VLLM_EMBED_URL,
             "revision": os.environ.get("RAG_EMBEDDING_REVISION", ""),
-            "query_instruction": os.environ.get("EMBEDDING_QUERY_INSTRUCTION", ""),
+            "query_instruction": RAGConfig.EMBEDDING_QUERY_INSTRUCTION,
             "text": text,
         }
         payload = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

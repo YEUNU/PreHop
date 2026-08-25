@@ -62,10 +62,9 @@ async def _clear_graph_and_schema(neo4j: Neo4jService) -> None:
             escaped = name.replace("`", "``")
             await neo4j.execute_query(f"DROP INDEX `{escaped}` IF EXISTS")
 
-    # One DETACH DELETE transaction can exceed Neo4j's transaction-memory cap
-    # on a full experiment matrix. Delete in committed batches and reduce the
-    # batch on the specific transient memory error. A failed transaction is
-    # rolled back, so retrying the same batch cannot partially overlap data.
+    # Delete in committed batches to stay within Neo4j transaction memory.
+    # Reduce only the batch that raises a transient memory error; rollback
+    # keeps each retry atomic.
     clear_batch = int(os.environ.get("RAG_NEO4J_CLEAR_BATCH_SIZE", "1000"))
     if clear_batch < 1:
         raise ValueError("RAG_NEO4J_CLEAR_BATCH_SIZE must be positive")

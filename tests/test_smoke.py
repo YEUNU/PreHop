@@ -164,10 +164,6 @@ def test_graphrag_inherits_indexing_and_retrieval():
 
 
 def test_baselines_still_importable():
-    # Naive / HopRAG / MS-GraphRAG are kept in this repo as comparison
-    # baselines — they should import cleanly with the agentic code paths
-    # removed.
+    # Keep the lightweight baseline import independent from optional packages.
     from models.naive.naive_rag import NaiveRAG  # noqa: F401
-    # HopRAG / MS-GraphRAG adapters pull heavy optional deps at import time
-    # (paddle/graphrag/etc.); we don't import them here so the smoke test
-    # stays light and runnable without those installed.
+    # HopRAG and MS GraphRAG load optional packages at import time.

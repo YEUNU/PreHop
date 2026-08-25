@@ -18,6 +18,13 @@ from .config import RAGConfig
 
 class VLLMClient:
     _client_cache: ClassVar[dict] = {}
+    # Request budgets belong to an inference endpoint, not to a client
+    # wrapper.  Sharing these objects prevents two VLLMClient instances on
+    # the same event loop from each consuming the full server budget.
+    _embed_semaphores: ClassVar[dict[tuple[str, int], asyncio.Semaphore]] = {}
+    _generation_semaphores: ClassVar[dict[tuple[str, int], asyncio.Semaphore]] = {}
+    _generation_inflight: ClassVar[dict[tuple[str, int], int]] = {}
+    _generation_peak: ClassVar[dict[tuple[str, int], int]] = {}
     _QUERY_EMBED_CACHE_LIMIT = 2048
 
     def __init__(self, model_name: str | None = None):
@@ -40,13 +47,6 @@ class VLLMClient:
         # 0 = infinite timeout (None)
         timeout_val = RAGConfig.LLM_REQUEST_TIMEOUT
         self._request_timeout = None if timeout_val == 0 else timeout_val
-        # HopRAG's synchronous upstream hooks may call this client from fresh
-        # event loops in worker threads. asyncio synchronization primitives
-        # are loop-bound after first contention, so keep one semaphore per
-        # running loop instead of sharing a single cross-loop object.
-        self._embed_semaphores: dict[int, asyncio.Semaphore] = {}
-        self._generation_semaphores: dict[int, asyncio.Semaphore] = {}
-
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except ValueError:
@@ -233,16 +233,12 @@ class VLLMClient:
 
     def _format_query_for_embedding(self, query: str) -> str:
         """Apply model-recommended query instruction format for Qwen embedding models."""
-        task = os.environ.get(
-            "EMBEDDING_QUERY_INSTRUCTION",
-            "Given a web search query, retrieve relevant passages that answer the query",
-        )
-        return f"Instruct: {task}\nQuery:{query}"
+        return f"Instruct: {RAGConfig.EMBEDDING_QUERY_INSTRUCTION}\nQuery:{query}"
 
     async def _create_embedding_request(self, inputs: list[str]):
-        loop_id = self._running_loop_id()
-        semaphore = self._embed_semaphores.setdefault(
-            loop_id,
+        key = (self.embed_url, self._running_loop_id())
+        semaphore = type(self)._embed_semaphores.setdefault(
+            key,
             asyncio.Semaphore(RAGConfig.MAX_CONCURRENT_EMBEDDING_REQUESTS),
         )
         async with semaphore:
@@ -253,13 +249,31 @@ class VLLMClient:
             )
 
     async def _create_generation_request(self, request_client: AsyncOpenAI, params: dict[str, Any]):
-        loop_id = self._running_loop_id()
-        semaphore = self._generation_semaphores.setdefault(
-            loop_id,
+        endpoint = str(getattr(request_client, "base_url", self.vllm_url)).rstrip("/")
+        key = (endpoint, self._running_loop_id())
+        cls = type(self)
+        semaphore = cls._generation_semaphores.setdefault(
+            key,
             asyncio.Semaphore(RAGConfig.MAX_CONCURRENT_LLM_CALLS),
         )
         async with semaphore:
-            return await self._retry_with_backoff(request_client.chat.completions.create, **params)
+            inflight = cls._generation_inflight.get(key, 0) + 1
+            cls._generation_inflight[key] = inflight
+            previous_peak = cls._generation_peak.get(key, 0)
+            if inflight > previous_peak:
+                cls._generation_peak[key] = inflight
+                if inflight == 1 or inflight % 10 == 0 or inflight == RAGConfig.MAX_CONCURRENT_LLM_CALLS:
+                    self.logger.info(
+                        "Generation endpoint load | in_flight=%d peak=%d limit=%d endpoint=%s",
+                        inflight,
+                        inflight,
+                        RAGConfig.MAX_CONCURRENT_LLM_CALLS,
+                        endpoint,
+                    )
+            try:
+                return await self._retry_with_backoff(request_client.chat.completions.create, **params)
+            finally:
+                cls._generation_inflight[key] -= 1
 
     async def _embed_batch_itemwise(self, batch: list[str], encoding_type: str) -> list[list[float]]:
         embeddings: list[list[float]] = []
@@ -600,6 +614,10 @@ class VLLMClient:
             except Exception as e:  # noqa: BLE001 - cleanup must continue through heterogeneous client types
                 logger.warning(f"Failed to close client cache entry '{key}': {e}")
         cls._client_cache.clear()
+        cls._embed_semaphores.clear()
+        cls._generation_semaphores.clear()
+        cls._generation_inflight.clear()
+        cls._generation_peak.clear()
 
 
 def get_llm_client(model_id: str = "default"):

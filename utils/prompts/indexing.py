@@ -12,7 +12,7 @@ Rules:
 2. Return at most 3 Q+ questions whose answer requires another chunk or document.
 3. Keep every question specific and grounded in entities or events present in the chunk.
 4. Do not emit a Q- paraphrase as Q+; leave the list empty when no outward dependency is supported.
-5. Never use source-relative placeholders as the only anchor.
+5. Every question must stand alone. Never refer to "the provided text", "the given text", "this chunk", or "the passage".
 6. Never fabricate facts, dates, entities, quotations, or events.
 7. Return empty lists for navigation, boilerplate, or text without useful questions.
 

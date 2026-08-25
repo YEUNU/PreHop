@@ -3,11 +3,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > Benchmark numbers are intentionally omitted from this overview. They are
-> published only from a complete, integrity-checked full-corpus matrix.
+> published only from complete, integrity-checked full-corpus runs.
 
 Reference implementation of a GraphRAG framework whose core claim is
 indexing-time HOP construction: inspectable question-level evidence links are
-rank-fused once, offline, into chunk-to-chunk edges, so the query path expands
+constructed once, offline, into chunk-to-chunk edges, so the query path expands
 the graph deterministically with no per-hop LLM reasoning. The query path is
 a thin role-based hybrid retrieve over a graph built once offline — no agent
 loop, no reflection, no refinement.
@@ -19,7 +19,10 @@ loop, no reflection, no refinement.
 Core indexing-time design, currently evaluated on MultiHop-RAG and MuSiQue:
 
 1. Every chunk receives separate hypothetical questions for facts it answers ($Q^-$) and information it still requires ($Q^+$).
-2. Each Q+ searches cross-document Q- and body representations. Direct-channel agreement chooses one evidence target per Q+, without a score threshold or learned reranker.
+2. Each Q+ retrieves the closest cross-document Q-. The Q-'s owner chunk is
+   the evidence target, so its body follows from graph ownership without a
+   second body search. When Q- is disabled for ablation, Q+ retrieves a body
+   target directly.
 
 Chunking is fixed-size (page-scoped sentence windows) — see `CLAUDE.md` "Architecture notes" for details.
 
@@ -157,6 +160,19 @@ be described as official-compatible runs. MuSiQue corpus metadata headers are
 removed before indexing and are used only to audit source identity. Incomplete or failed runs are not
 paper-eligible.
 
+Command logs are isolated by run, dataset, and strategy under
+`logs/{index|benchmark}/<run-id>/<corpus-tag>/<strategy>.log`. MS GraphRAG's
+required pipeline report is kept below the same index scope in `internal/`;
+it no longer writes a shared `logs/indexing-engine.log`.
+
+Prehop is marked complete only after the live graph passes deterministic
+index-quality checks: complete embeddings and ownership, valid and role-distinct
+Q−/Q+, exact document-order `NEXT`, cross-document HOP constraints, bounded
+out-degree, consistent Q+→Q-→owner provenance,
+and online search indexes. Coverage and graph density are recorded as
+descriptive statistics rather than tuned acceptance thresholds. Retrieval
+quality remains a separate held-out benchmark question.
+
 ### Per-dataset entrypoints
 
 `run_multihoprag.sh` and `run_dataset.sh` wrap the steps above with each
@@ -167,71 +183,41 @@ dataset's corpus, queries, and tags so you don't pass them by hand:
 
 # MultiHop-RAG
 python3 scripts/datasets/prepare_multihoprag.py  # downloads corpus + full queries
-./run_multihoprag.sh all                       # index all 4 + benchmark (sample200)
-./run_multihoprag.sh benchmark --queries full  # or the full 2556-query set
+./run_multihoprag.sh index --model prehop      # one strategy at a time
+./run_multihoprag.sh benchmark --model prehop --queries full
 
 # MuSiQue: preparation defaults to all 2,417 answerable dev rows.
 # Create exploratory samples only with make_sample.py.
 python3 scripts/datasets/prepare_musique.py
 python3 scripts/datasets/make_sample.py --dataset musique --per-type 67
-./run_dataset.sh musique all
+./run_dataset.sh musique all --model prehop
 ```
 
 See `CLAUDE.md` "Multi-hop dataset suite" for corpus/query file details per dataset.
 
-### Full indexing matrix and paper measurements
+### Independent paper runs
 
-After starting generation and embedding services, the following command clears
-Neo4j once and runs the matrix in four strategy barriers. Each barrier runs the
-two datasets concurrently, then advances to the next strategy:
-
-```bash
-VLLM_MAX_NUM_SEQS=120 VLLM_GENERATION_MAX_NUM_SEQS=120 VLLM_EMBED_MAX_NUM_SEQS=120 \
-.venv/bin/python scripts/run_index_matrix.py \
-  --run-id <unique-paper-run-id> \
-  --datasets multihoprag musique \
-  --strategies ms_graphrag hoprag naive prehop \
-  --clear-graph --max-parallel 2 --max-generation-parallel 2 \
-  --target-attempts 2 --save-prehop-intermediate
-```
-
-Results are isolated under `artifacts/indexing/<run-id>/`: per-target logs,
-GNU-time CPU/RSS measurements, host/vLLM pressure samples, integrity statistics,
-`summary.csv`, and a paste-ready `paper_table.md`. Sustained host-memory or
-vLLM queue pressure automatically reduces the parallel width for remaining
-targets; a resource/rate-limit failure also halves that target's internal
-worker count on retry. `logical_payload_bytes_estimate` is a cross-strategy reproducible
-payload estimate; it is not Neo4j's physical store-file size.
-Use a new, explicit run ID for every paper run. Dry runs and interrupted
-partial runs are not paper results and must not share an artifact directory
-with the replacement cold run.
-The runner applies one per-target generation budget to `MAX_CONCURRENT_LLM_CALLS`,
-`RAG_MS_CONCURRENT_REQUESTS`, and HopRAG's
-`RAG_HOP_DOC_WORKERS × RAG_HOP_MAX_THREADS`. With two generation targets and
-`max_num_seqs=120`, the aggregate generation upper bound is at most 120.
-Naive flattens 32 source documents into each embedding/write batch, which is
-important for one-chunk corpora. Matrix runs also preserve per-target phase
-timing and interrupted attempt fragments in `attempt_journal.jsonl`. Resume an
-interrupted run in the same folder with the original `--run-id`:
+Run each dataset/strategy pair independently. This keeps failures, resource
+measurements, logs, and corpus state attributable to one experimental target
+and avoids matrix-level retry or resume policy. Clear Neo4j only before the
+first target when multiple corpus tags must coexist.
 
 ```bash
-.venv/bin/python scripts/run_index_matrix.py \
-  --run-id <run-id> --resume --target-attempts 3
+RAG_RUN_ID=mhr-prehop-cold ./run_multihoprag.sh index \
+  --model prehop --clear-graph
+RAG_RUN_ID=musique-prehop-cold ./run_dataset.sh musique index \
+  --model prehop
+
+# Repeat explicitly for controlled and official baselines.
+RAG_RUN_ID=mhr-naive-cold ./run_multihoprag.sh index --model naive
+RAG_RUN_ID=mhr-hoprag-cold ./run_multihoprag.sh index --model hoprag
+RAG_RUN_ID=mhr-ms-graphrag-cold ./run_multihoprag.sh index --model ms_graphrag
 ```
 
-Use `scripts/merge_index_matrix_runs.py` only when combining independent
-historical run folders. `--target-attempts 2` means two total pipeline
-attempts (one retry); `RAG_HOP_INTERNAL_RETRIES=2` means two total HopRAG
-official-call attempts (one internal retry). The default watch line is emitted
-hourly and includes the current strategy, completed/pending targets, and an
-ETA that includes estimated future barriers; on a cold run it uses
-strategy-specific durations from prior matrix result folders when available.
-If no prior sample exists, the snapshot reports the unknown target count
-instead of fabricating a duration. Use `--watch-interval 60` for a minute-level
-watch. SIGINT/SIGTERM create resumable attempt fragments; SIGKILL cannot be
-captured. Resource failures halve the affected target's adapter limits and
-global LLM semaphore on retry.
-Prehop's runtime stats also split document generation/embedding, final graph
+Use a new explicit run ID for every cold paper run. An interrupted or failed
+run is incomplete; start a replacement run after resolving the cause rather
+than combining partial state. Prehop's runtime stats split document
+generation/embedding, final graph
 flush, HOP construction, and structural-audit time. Question coverage,
 direction coverage, provenance completeness, graph size, prompt-length
 violations, and NEXT/HOP topology checks are read from the stored result rather
@@ -239,17 +225,10 @@ than inferred from counters. For Prehop, full-query gold evidence titles are
 also resolved against the indexed corpus and used to report gold-document-pair
 and query-level HOP connectivity. This is an intermediate semantic-validity
 measure, not a substitute for retrieval/answer accuracy.
-Capacity topology is explicit. `RAG_INFERENCE_CAPACITY_MODE=separate` is used
-when generation and embedding model names are routed by one API gateway to
-different accelerator servers; each receives its own `max_num_seqs=120`
-budget. `shared` combines their worst-case pressure under one budget, while
-`auto` conservatively infers sharing from URL equality. The calculation uses
-`--max-generation-parallel` for generation rather than dividing that budget by
-embedding-only matrix slots. Both queues are sampled. Official adapters retain
-the aggregate `official_pipeline_seconds` plus adapter-observed workflow/stage
-timings; timings are not fabricated for boundaries the upstream package does
-not expose. Naive has aggregate pipeline timing only. MS GraphRAG relationship
-drops caused by missing extracted entities are recorded as integrity warnings.
+Official adapters retain their aggregate pipeline timing plus the workflow or
+stage timings exposed upstream; boundaries that upstream code does not expose
+are not fabricated. MS GraphRAG relationship drops caused by missing extracted
+entities are recorded as integrity warnings.
 
 LLM judging is disabled by default. When it is explicitly enabled, OpenAI Batch
 is the default transport. An interrupted submitted batch can be resumed without
@@ -283,13 +262,14 @@ Query-only ablations do not require rebuilding the index:
 |---|---|---|
 | `RAG_HYPO_CHANNEL_VARIANT` | `full` | `qminus_only`, `qplus_only`, `single_combined` |
 | `RAG_GRAPH_HOP_DEPTH` | `1` | `0` disables graph expansion |
-| `RAG_SOURCE_SELECTION_VARIANT` | `round_robin` | `global` disables source diversification |
+| `RAG_SOURCE_SELECTION_VARIANT` | `global` | `round_robin` enables source diversification as an ablation |
 
 The primary direction ablation is `{full, Q⁻-only, Q⁺-only}`. Source
 text, including pipe-delimited text, is indexed as-is; there is no
 table-to-text generation branch.
 
-Each ablation lives under its own corpus tag so indexed graphs never collide.
+Index-changing ablations use distinct corpus tags. Query-only ablations reuse
+the same immutable index and are recorded in result metadata.
 
 ---
 
@@ -301,14 +281,15 @@ Full list in the paper appendix; the most important:
 |---|---|---|
 | `CHUNK_SENTENCES` | 6 | fixed-size chunking window (sentences per chunk) |
 | Questions per direction | 3 | fixed output-schema bound for Q− and Q+ |
-| HOP targets | at most one per Q+ | derived from generated dependency questions |
+| HOP targets | at most one candidate per Q+ | nearest cross-document Q− owner |
 | Query representations | set union | $Q^-$ / body direct evidence and $Q^+$ dependency seeds, each searched once |
-| Offline HOP selection | direct-channel agreement | Q− and body evidence channels only |
+| Offline HOP selection | Q+→Q− owner resolution | the matched Q− deterministically identifies its evidence chunk |
 | Embedding dim | `NEO4J_VECTOR_DIMENSIONS` | must match the configured embedding model's actual output dim (see `CLAUDE.md` "Model / inference infra") |
 
-Offline HOP construction is rank-based and has no learned reranker, fixed
-cosine threshold, domain gate, or heuristic gate. Query-time candidate
-ordering is likewise threshold-free.
+Offline candidate construction is rank-based and has no learned reranker,
+fixed cosine threshold, domain gate, semantic judge, or tuned acceptance
+score. Query-time candidate ordering is also threshold-free and makes no LLM
+call before final answer synthesis.
 
 ---
 

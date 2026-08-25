@@ -125,7 +125,6 @@ class HybridSearchMixin:
 
         nodes = sorted(
             all_nodes.values(),
-            key=lambda item: item.get("rrf_score", 0.0),
-            reverse=True,
+            key=lambda item: (-float(item.get("rrf_score", 0.0)), self._node_identity(item)),
         )
         return nodes[:retained_limit]

@@ -14,7 +14,7 @@ from core.config import RAGConfig
 
 
 class RetrieveMixin:
-    async def retrieve(self, query: str, top_k: int = RAGConfig.DEFAULT_TOP_K) -> tuple:
+    async def retrieve(self, query: str, top_k: int) -> tuple:
         selected_nodes, _ = await self._retrieve_with_candidate_pool(query, top_k)
         output_nodes = [self._without_transient_retrieval_scores(node) for node in selected_nodes]
         return self._build_context_from_nodes(output_nodes), output_nodes

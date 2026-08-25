@@ -4,6 +4,7 @@
 #
 
 set -e
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -34,17 +35,26 @@ while [ $# -gt 0 ]; do
         --model) MODEL="$2"; shift 2 ;;
         --llm) LLM="$2"; shift 2 ;;
         --all) RUN_ALL=true; shift ;;
-        --corpus-tag) CORPUS_TAG="--corpus-tag $2"; shift 2 ;;
+        --corpus-tag) CORPUS_TAG="$2"; shift 2 ;;
         --skip-server) SKIP_SERVER=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
+SAFE_RUN_ID="${RAG_RUN_ID//[^A-Za-z0-9_.-]/_}"
+LOG_DATASET="${CORPUS_TAG:-${QUERIES_FILE##*/}}"
+LOG_DATASET="${LOG_DATASET%_queries.json}"
+LOG_DATASET="${LOG_DATASET:-default}"
+SAFE_LOG_DATASET="${LOG_DATASET//[^A-Za-z0-9_.-]/_}"
+LOG_ROOT="${RAG_LOG_ROOT:-logs}"
+BENCHMARK_LOG_DIR="${LOG_ROOT}/benchmark/${SAFE_RUN_ID}/${SAFE_LOG_DATASET}"
+mkdir -p "$BENCHMARK_LOG_DIR"
+
 echo "========================================="
 echo "     Benchmark Pre-flight Check          "
 echo "========================================="
 echo "Python: $PYTHON_BIN"
-echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, top_k=${RAG_DEFAULT_TOP_K:-12}"
+echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, top_k=12"
 
 echo "Step 0: Python/Dependency preflight..."
 if [ "$MODEL" = "hoprag" ] || [ "$MODEL" = "ms_graphrag" ] || [ "$RUN_ALL" = true ]; then
@@ -96,9 +106,15 @@ fi
 echo ""
 echo "[Step] Running benchmark..."
 if [ "$RUN_ALL" = true ]; then
-    "$PYTHON_BIN" main.py --mode benchmark_all --queries_file "$QUERIES_FILE" --model "$LLM" $CORPUS_TAG
+    BENCHMARK_ARGS=(main.py --mode benchmark_all --queries_file "$QUERIES_FILE" --model "$LLM")
+    LOG_NAME="all"
 else
-    "$PYTHON_BIN" main.py --mode benchmark --queries_file "$QUERIES_FILE" --strategy "$MODEL" --model "$LLM" $CORPUS_TAG
+    BENCHMARK_ARGS=(main.py --mode benchmark --queries_file "$QUERIES_FILE" --strategy "$MODEL" --model "$LLM")
+    LOG_NAME="$MODEL"
 fi
+[ -n "$CORPUS_TAG" ] && BENCHMARK_ARGS+=(--corpus-tag "$CORPUS_TAG")
+
+"$PYTHON_BIN" "${BENCHMARK_ARGS[@]}" 2>&1 | tee "$BENCHMARK_LOG_DIR/${LOG_NAME}.log"
+echo "Log: $BENCHMARK_LOG_DIR/${LOG_NAME}.log"
 
 # JSON/JSONL report artifacts are written by cli/benchmark.py during the run.

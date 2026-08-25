@@ -7,7 +7,6 @@ cross-page grouping — chunk boundaries never cross a page. Source text,
 including pipe-delimited fragments, is preserved without an LLM conversion.
 """
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -227,10 +226,13 @@ class ChunkingMixin:
             if not chunk_texts:
                 return []
 
-            async def hoprag_for_chunk(chunk_text: str):
-                return await self.extract_hoprag_queries(chunk_text, title)
-
-            q_results = await asyncio.gather(*[hoprag_for_chunk(t) for t in chunk_texts])
+            # Files already run concurrently in cli/index.py. Process chunks
+            # within one file in source order so a document cannot enqueue an
+            # unbounded second layer of generation tasks. The endpoint-wide
+            # limiter remains the final request-capacity guard.
+            q_results = []
+            for chunk_text in chunk_texts:
+                q_results.append(await self.extract_hoprag_queries(chunk_text, title))
 
             return [
                 {
@@ -243,8 +245,10 @@ class ChunkingMixin:
                 for chunk_text, q_data in zip(chunk_texts, q_results)
             ]
 
-        logger.info("[%s] Fan-out: processing %d pages in parallel", title, len(pages))
-        per_page_results = await asyncio.gather(*[process_page(page) for page in pages])
+        logger.info("[%s] Processing %d pages in source order", title, len(pages))
+        per_page_results = []
+        for page in pages:
+            per_page_results.append(await process_page(page))
 
         final_chunks: list[dict] = []
         global_sent_id = 0

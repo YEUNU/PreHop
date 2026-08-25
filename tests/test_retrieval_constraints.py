@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,6 +13,10 @@ def test_retrieval_has_no_dataset_specific_metadata_gate():
     assert not hasattr(rag, "_apply_retrieval_calibration")
     assert not hasattr(RAGConfig, "COMPANY_ANCHORING")
     assert not hasattr(RAGConfig, "RERANKER_THRESHOLD")
+
+
+def test_primary_source_selection_is_global_cosine_order():
+    assert RAGConfig.SOURCE_SELECTION_VARIANT == "global"
 
 
 @pytest.mark.asyncio
@@ -296,7 +301,7 @@ async def test_hop_ann_pool_is_sized_per_source_not_by_corpus_max(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_qplus_to_qminus_uses_only_direct_evidence_channels():
+async def test_full_hop_policy_follows_qminus_owner_without_second_body_search():
     rag = GraphRAG(strategy="prehop")
 
     async def fake_candidates(wave, channel):
@@ -319,11 +324,8 @@ async def test_qplus_to_qminus_uses_only_direct_evidence_channels():
         ],
     )
 
-    assert len(edges) == 1
-    assert edges[0]["tgt_id"] == "manual-2023"
-    assert edges[0]["direct_channels"] == ["q_minus"]
-    assert "same_need_match" not in edges[0]
-    assert {call.args[1] for call in rag._find_hop_candidates_batch.await_args_list} == {"q_minus", "body"}
+    assert [edge["tgt_id"] for edge in edges] == ["manual-2023"]
+    assert [call.args[1] for call in rag._find_hop_candidates_batch.await_args_list] == ["q_minus"]
 
 
 @pytest.mark.asyncio
@@ -331,31 +333,27 @@ async def test_each_individual_qplus_keeps_one_direct_evidence_target():
     rag = GraphRAG(strategy="prehop")
 
     async def fake_candidates(wave, channel):
-        if channel != "body":
-            return []
-        return [
+        candidates = [
             {
                 "source_chunk_id": wave[0]["id"],
                 "source_question_id": "q-first",
                 "target_id": "first-best",
-                "target_question_id": None,
+                "target_question_id": "qm-first" if channel == "q_minus" else None,
+                "target_text": "First target answers the first question.",
+                "target_title": "First",
                 "score": 0.99,
-            },
-            {
-                "source_chunk_id": wave[0]["id"],
-                "source_question_id": "q-first",
-                "target_id": "first-second",
-                "target_question_id": None,
-                "score": 0.98,
             },
             {
                 "source_chunk_id": wave[0]["id"],
                 "source_question_id": "q-second",
                 "target_id": "second-best",
-                "target_question_id": None,
+                "target_question_id": "qm-second" if channel == "q_minus" else None,
+                "target_text": "Second target answers the second question.",
+                "target_title": "Second",
                 "score": 0.70,
             },
         ]
+        return candidates
 
     rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
     edges = await rag._process_hop_wave(
@@ -372,6 +370,44 @@ async def test_each_individual_qplus_keeps_one_direct_evidence_target():
     )
 
     assert {edge["tgt_id"] for edge in edges} == {"first-best", "second-best"}
+    assert all(edge["direct_channels"] == ["q_minus"] for edge in edges)
+
+
+@pytest.mark.asyncio
+async def test_questions_sharing_one_target_keep_all_provenance():
+    rag = GraphRAG(strategy="prehop")
+
+    async def fake_candidates(wave, channel):
+        return [
+            {
+                "source_chunk_id": wave[0]["id"],
+                "source_question_id": question_id,
+                "target_id": "shared-target",
+                "target_question_id": f"qm-{question_id}" if channel == "q_minus" else None,
+                "target_text": "One passage answers both questions.",
+                "target_title": "Shared",
+                "score": 0.9,
+            }
+            for question_id in ("q-first", "q-second")
+        ]
+
+    rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
+
+    edges = await rag._process_hop_wave(
+        [
+            {
+                "id": "source-chunk",
+                "source": "source.txt",
+                "questions": [
+                    {"id": "q-first", "text": "First question?", "query_embedding": [1.0]},
+                    {"id": "q-second", "text": "Second question?", "query_embedding": [1.0]},
+                ],
+            }
+        ]
+    )
+
+    assert len(edges) == 1
+    assert edges[0]["source_question_ids"] == ["q-first", "q-second"]
 
 
 @pytest.mark.asyncio
@@ -381,16 +417,16 @@ async def test_hop_and_provenance_edges_are_written_in_one_query():
     edge = {
         "src_id": "source",
         "tgt_id": "target",
-        "score": 1.0,
-        "direct_channels": ["body"],
-        "q_minus_match": None,
-        "body_match": {"raw_score": 0.9},
-        "q_minus_matches": [],
-        "body_matches": [
-            {"source_question_id": "q-plus", "target_question_id": None, "raw_score": 0.9}
+        "direct_channels": ["q_minus"],
+        "q_minus_match": {"raw_score": 0.8},
+        "body_match": None,
+        "q_minus_matches": [
+            {"source_question_id": "q-plus", "target_question_id": "q-minus", "raw_score": 0.8}
         ],
+        "body_matches": [],
         "source_question_ids": ["q-plus"],
         "source_question_texts": ["Which evidence is missing?"],
+        "construction_mode": "qplus_to_qminus_owner",
     }
 
     await rag._flush_hop_edges([edge])
@@ -408,3 +444,14 @@ def test_indexing_has_no_tuned_hop_fusion_or_width_knobs():
         "HOP_SAME_NEED_WEIGHT",
     ):
         assert not hasattr(RAGConfig, name)
+
+
+def test_benchmark_does_not_reference_removed_hop_tuning_knobs():
+    benchmark_source = Path("cli/benchmark.py").read_text(encoding="utf-8")
+    for name in (
+        "HOP_LINK_LIMIT",
+        "HOP_CANDIDATE_LIMIT",
+        "HOP_ANN_POOL",
+        "HOP_SAME_NEED_WEIGHT",
+    ):
+        assert name not in benchmark_source
