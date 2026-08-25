@@ -14,7 +14,12 @@ load_project_env() {
     # shellcheck disable=SC1090
     . "$env_file"
     set +a
-    eval "$exported_snapshot"
+    # ``export -p`` emits ``declare -x`` statements. Evaluating those inside
+    # this function creates function-local variables, so values loaded from
+    # .env remain active after return instead of caller-provided overrides.
+    # Restore with ``export`` assignments, which update the shell environment
+    # visible to subsequently launched commands.
+    eval "${exported_snapshot//declare -x/export}"
 }
 
 # Resolve the Python interpreter. Prefers the project-local .venv (created with
