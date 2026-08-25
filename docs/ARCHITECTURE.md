@@ -66,7 +66,10 @@ The in-repo path limits simultaneously active files with
 clients. Files are read and scheduled in bounded batches. A document failure is
 isolated and persisted in `data/index_failures`; any failure still makes the
 target fail after cleanup/finalization, so partial success cannot be reported as
-a complete index.
+a complete index. Graph indexing uses a bounded rolling task window: when any
+document finishes, its slot is reused immediately. A slow document therefore
+does not impose a barrier on the rest of its original scheduling batch, while
+the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
 
 ### Prehop modules
 

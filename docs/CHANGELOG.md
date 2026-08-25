@@ -18,7 +18,10 @@ question-level provenance before publishing a completed snapshot.
 
 Generation request limits are shared by clients using the same endpoint and
 event loop, with in-flight/peak logging. Prehop bounds generation fan-out by
-processing chunks in source order within each concurrently active file.
+processing chunks in source order within each concurrently active file. Graph
+files now enter a bounded rolling scheduling window, whose completed slots are
+reused immediately. This removes the full-batch wait caused by a single long
+document without creating an unbounded task queue.
 
 ## 2026-08-24 — Matrix barrier, capacity, and continuation correction
 

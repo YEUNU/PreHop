@@ -7,6 +7,7 @@ import multiprocessing as _mp
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,6 +30,42 @@ logger = logging.getLogger("Prehop")
 _CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
 _SNAPSHOT_LABEL = "RAGIndexSnapshot"
 _SNAPSHOT_VERSION = 1
+
+
+async def _reap_bounded_tasks(
+    pending: dict[asyncio.Task[None], str],
+    *,
+    wait_for_one: bool,
+) -> list[tuple[str, Exception]]:
+    """Remove completed tasks from a bounded scheduling window."""
+    if not pending:
+        return []
+    done, _remaining = await asyncio.wait(
+        pending,
+        return_when=asyncio.FIRST_COMPLETED if wait_for_one else asyncio.ALL_COMPLETED,
+    )
+    errors = []
+    for task in done:
+        filename = pending.pop(task)
+        try:
+            await task
+        except Exception as exc:  # noqa: BLE001 - preserve the file identity for aggregate reporting
+            errors.append((filename, exc))
+    return errors
+
+
+async def _submit_bounded_task(
+    pending: dict[asyncio.Task[None], str],
+    limit: int,
+    filename: str,
+    coroutine_factory: Callable[[], Awaitable[None]],
+) -> list[tuple[str, Exception]]:
+    """Submit work after waiting only for the next available window slot."""
+    errors = []
+    if len(pending) >= limit:
+        errors = await _reap_bounded_tasks(pending, wait_for_one=True)
+    pending[asyncio.create_task(coroutine_factory())] = filename
+    return errors
 
 
 def _artifact_run_id() -> str:
@@ -739,8 +776,9 @@ async def _run_indexing_unlocked(
                     progress["completed"] += 1
             await _log_progress("done", filename)
 
-    # Bound resident file contents and scheduled coroutines independently from
-    # the active file-processing limit.
+    # Bound resident file contents and scheduled tasks independently from the
+    # active file-processing limit. Completed slots are reused immediately, so
+    # one long document cannot hold a full batch barrier.
     default_schedule_batch = 32 if not is_graph else file_concurrency * 2
     schedule_batch = max(
         file_concurrency,
@@ -749,9 +787,21 @@ async def _run_indexing_unlocked(
     parse_worker_cap = max(1, int(os.environ.get("RAG_PARSE_WORKERS", str(min(8, os.cpu_count() or 4)))))
     parse_pool = ProcessPoolExecutor(max_workers=parse_worker_cap, mp_context=_PARSE_MP_CTX) if is_graph else None
     loop = asyncio.get_running_loop()
+    pending_tasks: dict[asyncio.Task[None], str] = {}
+
+    def record_task_errors(errors: list[tuple[str, Exception]]) -> None:
+        for filename, exc in errors:
+            logger.error("Unhandled indexing task error in %s: %s", filename, exc)
+            failed_files.append({"item": filename, "stage": "task", "error": str(exc)})
+
     try:
-        for offset in range(0, len(files), schedule_batch):
-            batch_names = files[offset : offset + schedule_batch]
+        offset = 0
+        while offset < len(files):
+            if is_graph and len(pending_tasks) >= schedule_batch:
+                record_task_errors(await _reap_bounded_tasks(pending_tasks, wait_for_one=True))
+            available_slots = schedule_batch - len(pending_tasks) if is_graph else schedule_batch
+            batch_names = files[offset : offset + available_slots]
+            offset += len(batch_names)
             read_results = await asyncio.gather(
                 *[
                     asyncio.to_thread(
@@ -775,7 +825,6 @@ async def _run_indexing_unlocked(
                     raise result
                 file_contents.append((filename, result))
 
-            prepared_lookup: dict[str, dict] = {}
             if not is_graph and file_contents:
                 batch_label = f"{file_contents[0][0]}..{file_contents[-1][0]}"
                 async with progress["lock"]:
@@ -806,33 +855,53 @@ async def _run_indexing_unlocked(
                 continue
 
             if parse_pool is not None and file_contents:
-                parse_tasks = [
-                    loop.run_in_executor(parse_pool, parse_pages_offline, filename, content)
-                    for filename, content in file_contents
-                ]
-                parsed_results = await asyncio.gather(*parse_tasks, return_exceptions=True)
-                for (filename, _content), result in zip(file_contents, parsed_results):
-                    if isinstance(result, Exception):
+                async def prepare_file(filename: str, content: str) -> tuple[str, str, dict | None]:
+                    try:
+                        prepared_pages = await loop.run_in_executor(
+                            parse_pool,
+                            parse_pages_offline,
+                            filename,
+                            content,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - main-process parsing remains available
                         logger.warning(
                             "Page parsing failed for %s; will re-parse in main process: %s",
                             filename,
-                            result,
+                            exc,
                         )
-                        continue
-                    prepared_lookup[filename] = result
+                        prepared_pages = None
+                    return filename, content, prepared_pages
 
-            gather_results = await asyncio.gather(
-                *[
-                    process_file(filename, content, prepared_lookup.get(filename))
-                    for filename, content in file_contents
-                ],
-                return_exceptions=True,
-            )
-            for (filename, _content), result in zip(file_contents, gather_results):
-                if isinstance(result, Exception):
-                    logger.error("Unhandled indexing task error in %s: %s", filename, result)
-                    failed_files.append({"item": filename, "stage": "task", "error": str(result)})
+                parse_tasks = {
+                    asyncio.create_task(prepare_file(filename, content)) for filename, content in file_contents
+                }
+                try:
+                    for completed_parse in asyncio.as_completed(parse_tasks):
+                        filename, content, prepared_pages = await completed_parse
+                        errors = await _submit_bounded_task(
+                            pending_tasks,
+                            schedule_batch,
+                            filename,
+                            lambda filename=filename, content=content, prepared_pages=prepared_pages: process_file(
+                                filename,
+                                content,
+                                prepared_pages,
+                            ),
+                        )
+                        record_task_errors(errors)
+                finally:
+                    for task in parse_tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*parse_tasks, return_exceptions=True)
+
+        record_task_errors(await _reap_bounded_tasks(pending_tasks, wait_for_one=False))
     finally:
+        if pending_tasks:
+            for task in pending_tasks:
+                task.cancel()
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+            pending_tasks.clear()
         if parse_pool is not None:
             await asyncio.to_thread(parse_pool.shutdown, wait=True, cancel_futures=True)
     stage_timing["document_pipeline_seconds"] = time.perf_counter() - started_at
