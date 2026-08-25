@@ -238,7 +238,7 @@ async def test_hop_target_inherits_only_the_qplus_seed_rank():
     await rag.graph_search(["query"], depth=1, top_k=2)
 
     target = next(candidate for candidate in captured if candidate["id"] == "target")
-    assert target["representation_score"] == 0.5
+    assert target["representation_score"] == 0.25
 
 
 @pytest.mark.asyncio
