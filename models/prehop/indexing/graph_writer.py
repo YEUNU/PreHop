@@ -2,7 +2,7 @@
 
 Owns the graph-write side: index lifecycle (vector + fulltext), document and
 chunk MERGE, NEXT edge creation, and batched writes. HOP edges are delegated
-to HopEdgeMixin (paper §3.1.4).
+to the evidence-edge builder.
 
 Q- and Q+ are stored as individual question nodes rather than concatenated
 chunk properties.  This preserves multiple independent directions emitted by
@@ -54,7 +54,7 @@ class GraphWriterMixin:
 
         await self.neo4j.execute_query(f"""
             CREATE FULLTEXT INDEX {self.body_text_index} IF NOT EXISTS
-            FOR (n:{self.chunk_label}) ON EACH [n.title, n.text, n.chunk_summary]
+            FOR (n:{self.chunk_label}) ON EACH [n.title, n.text]
             OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
         await self.neo4j.execute_query(f"""
             CREATE FULLTEXT INDEX {self.q_minus_text_index} IF NOT EXISTS
@@ -263,7 +263,6 @@ class GraphWriterMixin:
                     "embedding": body_embedding,
                     "q_minus": q_minus_by_chunk[index],
                     "q_plus": q_plus_by_chunk[index],
-                    "chunk_summary": chunk["summary"],
                 }
             )
 
@@ -290,27 +289,27 @@ class GraphWriterMixin:
         self._pending_batch = []
 
         try:
-            for item in current_batch:
-                await self.retry_query(
-                    f"""
-                    MERGE (d:{self.doc_label} {{filename: $doc_id}})
-                    SET d.title = $doc_title, d.updated_at = timestamp()
-                    WITH d
+            await self.retry_query(
+                f"""
+                UNWIND $documents AS document
+                CALL (document) {{
+                    MERGE (d:{self.doc_label} {{filename: document.doc_id}})
+                    SET d.title = document.doc_title, d.updated_at = timestamp()
+                    WITH d, document
                     OPTIONAL MATCH (d)-[:CONTAINS]->(old:{self.chunk_label})
                     OPTIONAL MATCH (old)-[:HAS_Q_MINUS|HAS_Q_PLUS]->(old_q)
-                    WITH d, $batch AS new_batch,
+                    WITH d, document,
                          collect(DISTINCT old_q) AS old_questions,
                          collect(DISTINCT old) AS old_chunks
                     FOREACH (q IN old_questions | DETACH DELETE q)
                     FOREACH (c IN old_chunks | DETACH DELETE c)
-                    WITH d, new_batch
-                    UNWIND new_batch AS item
+                    WITH d, document
+                    UNWIND document.data AS item
                     MERGE (c:{self.chunk_label} {{id: item.id}})
                     SET c.text = item.text, c.source = item.source,
                         c.title = item.title,
                         c.sent_id = item.sent_id, c.page = item.page,
-                        c.embedding = item.embedding,
-                        c.chunk_summary = item.chunk_summary
+                        c.embedding = item.embedding
                     MERGE (d)-[:CONTAINS]->(c)
                     FOREACH (question IN item.q_minus |
                         MERGE (q:{self.q_minus_label} {{id: question.id}})
@@ -327,23 +326,19 @@ class GraphWriterMixin:
                             q.query_embedding = question.query_embedding
                         MERGE (c)-[:HAS_Q_PLUS]->(q)
                     )
-                """,
-                    {
-                        "batch": item["data"],
-                        "doc_id": item["doc_id"],
-                        "doc_title": item["doc_title"],
-                    },
-                )
-
-                await self.retry_query(
-                    f"""
-                    UNWIND range(0, size($batch)-2) AS i
-                    MATCH (c1:{self.chunk_label} {{id: $batch[i].id}})
-                    MATCH (c2:{self.chunk_label} {{id: $batch[i+1].id}})
+                    RETURN count(c) AS chunks_written
+                }}
+                CALL (document) {{
+                    UNWIND range(0, size(document.data) - 2) AS i
+                    MATCH (c1:{self.chunk_label} {{id: document.data[i].id}})
+                    MATCH (c2:{self.chunk_label} {{id: document.data[i + 1].id}})
                     MERGE (c1)-[:NEXT]->(c2)
+                    RETURN count(*) AS next_edges_written
+                }}
+                RETURN count(document) AS documents_written
                 """,
-                    {"batch": item["data"]},
-                )
+                {"documents": current_batch},
+            )
         except Exception:
             # MERGE makes replay safe. Restore the whole wave, including items
             # already written before the failure, so a later flush cannot
@@ -351,9 +346,4 @@ class GraphWriterMixin:
             self._pending_batch = current_batch + self._pending_batch
             raise
 
-        # HOP edge construction is now a single one-shot pass at the end of
-        # indexing (`build_all_hop_edges`), invoked from cli/index.py after
-        # all files have been flushed. The previous per-batch call here
-        # produced an asymmetric graph (early batches had only 24 other
-        # docs as candidates, late batches saw the whole corpus). See
-        # paper §3.1.4: "Multi-hop discovery happens once, at indexing time".
+        # Evidence edges are built only after every document is visible.

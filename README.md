@@ -1,4 +1,4 @@
-# Prehop / HypoHop: Question-Level Offline HOP Construction for Deterministic Multi-Hop Retrieval
+# Prehop: Offline Question Links for Deterministic Multi-Hop Retrieval
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -9,7 +9,7 @@ Reference implementation of a GraphRAG framework whose core claim is
 indexing-time HOP construction: inspectable question-level evidence links are
 rank-fused once, offline, into chunk-to-chunk edges, so the query path expands
 the graph deterministically with no per-hop LLM reasoning. The query path is
-a thin two-stage hybrid retrieve over a graph built once offline — no agent
+a thin role-based hybrid retrieve over a graph built once offline — no agent
 loop, no reflection, no refinement.
 
 ---
@@ -18,13 +18,14 @@ loop, no reflection, no refinement.
 
 Core indexing-time design, currently evaluated on MultiHop-RAG and MuSiQue:
 
-1. **Predictive Knowledge Mapping** — every chunk receives dual hypothetical-query annotations ($Q^-$ for self-contained facts, $Q^+$ for outgoing dependencies), indexed separately. This is the structural precondition for HOP edges below, not a standalone feature.
-2. **Rank-Fused HOP Edges Pre-Built Offline** — every Q+ independently searches cross-document Q-, body, and Q+ representations. Q+/Q- or Q+/body is required for a traversable edge; Q+/Q+ can only support its rank. There is no learned cross-encoder or cosine threshold.
+1. Every chunk receives separate hypothetical questions for facts it answers ($Q^-$) and information it still requires ($Q^+$).
+2. Each Q+ searches cross-document Q- and body representations. Direct-channel agreement chooses one evidence target per Q+, without a score threshold or learned reranker.
 
 Chunking is fixed-size (page-scoped sentence windows) — see `CLAUDE.md` "Architecture notes" for details.
 
-The query path is deliberately thin: two-stage hybrid retrieve (Q⁻/body, then
-Q⁺ expansion), external-embedding cosine top-k ordering, deterministic 1-hop
+The query path is deliberately thin: one parallel role-based retrieve over
+Q⁻/body direct evidence and Q⁺ dependency seeds, cosine ordering over
+embeddings stored during indexing, deterministic batched 1-hop
 traversal over bidirectional `NEXT` and outgoing `HOP_ANSWER` edges, and a
 single LLM synthesis call.
 
@@ -269,14 +270,22 @@ questions.
 
 ## Ablation toggles
 
-Indexing-time ablations are driven by environment toggles read in `core/config.py`:
+Method ablations are driven by environment toggles read in `core/config.py`:
 
 | Variable | Default | Effect when set to `false` |
 |---|---|---|
-| `RAG_ABLATION_Q_PLUS` | `true` | Stage 2 Q⁺ expansion disabled (also disables offline HOP-edge construction) |
-| `RAG_ABLATION_Q_MINUS` | `true` | Stage 1 Q⁻ channel disabled |
+| `RAG_ABLATION_Q_PLUS` | `true` | Q⁺ dependency-seed retrieval disabled (also disables offline HOP-edge construction) |
+| `RAG_ABLATION_Q_MINUS` | `true` | Q⁻ direct-evidence retrieval disabled |
 
-`{full, Q⁻-only, Q⁺-only}` is the paper's reported ablation matrix. Source
+Query-only ablations do not require rebuilding the index:
+
+| Variable | Default | Alternatives |
+|---|---|---|
+| `RAG_HYPO_CHANNEL_VARIANT` | `full` | `qminus_only`, `qplus_only`, `single_combined` |
+| `RAG_GRAPH_HOP_DEPTH` | `1` | `0` disables graph expansion |
+| `RAG_SOURCE_SELECTION_VARIANT` | `round_robin` | `global` disables source diversification |
+
+The primary direction ablation is `{full, Q⁻-only, Q⁺-only}`. Source
 text, including pipe-delimited text, is indexed as-is; there is no
 table-to-text generation branch.
 
@@ -291,14 +300,10 @@ Full list in the paper appendix; the most important:
 | Parameter | Value | Where |
 |---|---|---|
 | `CHUNK_SENTENCES` | 6 | fixed-size chunking window (sentences per chunk) |
-| `MIN_CHUNK_SENTENCES` | 2 | trailing short window merges into the previous chunk below this |
-| `L_hop` | 5 | max outgoing HOP edges per source chunk |
-| `K_hop` | 15 | retained candidates per question and target channel |
-| ANN floor | 50 | minimum pool; raised per source by its own representations + `K_hop` |
-| same-need weight | 0.5 | Q+→Q+ RRF support; never sufficient to create `HOP_ANSWER` |
-| Stage 1 weights | 0.7 / 0.3 | $Q^-$ / body |
-| Stage 2 weights | 0.6 / 0.4 | $Q^+$ / $Q^-$ support |
-| RRF `k` | 60 | $w_v=1.3$, $w_t=1.0$ |
+| Questions per direction | 3 | fixed output-schema bound for Q− and Q+ |
+| HOP targets | at most one per Q+ | derived from generated dependency questions |
+| Query representations | set union | $Q^-$ / body direct evidence and $Q^+$ dependency seeds, each searched once |
+| Offline HOP selection | direct-channel agreement | Q− and body evidence channels only |
 | Embedding dim | `NEO4J_VECTOR_DIMENSIONS` | must match the configured embedding model's actual output dim (see `CLAUDE.md` "Model / inference infra") |
 
 Offline HOP construction is rank-based and has no learned reranker, fixed

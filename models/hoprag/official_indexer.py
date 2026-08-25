@@ -760,7 +760,7 @@ def _patch_create_nodes_offline_parallel() -> None:
     levels of parallelism stack:
         total concurrent LLM calls ≈ _DOC_WORKERS × max_thread_num
         e.g. DOC_WORKERS=10 × CHUNK_THREADS=4 → at most 40 calls on the
-        shared 120-sequence paper endpoint.
+        shared 120-sequence inference endpoint.
 
     Thread-safety notes:
     - Node-ID assignment uses a lock-protected counter.  IDs only need to be

@@ -1,9 +1,8 @@
-"""Fixed-size chunking (paper §3.1.2 replacement — core-only rewrite).
+"""Create fixed sentence windows within individual pages.
 
 Each page is split into sentences and grouped into fixed-size windows of
-`RAGConfig.CHUNK_SENTENCES` sentences (a trailing window shorter than
-`RAGConfig.MIN_CHUNK_SENTENCES` is merged into the preceding chunk instead of
-being emitted on its own). No embedding-similarity decisions and no
+`RAGConfig.CHUNK_SENTENCES` sentences. The final partial window is retained.
+No embedding-similarity decisions and no
 cross-page grouping — chunk boundaries never cross a page. Source text,
 including pipe-delimited fragments, is preserved without an LLM conversion.
 """
@@ -28,16 +27,14 @@ def _make_semantic_chunk_id(source, title, sent_id):
     return hashlib.md5(content_sig.encode()).hexdigest()
 
 
-# --- chunk cache (skip LLM regeneration on rerun) -----------------------------
-#
+# Chunk cache for skipping repeated question generation.
 # After a successful `extract_knowledge` we persist the resulting chunks
-# (Q-/Q+, chunk_summary, text/page/sent_id metadata) to
+# (Q-/Q+ and text/page/sent_id metadata) to
 # `data/index_cache/<version>/<corpus_tag>/<source>__<sha8>__<ablation_sig>.json`.
-# Rerunning indexing on the same file under the same paper-relevant ablation
+# Rerunning indexing on the same file under the same generation settings
 # flags and prompt text loads the cache and returns the prior knowledge dict
-# — embeddings are still regenerated downstream, since they're cheap (vLLM
-# batch) and the embedding model can change independently of LLM-generated
-# text.
+# Embeddings use a separate cache keyed by model, revision, encoding role,
+# dimensions, instruction, endpoint, and normalized text.
 
 _CHUNK_CACHE_VERSION = "v1"  # v1 preserves raw table/pipe text; no table-to-text generation
 
@@ -52,7 +49,7 @@ def _chunk_cache_enabled() -> bool:
 
 def _prompt_sig() -> str:
     """Hash of every prompt template whose text ends up baked into a cached
-    chunk (Q-/Q+/summary via HOPRAG_PROMPT). Editing a prompt changes this hash, so old cache
+    chunk. Editing a prompt changes this hash, so old cache
     entries are never reused under a changed prompt — they just sit
     untouched on disk under their old key (nothing is deleted) while a fresh
     run writes new entries under the new key."""
@@ -165,20 +162,15 @@ def parse_pages_offline(filename: str, content: str) -> dict[str, Any]:
 def split_fixed_sentence_windows(
     text: str,
     chunk_sentences: int | None = None,
-    min_chunk_sentences: int | None = None,
 ) -> list[str]:
     """Split one page into the exact fixed sentence windows used by all in-repo methods."""
     chunk_sentences = RAGConfig.CHUNK_SENTENCES if chunk_sentences is None else chunk_sentences
-    min_chunk_sentences = RAGConfig.MIN_CHUNK_SENTENCES if min_chunk_sentences is None else min_chunk_sentences
-    if chunk_sentences < 1 or min_chunk_sentences < 1:
-        raise ValueError("chunk_sentences and min_chunk_sentences must be positive")
+    if chunk_sentences < 1:
+        raise ValueError("chunk_sentences must be positive")
     sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", text) if sentence.strip()]
     chunks = [
         " ".join(sentences[offset : offset + chunk_sentences]) for offset in range(0, len(sentences), chunk_sentences)
     ]
-    if len(chunks) > 1 and len(sentences) % chunk_sentences in range(1, min_chunk_sentences):
-        chunks[-2] = f"{chunks[-2]} {chunks[-1]}"
-        chunks.pop()
     return chunks
 
 
@@ -200,11 +192,9 @@ class ChunkingMixin:
         source: str = "",
         prepared_pages: "dict[str, Any] | None" = None,
     ) -> dict[str, Any]:
-        # On-disk chunk cache: skips every LLM call (Q-/Q+ + chunk_summary)
+        # The on-disk cache skips Q-/Q+ generation for unchanged source text.
         # when the same source content was already chunked under the same
         # ablation flags. Cache key = sha256(content) + ablation signature.
-        # Embeddings are *not* cached — they're cheap via vLLM batching and
-        # the embed model can change independently.
         cached = _chunk_cache_load(self.corpus_tag, source, content)
         if cached is not None:
             cached_title = cached.get("title", "Unknown")
@@ -249,7 +239,6 @@ class ChunkingMixin:
                     "title": title,
                     "q_minus": q_data.get("q_minus", []),
                     "q_plus": q_data.get("q_plus", []),
-                    "summary": q_data.get("summary", ""),
                 }
                 for chunk_text, q_data in zip(chunk_texts, q_results)
             ]
@@ -281,13 +270,10 @@ class ChunkingMixin:
                     {
                         "sent_id": chunk["sent_id"],
                         "page": chunk["page"],
-                        # Keep the complete text so cold-generation and
-                        # cache-hit debug artifacts have identical semantics
-                        # and can be audited against the live graph.
+                        # Keep complete text in debug output for graph comparison.
                         "text": chunk["text"],
                         "q_minus": chunk["q_minus"],
                         "q_plus": chunk["q_plus"],
-                        "summary": chunk["summary"],
                     }
                     for chunk in final_chunks
                 ],

@@ -14,23 +14,16 @@ def test_retrieval_has_no_dataset_specific_metadata_gate():
     assert not hasattr(RAGConfig, "RERANKER_THRESHOLD")
 
 
-def test_hop_bridge_provenance_is_normalized_for_query_scoring():
-    rag = GraphRAG(strategy="prehop")
-
-    assert rag._normalize_bridge_text(["  Which manual?  ", "Which manual?", "What year?\n"]) == (
-        "Which manual?\nWhat year?"
-    )
-    assert rag._normalize_bridge_text(None) == ""
-
-
 @pytest.mark.asyncio
 async def test_similarity_ordering_has_no_score_gate():
     rag = GraphRAG(strategy="prehop")
-    rag._embedding_similarity_scores = AsyncMock(return_value=[-0.8, -0.2])  # type: ignore[method-assign]
 
     selected, ordered = await rag._score_and_select(
-        "query",
-        [{"id": "low", "text": "a"}, {"id": "high", "text": "b"}],
+        [1.0, 0.0],
+        [
+            {"id": "low", "text": "a", "embedding": [-0.8, 0.6]},
+            {"id": "high", "text": "b", "embedding": [-0.2, 0.98]},
+        ],
         top_k=2,
     )
 
@@ -41,26 +34,63 @@ async def test_similarity_ordering_has_no_score_gate():
 @pytest.mark.asyncio
 async def test_hop_candidate_scoring_preserves_bridge_question_semantics():
     rag = GraphRAG(strategy="prehop")
-    rag._embedding_similarity_scores = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[[0.6], [0.8]]
-    )
     candidate = {
         "id": "target",
         "title": "2023 manual",
         "text": "The target body.",
-        "bridge_text": "Bridge questions: Which 2023 manual superseded the 2022 port?",
+        "embedding": [0.6, 0.8],
+        "bridge_embeddings": [[0.8, 0.6], [0.2, 0.98]],
     }
 
-    selected, _ = await rag._score_and_select("Which manual superseded it?", [candidate], top_k=1)
+    selected, _ = await rag._score_and_select([1.0, 0.0], [candidate], top_k=1)
 
-    assert rag._embedding_similarity_scores.await_args_list[1].args[1] == [candidate["bridge_text"]]
     assert selected[0]["similarity_score"] == 0.6
     assert selected[0]["bridge_similarity_score"] == 0.8
-    assert selected[0]["final_score"] == pytest.approx(0.7)
+    assert selected[0]["final_score"] == pytest.approx(0.6)
+
+
+def test_final_selection_round_robins_sources_without_fraction_parameter():
+    rag = GraphRAG(strategy="prehop")
+    ordered = [
+        {"id": "a1", "source": "a"},
+        {"id": "a2", "source": "a"},
+        {"id": "b1", "source": "b"},
+        {"id": "a3", "source": "a"},
+        {"id": "b2", "source": "b"},
+    ]
+
+    selected = rag._source_round_robin(ordered, top_k=4)
+
+    assert [node["id"] for node in selected] == ["a1", "b1", "a2", "b2"]
+    assert not hasattr(RAGConfig, "MAX_CHUNKS_PER_SOURCE_FRACTION")
 
 
 @pytest.mark.asyncio
-async def test_retrieve_always_runs_q_plus_stage_in_full_mode():
+async def test_global_source_selection_is_an_explicit_ablation(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "global")
+    rag = GraphRAG(strategy="prehop")
+    candidates = [
+        {"id": "a1", "source": "a", "embedding": [1.0, 0.0]},
+        {"id": "a2", "source": "a", "embedding": [0.9, 0.1]},
+        {"id": "b1", "source": "b", "embedding": [0.8, 0.2]},
+    ]
+
+    selected, _ = await rag._score_and_select([1.0, 0.0], candidates, top_k=2)
+
+    assert [node["id"] for node in selected] == ["a1", "a2"]
+
+
+def test_transient_index_embeddings_are_not_returned_publicly():
+    rag = GraphRAG(strategy="prehop")
+    output = rag._without_transient_retrieval_scores(
+        {"id": "chunk", "text": "evidence", "embedding": [1.0], "bridge_embeddings": [[1.0]]}
+    )
+
+    assert output == {"id": "chunk", "text": "evidence"}
+
+
+@pytest.mark.asyncio
+async def test_retrieve_searches_each_role_channel_once_in_full_mode():
     rag = GraphRAG(strategy="prehop")
 
     stage1_node = {
@@ -70,6 +100,7 @@ async def test_retrieve_always_runs_q_plus_stage_in_full_mode():
         "page": 10,
         "text": "Operating cash flow was 3.6 billion.",
         "rrf_score": 1.0,
+        "embedding": [1.0, 0.0],
     }
     stage2_node = {
         "id": "n2",
@@ -78,9 +109,11 @@ async def test_retrieve_always_runs_q_plus_stage_in_full_mode():
         "page": 11,
         "text": "Capital expenditures were 1.1 billion in FY2022.",
         "rrf_score": 0.9,
+        "embedding": [1.0, 0.0],
     }
 
-    async def fake_candidates(_q_text: str, limit: int, channel: str = "body"):
+    async def fake_candidates(_q_text: str, query_embedding, limit: int, channel: str = "body"):
+        assert query_embedding == [1.0, 0.0]
         if channel == "q_minus":
             return [dict(stage1_node)]
         if channel == "q_plus":
@@ -88,9 +121,7 @@ async def test_retrieve_always_runs_q_plus_stage_in_full_mode():
         return []
 
     rag._hybrid_rrf_candidates = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
-    # Uniform embeddings give both candidates the same cosine score; Q+ is
-    # still included because the full method always executes both stages.
-    rag.llm.get_embeddings = AsyncMock(side_effect=lambda texts, encoding_type="document": [[1.0, 0.0] for _ in texts])
+    rag.llm.get_embedding = AsyncMock(return_value=[1.0, 0.0])
 
     _, nodes = await rag.retrieve(
         "What was AMD FY2022 free cash flow?",
@@ -100,6 +131,70 @@ async def test_retrieve_always_runs_q_plus_stage_in_full_mode():
     ids = {n.get("id") for n in nodes}
     assert "n1" in ids
     assert "n2" in ids
+
+
+@pytest.mark.asyncio
+async def test_retrieval_embeds_query_once_before_parallel_channels():
+    rag = GraphRAG(strategy="prehop")
+    rag.llm.get_embedding = AsyncMock(return_value=[1.0, 0.0])
+    rag._hybrid_rrf_candidates = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    await rag._retrieve_with_candidate_pool("one query", top_k=12)
+
+    rag.llm.get_embedding.assert_awaited_once_with("one query")
+    assert rag._hybrid_rrf_candidates.await_count == 3
+    assert [call.kwargs["channel"] for call in rag._hybrid_rrf_candidates.await_args_list] == [
+        "q_minus",
+        "body",
+        "q_plus",
+    ]
+    assert all(call.kwargs["query_embedding"] == [1.0, 0.0] for call in rag._hybrid_rrf_candidates.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_derives_modality_width_from_owner_budget():
+    rag = GraphRAG(strategy="prehop")
+    rag._run_channel_query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    await rag._hybrid_rrf_candidates("query", [1.0], limit=7, channel="q_minus")
+    qminus_limits = [call.args[1]["limit"] for call in rag._run_channel_query.await_args_list]
+    assert qminus_limits == [21]
+
+    rag._run_channel_query.reset_mock()
+    await rag._hybrid_rrf_candidates("query", [1.0], limit=7, channel="body")
+    body_limits = [call.args[1]["limit"] for call in rag._run_channel_query.await_args_list]
+    assert body_limits == [7]
+
+
+@pytest.mark.asyncio
+async def test_only_query_matched_dependency_seeds_can_initiate_hop_traversal():
+    rag = GraphRAG(strategy="prehop")
+    direct = {
+        "id": "direct",
+        "title": "Direct",
+        "sent_id": 0,
+        "text": "direct",
+        "dependency_seed": False,
+    }
+    dependency = {
+        "id": "dependency",
+        "title": "Dependency",
+        "sent_id": 0,
+        "text": "dependency",
+        "dependency_seed": True,
+    }
+    rag._retrieve_with_candidate_pool = AsyncMock(  # type: ignore[method-assign]
+        return_value=([direct], [direct, dependency])
+    )
+    rag.llm.get_embedding = AsyncMock(return_value=[1.0])
+    rag._expand_frontier = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    rag._score_and_select = AsyncMock(return_value=([direct], [direct]))  # type: ignore[method-assign]
+
+    await rag.graph_search(["query"], depth=1, top_k=1)
+
+    rag._expand_frontier.assert_awaited_once()
+    assert set(rag._expand_frontier.await_args.args[0]) == {"direct", "dependency"}
+    assert rag._expand_frontier.await_args.args[2] == {"dependency"}
 
 
 @pytest.mark.asyncio
@@ -125,7 +220,6 @@ async def test_build_graph_stores_generated_q_plus_without_heuristic_filter():
                     "For FY2022, what happened?",
                     "",
                 ],
-                "summary": "Cash flow statement summary.",
             }
         ]
     }
@@ -143,9 +237,8 @@ async def test_build_graph_stores_generated_q_plus_without_heuristic_filter():
 
 
 @pytest.mark.asyncio
-async def test_qplus_only_similarity_cannot_create_hop_answer(monkeypatch):
+async def test_qplus_similarity_is_not_an_indexing_candidate_channel():
     rag = GraphRAG(strategy="prehop")
-    monkeypatch.setattr(RAGConfig, "HOP_LINK_LIMIT", 5)
 
     async def fake_candidates(wave, channel):
         if channel == "q_plus":
@@ -177,8 +270,6 @@ async def test_qplus_only_similarity_cannot_create_hop_answer(monkeypatch):
 @pytest.mark.asyncio
 async def test_hop_ann_pool_is_sized_per_source_not_by_corpus_max(monkeypatch):
     rag = GraphRAG(strategy="prehop")
-    monkeypatch.setattr(RAGConfig, "HOP_ANN_POOL", 50)
-    monkeypatch.setattr(RAGConfig, "HOP_CANDIDATE_LIMIT", 15)
     rag.retry_query = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
     await rag._find_hop_candidates_batch(
@@ -200,13 +291,13 @@ async def test_hop_ann_pool_is_sized_per_source_not_by_corpus_max(monkeypatch):
     )
 
     parameters = rag.retry_query.await_args.args[1]
-    assert [item["ann_pool"] for item in parameters["source_questions"]] == [50, 180]
+    assert [item["ann_pool"] for item in parameters["source_questions"]] == [22, 180]
+    assert "candidate_limit" not in parameters
 
 
 @pytest.mark.asyncio
-async def test_qplus_to_qminus_preserves_same_need_as_support(monkeypatch):
+async def test_qplus_to_qminus_uses_only_direct_evidence_channels():
     rag = GraphRAG(strategy="prehop")
-    monkeypatch.setattr(RAGConfig, "HOP_LINK_LIMIT", 5)
 
     async def fake_candidates(wave, channel):
         source = {
@@ -215,8 +306,6 @@ async def test_qplus_to_qminus_preserves_same_need_as_support(monkeypatch):
         }
         if channel == "q_minus":
             return [{**source, "target_id": "manual-2023", "target_question_id": "qm-2023", "score": 0.8}]
-        if channel == "q_plus":
-            return [{**source, "target_id": "manual-2023", "target_question_id": "qp-2023", "score": 0.9}]
         return []
 
     rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
@@ -233,13 +322,13 @@ async def test_qplus_to_qminus_preserves_same_need_as_support(monkeypatch):
     assert len(edges) == 1
     assert edges[0]["tgt_id"] == "manual-2023"
     assert edges[0]["direct_channels"] == ["q_minus"]
-    assert edges[0]["same_need_match"]["target_question_id"] == "qp-2023"
+    assert "same_need_match" not in edges[0]
+    assert {call.args[1] for call in rag._find_hop_candidates_batch.await_args_list} == {"q_minus", "body"}
 
 
 @pytest.mark.asyncio
-async def test_each_individual_qplus_keeps_one_direction_before_global_fill(monkeypatch):
+async def test_each_individual_qplus_keeps_one_direct_evidence_target():
     rag = GraphRAG(strategy="prehop")
-    monkeypatch.setattr(RAGConfig, "HOP_LINK_LIMIT", 2)
 
     async def fake_candidates(wave, channel):
         if channel != "body":
@@ -283,3 +372,39 @@ async def test_each_individual_qplus_keeps_one_direction_before_global_fill(monk
     )
 
     assert {edge["tgt_id"] for edge in edges} == {"first-best", "second-best"}
+
+
+@pytest.mark.asyncio
+async def test_hop_and_provenance_edges_are_written_in_one_query():
+    rag = GraphRAG(strategy="prehop")
+    rag.retry_query = AsyncMock(return_value=[])
+    edge = {
+        "src_id": "source",
+        "tgt_id": "target",
+        "score": 1.0,
+        "direct_channels": ["body"],
+        "q_minus_match": None,
+        "body_match": {"raw_score": 0.9},
+        "q_minus_matches": [],
+        "body_matches": [
+            {"source_question_id": "q-plus", "target_question_id": None, "raw_score": 0.9}
+        ],
+        "source_question_ids": ["q-plus"],
+        "source_question_texts": ["Which evidence is missing?"],
+    }
+
+    await rag._flush_hop_edges([edge])
+
+    rag.retry_query.assert_awaited_once()
+    assert rag.retry_query.await_args.args[1] == {"edges": [edge]}
+
+
+def test_indexing_has_no_tuned_hop_fusion_or_width_knobs():
+    for name in (
+        "RRF_K_CONSTANT",
+        "HOP_LINK_LIMIT",
+        "HOP_CANDIDATE_LIMIT",
+        "HOP_ANN_POOL",
+        "HOP_SAME_NEED_WEIGHT",
+    ):
+        assert not hasattr(RAGConfig, name)

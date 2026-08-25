@@ -1,16 +1,16 @@
-"""Retrieval layer (paper §3.2.3 Execution).
+"""Deterministic retrieval over body, question, and graph representations.
 
-Three index types per chunk are consulted (Body, Q-, Q+); two stages combine
-them via reciprocal rank fusion; cosine similarity orders candidates; pre-built
+Three index types per chunk are consulted (Body, Q-, Q+); equal reciprocal
+ranks combine them; indexed-embedding cosine similarity orders candidates; pre-built
 NEXT/HOP_ANSWER edges drive graph traversal; retrieval uses the original benchmark
 query without query-time LLM rewriting.
 
 Modules:
 - text_utils.py — normalization and context formatting
 - hybrid.py — RRF over {body, q_minus, q_plus} channels
-- scoring.py — external-bi-encoder cosine ordering, without a score gate
-- traversal.py — deterministic graph_search over offline NEXT/HOP_ANSWER edges
-- retrieve.py — two-stage Q-/Q+ retrieve entry point
+- scoring.py — parameter-free indexed-embedding ordering and source cycling
+- traversal.py — level-batched graph_search over offline NEXT/HOP_ANSWER edges
+- retrieve.py — role-based Q-/body/Q+ retrieve entry point
 """
 
 from .hybrid import HybridSearchMixin

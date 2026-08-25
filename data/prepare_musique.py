@@ -1,21 +1,4 @@
-"""MuSiQue 데이터셋 준비 (Trivedi et al., 2022), answerable(ans_v1.0) 설정.
-
-MultiHop-RAG/HotpotQA(`prepare_multihoprag.py`/`prepare_hotpotqa.py`)와 동일한
-산출물 규약을 따른다:
-  1. data/musique_corpus/*.txt   — Wikipedia 문단(paragraph) 1개 = 문서 1개
-     (인덱싱 입력). 제목이 아니라 안정적인 문단 콘텐츠 식별자로 중복
-     제거하므로 같은 제목의 서로 다른 문단도 모두 보존한다.
-  2. data/musique_queries.json   — 벤치마크가 읽는 쿼리 포맷 (dataset 마커
-     "musique", id 접두사(2hop/3hop/4hop)를 category로 사용, is_supporting
-     문단 증거)
-
-HotpotQA와 달리 gold 증거가 문장이 아니라 문단(paragraph) 단위로만 표시된다
-(question_decomposition에 서브질문/서브답은 있지만 문장 인덱스는 없음) —
-evidence_facts는 문단 전체 텍스트를 그대로 쓴다. dev split(JSONL, Git LFS)을
-HuggingFace 미러(dgslibisey/MuSiQue)에서 직접 받는다. 회사/페이지 개념이
-없으므로 page_match는 사용하지 않는다. 인덱싱·벤치마크 시
-`--corpus-tag musique`로 다른 데이터셋과 Neo4j 라벨을 분리한다.
-"""
+"""Prepare the answerable MuSiQue development corpus and benchmark queries."""
 
 import argparse
 import hashlib
@@ -272,16 +255,11 @@ def _hop_category(row_id: str) -> str:
 
 
 def build_queries(rows: list[dict]) -> list[dict]:
-    """MuSiQue rows를 벤치마크 쿼리 포맷으로 변환.
-
-    evidence_docs/evidence_facts는 MultiHop-RAG/HotpotQA와 동일한 필드명을
-    쓴다 — cli/benchmark.py의 evaluate_multihoprag_response가 데이터셋에
-    상관없이 이 스키마를 그대로 소비한다(코드 새로 안 만듦).
-    """
+    """Convert MuSiQue rows to the shared benchmark query schema."""
     out = []
     for row in rows:
         if row.get("answerable") is False:
-            continue  # unanswerable 서브셋은 이번 벤치마크 범위 밖
+            continue  # The unanswerable subset is outside this benchmark scope.
 
         evidence_docs: list[str] = []
         evidence_facts: list[str] = []
@@ -346,13 +324,13 @@ def print_stats(queries: list[dict]):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MuSiQue(answerable, dev) 데이터셋 준비")
-    parser.add_argument("--skip-corpus", action="store_true", help="코퍼스 디렉토리 생성 건너뛰기 (쿼리만 갱신)")
+    parser = argparse.ArgumentParser(description="Prepare the answerable MuSiQue development split")
+    parser.add_argument("--skip-corpus", action="store_true", help="Update queries without rebuilding corpus files")
     parser.add_argument(
         "--limit",
         type=int,
         default=DEFAULT_LIMIT,
-        help="가져올 dev row 수 (기본 0=official answerable dev 전체 2417개; 샘플은 make_sample.py 사용)",
+        help="Number of development rows; zero loads the complete answerable split",
     )
     args = parser.parse_args()
 

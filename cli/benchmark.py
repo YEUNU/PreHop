@@ -318,9 +318,8 @@ def _extract_stage_timing(trace: Any) -> dict[str, float]:
     `interaction_trace` (see models/prehop/graphrag.py's `run_workflow`),
     if present, so they land as top-level numeric fields on `result_item`
     and get auto-averaged into `avg_retrieve_ms`/`avg_traversal_ms`/
-    `avg_synthesis_ms` by `_recompute_aggregates` — the paper's headline
-    latency-breakdown claim (no per-hop LLM reasoning) needs this split out,
-    not just the single aggregate `latency`.
+    `avg_synthesis_ms` by `_recompute_aggregates`. This keeps the stage split
+    rather than only the aggregate `latency`.
 
     Other strategies' traces don't carry these keys, so this returns {} for
     them — deliberately not defaulting to 0.0, which would misreport "zero
@@ -671,7 +670,7 @@ async def reconcile_pending_judges(run_dir: Path) -> int:
 
     All expected custom IDs must be present before a result is changed. A
     failed or partial batch therefore leaves its manifest and unjudged result
-    intact for inspection/retry instead of publishing a partial paper metric.
+    intact for inspection or retry instead of publishing a partial metric.
     """
     from utils.batch_judge import resolve_batches
     from utils.metrics import _resolve_judge_fields

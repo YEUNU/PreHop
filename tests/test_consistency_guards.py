@@ -271,13 +271,12 @@ async def test_json_guard_rejects_truthy_wrong_schema():
 @pytest.mark.parametrize(
     "payload, message",
     [
-        ({"summary": "ok", "q_minus": [123], "q_plus": []}, "non-string/blank"),
-        ({"summary": "ok", "q_minus": [""], "q_plus": []}, "non-string/blank"),
+        ({"q_minus": [123], "q_plus": []}, "non-string/blank"),
+        ({"q_minus": [""], "q_plus": []}, "non-string/blank"),
         (
-            {"summary": "ok", "q_minus": ["q1", "q2", "q3", "q4"], "q_plus": []},
+            {"q_minus": ["q1", "q2", "q3", "q4"], "q_plus": []},
             "more than 3",
         ),
-        ({"summary": " ", "q_minus": [], "q_plus": []}, "blank summary"),
     ],
 )
 async def test_knowledge_mapping_rejects_malformed_inner_schema(payload, message):
@@ -303,10 +302,9 @@ async def test_generate_json_propagates_transport_error_without_parse_retry():
 @pytest.mark.asyncio
 async def test_similarity_scoring_rejects_empty_embedding_instead_of_scoring_zero():
     rag = GraphRAG(strategy="prehop")
-    rag.llm.get_embeddings = AsyncMock(side_effect=[[[]], [[1.0, 0.0]]])
 
-    with pytest.raises(ValueError, match="query embedding is missing"):
-        await rag._get_query_and_doc_embeddings("query", ["document"])
+    with pytest.raises(ValueError, match="missing its indexed embedding"):
+        await rag._score_and_select([1.0, 0.0], [{"id": "missing", "embedding": []}], top_k=1)
 
 
 @pytest.mark.asyncio
@@ -314,8 +312,26 @@ async def test_sparse_embedding_rejects_partial_batch():
     rag = GraphRAG(strategy="prehop")
     rag.llm.get_embeddings = AsyncMock(return_value=[[1.0, 0.0]])
 
-    with pytest.raises(ValueError, match="expected 2 non-empty vectors"):
+    with pytest.raises(ValueError, match="expected 2 vectors"):
         await rag._embed_sparse_texts(["first", "second"])
+
+
+@pytest.mark.asyncio
+async def test_sparse_embedding_reuses_revision_scoped_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAG_EMBEDDING_CACHE", "on")
+    monkeypatch.setenv("RAG_EMBEDDING_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("RAG_EMBEDDING_REVISION", "revision-a")
+    rag = GraphRAG(strategy="prehop")
+    rag.vector_dimensions = 2
+    rag.llm.get_embeddings = AsyncMock(return_value=[[1.0, 0.0]])
+
+    assert await rag._embed_sparse_texts(["same text"]) == [[1.0, 0.0]]
+    assert await rag._embed_sparse_texts(["same text"]) == [[1.0, 0.0]]
+    rag.llm.get_embeddings.assert_awaited_once()
+
+    monkeypatch.setenv("RAG_EMBEDDING_REVISION", "revision-b")
+    await rag._embed_sparse_texts(["same text"])
+    assert rag.llm.get_embeddings.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -329,6 +345,21 @@ async def test_graph_flush_restores_batch_after_write_failure():
         await rag._flush_graph_batch_unlocked()
 
     assert rag._pending_batch == [pending]
+
+
+@pytest.mark.asyncio
+async def test_graph_flush_writes_a_document_wave_in_one_query():
+    rag = GraphRAG(strategy="prehop")
+    rag._pending_batch = [
+        {"data": [{"id": "c1"}], "doc_id": "one.txt", "doc_title": "One"},
+        {"data": [{"id": "c2"}], "doc_id": "two.txt", "doc_title": "Two"},
+    ]
+    rag.retry_query = AsyncMock(return_value=[])
+
+    await rag._flush_graph_batch_unlocked()
+
+    rag.retry_query.assert_awaited_once()
+    assert rag.retry_query.await_args.args[1]["documents"][1]["doc_id"] == "two.txt"
 
 
 @pytest.mark.asyncio
@@ -365,15 +396,15 @@ def test_naive_uses_shared_page_scoped_fixed_windows(monkeypatch):
     from core.config import RAGConfig
 
     monkeypatch.setattr(RAGConfig, "CHUNK_SENTENCES", 2)
-    monkeypatch.setattr(RAGConfig, "MIN_CHUNK_SENTENCES", 2)
     title, chunks = NaiveRAG._parse_document(
         "doc.txt",
         "Title: Shared\n--- Page 1 ---\nOne. Two. Three.\n--- Page 2 ---\nFour. Five.",
     )
     assert title == "Shared"
     assert chunks == [
-        {"text": "One. Two. Three.", "page": 1, "sent_id": 0},
-        {"text": "Four. Five.", "page": 2, "sent_id": 1},
+        {"text": "One. Two.", "page": 1, "sent_id": 0},
+        {"text": "Three.", "page": 1, "sent_id": 1},
+        {"text": "Four. Five.", "page": 2, "sent_id": 2},
     ]
 
 

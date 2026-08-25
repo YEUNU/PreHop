@@ -232,7 +232,11 @@ class NaiveRAG:
         prompt = build_answer_prompt(context, query)
         messages = [{"role": "user", "content": prompt}]
 
-        answer = await self.vllm.generate_response(messages)
+        answer = await self.vllm.generate_response(
+            messages,
+            temperature=0.0,
+            max_tokens=RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS,
+        )
         if not str(answer or "").strip():
             raise ValueError("Answer synthesis returned an empty response")
         # Preserve source filename as an opaque identity; MuSiQue uses it to

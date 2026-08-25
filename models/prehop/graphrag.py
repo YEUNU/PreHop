@@ -1,5 +1,4 @@
-"""GraphRAG facade composing the offline indexing pipeline (paper §3.1) and
-the query-time retrieval pipeline (paper §3.2.3).
+"""Compose offline graph indexing and deterministic query-time retrieval.
 
 All Neo4j labels and index names are derived from (strategy, corpus_tag) so
 multiple corpora and strategies coexist in the same database without
@@ -95,9 +94,8 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             doc = row.get("title") or row.get("doc") or "Unknown"
             page = row.get("page", 0)
             sent_id = row.get("sent_id", 0)
-            # Corpus filenames are the stable identity (including MuSiQue's
-            # paragraph hash).  Only source-less legacy/mock rows retain the
-            # historical display-title/page/sentence deduplication behavior.
+            # Corpus filenames are stable identities. Source-less rows use
+            # display title, page, and sentence identity.
             source = row.get("source")
             key = ("source", source, page, sent_id) if source else ("legacy", doc, page, sent_id)
             if key in seen:
@@ -118,12 +116,26 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
 
     @staticmethod
     def _build_answer_prompt(context: str, user_query: str) -> str:
-        # Single-pass synthesis prompt (paper §3.2.6). Structurally identical
+        # Use the same single-pass synthesis prompt as controlled baselines.
         # to the HopRAG / naive baseline prompts so any score gap traces back
         # to retrieval, not synthesis-prompt asymmetry. The role is
         # dataset-neutral. MS GraphRAG owns synthesis inside its
         # official local/global search API and is the documented exception.
         return build_shared_answer_prompt(context, user_query)
+
+    def _fit_ranked_context(self, nodes: list[dict[str, Any]], query: str) -> str:
+        """Add ranked chunks until the actual synthesis prompt reaches its budget."""
+        accepted: list[dict[str, Any]] = []
+        for node in nodes:
+            candidate = self._build_context_from_nodes([*accepted, node])
+            prompt = self._build_answer_prompt(candidate, query)
+            messages = [{"role": "user", "content": prompt}]
+            counted = self.llm._count_tokens(messages)
+            prompt_tokens = counted if isinstance(counted, int) else max(1, len(prompt) // 4)
+            if prompt_tokens + RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS > RAGConfig.MAX_CONTEXT_LENGTH:
+                break
+            accepted.append(node)
+        return self._build_context_from_nodes(accepted)
 
     # ---------- main entry ----------
     async def run_workflow(
@@ -131,13 +143,13 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         user_query: str,
         history: list[dict[str, Any]] | None = None,
     ) -> tuple:
-        """Retrieve-only query path (paper §3.2). Returns (answer, sources, trace).
+        """Run retrieval, traversal, and one synthesis call.
 
         No agent loop, no reflection, no refinement. The path is:
-          1. Two-stage hybrid retrieve (Q-/body, then Q+ expansion).
+          1. Parallel role-based retrieve (Q-/body evidence, Q+ dependency seeds).
           2. External-embedding cosine top-k ordering.
           3. Deterministic 1-hop bidirectional-NEXT/outgoing-HOP_ANSWER traversal
-             (when RAG_GRAPH_HOP_DEPTH > 0, default).
+             (when RAG_GRAPH_HOP_DEPTH is 1, default).
           4. Single LLM synthesis call.
         """
         _ = history
@@ -179,10 +191,19 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             )
             return answer, sources, trace
 
+        context = self._fit_ranked_context(retrieved_nodes, retrieval_query)
+        if not context:
+            answer = self._ensure_answer_prefix("Insufficient evidence.")
+            trace.append({"step": "synthesis", "output": {"answer": answer, "reason": "context_budget"}, "synthesis_ms": 0.0})
+            return answer, sources, trace
         prompt = self._build_answer_prompt(context, retrieval_query)
         messages = [{"role": "user", "content": prompt}]
         t_synthesis0 = time.perf_counter()
-        raw = await self.llm.generate_response(messages)
+        raw = await self.llm.generate_response(
+            messages,
+            temperature=0.0,
+            max_tokens=RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS,
+        )
         synthesis_ms = (time.perf_counter() - t_synthesis0) * 1000
         if not str(raw or "").strip():
             raise ValueError("Answer synthesis returned an empty response")

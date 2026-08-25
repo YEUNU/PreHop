@@ -562,9 +562,9 @@ async def evaluate_multihoprag_response(
 ) -> dict:
     """Evaluate answer quality and dataset-appropriate evidence quality.
 
-    Deterministic normalized EM/F1 is the primary answer signal. The LLM judge
-    keeps semantic correctness and context groundedness as separate
-    diagnostic axes. Sentence/fact ranking metrics are skipped for MuSiQue
+    Deterministic normalized EM/F1 is the downstream answer signal. The LLM
+    judge keeps semantic correctness and context groundedness as separate,
+    optional diagnostic axes. Sentence/fact ranking metrics are skipped for MuSiQue
     because its gold evidence is paragraph-level, while title-level evidence
     precision/recall/F1 is reported for every dataset.
     """

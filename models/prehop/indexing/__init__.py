@@ -2,7 +2,7 @@
 
 Layer order:
 - Fixed-size chunking — chunking.py
-- Predictive Knowledge Mapping (Q-/Q+) — knowledge_mapping.py
+- Q-/Q+ generation — knowledge_mapping.py
 - Strict sparse-text embedding — embedding.py
 - Rank-Based HOP Edge Pre-Construction — hop_edges.py
 - Neo4j storage (chunks + NEXT edges + index lifecycle) — graph_writer.py

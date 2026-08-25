@@ -4,8 +4,6 @@ import re
 import unicodedata
 from typing import Any
 
-from core.config import RAGConfig
-
 
 class TextUtilsMixin:
     @staticmethod
@@ -45,15 +43,14 @@ class TextUtilsMixin:
         merged: dict[str, dict[str, Any]],
         nodes: list[dict[str, Any]],
         score_key: str,
-        weight: float,
         default_keys: tuple[str, ...] = (),
     ) -> None:
         """Reciprocal-rank-fusion accumulation, shared by hybrid.py's
         vector/fulltext channel fusion and retrieve.py's stage1/stage2
-        candidate merging: rrf_score += weight * (1 / (k + rank)) into
+        candidate merging: score += 1 / (rank + 1) into
         `merged`, keyed by node identity. `default_keys` seeds every score
         field a caller's later accumulation passes might target (e.g.
-        retrieve.py's stage1/stage2/stage2_support scores) so a
+        retrieve.py's direct/dependency role scores) so a
         first-seen-in-a-later-pass node still has all fields present;
         callers with a single fixed score key can omit it.
         """
@@ -64,7 +61,7 @@ class TextUtilsMixin:
                 for key in default_keys or (score_key,):
                     item.setdefault(key, 0.0)
                 merged[node_id] = item
-            merged[node_id][score_key] += weight * (1.0 / (RAGConfig.RRF_K_CONSTANT + rank))
+            merged[node_id][score_key] += 1.0 / (rank + 1)
 
     @staticmethod
     def _node_identity(node: dict[str, Any]) -> str:

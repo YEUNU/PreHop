@@ -662,8 +662,7 @@ async def _run_indexing_unlocked(
             failed_files.append({"item": "__graph_flush__", "stage": "graph_flush", "error": str(exc)})
         stage_timing["graph_flush_seconds"] = time.perf_counter() - graph_flush_started
 
-        # One-shot HOP edge construction over the complete graph (paper
-        # §3.1.4). Done after all chunks/embeddings are written so every
+        # Build evidence edges after all chunks and embeddings are written so every
         # source chunk has the same candidate pool. Strategies that don't
         # use HOP (e.g., naive_rag) won't have this method.
         if not any(item["stage"] == "graph_flush" for item in failed_files) and hasattr(engine, "build_all_hop_edges"):
@@ -695,7 +694,7 @@ async def _run_indexing_unlocked(
                 source_ids,
                 corpus_manifest,
             )
-        except Exception as exc:  # noqa: BLE001 - integrity mismatch must invalidate paper output
+        except Exception as exc:  # noqa: BLE001 - integrity mismatch invalidates the result
             logger.error("Active index snapshot validation failed: %s", exc)
             failed_files.append({"item": "__active_snapshot__", "stage": "active_snapshot", "error": str(exc)})
 
@@ -735,10 +734,10 @@ async def _run_indexing_unlocked(
         except (OSError, TypeError, ValueError) as exc:
             logger.error("Could not write failure log to %s: %s", failures_path, exc)
 
-    # Structured graph/corpus statistics for the paper's dataset/graph
+    # Record structured graph and corpus statistics from the live database.
     # tables (chunk/HOP-edge counts, Q-/Q+ coverage) — queried from the live
     # graph so it's always consistent with what actually landed in Neo4j.
-    # Measurement failures make the run incomplete: paper tables must not
+    # Measurement failures make the run incomplete; result tables must not
     # silently report an index whose structural statistics were never read.
     graph_stats = None
     graph_stats_started = time.perf_counter()

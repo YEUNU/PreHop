@@ -6,9 +6,9 @@ These tests pin the structural invariants of this repository:
 - The agentic 5-stage code paths (stages/, orchestrator, service,
   agentic_core) are gone.
 - GraphRAG exposes a `run_workflow()` entry point (the retrieval-only path
-  that the paper reports).
+  that the repository reports).
 
-If any of these break, the README and paper claims drift away from reality.
+If any of these break, the README and implementation drift apart.
 """
 
 import importlib

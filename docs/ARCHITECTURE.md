@@ -14,8 +14,7 @@ window splitter:
 - If page markers are absent, the remaining body is one logical page. This is
   a supported corpus format, not an LLM fallback.
 - `split_fixed_sentence_windows(...)` sentence-splits each page, emits windows
-  of `RAG_CHUNK_SENTENCES` (default 6), and merges a final window shorter than
-  `RAG_MIN_CHUNK_SENTENCES` (default 2) into its predecessor.
+  of `RAG_CHUNK_SENTENCES` (default 6), and retains the final partial window.
 - Page boundaries are never crossed. Pipe-delimited text is preserved exactly;
   there is no table-to-text branch.
 - Prehop and Naive both call these functions, so their chunk synthesis
@@ -32,7 +31,7 @@ then `run_indexing_unlocked` dispatches as follows:
 strategy == prehop
   shared parser in spawn ProcessPool
   -> shared fixed page windows
-  -> external generation: Q-/Q+/summary per chunk
+  -> external generation: Q-/Q+ per chunk
   -> external body/Q-/Q+ document embeddings + Q+ query embeddings
   -> atomic Neo4j Document/Chunk/question replacement + NEXT writes
   -> after every document succeeds: whole-corpus HOP edge pass
@@ -73,7 +72,7 @@ a complete index.
 
 `indexing/chunking.py`
 
-- Owns the parser, shared splitter, optional content-addressed Q-/Q+/summary
+- Owns the parser, shared splitter, optional content-addressed Q-/Q+
   cache, and run-namespaced debug output.
 - `RAG_CHUNK_CACHE=off` disables reuse. A measured cold matrix run forces it
   off and clears prior artifacts.
@@ -85,15 +84,18 @@ a complete index.
 
 - Makes one schema-validated external generation call per chunk using
   `HOPRAG_PROMPT`.
-- Returns `summary`, `q_minus`, and `q_plus`; missing keys, invalid JSON,
-  non-string list values, an empty summary, or more than three questions raise
+- Returns `q_minus` and `q_plus`; missing keys, invalid JSON,
+  non-string list values, or more than three questions raise
   after client retries. Empty Q-/Q+ lists are intentional valid outputs.
 - Q+ output has no post-generation keyword, domain, or heuristic quality gate.
   Only empty strings and exact duplicates are removed before storage.
 
 `indexing/embedding.py`
 
-- Batches non-empty strings through the external embedding endpoint.
+- Reuses cached vectors only when model, revision, endpoint, dimensions,
+  encoding role, instruction, and normalized text all match.
+- Batches cache misses through the external embedding endpoint.
+- Cold timing runs disable both generation and embedding caches.
 - Restores sparse results to original positions and verifies response count,
   non-empty vectors, and consistent dimensions.
 
@@ -117,21 +119,14 @@ a complete index.
 `indexing/hop_edges.py`
 
 - Runs once after the complete Prehop corpus is flushed and indexes are online.
-- Every individual source Q+ retrieves up to 15 cross-document candidates from
-  target Q-, target body, and target Q+ channels.
-- Q+→Q- means the target advertises an answerable formulation; Q+→body means
-  direct passage evidence; Q+→Q+ means two documents express the same
-  unresolved need. Only Q-/body are direct evidence. Q+→Q+ receives weight
-  0.5 and can boost a direct match but can never create an edge alone.
-- Reciprocal-rank scores are fused per target chunk across every source Q+.
-  At most five targets become outgoing `HOP_ANSWER` edges. Provenance remains
-  inspectable as `ANSWERED_BY`, `SUPPORTED_BY`, and `SAME_NEED` relations.
+- Every individual source Q+ retrieves the best cross-document Q- and body
+  candidates. Direct-channel agreement chooses one evidence target per Q+.
+  Provenance remains inspectable as `ANSWERED_BY` and `SUPPORTED_BY` relations.
 - There are deliberately no Q-↔Q- edges. Documents with the same answer but
   different year/version remain alternative candidates rather than being
   asserted as semantic continuations. Cross-document scope is mandatory.
-- Neo4j filters source documents after ANN. Each source therefore uses
-  `max(50, own-channel-count + 15)` as its pool: this keeps 15 foreign slots
-  without letting one giant document inflate every request in the corpus.
+- Neo4j filters source documents after ANN. Each source therefore requests its
+  own channel count plus one foreign slot, without a fixed ANN floor.
 - There is no cosine threshold, same-company filter, runtime-HOP mode,
   cross-encoder, domain rule, or LLM call. If Q+ is disabled, the pass skips.
 
@@ -164,7 +159,7 @@ format suffix and then:
 RAG_GRAPH_HOP_DEPTH == 0
   -> retrieve(query, top_k=12)
 
-RAG_GRAPH_HOP_DEPTH > 0 (default 1)
+RAG_GRAPH_HOP_DEPTH == 1 (default)
   -> retrieve(query) for seeds
   -> deterministic NEXT/HOP expansion for the configured depth
 
@@ -176,78 +171,62 @@ non-empty context
 ```
 
 `retrieval/hybrid.py` embeds the original query and runs vector plus Neo4j
-full-text search for one channel (`body`, `q_minus`, or `q_plus`). The two
-queries run on separate Neo4j sessions concurrently (`asyncio.gather`) rather
-than sharing one session's serialized request/response cycle, then fuse into
-one ordered list with weighted RRF (`k=60`, vector 1.3, text 1.0).
+full-text search for one channel (`body`, `q_minus`, or `q_plus`). Vector and
+full-text branches share one Cypher request per representation; enabled
+representations run concurrently. Their results fuse into one ordered list
+using equal reciprocal ranks `1 / (rank + 1)`. There is no
+modality weight or query-time fusion constant.
 
-`retrieval/retrieve.py` has these channel branches:
+`retrieval/retrieve.py` searches each enabled representation exactly once with
+the same query embedding. Q- and body hits have the direct-evidence role; Q+
+hits have the dependency-seed role and can expose outgoing offline HOP edges.
+Enabled representation results form a set union, so direction is expressed
+by graph role rather than a cross-representation score.
 
-- `HYPO_CHANNEL_VARIANT=qminus_only`: Q- only, Stage 2 disabled.
-- `qplus_only`: Q+ only, Stage 2 disabled.
-- `single_combined`: Q-/Q+ at 0.5/0.5, Stage 2 disabled.
-- `full` with Q- enabled: Stage 1 Q-/body at 0.7/0.3.
-- `full` with Q- disabled: Stage 1 body only.
-- In full mode, Stage 2 always runs and adds Q+ and Q- support at 0.6/0.4.
-  Disabling Q+ explicitly as an ablation also disables Stage 2.
+- `HYPO_CHANNEL_VARIANT=qminus_only`: Q- direct evidence only.
+- `qplus_only`: Q+ dependency seeds only.
+- `single_combined`: Q-/Q+ once each, set union, no body.
+- `full`: Q-/body direct evidence plus Q+ dependency seeds.
 
-Each stage's two independent channel calls (e.g. Q-/body, or Q+/Q- support)
-run concurrently rather than sequentially. Stage 1 only scores/selects its
-own candidates when it is the final result; when Stage 2 runs (the default),
-Stage 1's candidates flow into Stage 2 unscored, since Stage 2's own final
-scoring pass would otherwise immediately discard a first scoring pass over
-the same pool. `core/vllm_client.py` caches single-text query embeddings
-per client instance (keyed by exact text, gated to `encoding_type="query"`
-single-item calls only, never document batches) so the same query string is
-not re-embedded across every channel/scoring call that needs it within one
-retrieval — text-to-embedding is a pure function of (text, model), so this
-changes no values, only removes redundant network round trips.
+The searches run concurrently. There is no second Q- support search: a Q-
+hit already identifies its owner evidence chunk, while a Q+ hit reaches target
+Q-/body evidence through the pre-built `HOP_ANSWER` relation. The query
+embedding is created once before parallel channel search and passed unchanged
+to every vector channel and final scoring call.
 
-`retrieval/scoring.py` uses external query/document embeddings and cosine
-similarity to order candidates; there is no dedicated reranker model, rerank
+`retrieval/scoring.py` reuses the body and source-Q+ document embeddings stored
+during indexing and embeds only the user query. Cosine similarity orders
+candidates; there is no dedicated reranker model, rerank
 prompt, query rewrite, metadata boost, boilerplate penalty, company filter,
-or domain gate. Final top-k selection caps each source document at
-`RAG_MAX_CHUNKS_PER_SOURCE_FRACTION` (default 0.34, `floor(top_k *
-fraction)`, minimum 1) of the returned slots — pure global score order let
-several near-duplicate high-scoring chunks from one document fill most of
-the evidence set and crowd out the only chunk carrying a second gold
-document, directly undermining multi-hop, cross-document evidence. Same
-rule for every source/dataset. Candidates over the cap still backfill by
-score if there are not enough distinct sources to fill top_k.
+or domain gate. Final top-k selection is parameter-free source round-robin:
+take the best remaining chunk from each source in rank order, repeat, and stop
+at `top_k`. A single source naturally backfills when few sources are present.
+`RAG_SOURCE_SELECTION_VARIANT=global` selects the global top-k and is reserved
+for the source-diversification ablation.
 
-`retrieve.py`'s Stage 1 and `traversal.py`'s incremental collection each size
-their candidate pool as `max(floor, top_k * multiplier)` —
-`RAG_CANDIDATE_LIMIT_MULTIPLIER` (8), `RAG_SUPPORT_POOL_MULTIPLIER` (4),
-`RAG_STAGE1_POOL_MULTIPLIER` (6), and `RAG_WIDE_POOL_MULTIPLIER` (6, shared
-by `retrieve.py`'s Stage 2 cap and `traversal.py`'s `candidate_budget`) —
-instead of the fixed literals used before this was config-driven. A 60-query
-multihoprag fact_recall
-sweep found the wide-pool default of 8 both slower and no better than 6
-(fact_recall 0.611 vs 0.619, ~25% more traversal latency for no gain), so the
-default moved to 6; the other three multipliers were swept too and showed no
-improvement beyond run-to-run noise, so they kept their original values.
+Each representation retains at most `top_k` owner chunks, so the fused base
+pool is bounded by `top_k × active_representation_count` without a candidate
+multiplier. Vector and full-text search do not have separate tunable width
+knobs. Body nodes use the owner budget as-is. Q−/Q+
+indexes contain at most three questions per owner chunk, so their raw
+question-node searches use exactly three times the owner budget before
+deduplication. This factor is an indexing-schema bound, not a tuned retrieval
+parameter. The query embedding is created once before parallel channel search
+and passed unchanged to every vector channel.
 
-`retrieval/traversal.py` treats the wide Stage 2 RRF pool (not just the
-top-k) as an ordered seed queue and expands one not-yet-expanded seed at a
-time, incremental best-first, rather than all seeds at once. `NEXT` is
+`retrieval/traversal.py` treats the complete representation-union pool (not just the
+final top-k) as one frontier and expands it in one Neo4j request per depth. `NEXT` is
 walked in both directions to recover preceding/following document context;
-`HOP_ANSWER` is walked only in the Q+→answer-evidence direction. NEXT and
+`HOP_ANSWER` is exposed only by owner chunks actually matched through the Q+
+dependency channel and is walked only in the Q+→answer-evidence direction.
+Q−/body-only seeds and graph-discovered nodes expose NEXT only, preventing an
+unrelated Q+ attached to a direct-evidence chunk from triggering a HOP. NEXT and
 HOP paths are ranked separately per expansion step, then fused per target
-chunk. A seed that was only passively swept up as another (higher-ranked,
-same-document) seed's NEXT-neighbor still gets its own expansion turn —
-gating that on "already discovered" instead of "already expanded" let one
-early seed's same-document walk silently consume the shared candidate
-budget before a lower-ranked, cross-document seed ever ran, at real cost to
-cross-document evidence coverage on a live multihoprag A/B check. Only a
-seed that has itself already been expanded is skipped. Candidates are
-pruned to a shared reservoir
-(`candidate_budget = max(24, top_k*RAG_WIDE_POOL_MULTIPLIER)`, default multiplier 6) after
-every step, then handed to `scoring.py` for final selection. HOP candidates
-are scored independently against their preserved source bridge-Q+ and
-target body, then the two cosine scores are averaged. This requires
-agreement on both sides of the evidence path; concatenating them let a
-strong bridge phrase mask an unrelated target, while discarding Q+ erased
-why the edge existed. There is no query-time generation, continuation
+chunk. The structurally bounded results are retained without a candidate
+reservoir or graph-search floor. HOP candidates compare the query against
+each indexed source Q+ separately, take the best bridge similarity, and use
+`min(body, bridge)` as the final score. This requires agreement on both sides
+without a mixing weight. There is no query-time generation, continuation
 prompt, heuristic stop gate, or runtime ANN supplement in Prehop retrieval.
 
 `retrieval/text_utils.py` contains only normalization, Lucene sanitization,
@@ -257,7 +236,7 @@ context formatting, node identity/dedup, and RRF helpers.
 
 Project-owned prompt templates are deliberately limited to:
 
-- `utils/prompts/indexing.py`: Prehop indexing-time Q-/Q+/summary generation.
+- `utils/prompts/indexing.py`: indexing-time Q-/Q+ generation.
 - `utils/prompts/shared.py`: one dataset-neutral final-answer prompt shared by
   Prehop, Naive, and the HopRAG adapter.
 - `utils/prompts/evaluation.py`: the offline benchmark judge.

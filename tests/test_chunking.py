@@ -17,18 +17,14 @@ def _disable_chunk_cache(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fixed_size_chunking_windows(monkeypatch):
-    # Fixed-size chunking (core-only rewrite): pages are windowed into
-    # CHUNK_SENTENCES-sentence chunks; a trailing window shorter than
-    # MIN_CHUNK_SENTENCES merges into the previous chunk.
+    # Pages are split into fixed sentence windows, including a partial tail.
     monkeypatch.setattr(RAGConfig, "CHUNK_SENTENCES", 3)
-    monkeypatch.setattr(RAGConfig, "MIN_CHUNK_SENTENCES", 2)
 
     rag = GraphRAG(strategy="prehop")
     rag.vllm = MagicMock()
     rag.indexing_llm = AsyncMock()
     rag.indexing_llm.generate_json = AsyncMock(
         return_value={
-            "summary": "Mock summary",
             "q_minus": ["q1"],
             "q_plus": ["q2"],
         }
@@ -41,28 +37,26 @@ async def test_fixed_size_chunking_windows(monkeypatch):
     chunks = knowledge["chunks"]
 
     # 8 sentences / window=3 -> [1,2,3] [4,5,6] [7,8]; trailing window of 2
-    # meets min_chunk_sentences=2 so it stays its own chunk (3 chunks total).
+    # remains as a partial third chunk.
     assert len(chunks) == 3
     assert chunks[0]["text"] == "Sentence 1. Sentence 2. Sentence 3."
     assert chunks[1]["text"] == "Sentence 4. Sentence 5. Sentence 6."
     assert chunks[2]["text"] == "Sentence 7. Sentence 8."
     assert all(c["page"] == 1 for c in chunks)
-    assert chunks[0]["summary"] == "Mock summary"
+    assert "summary" not in chunks[0]
     assert chunks[0]["q_minus"] == ["q1"]
     assert chunks[0]["q_plus"] == ["q2"]
 
 
 @pytest.mark.asyncio
-async def test_trailing_window_merges_below_minimum(monkeypatch):
+async def test_trailing_window_is_retained(monkeypatch):
     monkeypatch.setattr(RAGConfig, "CHUNK_SENTENCES", 3)
-    monkeypatch.setattr(RAGConfig, "MIN_CHUNK_SENTENCES", 2)
 
     rag = GraphRAG(strategy="prehop")
     rag.vllm = MagicMock()
     rag.indexing_llm = AsyncMock()
     rag.indexing_llm.generate_json = AsyncMock(
         return_value={
-            "summary": "Mock summary",
             "q_minus": [],
             "q_plus": [],
         }
@@ -74,24 +68,22 @@ async def test_trailing_window_merges_below_minimum(monkeypatch):
     knowledge = await rag.extract_knowledge(test_content, source="test")
     chunks = knowledge["chunks"]
 
-    # 7 sentences / window=3 -> [1,2,3] [4,5,6] [7]; trailing window of 1 is
-    # below min_chunk_sentences=2, so it merges into the previous chunk.
-    assert len(chunks) == 2
+    # 7 sentences / window=3 -> [1,2,3] [4,5,6] [7].
+    assert len(chunks) == 3
     assert chunks[0]["text"] == "Sentence 1. Sentence 2. Sentence 3."
-    assert chunks[1]["text"] == "Sentence 4. Sentence 5. Sentence 6. Sentence 7."
+    assert chunks[1]["text"] == "Sentence 4. Sentence 5. Sentence 6."
+    assert chunks[2]["text"] == "Sentence 7."
 
 
 @pytest.mark.asyncio
 async def test_pipe_delimited_text_is_preserved_without_conversion(monkeypatch):
     monkeypatch.setattr(RAGConfig, "CHUNK_SENTENCES", 6)
-    monkeypatch.setattr(RAGConfig, "MIN_CHUNK_SENTENCES", 2)
 
     rag = GraphRAG(strategy="prehop")
     rag.vllm = MagicMock()
     rag.indexing_llm = AsyncMock()
     rag.indexing_llm.generate_json = AsyncMock(
         return_value={
-            "summary": "Mock summary",
             "q_minus": ["q1"],
             "q_plus": ["q2"],
         }

@@ -1,4 +1,4 @@
-"""Merge interrupted matrix fragments into cumulative paper timing tables.
+"""Merge interrupted matrix fragments into cumulative timing tables.
 
 Each matrix run writes an ``attempt_journal.jsonl``.  A Ctrl-C records the
 elapsed partial attempt, while a later run records the resumed attempt.  This

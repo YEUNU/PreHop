@@ -3,7 +3,7 @@
 
 The runner clears Neo4j at most once, executes each strategy as a strict
 dataset barrier through a bounded parallel queue, samples host/vLLM pressure,
-and writes paper-ready JSON/CSV/Markdown artifacts under
+and writes reproducible JSON, CSV, and Markdown artifacts under
 ``artifacts/indexing/<run-id>``.
 It lowers the queue width for not-yet-started targets after sustained memory or
 vLLM-waiting pressure; already-running targets are allowed to finish cleanly.
@@ -46,7 +46,7 @@ DATASETS = {
     "multihoprag": ROOT / "data/multihoprag_corpus",
     "musique": ROOT / "data/musique_corpus",
 }
-# Exact prepared paper corpora. MuSiQue uses stable title/body paragraph
+# Exact prepared evaluation corpora. MuSiQue uses stable title/body paragraph
 # identities, so same-title/different-body paragraphs are all retained.
 EXPECTED_FILE_COUNTS = {"multihoprag": 609, "musique": 21_099}
 STRATEGIES = ("ms_graphrag", "hoprag", "naive", "prehop")
@@ -456,13 +456,8 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                            count(DISTINCT c.id) AS unique_chunk_ids,
                            count(c.embedding) AS body_embedding_count,
                            count(CASE WHEN trim(coalesce(c.text, '')) = '' THEN 1 END) AS empty_text_count,
-                           count(CASE WHEN trim(coalesce(c.chunk_summary, '')) = '' THEN 1 END)
-                               AS empty_summary_count,
-                           count(CASE WHEN size(split(trim(coalesce(c.chunk_summary, '')), ' ')) > 35
-                                      THEN 1 END) AS summary_over_35_words,
                            collect(DISTINCT size(c.embedding)) AS embedding_dimensions,
                            sum(size(coalesce(c.title, '')) + size(coalesce(c.text, '')) +
-                               size(coalesce(c.chunk_summary, '')) +
                                4 * coalesce(size(c.embedding), 0)) AS chunk_payload_bytes
                     """,
                 )
@@ -475,8 +470,6 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                                count(DISTINCT q.id) AS unique_q_minus_ids,
                                count(q.embedding) AS q_minus_embedding_count,
                                count(CASE WHEN trim(coalesce(q.text, '')) = '' THEN 1 END) AS empty_q_minus_count,
-                               count(CASE WHEN size(split(trim(coalesce(q.text, '')), ' ')) > 22
-                                          THEN 1 END) AS q_minus_over_22_words,
                                collect(DISTINCT size(q.embedding)) AS q_minus_embedding_dimensions,
                                sum(size(coalesce(q.title, '')) + size(coalesce(q.text, '')) +
                                    4 * coalesce(size(q.embedding), 0)) AS q_minus_payload_bytes
@@ -504,8 +497,6 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                                count(q.embedding) AS q_plus_embedding_count,
                                count(q.query_embedding) AS q_plus_query_embedding_count,
                                count(CASE WHEN trim(coalesce(q.text, '')) = '' THEN 1 END) AS empty_q_plus_count,
-                               count(CASE WHEN size(split(trim(coalesce(q.text, '')), ' ')) > 22
-                                          THEN 1 END) AS q_plus_over_22_words,
                                collect(DISTINCT size(q.embedding)) AS q_plus_embedding_dimensions,
                                collect(DISTINCT size(q.query_embedding)) AS q_plus_query_embedding_dimensions,
                                sum(size(coalesce(q.title, '')) + size(coalesce(q.text, '')) +
@@ -613,7 +604,6 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                 )
                 for rel, key, target_label in (
                     ("ANSWERED_BY", "answered_by_edge_count", q_minus),
-                    ("SAME_NEED", "same_need_edge_count", q_plus),
                     ("SUPPORTED_BY", "supported_by_edge_count", chunk),
                 ):
                     stats.update(
@@ -689,7 +679,7 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                         f"""
                         MATCH (src:{chunk})-[r:HOP_ANSWER]->(:{chunk})
                         WITH src, count(r) AS degree
-                        RETURN count(CASE WHEN degree > {int(os.environ.get("RAG_HOP_LINK_LIMIT", "5"))}
+                        RETURN count(CASE WHEN degree > 3
                                           THEN 1 END) AS hop_outdegree_violation_count
                         """,
                     )
@@ -703,8 +693,7 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                     RETURN c.source AS source, c.title AS title, c.page AS page,
                            c.sent_id AS sent_id, c.text AS text,
                            q_minus_texts AS q_minus,
-                           collect(qp.text) AS q_plus,
-                           c.chunk_summary AS chunk_summary
+                           collect(qp.text) AS q_plus
                     ORDER BY c.source, c.sent_id
                     LIMIT 8
                     """
@@ -715,8 +704,7 @@ def _graph_stats(target: Target) -> dict[str, Any]:
                     MATCH (src:{chunk})-[r:HOP_ANSWER]->(tgt:{chunk})
                     RETURN src.source AS source, src.text AS source_text,
                            tgt.source AS target_source, tgt.text AS target_text,
-                           r.score AS score, r.direct_channels AS direct_channels,
-                           r.same_need_score AS same_need_score
+                           r.score AS score, r.direct_channels AS direct_channels
                     ORDER BY r.score DESC
                     LIMIT 8
                     """
@@ -771,7 +759,7 @@ def _graph_stats(target: Target) -> dict[str, Any]:
 
 
 def _validate_target_stats(target: Target, stats: dict[str, Any], input_file_count: int) -> None:
-    """Fail paper measurements on incomplete, duplicated, empty, or wrong-dimension indices."""
+    """Reject incomplete, duplicated, empty, or wrong-dimension indices."""
     expected_dim = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024"))
     dimensions = sorted(int(value) for value in (stats.get("embedding_dimensions") or []) if value is not None)
     if dimensions and dimensions != [expected_dim]:
@@ -813,7 +801,6 @@ def _validate_target_stats(target: Target, stats: dict[str, Any], input_file_cou
             "duplicate_q_plus_id_count",
             "orphan_q_minus_count",
             "orphan_q_plus_count",
-            "empty_summary_count",
             "contains_source_mismatch_count",
             "q_minus_owner_mismatch_count",
             "q_plus_owner_mismatch_count",
@@ -999,7 +986,7 @@ def _extract_integrity_warnings(strategy: str, log_text: str) -> list[dict[str, 
 
     MS GraphRAG intentionally drops relationships whose extracted endpoint
     entity was absent.  That is not a process failure, but it is material to a
-    paper audit and must travel with the target result.
+    result audit and must travel with the target result.
     """
     if strategy != "ms_graphrag":
         return []
@@ -1248,7 +1235,7 @@ def _write_progress_snapshot(run_dir: Path, state: dict[str, Any]) -> None:
 
 
 def _write_phase_tables(run_dir: Path, results: list[dict[str, Any]]) -> None:
-    """Write target-level and strategy-level phase accounting for paper tables."""
+    """Write target-level and strategy-level phase accounting."""
     target_fields = [
         "dataset",
         "strategy",
@@ -1358,6 +1345,7 @@ async def _run_target(
     env = os.environ.copy()
     env["RAG_RUN_ID"] = child_run_id
     env["RAG_CHUNK_CACHE"] = "off"
+    env["RAG_EMBEDDING_CACHE"] = "off"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     base_file_workers = max(1, int(os.environ.get("RAG_MAX_PARALLEL_FILES", "16")))
     base_hop_doc_workers = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")))
@@ -1823,19 +1811,19 @@ async def _main(args: argparse.Namespace) -> int:
             for dataset in selected_datasets
         },
         "method_settings": {
-            "prehop_naive_chunk_sentences": int(os.environ.get("RAG_CHUNK_SENTENCES", "6")),
-            "prehop_naive_min_chunk_sentences": int(os.environ.get("RAG_MIN_CHUNK_SENTENCES", "2")),
-            "prehop_naive_top_k": int(os.environ.get("RAG_DEFAULT_TOP_K", "12")),
+            "prehop_naive_chunk_sentences": 6,
+            "prehop_naive_top_k": 12,
             "hoprag_official_top_k": 20,
             "ms_graphrag_context_budget": "official package configuration",
-            "hop_link_limit": int(os.environ.get("RAG_HOP_LINK_LIMIT", "5")),
-            "hop_candidate_limit": int(os.environ.get("RAG_HOP_CANDIDATE_LIMIT", "15")),
-            "hop_ann_pool": int(os.environ.get("RAG_HOP_ANN_POOL", "50")),
             "hop_gather_wave": int(os.environ.get("RAG_HOP_GATHER_WAVE", "64")),
-            "hop_channel_concurrency": int(os.environ.get("RAG_HOP_CHANNEL_CONCURRENCY", "2")),
-            "hop_same_need_weight": float(os.environ.get("RAG_HOP_SAME_NEED_WEIGHT", "0.5")),
+            "questions_per_direction": 3,
+            "hop_targets_per_question": 1,
+            "hop_selection": "direct-channel agreement over Q- and body",
             "q_minus_enabled": os.environ.get("RAG_ABLATION_Q_MINUS", "True").lower() == "true",
             "q_plus_enabled": os.environ.get("RAG_ABLATION_Q_PLUS", "True").lower() == "true",
+            "query_channel_variant": os.environ.get("RAG_HYPO_CHANNEL_VARIANT", "full"),
+            "graph_expansion": int(os.environ.get("RAG_GRAPH_HOP_DEPTH", "1")),
+            "source_selection": os.environ.get("RAG_SOURCE_SELECTION_VARIANT", "round_robin"),
             "prehop_file_workers": int(os.environ.get("RAG_MAX_PARALLEL_FILES", "16")),
             "hoprag_doc_workers": int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")),
             "hoprag_chunk_threads_per_document": int(os.environ.get("RAG_HOP_MAX_THREADS", "4")),

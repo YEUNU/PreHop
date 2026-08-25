@@ -154,7 +154,7 @@ async def test_live_graphrag_index_retrieve_roundtrip():
     KnowledgeMappingMixin (Q-/Q+ generation via indexing_llm) ->
     GraphWriterMixin (Neo4j MERGE + NEXT edges + index lifecycle) ->
     HopEdgeMixin (offline HOP scoring for generated non-empty Q+ items) ->
-    RetrieveMixin (two-stage Q-/Q+ entry) -> HybridSearchMixin (RRF) ->
+    RetrieveMixin (role-based Q-/body/Q+ entry) -> HybridSearchMixin (RRF) ->
     SimilarityScoringMixin (external embedding cosine ordering). The unique token must survive
     indexing and resurface through retrieval.
     """
@@ -246,7 +246,6 @@ async def test_live_graphrag_index_retrieve_roundtrip():
                     "text": f"The revised filing retains {unique_token} as its only disclosed program.",
                     "sent_id": 0,
                     "page": 1,
-                    "summary": "The revised filing retains one disclosed program.",
                     "q_minus": [f"Which program is retained in the revised filing containing {unique_token}?"],
                     "q_plus": [f"Which later filing updated the metrics for {unique_token}?"],
                 }

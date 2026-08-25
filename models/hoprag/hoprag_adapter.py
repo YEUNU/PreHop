@@ -15,6 +15,7 @@ import types
 from pathlib import Path
 from typing import Any
 
+from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient, get_llm_client
 from utils.formatters import format_context_from_nodes
@@ -341,7 +342,11 @@ class HopRAGAdapter:
 
         prompt = build_answer_prompt(context, query)
         messages = [{"role": "user", "content": prompt}]
-        answer = await self.llm.generate_response(messages)
+        answer = await self.llm.generate_response(
+            messages,
+            temperature=0.0,
+            max_tokens=RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS,
+        )
         if not str(answer or "").strip():
             raise ValueError("Answer synthesis returned an empty response")
         trace = [{"step": "hoprag_official_hopretriever_qa", "input": messages, "output": answer}]

@@ -21,15 +21,22 @@ branch map is in `docs/ARCHITECTURE.md`.
   two-dataset, 120-sequence matrix). Embeddings default to batches of 32 and
   are budgeted separately when generation and embedding use separate
   accelerator servers.
-- A dedicated reranker is not used. The external embedding endpoint supplies
-  vectors for threshold-free cosine top-k ordering. Final selection caps each
-  source document at `RAG_MAX_CHUNKS_PER_SOURCE_FRACTION` (default 0.34) of
-  top_k so one strongly-matching document cannot fill the whole evidence set.
-- Query-time candidate-pool widths are config-driven:
-  `RAG_CANDIDATE_LIMIT_MULTIPLIER` (8), `RAG_SUPPORT_POOL_MULTIPLIER` (4),
-  `RAG_STAGE1_POOL_MULTIPLIER` (6), `RAG_WIDE_POOL_MULTIPLIER` (6). A single
-  query-time query string is embedded once per client instance and reused
-  across every channel/scoring call that needs it in the same retrieval.
+- A dedicated reranker is not used. Query-time scoring reuses body and Q+
+  document embeddings stored during indexing; only the user query is embedded.
+  Final selection takes one ranked chunk per source per round until `top_k`,
+  avoiding a tunable per-source fraction.
+- Query-time search is role-based and has no candidate-width multipliers. Q−
+  and body provide direct-evidence candidates; Q+ provides dependency seeds
+  for outgoing offline HOP traversal. Each enabled representation is searched
+  once and retains at most `top_k` owner chunks, so the fused base-pool bound
+  is `top_k × active_representation_count`. A single query embedding is reused
+  throughout. Q−/Q+ raw search uses the indexing schema's maximum three
+  questions per owner rather than a tuned modality limit.
+- Vector/full-text fusion uses equal reciprocal ranks `1 / (rank + 1)`.
+  Representation results form a set union without cross-representation scores.
+- Graph expansion batches the complete frontier once per depth, retains the
+  structurally bounded result set without a reservoir multiplier, and scores
+  a HOP target as `min(body similarity, best individual source-Q+ similarity)`.
 - Prehop has no query rewrite, rerank simplification prompt, continuation
   prompt, runtime HOP, company/domain gate, metadata boost, boilerplate
   penalty, table-to-text generation, or Q+ heuristic post-filter.
@@ -173,10 +180,10 @@ than relying only on progress logs:
 - sample `data/debug/<run-id>/prehop/<corpus>/<source>/final_chunks.json` when
   `--save-intermediate` is enabled;
 - verify raw chunk text, title/page/sent_id ordering, grounded Q-, outward Q+,
-  summary, and absence of fabricated/table-converted text;
+  generated questions and absence of fabricated or converted text;
 - query total Documents/Chunks and Q-/Q+ coverage;
 - after the final pass, inspect HOP direct-channel provenance, per-source
-  out-degree, cross-source property, and representative Q+→Q-/body/SAME_NEED
+  out-degree, cross-source property, and representative Q+→Q-/body
   source/target text;
 - compare source file count to indexed Document count and fail on any mismatch.
 

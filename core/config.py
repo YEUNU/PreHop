@@ -44,9 +44,13 @@ class RAGConfig:
     LLM_SEED = int(_LLM_SEED_RAW) if _LLM_SEED_RAW.lstrip("-").isdigit() else None
     MAX_CONTEXT_LENGTH = int(os.environ.get("RAG_MAX_CONTEXT_LENGTH", "16384"))
     # Capped below the configured context limit so input has output headroom.
-    # Indexing prompts (chunking, Q-/Q+, summary) rarely exceed 1–2K output;
+    # Indexing prompts for Q-/Q+ generation rarely exceed 1–2K output;
     # 4K is comfortable headroom.
     MAX_OUTPUT_TOKENS = 4096
+    # The benchmark contract requests a short final answer, not free-form
+    # generation. This fixed cap reserves context space and bounds latency; it
+    # is shared by controlled answer-synthesis paths and is not swept.
+    SYNTHESIS_MAX_OUTPUT_TOKENS = 128
     MAX_EMBEDDING_LENGTH = int(os.environ.get("MAX_EMBEDDING_LENGTH", "16384"))
 
     # --- RAG & Indexing Settings ---
@@ -57,76 +61,26 @@ class RAGConfig:
     EMBEDDING_DIMENSIONS = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024"))
     NEO4J_BATCH_SIZE = int(os.environ.get("NEO4J_BATCH_SIZE", "25"))
 
-    # --- Search & Ranking (RRF) ---
-    RRF_K_CONSTANT = int(os.environ.get("RAG_RRF_K", "60"))
-    # The vector channel carries semantic signal from the shared bi-encoder;
-    # keep it slightly above the full-text contribution in RRF.
-    RRF_VECTOR_WEIGHT = float(os.environ.get("RAG_RRF_VECTOR_WEIGHT", "1.3"))
-    RRF_TEXT_WEIGHT = float(os.environ.get("RAG_RRF_TEXT_WEIGHT", "1.0"))
-    VECTOR_SEARCH_LIMIT = int(os.environ.get("RAG_VECTOR_SEARCH_LIMIT", "20"))
-    TEXT_SEARCH_LIMIT = int(os.environ.get("RAG_TEXT_SEARCH_LIMIT", "20"))
-
+    # --- Search & Ranking ---
+    # Query-time channels use unweighted reciprocal rank, 1 / (rank + 1).
+    # There is no dataset-tuned fusion constant or modality preference.
     # --- Indexing Pipeline Settings ---
     # Fixed-size chunking (core-only rewrite — replaces adaptive/embedding-
     # similarity chunk splitting). Each page is windowed into chunks of
-    # CHUNK_SENTENCES sentences; a trailing window shorter than
-    # MIN_CHUNK_SENTENCES merges into the previous chunk instead of standing
-    # alone.
-    CHUNK_SENTENCES = int(os.environ.get("RAG_CHUNK_SENTENCES", "6"))
-    MIN_CHUNK_SENTENCES = int(os.environ.get("RAG_MIN_CHUNK_SENTENCES", "2"))
-    HOP_LINK_LIMIT = int(os.environ.get("RAG_HOP_LINK_LIMIT", "5"))
-    # Each individual Q+ searches all three document-side representations.
-    # Neo4j applies WHERE after ANN candidate generation, so the ANN pool is
-    # intentionally larger than the retained cross-document candidate list.
-    HOP_CANDIDATE_LIMIT = int(os.environ.get("RAG_HOP_CANDIDATE_LIMIT", "15"))
-    HOP_ANN_POOL = int(os.environ.get("RAG_HOP_ANN_POOL", "50"))
-    # HOP ANN sends high-dimensional vectors and candidate rows through Neo4j
-    # transactions. Keep waves/channels bounded independently from file/LLM
-    # concurrency to stay below the database transaction-memory pool.
+    # CHUNK_SENTENCES sentences, including the final partial window.
+    CHUNK_SENTENCES = 6
+    QUESTIONS_PER_DIRECTION = 3
+    # HOP ANN sends high-dimensional vectors and candidate rows through bounded waves.
     HOP_GATHER_WAVE = int(os.environ.get("RAG_HOP_GATHER_WAVE", "64"))
-    HOP_CHANNEL_CONCURRENCY = int(os.environ.get("RAG_HOP_CHANNEL_CONCURRENCY", "2"))
-    # Q+->Q+ is supporting evidence for a direct Q+->Q-/body match, not an
-    # independently traversable document edge.
-    HOP_SAME_NEED_WEIGHT = float(os.environ.get("RAG_HOP_SAME_NEED_WEIGHT", "0.5"))
-    GRAPH_SEARCH_LIMIT = int(os.environ.get("RAG_GRAPH_SEARCH_LIMIT", "20"))
-    DEFAULT_TOP_K = int(os.environ.get("RAG_DEFAULT_TOP_K", "12"))
+    DEFAULT_TOP_K = 12
     FULLTEXT_ANALYZER = os.environ.get("NEO4J_FULLTEXT_ANALYZER", "english")
 
-    # --- Candidate pool sizing (query time) ---
-    # Retrieval sizes several intermediate candidate pools as
-    # `max(floor, top_k * multiplier)` before final scoring/selection. A
-    # wider pool costs extra Neo4j/embedding round trips; a narrower one
-    # risks pruning the one chunk that eventually reaches a gold document
-    # before scoring or traversal ever sees it.
-    CANDIDATE_LIMIT_MULTIPLIER = int(os.environ.get("RAG_CANDIDATE_LIMIT_MULTIPLIER", "8"))
-    SUPPORT_POOL_MULTIPLIER = int(os.environ.get("RAG_SUPPORT_POOL_MULTIPLIER", "4"))
-    STAGE1_POOL_MULTIPLIER = int(os.environ.get("RAG_STAGE1_POOL_MULTIPLIER", "6"))
-    # Shared by retrieve.py's stage 2 candidate cap and traversal.py's
-    # incremental-collection reservoir: both represent the final wide
-    # candidate pool handed to scoring.
-    WIDE_POOL_MULTIPLIER = int(os.environ.get("RAG_WIDE_POOL_MULTIPLIER", "6"))
-
-    # Final top-k selection is otherwise pure global score order, so several
-    # near-duplicate high-scoring chunks from one source document can occupy
-    # most of the evidence slots and crowd out a lower-scoring chunk that is
-    # the only path to a second gold document. A fixed fraction of top_k
-    # (rounded down, minimum 1) caps how many chunks a single source can
-    # contribute before the remaining slots open up to other sources; excess
-    # same-source candidates still backfill by score if there are not enough
-    # distinct sources to fill top_k. One rule for every dataset/strategy —
-    # no per-dataset tuning.
-    MAX_CHUNKS_PER_SOURCE_FRACTION = float(os.environ.get("RAG_MAX_CHUNKS_PER_SOURCE_FRACTION", "0.34"))
-
-    # Graph traversal depth on the query path. depth=0 = pure `retrieve()`
-    # (Stage 1+2 RRF + similarity ordering, no graph expansion) for ablation; depth>0 uses
-    # `graph_search` — deterministic traversal over the
-    # NEXT/HOP edges built during indexing (paper §3.1.4), no LLM continuation
-    # check. depth=1 is the default (bidirectional NEXT plus outgoing
-    # HOP_ANSWER).
+    # Zero disables graph expansion for ablation; one enables the fixed
+    # bidirectional NEXT and outgoing HOP_ANSWER expansion.
     GRAPH_HOP_DEPTH = int(os.environ.get("RAG_GRAPH_HOP_DEPTH", "1"))
 
     # --- Ablation & Experimental Toggles ---
-    # Predictive Knowledge Mapping channel ablations.
+    # Q-/Q+ channel ablations.
     # ABLATION_Q_MINUS / ABLATION_Q_PLUS gate whether the Q-/Q+ channels
     # participate in indexing (embedding storage) and retrieval (channel use).
     # Disabling Q+ also disables offline HOP edge construction, since HOP
@@ -134,17 +88,19 @@ class RAGConfig:
     ABLATION_Q_MINUS = os.environ.get("RAG_ABLATION_Q_MINUS", "True").lower() == "true"
     ABLATION_Q_PLUS = os.environ.get("RAG_ABLATION_Q_PLUS", "True").lower() == "true"
 
-    # Direction-split ablation for the EMNLP rebuttal. Selects which Q-/Q+
-    # channels Stage 1 of retrieve.py queries and whether Stage 2 fires.
+    # Select which Q-/Q+ representation channels retrieve.py queries.
     # Values:
-    #   "full"            -> paper default (Q- 0.7 + body 0.3, followed by
-    #                        Q+ 0.6 + Q- support 0.4 on every query).
-    #   "qminus_only"     -> Stage 1: Q- 1.0, no body. Stage 2 disabled.
-    #   "qplus_only"      -> Stage 1: Q+ 1.0, no body. Stage 2 disabled.
-    #   "single_combined" -> Stage 1: Q- 0.5 + Q+ 0.5 (HopRAG-style single
-    #                        hypothetical channel). Stage 2 disabled.
+    #   "full"            -> Q-/body direct evidence plus Q+
+    #                        dependency seeds in one set union.
+    #   "qminus_only"     -> Q- only, direct evidence role.
+    #   "qplus_only"      -> Q+ only, dependency-seed role.
+    #   "single_combined" -> Q- and Q+ queried once and combined by set union,
+    #                        with no body channel.
     # No re-indexing required; only retrieval-time channel selection changes.
     HYPO_CHANNEL_VARIANT = os.environ.get("RAG_HYPO_CHANNEL_VARIANT", "full").strip().lower() or "full"
+    SOURCE_SELECTION_VARIANT = (
+        os.environ.get("RAG_SOURCE_SELECTION_VARIANT", "round_robin").strip().lower() or "round_robin"
+    )
 
     @classmethod
     def validate(cls) -> None:
@@ -156,22 +112,10 @@ class RAGConfig:
             "VLLM_MAX_NUM_SEQS": cls.VLLM_MAX_NUM_SEQS,
             "EMBEDDING_DIMENSIONS": cls.EMBEDDING_DIMENSIONS,
             "NEO4J_BATCH_SIZE": cls.NEO4J_BATCH_SIZE,
-            "RRF_K_CONSTANT": cls.RRF_K_CONSTANT,
-            "VECTOR_SEARCH_LIMIT": cls.VECTOR_SEARCH_LIMIT,
-            "TEXT_SEARCH_LIMIT": cls.TEXT_SEARCH_LIMIT,
             "CHUNK_SENTENCES": cls.CHUNK_SENTENCES,
-            "MIN_CHUNK_SENTENCES": cls.MIN_CHUNK_SENTENCES,
-            "HOP_LINK_LIMIT": cls.HOP_LINK_LIMIT,
-            "HOP_CANDIDATE_LIMIT": cls.HOP_CANDIDATE_LIMIT,
-            "HOP_ANN_POOL": cls.HOP_ANN_POOL,
+            "QUESTIONS_PER_DIRECTION": cls.QUESTIONS_PER_DIRECTION,
             "HOP_GATHER_WAVE": cls.HOP_GATHER_WAVE,
-            "HOP_CHANNEL_CONCURRENCY": cls.HOP_CHANNEL_CONCURRENCY,
-            "GRAPH_SEARCH_LIMIT": cls.GRAPH_SEARCH_LIMIT,
             "DEFAULT_TOP_K": cls.DEFAULT_TOP_K,
-            "CANDIDATE_LIMIT_MULTIPLIER": cls.CANDIDATE_LIMIT_MULTIPLIER,
-            "SUPPORT_POOL_MULTIPLIER": cls.SUPPORT_POOL_MULTIPLIER,
-            "STAGE1_POOL_MULTIPLIER": cls.STAGE1_POOL_MULTIPLIER,
-            "WIDE_POOL_MULTIPLIER": cls.WIDE_POOL_MULTIPLIER,
         }
         invalid = {name: value for name, value in positive.items() if value < 1}
         if invalid:
@@ -187,12 +131,8 @@ class RAGConfig:
                 "Generation client can exceed VLLM_MAX_NUM_SEQS: "
                 f"concurrent_calls={cls.MAX_CONCURRENT_LLM_CALLS} > {cls.VLLM_MAX_NUM_SEQS}"
             )
-        if cls.HOP_SAME_NEED_WEIGHT < 0:
-            raise ValueError("RAG_HOP_SAME_NEED_WEIGHT must be non-negative")
-        if not (0.0 < cls.MAX_CHUNKS_PER_SOURCE_FRACTION <= 1.0):
-            raise ValueError("RAG_MAX_CHUNKS_PER_SOURCE_FRACTION must be in (0, 1]")
-        if cls.GRAPH_HOP_DEPTH < 0 or cls.GRAPH_HOP_DEPTH > 4:
-            raise ValueError("RAG_GRAPH_HOP_DEPTH must be between 0 and 4")
+        if cls.GRAPH_HOP_DEPTH not in {0, 1}:
+            raise ValueError("RAG_GRAPH_HOP_DEPTH must be 0 or 1")
 
         allowed_variants = {"full", "qminus_only", "qplus_only", "single_combined"}
         if cls.HYPO_CHANNEL_VARIANT not in allowed_variants:
@@ -208,3 +148,5 @@ class RAGConfig:
             cls.ABLATION_Q_MINUS and cls.ABLATION_Q_PLUS
         ):
             raise ValueError("single_combined requires both Q- and Q+ channels")
+        if cls.SOURCE_SELECTION_VARIANT not in {"round_robin", "global"}:
+            raise ValueError("RAG_SOURCE_SELECTION_VARIANT must be round_robin or global")
