@@ -203,7 +203,8 @@ async def test_only_query_matched_dependency_seeds_can_initiate_hop_traversal():
 
 
 @pytest.mark.asyncio
-async def test_build_graph_stores_generated_q_plus_without_heuristic_filter():
+async def test_build_graph_stores_generated_q_plus_without_heuristic_filter(monkeypatch):
+    monkeypatch.setenv("RAG_EMBEDDING_CACHE", "off")
     rag = GraphRAG(strategy="prehop")
     rag._ensure_index_ready = AsyncMock(return_value=None)  # type: ignore[method-assign]
     rag.vector_dimensions = 1

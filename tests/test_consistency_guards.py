@@ -19,13 +19,15 @@ from utils.prompts.shared import build_answer_prompt
 
 
 @pytest.mark.asyncio
-async def test_missing_dataset_fails_instead_of_returning_success(tmp_path):
+async def test_missing_dataset_fails_instead_of_returning_success(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     with pytest.raises(FileNotFoundError):
         await run_indexing(str(tmp_path / "missing"), "prehop", "default")
 
 
 @pytest.mark.asyncio
-async def test_empty_dataset_fails_instead_of_reporting_zero_success(tmp_path):
+async def test_empty_dataset_fails_instead_of_reporting_zero_success(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     with pytest.raises(ValueError, match="no supported"):
         await run_indexing(str(tmp_path), "prehop", "default")
 
@@ -316,7 +318,8 @@ async def test_similarity_scoring_rejects_empty_embedding_instead_of_scoring_zer
 
 
 @pytest.mark.asyncio
-async def test_sparse_embedding_rejects_partial_batch():
+async def test_sparse_embedding_rejects_partial_batch(monkeypatch):
+    monkeypatch.setenv("RAG_EMBEDDING_CACHE", "off")
     rag = GraphRAG(strategy="prehop")
     rag.llm.get_embeddings = AsyncMock(return_value=[[1.0, 0.0]])
 
