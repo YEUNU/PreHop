@@ -164,11 +164,13 @@ async def test_hybrid_search_derives_modality_width_from_owner_budget():
     await rag._hybrid_rrf_candidates("query", [1.0], limit=7, channel="q_minus")
     qminus_limits = [call.args[1]["limit"] for call in rag._run_channel_query.await_args_list]
     assert qminus_limits == [21]
+    assert "CALL () {" in rag._run_channel_query.await_args.args[0]
 
     rag._run_channel_query.reset_mock()
     await rag._hybrid_rrf_candidates("query", [1.0], limit=7, channel="body")
     body_limits = [call.args[1]["limit"] for call in rag._run_channel_query.await_args_list]
     assert body_limits == [7]
+    assert "CALL () {" in rag._run_channel_query.await_args.args[0]
 
 
 @pytest.mark.asyncio

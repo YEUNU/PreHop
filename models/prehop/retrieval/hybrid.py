@@ -100,7 +100,7 @@ class HybridSearchMixin:
         # One database round trip per representation. The enclosing caller
         # still searches all enabled representations concurrently.
         combined_query = f"""
-            CALL {{
+            CALL () {{
                 {query_vec}
                 UNION ALL
                 {query_ft}
