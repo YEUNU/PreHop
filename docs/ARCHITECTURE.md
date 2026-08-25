@@ -240,7 +240,8 @@ early seed's same-document walk silently consume the shared candidate
 budget before a lower-ranked, cross-document seed ever ran, at real cost to
 cross-document evidence coverage on a live multihoprag A/B check. Only a
 seed that has itself already been expanded is skipped. Candidates are
-pruned to a shared reservoir (`candidate_budget = max(24, top_k*8)`) after
+pruned to a shared reservoir
+(`candidate_budget = max(24, top_k*RAG_WIDE_POOL_MULTIPLIER)`, default multiplier 6) after
 every step, then handed to `scoring.py` for final selection. HOP candidates
 are scored independently against their preserved source bridge-Q+ and
 target body, then the two cosine scores are averaged. This requires
@@ -261,7 +262,8 @@ Project-owned prompt templates are deliberately limited to:
   Prehop, Naive, and the HopRAG adapter.
 - `utils/prompts/evaluation.py`: the offline benchmark judge.
 
-The benchmark uses the OpenAI Batch API for LLM-as-a-judge by default
+LLM-as-a-judge is disabled by default (`RAG_JUDGE_ENABLED=false`). When it is
+explicitly enabled, the benchmark uses the OpenAI Batch API by default
 (`RAG_JUDGE_BATCH=true`). Each strategy/seed writes an atomic pending manifest
 immediately after submission; `main.py` resolves all submitted batches in
 parallel and only publishes aggregates when every expected custom ID is
@@ -291,11 +293,13 @@ official baseline.
 
 ## Evaluation output contract
 
-The benchmark emits deterministic normalized answer EM/F1 as the primary
-answer signal. MuSiQue uses answer aliases. The LLM-as-a-judge `score` is a
-supplemental semantic-correctness field for aliases and equivalent wording;
+The benchmark emits deterministic normalized answer EM/F1 as a downstream
+answer signal; benchmark-annotated gold-evidence retrieval is primary for the
+method claim. MuSiQue uses answer aliases. The LLM-as-a-judge `score` is an
+optional exploratory semantic-correctness field for aliases and equivalent wording;
 `groundedness` and `hallucination` are separate context-directed diagnostics.
-None replaces deterministic answer scoring.
+None replaces deterministic answer scoring, and without qualified-human
+validation none enters quantitative submission results or system rankings.
 
 Evidence metrics follow the prepared gold unit for each dataset:
 
@@ -308,8 +312,10 @@ Evidence metrics follow the prepared gold unit for each dataset:
 
 Missing gold units are emitted as `-1`, while an evaluated query with no match
 is zero. Paper aggregates exclude failed, incomplete, and unreconciled rows.
-The exact metric definitions and official evaluator references are maintained
-in `docs/prehop_paper.md`.
+The exact metric definitions, official evaluator references, paper-eligibility
+rules, and reporting decisions are maintained in the local, intentionally
+untracked `docs/prehop_paper.md`. This architecture document summarizes the
+implemented evaluation contract but does not replace that paper specification.
 
 ## Measured full matrix
 
@@ -341,9 +347,10 @@ turns short-document datasets into real embedding batches instead of thousands
 of one-item requests. Live progress markers, current phase, and ETA are written
 to `progress.json`.
 The generation-heavy baselines receive a per-target budget calculated from the
-active phase width. With three targets and a 120-sequence generation server,
-each target receives at most 40 calls; HopRAG's worker/thread product and MS
-GraphRAG's request semaphore are both clamped to that value. Progress snapshots
+active generation-heavy phase width. With the current two-dataset matrix and a
+120-sequence generation server, each target receives at most 60 calls;
+HopRAG's worker/thread product and MS GraphRAG's request semaphore are both
+clamped to that value. Progress snapshots
 include active, pending, and future-barrier ETA components; the default watch
 line is hourly and can be changed with `--watch-interval`.
 

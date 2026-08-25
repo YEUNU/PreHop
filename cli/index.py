@@ -15,6 +15,7 @@ from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing.chunking import parse_pages_offline
 from utils.io import _write_json
+from utils.provenance import code_provenance
 
 # Spawn-based context for the parsing worker pool. Using the default `fork`
 # context corrupts the parent process's httpx/openai async clients (vLLM
@@ -102,6 +103,8 @@ async def _set_neo4j_snapshot_state(
             m.updated_at_epoch = $updated_at
         """,
         {
+            "run_id": _artifact_run_id(),
+            "index_code_provenance": code_provenance(),
             "strategy": strategy,
             "corpus_tag": corpus_tag,
             "status": status,
@@ -298,12 +301,9 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
         "summary_over_35_words": quality_stats.get("summary_over_35_words", 0) or 0,
         "linked_q_plus_questions": direction_stats.get("linked_q_plus", 0) or 0,
         "q_plus_direction_coverage": (
-            (direction_stats.get("linked_q_plus", 0) or 0)
-            / (direction_stats.get("total_q_plus", 0) or 1)
+            (direction_stats.get("linked_q_plus", 0) or 0) / (direction_stats.get("total_q_plus", 0) or 1)
         ),
-        "hop_without_bridge_provenance": (
-            hop_bridge_stats.get("hop_without_bridge_provenance", 0) or 0
-        ),
+        "hop_without_bridge_provenance": (hop_bridge_stats.get("hop_without_bridge_provenance", 0) or 0),
         # Out-degree among HOP-eligible (Q+-surviving) source chunks only —
         # matches the "wrote N HOP edges over M Q+ chunks" indexing log line.
         "avg_hop_out_degree_per_eligible_chunk": (total_hop_edges / q_plus_chunks) if q_plus_chunks else 0.0,
@@ -599,9 +599,7 @@ async def _run_indexing_unlocked(
                 try:
                     indexed = await engine.index_documents(file_contents)
                     if indexed != len(file_contents):
-                        raise RuntimeError(
-                            f"Naive batch reported {indexed} documents, expected {len(file_contents)}"
-                        )
+                        raise RuntimeError(f"Naive batch reported {indexed} documents, expected {len(file_contents)}")
                     async with progress["lock"]:
                         stats["succeeded"] += indexed
                         progress["completed"] += indexed
@@ -721,6 +719,8 @@ async def _run_indexing_unlocked(
             _write_json(
                 failures_path,
                 {
+                    "run_id": _artifact_run_id(),
+                    "index_code_provenance": code_provenance(),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
@@ -758,6 +758,8 @@ async def _run_indexing_unlocked(
             _write_json(
                 stats_path,
                 {
+                    "run_id": _artifact_run_id(),
+                    "index_code_provenance": code_provenance(),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,

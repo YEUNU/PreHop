@@ -14,6 +14,7 @@ from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from utils.io import _safe_float, _write_json
 from utils.metrics import evaluate_multihoprag_response
+from utils.provenance import code_provenance
 from utils.reporting import _write_model_report_artifacts
 
 logger = logging.getLogger("Prehop")
@@ -85,12 +86,44 @@ def _latest_index_manifest_metadata(strategy: str, corpus_tag: str, stats_dir: P
         return {"path": str(path), "status": "invalid", "fingerprint": None, "paragraph_count": None}
     if not isinstance(payload, dict):
         return {"path": str(path), "status": "invalid", "fingerprint": None, "paragraph_count": None}
+    run_id = payload.get("run_id") or path.stem.removeprefix(f"{strategy}_{corpus_tag}_")
+    index_code = payload.get("index_code_provenance")
+    if not isinstance(index_code, dict):
+        index_code = _matrix_index_code_provenance(str(run_id))
     return {
         "path": str(path),
+        "run_id": run_id,
         "status": payload.get("status"),
         "fingerprint": payload.get("corpus_manifest_fingerprint"),
         "paragraph_count": payload.get("corpus_manifest_paragraph_count"),
+        "code_provenance": index_code,
     }
+
+
+def _matrix_index_code_provenance(run_id: str, artifacts_dir: Path = Path("artifacts/indexing")) -> dict | None:
+    """Resolve a matrix child's indexing snapshot from its parent manifest."""
+    if not run_id or not artifacts_dir.is_dir():
+        return None
+    for manifest_path in sorted(artifacts_dir.glob("*/manifest.json"), reverse=True):
+        try:
+            manifest = _read_json_file(manifest_path)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        matrix_id = str(manifest.get("run_id") or "") if isinstance(manifest, dict) else ""
+        if not matrix_id or not (run_id == matrix_id or run_id.startswith(f"{matrix_id}_")):
+            continue
+        code = manifest.get("code")
+        if not isinstance(code, dict):
+            return None
+        source_tree = code.get("source_tree") if isinstance(code.get("source_tree"), dict) else {}
+        return {
+            "revision": code.get("revision"),
+            "dirty": code.get("dirty"),
+            "source_tree_sha256": source_tree.get("sha256"),
+            "file_count": source_tree.get("file_count"),
+            "matrix_manifest_path": str(manifest_path),
+        }
+    return None
 
 
 def _validate_corpus_index_fingerprint(
@@ -139,9 +172,7 @@ def _manifest_source_ids(corpus_manifest: dict | None) -> list[str] | None:
     if corpus_manifest is None:
         return None
     corpus_dir = Path(str(corpus_manifest["path"])).parent
-    source_ids = sorted(
-        path.stem for path in corpus_dir.iterdir() if path.is_file() and path.suffix in (".txt", ".md")
-    )
+    source_ids = sorted(path.stem for path in corpus_dir.iterdir() if path.is_file() and path.suffix in (".txt", ".md"))
     if len(source_ids) != len(set(source_ids)):
         raise RuntimeError("Prepared corpus has duplicate filename stems; active source identity is ambiguous")
     if len(source_ids) != corpus_manifest["paragraph_count"]:
@@ -327,7 +358,11 @@ def _apply_judge_label(result_item: dict[str, Any]) -> None:
 
     # The headline correctness/label is deterministic.  A null query uses its
     # explicit refusal metric; other rows use EM (MuSiQue's EM is alias-aware).
-    primary = result_item.get("null_refusal") if result_item.get("question_type") == "null_query" else result_item.get("answer_em")
+    primary = (
+        result_item.get("null_refusal")
+        if result_item.get("question_type") == "null_query"
+        else result_item.get("answer_em")
+    )
     primary_score = _safe_float(primary, -1.0)
     result_item["primary_answer_score"] = primary_score
     if has_error or primary_score < 0:
@@ -412,9 +447,7 @@ def _unjudged_count(rows: list[dict[str, Any]], key: str = "llm_judge_score") ->
     return sum(
         1
         for row in rows
-        if not isinstance(row.get(key), (int, float))
-        or isinstance(row.get(key), bool)
-        or float(row[key]) < 0
+        if not isinstance(row.get(key), (int, float)) or isinstance(row.get(key), bool) or float(row[key]) < 0
     )
 
 
@@ -524,14 +557,20 @@ def _validate_benchmark_data(benchmark_data: Any, source: str) -> list[dict[str,
             raise ValueError(f"Benchmark row {idx} has no non-empty 'ground_truth'")
         if marker.strip().lower() == "musique":
             paragraph_ids = item.get("evidence_paragraph_ids")
-            if not isinstance(paragraph_ids, list) or not paragraph_ids or any(not isinstance(v, str) or not v.strip() for v in paragraph_ids):
+            if (
+                not isinstance(paragraph_ids, list)
+                or not paragraph_ids
+                or any(not isinstance(v, str) or not v.strip() for v in paragraph_ids)
+            ):
                 raise ValueError(
                     f"MuSiQue row {idx} lacks non-empty evidence_paragraph_ids; regenerate with data/prepare_musique.py and reindex"
                 )
         else:
             for field in ("evidence_facts", "evidence_docs"):
                 if not isinstance(item.get(field), list):
-                    raise TypeError(f"MultiHop-RAG row {idx} has invalid '{field}'; regenerate the official query manifest")
+                    raise TypeError(
+                        f"MultiHop-RAG row {idx} has invalid '{field}'; regenerate the official query manifest"
+                    )
             if str(item.get("question_type", "")).strip().lower() != "null_query" and not item["evidence_facts"]:
                 raise ValueError(f"MultiHop-RAG row {idx} has no gold evidence_facts for a non-null question")
         validated.append(item)
@@ -711,10 +750,7 @@ async def reconcile_pending_judges(run_dir: Path) -> int:
                 "substantive answer",
                 judge_model,
             )
-            if (
-                resolved_fields["llm_judge_score"] < 0
-                or resolved_fields["groundedness"] < 0
-            ):
+            if resolved_fields["llm_judge_score"] < 0 or resolved_fields["groundedness"] < 0:
                 invalid_payloads.append(str(custom_id))
         if invalid_payloads:
             unresolved.append(
@@ -822,6 +858,7 @@ async def run_benchmark(
     )
     corpus_manifest = _load_benchmark_corpus_manifest(dataset_marker, queries_file)
     index_manifest = _latest_index_manifest_metadata(strategy, corpus_tag)
+    benchmark_code = code_provenance()
     corpus_index_fingerprint_status = _validate_corpus_index_fingerprint(
         dataset_marker,
         evaluation_scope,
@@ -901,9 +938,7 @@ async def run_benchmark(
                 "or set RAG_JUDGE_BATCH=false for an explicit synchronous judge run."
             )
         if not RAGConfig.OPENAI_API_KEY:
-            raise RuntimeError(
-                "RAG_JUDGE_ENABLED=true with RAG_JUDGE_BATCH=true requires OPENAI_API_KEY."
-            )
+            raise RuntimeError("RAG_JUDGE_ENABLED=true with RAG_JUDGE_BATCH=true requires OPENAI_API_KEY.")
         from utils.batch_judge import OpenAIBatchJudge
 
         batch_collector = OpenAIBatchJudge(
@@ -943,6 +978,12 @@ async def run_benchmark(
             "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
             "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
             "index_manifest_stats_path": (index_manifest or {}).get("path"),
+            "index_provenance": {
+                "run_id": (index_manifest or {}).get("run_id"),
+                "code": (index_manifest or {}).get("code_provenance"),
+            },
+            "query_provenance": dict(benchmark_code),
+            "evaluation_provenance": dict(benchmark_code),
             "index_manifest_fingerprint": (index_manifest or {}).get("fingerprint"),
             "index_manifest_status": (index_manifest or {}).get("status"),
             "corpus_index_fingerprint_status": corpus_index_fingerprint_status,

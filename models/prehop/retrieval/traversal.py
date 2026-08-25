@@ -23,21 +23,13 @@ class TraversalMixin:
     ) -> tuple:
         """Retrieve evidence through incremental, duplicate-free graph expansion."""
         t0 = time.perf_counter()
-        normalized_entities = [
-            normalized
-            for entity in entities
-            if (normalized := self._normalize_entity_term(entity))
-        ]
+        normalized_entities = [normalized for entity in entities if (normalized := self._normalize_entity_term(entity))]
         seed_query = " ".join(normalized_entities).strip() or " ".join(entities).strip()
         if not seed_query:
             return "", [], {"retrieve_ms": 0.0, "traversal_ms": 0.0}
 
         depth = max(1, min(int(depth), 4))
-        excluded_ids = {
-            str(chunk_id).strip()
-            for chunk_id in (excluded_chunk_ids or set())
-            if str(chunk_id).strip()
-        }
+        excluded_ids = {str(chunk_id).strip() for chunk_id in (excluded_chunk_ids or set()) if str(chunk_id).strip()}
         candidate_budget = max(24, top_k * RAGConfig.WIDE_POOL_MULTIPLIER)
 
         t_retrieve0 = time.perf_counter()
@@ -54,17 +46,11 @@ class TraversalMixin:
                 "traversal_ms": max(0.0, total_ms - retrieve_ms),
             }
 
-        base_candidates = [
-            node
-            for node in base_candidates
-            if self._node_identity(node) not in excluded_ids
-        ]
+        base_candidates = [node for node in base_candidates if self._node_identity(node) not in excluded_ids]
         if not base_candidates:
             return "", [], timing()
 
-        base_rank = {
-            self._node_identity(node): rank for rank, node in enumerate(base_candidates)
-        }
+        base_rank = {self._node_identity(node): rank for rank, node in enumerate(base_candidates)}
         collected: dict[str, dict[str, Any]] = {}
         for node in semantic_seeds:
             node_id = self._node_identity(node)
@@ -115,10 +101,10 @@ class TraversalMixin:
                     if previous_strength is None or path_strength > previous_strength:
                         best_path_strength[path_type][target_id] = path_strength
 
-                    candidate = {
-                        key: row.get(key)
-                        for key in ("id", "title", "sent_id", "page", "text", "source")
-                    }
+                    candidate = {key: row.get(key) for key in ("id", "title", "sent_id", "page", "text", "source")}
+                    bridge_text = self._normalize_bridge_text(row.get("bridge_text"))
+                    if path_type == "hop" and bridge_text:
+                        candidate["bridge_text"] = bridge_text
                     candidate["retrieval_paths"] = [
                         {
                             "kind": path_type,
@@ -139,9 +125,7 @@ class TraversalMixin:
                     )[:candidate_budget]
                 )
                 frontier_ids = [
-                    node_id
-                    for node_id in next_frontier
-                    if node_id in collected and node_id not in expanded_ids
+                    node_id for node_id in next_frontier if node_id in collected and node_id not in expanded_ids
                 ]
                 expanded_ids.update(frontier_ids)
 
@@ -175,17 +159,20 @@ class TraversalMixin:
                 MATCH (src:{self.chunk_label} {{id: src_id}})
                 CALL (src) {{
                     MATCH (src)-[:NEXT]-(related:{self.chunk_label})
-                    RETURN related, 'next' AS path_type, null AS edge_score
+                    RETURN related, 'next' AS path_type, null AS edge_score,
+                           null AS bridge_text
                     UNION ALL
                     MATCH (src)-[hop:HOP_ANSWER]->(related:{self.chunk_label})
-                    RETURN related, 'hop' AS path_type, hop.score AS edge_score
+                    RETURN related, 'hop' AS path_type, hop.score AS edge_score,
+                           hop.source_question_texts AS bridge_text
                 }}
-                WITH src, related, path_type, edge_score
+                WITH src, related, path_type, edge_score, bridge_text
                 WHERE NOT related.id IN $discovered_ids
                 RETURN src.id AS source_id, related.id AS id,
                        related.title AS title, related.sent_id AS sent_id,
                        related.page AS page, related.text AS text,
-                       related.source AS source, path_type, edge_score
+                       related.source AS source, path_type, edge_score,
+                       bridge_text
                 ORDER BY source_id, path_type, edge_score DESC, id
                 LIMIT $limit
             """
@@ -198,6 +185,13 @@ class TraversalMixin:
                 },
             )
             return [dict(record) async for record in result]
+
+    @staticmethod
+    def _normalize_bridge_text(value: Any) -> str:
+        """Convert stored source Q+ provenance to deterministic scoring text."""
+        values = value if isinstance(value, list) else [value]
+        cleaned = [" ".join(str(item or "").split()) for item in values]
+        return "\n".join(dict.fromkeys(item for item in cleaned if item))
 
     @staticmethod
     def _rank_frontier_rows(
@@ -235,21 +229,13 @@ class TraversalMixin:
             (node_id for node_id in present_ids if node_id in base_rank),
             key=lambda node_id: (base_rank[node_id], node_id),
         )
-        channel_ranks["base"] = {
-            node_id: rank for rank, node_id in enumerate(base_order)
-        }
+        channel_ranks["base"] = {node_id: rank for rank, node_id in enumerate(base_order)}
         for path_type in ("next", "hop"):
             path_order = sorted(
-                (
-                    node_id
-                    for node_id in present_ids
-                    if node_id in best_path_strength[path_type]
-                ),
+                (node_id for node_id in present_ids if node_id in best_path_strength[path_type]),
                 key=lambda node_id: (-best_path_strength[path_type][node_id], node_id),
             )
-            channel_ranks[path_type] = {
-                node_id: rank for rank, node_id in enumerate(path_order)
-            }
+            channel_ranks[path_type] = {node_id: rank for rank, node_id in enumerate(path_order)}
 
         ordered: list[tuple[str, dict[str, Any]]] = []
         for node_id, node in collected.items():

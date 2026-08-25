@@ -179,7 +179,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             )
             return answer, sources, trace
 
-        prompt = self._build_answer_prompt(context, user_query)
+        prompt = self._build_answer_prompt(context, retrieval_query)
         messages = [{"role": "user", "content": prompt}]
         t_synthesis0 = time.perf_counter()
         raw = await self.llm.generate_response(messages)

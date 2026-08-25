@@ -14,6 +14,15 @@ def test_retrieval_has_no_dataset_specific_metadata_gate():
     assert not hasattr(RAGConfig, "RERANKER_THRESHOLD")
 
 
+def test_hop_bridge_provenance_is_normalized_for_query_scoring():
+    rag = GraphRAG(strategy="prehop")
+
+    assert rag._normalize_bridge_text(["  Which manual?  ", "Which manual?", "What year?\n"]) == (
+        "Which manual?\nWhat year?"
+    )
+    assert rag._normalize_bridge_text(None) == ""
+
+
 @pytest.mark.asyncio
 async def test_similarity_ordering_has_no_score_gate():
     rag = GraphRAG(strategy="prehop")
@@ -98,9 +107,7 @@ async def test_build_graph_stores_generated_q_plus_without_heuristic_filter():
     rag = GraphRAG(strategy="prehop")
     rag._ensure_index_ready = AsyncMock(return_value=None)  # type: ignore[method-assign]
     rag.vector_dimensions = 1
-    rag.llm.get_embeddings = AsyncMock(
-        side_effect=lambda texts, encoding_type="document": [[0.1] for _ in texts]
-    )
+    rag.llm.get_embeddings = AsyncMock(side_effect=lambda texts, encoding_type="document": [[0.1] for _ in texts])
 
     # Storage keeps generated non-empty Q+ values without applying a
     # domain/keyword heuristic after the model's schema-validated response.

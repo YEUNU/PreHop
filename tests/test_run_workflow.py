@@ -89,6 +89,8 @@ def test_build_answer_prompt_contains_context_and_query():
     # Voice-of-the-prompt: cite-only synthesis, abstain on insufficient.
     assert "only the provided context" in prompt
     assert "insufficient" in prompt.lower() or "do not know" in prompt.lower()
+    assert "Do not include reasoning" in prompt
+    assert "respond exactly: Insufficient evidence." in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +180,8 @@ async def test_run_workflow_strips_benchmark_format_marker_before_retrieving():
         call_kwargs = rag.graph_search.await_args.kwargs
         assert "[Benchmark Output Format]" not in (call_kwargs.get("user_query") or "")
         assert "[Benchmark Output Format]" not in (call_kwargs.get("entities") or [""])[0]
+        synthesis_prompt = rag.llm.generate_response.await_args.args[0][0]["content"]
+        assert "[Benchmark Output Format]" not in synthesis_prompt
     finally:
         p.stop()
 

@@ -15,10 +15,12 @@ branch map is in `docs/ARCHITECTURE.md`.
   dimensions.
 - The paper matrix server capacity is `VLLM_MAX_NUM_SEQS=120`. The matrix runner
   clamps `MAX_CONCURRENT_LLM_CALLS`, `RAG_MS_CONCURRENT_REQUESTS`, and
-  `RAG_HOP_DOC_WORKERS × RAG_HOP_MAX_THREADS` under one per-target budget, then
-  multiplies that budget by the three concurrent datasets in the active
-  strategy phase. Embeddings default to batches of 32 and are budgeted
-  separately when generation and embedding use separate accelerator servers.
+  `RAG_HOP_DOC_WORKERS × RAG_HOP_MAX_THREADS` under one per-target budget. The
+  budget is the configured generation capacity divided by the active
+  generation-heavy target width (60 calls per target for the current
+  two-dataset, 120-sequence matrix). Embeddings default to batches of 32 and
+  are budgeted separately when generation and embedding use separate
+  accelerator servers.
 - A dedicated reranker is not used. The external embedding endpoint supplies
   vectors for threshold-free cosine top-k ordering. Final selection caps each
   source document at `RAG_MAX_CHUNKS_PER_SOURCE_FRACTION` (default 0.34) of
@@ -36,14 +38,18 @@ branch map is in `docs/ARCHITECTURE.md`.
 - Official baselines keep their upstream behavior. In particular, official
   HopRAG `bfs_node` uses its published LLM node judgement during retrieval;
   this is documented baseline behavior and is routed to the external endpoint.
-- Benchmark LLM judging uses OpenAI Batch by default and never silently falls
-  back to synchronous paid calls. Disable it only for an explicit debug run.
+- Benchmark LLM judging is disabled by default. When explicitly enabled for
+  exploratory error analysis, it uses OpenAI Batch by default and never
+  silently falls back to synchronous paid calls. Without qualified-human
+  validation, judge output is excluded from paper rankings and quantitative
+  result tables.
 - Benchmark answer quality emits deterministic normalized EM/F1 (including
-  MuSiQue aliases) as the primary signal and keeps LLM-judge semantic
+  MuSiQue aliases) as a downstream signal and keeps LLM-judge semantic
   correctness and context groundedness as separate diagnostic fields.
   MultiHop-RAG emits official-compatible `official_hits@k`, `official_mrr@10`,
   and `official_map@10` separately from custom `evidence_fact_recall@k`.
-  MuSiQue support uses the official formula over stable global paragraph
+  Gold-evidence retrieval is primary for the method claim. MuSiQue support
+  uses the official formula over stable global paragraph
   identities and is named `paragraph_support_*`, not official query-local
   `idx` support; title-level evidence precision/recall/F1 is diagnostic only.
   Paragraph-ID headers are stripped before indexing. Negative sentinels and

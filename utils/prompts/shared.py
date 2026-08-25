@@ -11,7 +11,9 @@ def build_answer_prompt(context: str, query: str) -> str:
     """
     return (
         f"You are {answer_role()}. Answer the question using only the provided context.\n"
-        "If the context is insufficient, say you do not know.\n"
+        "Give the shortest answer that fully answers the question.\n"
+        "Do not include reasoning or information that was not requested.\n"
+        "If the context does not support an answer, respond exactly: Insufficient evidence.\n"
         "\n"
         f"Context:\n{context}\n"
         "\n"

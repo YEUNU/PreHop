@@ -33,17 +33,22 @@ single LLM synthesis call.
 ## Results
 
 The repository fixes dataset-specific evaluation rather than using one pooled
-retrieval score. Deterministic normalized answer EM/F1 is primary, with
+retrieval score. Gold-evidence retrieval is primary for the method claim, and
+deterministic normalized answer EM/F1 provides downstream validation, with
 alias-aware matching for MuSiQue. MultiHop-RAG reports official-compatible
 any-hit/MRR/MAP fields separately from custom `evidence_fact_recall@k` and a
 null-refusal slice. MuSiQue reports `paragraph_support_*` using the official
 SupportMetric formula over stable global paragraph identities; this is not an
 official query-local-`idx` submission (titles remain diagnostic-only). The
-LLM judge is supplemental: semantic correctness and
-context groundedness are separate fields, and it is never the sole answer
-metric. It is disabled by default; set `RAG_JUDGE_ENABLED=true` only for a
-separately labelled supplemental analysis. See [the local paper specification](docs/prehop_paper.md) and
-`CLAUDE.md` for the complete protocol.
+LLM judge is an optional exploratory diagnostic: semantic correctness and
+context groundedness are separate fields, and neither supports a primary
+claim without qualified-human validation. It is disabled by default; set
+`RAG_JUDGE_ENABLED=true` only for internal error analysis or a separately
+validated supplemental study. See [the local paper
+specification](docs/prehop_paper.md), [the architecture and evaluation
+contract](docs/ARCHITECTURE.md), and `CLAUDE.md` for the complete research
+protocol. The finalized paper specification is intentionally kept local and
+untracked until a deliberate submission export.
 
 The judge model must differ from both the run's generation model and
 `VLLM_SERVED_MODEL_NAME`. `RAG_JUDGE_ALLOW_SELF=true` exists only for explicit
@@ -245,8 +250,9 @@ timings; timings are not fabricated for boundaries the upstream package does
 not expose. Naive has aggregate pipeline timing only. MS GraphRAG relationship
 drops caused by missing extracted entities are recorded as integrity warnings.
 
-OpenAI Batch judging is the default evaluation path. An interrupted submitted
-batch can be resumed without re-running retrieval:
+LLM judging is disabled by default. When it is explicitly enabled, OpenAI Batch
+is the default transport. An interrupted submitted batch can be resumed without
+re-running retrieval:
 
 ```bash
 .venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>

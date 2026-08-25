@@ -14,6 +14,7 @@ from cli.benchmark import (
     _judge_independence,
     _latest_index_manifest_metadata,
     _load_benchmark_corpus_manifest,
+    _matrix_index_code_provenance,
     _recompute_aggregates,
     _update_summary_status,
     _validate_benchmark_data,
@@ -83,12 +84,17 @@ def test_corpus_manifest_is_optional_but_full_benchmark_requires_matching_index(
     bad_manifest = {**corpus_manifest, "query_ids_sha256": "wrong"}
     with pytest.raises(RuntimeError, match="query-id digest"):
         _validate_corpus_index_fingerprint("musique", "full_benchmark", bad_manifest, index_manifest, query_digest)
-    assert _validate_corpus_index_fingerprint("multihoprag", "full_benchmark", None, None, query_digest) == "manifest_absent"
+    assert (
+        _validate_corpus_index_fingerprint("multihoprag", "full_benchmark", None, None, query_digest)
+        == "manifest_absent"
+    )
     with pytest.raises(RuntimeError, match="requires corpus_manifest"):
         _validate_corpus_index_fingerprint("musique", "full_benchmark", None, None, query_digest)
 
     stats_path.write_text(
-        json.dumps({"status": "complete", "corpus_manifest_fingerprint": "stale", "corpus_manifest_paragraph_count": 2}),
+        json.dumps(
+            {"status": "complete", "corpus_manifest_fingerprint": "stale", "corpus_manifest_paragraph_count": 2}
+        ),
         encoding="utf-8",
     )
     stale_index = _latest_index_manifest_metadata("prehop", "musique", stats_dir)
@@ -105,9 +111,7 @@ def test_corpus_manifest_is_optional_but_full_benchmark_requires_matching_index(
 def test_latest_failed_index_artifact_is_not_bypassed_by_older_completed(tmp_path):
     completed = tmp_path / "prehop_musique_completed.json"
     failed = tmp_path / "prehop_musique_failed.json"
-    completed.write_text(
-        json.dumps({"status": "complete", "corpus_manifest_fingerprint": "old"}), encoding="utf-8"
-    )
+    completed.write_text(json.dumps({"status": "complete", "corpus_manifest_fingerprint": "old"}), encoding="utf-8")
     failed.write_text(json.dumps({"status": "failed", "corpus_manifest_fingerprint": "new"}), encoding="utf-8")
     os.utime(completed, (1, 1))
     os.utime(failed, (2, 2))
@@ -123,6 +127,34 @@ def test_latest_failed_index_artifact_is_not_bypassed_by_older_completed(tmp_pat
             latest,
             OFFICIAL_QUERY_ID_DIGESTS["musique"],
         )
+
+
+def test_matrix_child_resolves_separate_index_code_provenance(tmp_path):
+    artifacts_dir = tmp_path / "indexing"
+    run_dir = artifacts_dir / "paper-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "paper-run",
+                "code": {
+                    "revision": "index-revision",
+                    "dirty": False,
+                    "source_tree": {"sha256": "index-tree", "file_count": 88},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    provenance = _matrix_index_code_provenance(
+        "paper-run_musique__prehop",
+        artifacts_dir,
+    )
+
+    assert provenance["revision"] == "index-revision"
+    assert provenance["source_tree_sha256"] == "index-tree"
+    assert provenance["matrix_manifest_path"].endswith("paper-run/manifest.json")
 
 
 @pytest.mark.asyncio
@@ -257,7 +289,7 @@ def test_musique_corpus_keeps_same_title_distinct_paragraphs(tmp_path, monkeypat
             "paragraphs": [
                 {"title": "Repeated", "paragraph_text": "first body"},
                 {"title": "Repeated", "paragraph_text": "second body"},
-            ]
+            ],
         }
     ]
 
