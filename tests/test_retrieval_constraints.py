@@ -37,6 +37,25 @@ async def test_similarity_ordering_has_no_score_gate():
 
 
 @pytest.mark.asyncio
+async def test_final_order_preserves_representation_rank_without_fitted_weight():
+    rag = GraphRAG(strategy="prehop")
+
+    selected, _ = await rag._score_and_select(
+        [1.0, 0.0],
+        [
+            {"id": "semantic-first", "embedding": [1.0, 0.0], "representation_score": 0.5},
+            {"id": "representation-first", "embedding": [0.8, 0.6], "representation_score": 1.0},
+            {"id": "middle", "embedding": [0.9, 0.43589], "representation_score": 0.75},
+        ],
+        top_k=3,
+    )
+
+    assert [node["id"] for node in selected] == ["semantic-first", "representation-first", "middle"]
+    assert selected[0]["rank_fusion_score"] == pytest.approx(1.0 + 1.0 / 3.0)
+    assert selected[1]["rank_fusion_score"] == pytest.approx(1.0 / 3.0 + 1.0)
+
+
+@pytest.mark.asyncio
 async def test_hop_candidate_scoring_preserves_bridge_question_semantics():
     rag = GraphRAG(strategy="prehop")
     candidate = {
@@ -175,6 +194,51 @@ async def test_retrieval_records_every_direct_representation_path():
         {"kind": "direct", "channel": "q_minus", "query_view": "query", "depth": 0},
         {"kind": "direct", "channel": "q_plus", "query_view": "query", "depth": 0},
     ]
+    assert pool[0]["representation_scores"] == {"q_minus": 1.0, "q_plus": 1.0}
+    assert pool[0]["representation_score"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_hop_target_inherits_only_the_qplus_seed_rank():
+    rag = GraphRAG(strategy="prehop")
+    seed = {
+        "id": "seed",
+        "title": "Seed",
+        "sent_id": 0,
+        "text": "dependency",
+        "embedding": [1.0],
+        "dependency_seed": True,
+        "representation_score": 1.5,
+        "representation_scores": {"q_minus": 1.0, "q_plus": 0.5},
+    }
+    rag._retrieve_with_candidate_pool = AsyncMock(return_value=([seed], [seed]))  # type: ignore[method-assign]
+    rag.llm.get_embedding = AsyncMock(return_value=[1.0])
+    rag._expand_frontier = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {
+                "source_id": "seed",
+                "id": "target",
+                "title": "Target",
+                "sent_id": 0,
+                "text": "answer",
+                "embedding": [1.0],
+                "path_type": "hop",
+                "bridge_embeddings": [[1.0]],
+            }
+        ]
+    )
+    captured: list[dict] = []
+
+    async def capture_scores(_query_embedding, candidates, _top_k):
+        captured.extend(candidates)
+        return candidates, candidates
+
+    rag._score_and_select = AsyncMock(side_effect=capture_scores)  # type: ignore[method-assign]
+
+    await rag.graph_search(["query"], depth=1, top_k=2)
+
+    target = next(candidate for candidate in captured if candidate["id"] == "target")
+    assert target["representation_score"] == 0.5
 
 
 @pytest.mark.asyncio

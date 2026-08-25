@@ -78,6 +78,14 @@ class TraversalMixin:
                     for key in ("id", "title", "sent_id", "page", "text", "source", "embedding")
                 },
             )
+            source_candidate = collected.get(str(row.get("source_id") or ""), {})
+            source_channel_scores = source_candidate.get("representation_scores") or {}
+            if path_type == "hop":
+                inherited_score = float(source_channel_scores.get("q_plus", 0.0))
+            else:
+                inherited_score = float(source_candidate.get("representation_score", 0.0))
+            if inherited_score > float(candidate.get("representation_score", 0.0)):
+                candidate["representation_score"] = inherited_score
             bridge_embeddings = [embedding for embedding in (row.get("bridge_embeddings") or []) if embedding]
             if path_type == "hop" and bridge_embeddings:
                 existing = candidate.setdefault("bridge_embeddings", [])

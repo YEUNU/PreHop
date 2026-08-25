@@ -92,15 +92,25 @@ class RetrieveMixin:
 
         merged: dict[str, dict[str, Any]] = {}
         for (channel, view), nodes in zip(search_specs, searches):
-            for node in nodes:
+            for rank, node in enumerate(nodes):
                 node_id = self._node_identity(node)
-                merged.setdefault(node_id, dict(node))
-                paths = merged[node_id].setdefault("retrieval_paths", [])
+                candidate = merged.setdefault(node_id, dict(node))
+                # The rank returned by a representation already fuses its
+                # vector and lexical modalities. Preserve that evidence when
+                # representation lists are merged instead of discarding it
+                # during the later body-only ordering. Reciprocal rank has no
+                # fitted scale or dataset-dependent threshold.
+                representation_scores = candidate.setdefault("representation_scores", {})
+                representation_scores[channel] = float(representation_scores.get(channel, 0.0)) + 1.0 / (
+                    rank + 1
+                )
+                candidate["representation_score"] = sum(representation_scores.values())
+                paths = candidate.setdefault("retrieval_paths", [])
                 direct_path = {"kind": "direct", "channel": channel, "query_view": view, "depth": 0}
                 if direct_path not in paths:
                     paths.append(direct_path)
                 if channel == "q_plus":
-                    merged[node_id]["dependency_seed"] = True
+                    candidate["dependency_seed"] = True
         for node in merged.values():
             node.setdefault("dependency_seed", False)
 
@@ -116,6 +126,9 @@ class RetrieveMixin:
         output = dict(node)
         for key in (
             "rrf_score",
+            "representation_score",
+            "representation_scores",
+            "rank_fusion_score",
             "dependency_seed",
             "embedding",
             "bridge_embeddings",

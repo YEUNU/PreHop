@@ -1,7 +1,7 @@
 """Deterministic retrieval over body, question, and graph representations.
 
 Three index types per chunk are consulted (Body, Q-, Q+); equal reciprocal
-ranks combine them; indexed-embedding cosine similarity orders candidates; pre-built
+ranks combine representation and indexed-body semantic orders; pre-built
 NEXT/HOP_ANSWER edges drive graph traversal; retrieval uses the original benchmark
 query without query-time LLM rewriting.
 

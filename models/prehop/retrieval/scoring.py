@@ -1,4 +1,4 @@
-"""Parameter-free ordering over embeddings computed during indexing."""
+"""Parameter-free fusion of indexed representation and body semantics."""
 
 from collections import defaultdict, deque
 from typing import Any
@@ -22,12 +22,15 @@ class SimilarityScoringMixin:
         candidates: list[dict[str, Any]],
         top_k: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Score bodies and stored Q+ bridges without query-time re-embedding.
+        """Fuse representation ranks with body and stored-Q+ semantics.
 
         A traversed HOP target must satisfy both sides of its offline path.
         The best matching individual source Q+ represents the bridge, and the
         conservative minimum with body relevance requires neither side to be
-        rescued by a tuned interpolation weight.
+        rescued by a tuned interpolation weight. Equal reciprocal ranks then
+        combine that semantic order with the Q-/body/Q+ retrieval order. This
+        avoids comparing backend-specific raw scores and introduces no fitted
+        weight or threshold.
         """
         if not candidates:
             return [], []
@@ -49,9 +52,38 @@ class SimilarityScoringMixin:
                 candidate["bridge_similarity_score"] = bridge_score
             candidate["final_score"] = final_score
 
-        ordered = sorted(
+        semantic_order = sorted(
             candidates,
             key=lambda item: (item.get("final_score", 0.0), self._node_identity(item)),
+            reverse=True,
+        )
+        representation_order = sorted(
+            candidates,
+            key=lambda item: (float(item.get("representation_score", 0.0)), self._node_identity(item)),
+            reverse=True,
+        )
+        semantic_ranks = {
+            self._node_identity(candidate): rank for rank, candidate in enumerate(semantic_order)
+        }
+        representation_ranks = {
+            self._node_identity(candidate): rank
+            for rank, candidate in enumerate(representation_order)
+            if float(candidate.get("representation_score", 0.0)) > 0.0
+        }
+        for candidate in candidates:
+            node_id = self._node_identity(candidate)
+            score = 1.0 / (semantic_ranks[node_id] + 1)
+            if node_id in representation_ranks:
+                score += 1.0 / (representation_ranks[node_id] + 1)
+            candidate["rank_fusion_score"] = score
+
+        ordered = sorted(
+            candidates,
+            key=lambda item: (
+                float(item.get("rank_fusion_score", 0.0)),
+                float(item.get("final_score", 0.0)),
+                self._node_identity(item),
+            ),
             reverse=True,
         )
         selected = (
