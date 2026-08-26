@@ -7,6 +7,56 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-08-26 — Full-query Prehop and Naive development comparison
+
+The current Prehop default and the controlled Naive RAG baseline completed all
+2,556 prepared MultiHop-RAG queries with zero runtime errors, the same query-ID
+digest, top-k 12, generation and embedding models, four concurrent queries,
+and disabled optional judge. The 301 null queries are excluded from official
+retrieval denominators, leaving 2,255 eligible retrieval queries.
+
+| System | Hits@4 | Hits@10 | MRR@10 | MAP@10 |
+|---|---:|---:|---:|---:|
+| Prehop | 0.7259 | 0.8506 | 0.5784 | 0.2795 |
+| Naive RAG | 0.6816 | 0.8399 | 0.5457 | 0.2594 |
+
+Paired bootstrap used 10,000 resamples and seed 42. Prehop improved Hits@4 by
+0.0443 (95% CI [0.0293, 0.0590]), MRR@10 by 0.0327 ([0.0222, 0.0432]), and
+MAP@10 by 0.0201 ([0.0151, 0.0251]). Hits@10 changed by 0.0106 with an
+interval spanning zero ([-0.0027, 0.0235]). Diagnostic document precision,
+recall, F1, fact recall@4/@10, and answer F1 also had intervals excluding zero;
+answer EM did not.
+
+| System | Doc P | Doc R | Doc F1 | Fact R@10 | Answer F1 | Mean latency |
+|---|---:|---:|---:|---:|---:|---:|
+| Prehop | 0.4634 | 0.7017 | 0.5321 | 0.5728 | 0.1588 | 4.861 s |
+| Naive RAG | 0.4371 | 0.6792 | 0.5012 | 0.5400 | 0.1459 | 3.824 s |
+
+The existing full-corpus indexing artifacts record the following costs. For
+Neo4j systems, capacity is an estimated logical property payload: stored vector
+elements at eight bytes plus text, scalar, list, node, and relationship
+payloads. It excludes shared Neo4j store and search-index overhead. MS GraphRAG
+capacity is the physical retrieval artifact size excluding cache, logs, and
+staged input, so its storage mechanism is not directly equivalent.
+
+| System | Indexing time | Capacity |
+|---|---:|---:|
+| Prehop | 41 min 53 s | 1.544 GiB |
+| Naive RAG | 1 min 44 s | 0.170 GiB |
+| HopRAG | 2 h 24 min 16 s | 5.324 GiB |
+| MS GraphRAG | 25 min 16 s | 0.395 GiB |
+
+Result artifacts are
+`data/results/prehop_full_default_20260826/prehop/multihoprag/prehop_multihoprag.json`
+and
+`data/results/naive_full_20260826/naive/multihoprag/naive_multihoprag.json`;
+the paired artifact is under
+`data/results/prehop_full_default_20260826/comparison_vs_naive_full/`.
+Both benchmark artifacts are complete, but the older indexes lack the current
+corpus fingerprint manifest. These values are therefore full-query development
+results, not final paper results. A clean reindex under the current manifest
+contract is required before paper reporting.
+
 ## 2026-08-26 — Paper and architecture synchronized to the fixed configuration
 
 The manuscript now describes the selected configuration without promoting its
@@ -41,6 +91,10 @@ Direct `run_servers.sh` invocation now loads `.env` before applying the empty
 API-key fallback. Previously the fallback was exported first and then preserved
 as a caller override, causing authenticated external endpoints to fail their
 preflight with HTTP 401 even when `.env` contained a valid key.
+
+`scripts/paired_bootstrap.py` now creates its requested output directory before
+writing comparison artifacts. A new nested `--out-dir` therefore works without
+a separate manual directory-creation step.
 
 ## 2026-08-26 — Development-winning P2 default and traversal specialization
 

@@ -263,6 +263,7 @@ def main() -> None:
             results[m][strat] = _bootstrap(_paired(prehop, base, m), rng)
 
     out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{corpus_tag}_paired_bootstrap.json").write_text(
         json.dumps(
             {
