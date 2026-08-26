@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-08-26 — Parameter-free representation fusion and baseline integrity
+
+Prehop now preserves reciprocal-rank evidence when Q−, body, and Q+ owner
+lists are merged. Final selection combines the resulting representation order
+with the body/bridge semantic order using equal reciprocal ranks; it does not
+interpolate backend scores or introduce a fitted channel weight. NEXT targets
+inherit total source representation evidence and HOP targets inherit only Q+
+evidence, both attenuated by reciprocal path length. With the required
+one-edge traversal this is a structural factor of one half, not a swept
+hyperparameter. This prevents graph-discovered nodes from tying directly
+retrieved owners solely through inheritance.
+
+The independent MultiHop-RAG sample-200 development check completed once for
+each of Prehop, Naive, official HopRAG, and official MS GraphRAG on the same
+query-ID digest, with the optional judge disabled and no runtime-error rows.
+The checkpoint is exploratory because its corpus manifest is absent and it is
+not the complete 2,556-query split. It therefore validates implementation
+direction but is not a submission result. Paired analysis showed that the
+final Prehop revision improved the pre-fusion checkpoint on Hits@4, MRR@10,
+MAP@10, and diagnostic fact recall@4, while diagnostic document F1 remained
+lower; the paper claim remains scoped to official evidence ranking and
+discloses the document-level tradeoff.
+
+HopRAG provenance recovery now marks exact text shared by multiple source
+documents as ambiguous instead of awarding an arbitrary title, and its sync
+adapter reuses one event loop per worker thread to prevent descriptor growth.
+MS GraphRAG provenance continues to follow official text-unit IDs through
+document IDs to staged filenames. Its adapter-owned keyword router was removed:
+the baseline now consistently invokes the official LocalSearch API. Full tests
+cover both provenance paths and the fixed API selection.
+
 ## 2026-08-25 — Independent runs and answer-owner HOP construction
 
 Removed the aggregate matrix runner and its merge/accounting tests. Dataset

@@ -25,7 +25,13 @@ from models.hoprag import official_indexer as hop_official_indexer
 from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
 from scripts.datasets import prepare_musique
-from scripts.paired_bootstrap import _load, _paired, _validate_artifact_pair
+from scripts.paired_bootstrap import (
+    MULTIHOPRAG_METRICS,
+    MUSIQUE_METRICS,
+    _load,
+    _paired,
+    _validate_artifact_pair,
+)
 
 
 def test_musique_preparation_defaults_to_the_full_split():
@@ -398,6 +404,13 @@ def test_paired_bootstrap_excludes_negative_sentinel_and_runtime_errors():
     }
 
     assert _paired(prehop, baseline, "paragraph_support_f1").tolist() == [0.5]
+
+
+def test_paired_bootstrap_reports_all_document_diagnostics():
+    for metrics in (MULTIHOPRAG_METRICS, MUSIQUE_METRICS):
+        assert "evidence_doc_precision" in metrics
+        assert "evidence_doc_recall" in metrics
+        assert "evidence_doc_f1" in metrics
 
 
 def test_aggregates_exclude_runtime_errors_and_record_eligible_count():

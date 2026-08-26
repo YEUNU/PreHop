@@ -51,7 +51,9 @@ MULTIHOPRAG_METRICS = [
     "official_hits@10",
     "evidence_fact_recall@4",
     "evidence_fact_recall@10",
+    "evidence_doc_precision",
     "evidence_doc_recall",
+    "evidence_doc_f1",
 ]
 MUSIQUE_METRICS = [
     "answer_em",
@@ -61,7 +63,9 @@ MUSIQUE_METRICS = [
     "paragraph_support_precision",
     "paragraph_support_recall",
     "paragraph_support_f1",
+    "evidence_doc_precision",
     "evidence_doc_recall",
+    "evidence_doc_f1",
 ]
 RETRIEVAL_METRICS = set(MULTIHOPRAG_METRICS[3:] + MUSIQUE_METRICS[4:])
 LOWER_IS_BETTER = {"hallucination"}

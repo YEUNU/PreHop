@@ -196,8 +196,11 @@ modality weight or query-time fusion constant.
 `retrieval/retrieve.py` searches each enabled representation exactly once with
 the same query embedding. Q- and body hits have the direct-evidence role; Q+
 hits have the dependency-seed role and can expose outgoing offline HOP edges.
-Enabled representation results form a set union, so direction is expressed
-by graph role rather than a cross-representation score.
+Enabled representation results form a set union. Each owner retains
+`1 / (rank + 1)` evidence from every representation list in which it appears;
+these values define a representation order without mixing backend-specific
+vector or lexical scores. Direction remains expressed by graph role rather
+than a learned or fitted channel weight.
 
 - `HYPO_CHANNEL_VARIANT=qminus_only`: Q- direct evidence only.
 - `qplus_only`: Q+ dependency seeds only.
@@ -211,10 +214,15 @@ embedding is created once before parallel channel search and passed unchanged
 to every vector channel and final scoring call.
 
 `retrieval/scoring.py` reuses the body and source-Q+ document embeddings stored
-during indexing and embeds only the user query. Cosine similarity orders
-candidates; there is no dedicated reranker model, rerank
+during indexing and embeds only the user query. Body similarity defines the
+semantic score for direct/NEXT candidates; a HOP candidate uses
+`min(body similarity, best individual source-Q+ similarity)`. Candidates are
+ordered once by this semantic score and once by their retained representation
+evidence. Equal reciprocal ranks from the two orders are summed for final
+selection. This avoids calibrated raw-score interpolation and introduces no
+fitted weight or threshold. There is no dedicated reranker model, rerank
 prompt, query rewrite, metadata boost, boilerplate penalty, company filter,
-or domain gate. Final top-k selection uses global cosine order by default.
+or domain gate. Final top-k selection uses this fused global order by default.
 `RAG_SOURCE_SELECTION_VARIANT=round_robin` is an explicit ablation that takes
 one ranked chunk per source per round; it is not part of the primary method.
 
@@ -236,11 +244,17 @@ dependency channel and is walked only in the Q+→answer-evidence direction.
 Q−/body-only seeds and graph-discovered nodes expose NEXT only, preventing an
 unrelated Q+ attached to a direct-evidence chunk from triggering a HOP. NEXT and
 HOP paths are ranked separately per expansion step, then fused per target
-chunk. The structurally bounded results are retained without a candidate
-reservoir or graph-search floor. HOP candidates compare the query against
-each indexed source Q+ separately, take the best bridge similarity, and use
-`min(body, bridge)` as the final score. This requires agreement on both sides
-without a mixing weight. There is no query-time generation, continuation
+chunk. A NEXT target inherits the source's total representation evidence; a
+HOP target inherits only the source's Q+ evidence. In either case the inherited
+value is multiplied by reciprocal path length `1 / (depth + 1)`. The primary
+method requires depth one, so indirect evidence receives one half of its
+direct source value. This structural attenuation prevents an expanded target
+from tying its directly retrieved owner without adding a fitted coefficient.
+The structurally bounded results are retained without a candidate reservoir or
+graph-search floor. HOP candidates compare the query against each indexed
+source Q+ separately, take the best bridge similarity, and use
+`min(body, bridge)` as the semantic score. This requires agreement on both
+sides without a mixing weight. There is no query-time generation, continuation
 prompt, heuristic stop gate, or runtime ANN supplement in Prehop retrieval.
 
 `retrieval/text_utils.py` contains only normalization, Lucene sanitization,
@@ -277,7 +291,9 @@ prompts are baseline algorithms, not hidden Prehop gates.
 - Prehop and Naive use the same fixed chunks and shared final synthesis prompt.
 - Prehop and Naive use top-k 12.
 - HopRAG keeps the official repository's end-to-end top-k 20.
-- MS GraphRAG keeps its official context-budget search configuration.
+- MS GraphRAG uses the official LocalSearch API and context-budget
+  configuration for entity-grounded passage QA. The adapter does not route
+  between LocalSearch and GlobalSearch using query keywords.
 
 Because these retrieval budgets are intentionally method-official rather than
 identical, paper tables and captions must state them. A separate controlled
@@ -296,7 +312,9 @@ validation none enters quantitative submission results or system rankings.
 
 Evidence metrics follow the prepared gold unit for each dataset:
 
-- MultiHop-RAG reports fact recall at `k` on non-null queries; null queries
+- MultiHop-RAG reports official any-hit Hits@k, MRR@10, and MAP@10 on non-null
+  queries. Normalized/token-overlap `evidence_fact_recall@k` and title-level
+  document precision/recall/F1 remain explicitly diagnostic. Null queries
   report refusal and attempted-answer hallucination separately and do not
   enter retrieval denominators.
 - MuSiQue reports supporting-paragraph/title precision, recall, and F1. Its

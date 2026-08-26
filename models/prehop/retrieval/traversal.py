@@ -89,7 +89,7 @@ class TraversalMixin:
             # length 1 / (depth + 1), rather than being treated as strongly as
             # a directly retrieved owner. Depth is structural provenance, not
             # a fitted attenuation hyperparameter.
-            inherited_score /= 2.0
+            inherited_score *= 1.0 / (int(depth) + 1)
             if inherited_score > float(candidate.get("representation_score", 0.0)):
                 candidate["representation_score"] = inherited_score
             bridge_embeddings = [embedding for embedding in (row.get("bridge_embeddings") or []) if embedding]

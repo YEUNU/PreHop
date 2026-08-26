@@ -27,10 +27,12 @@ Core indexing-time design, currently evaluated on MultiHop-RAG and MuSiQue:
 Chunking is fixed-size (page-scoped sentence windows) — see `CLAUDE.md` "Architecture notes" for details.
 
 The query path is deliberately thin: one parallel role-based retrieve over
-Q⁻/body direct evidence and Q⁺ dependency seeds, cosine ordering over
-embeddings stored during indexing, deterministic batched 1-hop
+Q⁻/body direct evidence and Q⁺ dependency seeds, parameter-free reciprocal-rank
+fusion of representation and semantic orders, deterministic batched 1-hop
 traversal over bidirectional `NEXT` and outgoing `HOP_ANSWER` edges, and a
-single LLM synthesis call.
+single LLM synthesis call. Rank evidence propagated over a graph edge is
+attenuated by reciprocal path length, so indirect evidence does not enter the
+representation order as strongly as a directly retrieved owner.
 
 ---
 
@@ -285,12 +287,16 @@ Full list in the paper appendix; the most important:
 | Questions per direction | 3 | fixed output-schema bound for Q− and Q+ |
 | HOP targets | at most one candidate per Q+ | nearest cross-document Q− owner |
 | Query representations | set union | $Q^-$ / body direct evidence and $Q^+$ dependency seeds, each searched once |
+| Query-time rank fusion | equal reciprocal ranks | representation order + body/bridge semantic order; no fitted weight |
+| Graph rank propagation | reciprocal path length | a one-edge target inherits half of its source rank evidence |
 | Offline HOP selection | Q+→Q− owner resolution | the matched Q− deterministically identifies its evidence chunk |
 | Embedding dim | `NEO4J_VECTOR_DIMENSIONS` | must match the configured embedding model's actual output dim (see `CLAUDE.md` "Model / inference infra") |
 
 Offline candidate construction is rank-based and has no learned reranker,
 fixed cosine threshold, domain gate, semantic judge, or tuned acceptance
-score. Query-time candidate ordering is also threshold-free and makes no LLM
+score. Query-time candidate ordering is also threshold-free: it retains each
+representation's reciprocal ranks, combines the resulting representation
+order with the semantic order using equal reciprocal ranks, and makes no LLM
 call before final answer synthesis.
 
 ---

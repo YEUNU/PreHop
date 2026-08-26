@@ -22,7 +22,8 @@ branch map is in `docs/ARCHITECTURE.md`.
   512 and use the separately configured embedding endpoint.
 - A dedicated reranker is not used. Query-time scoring reuses body and Q+
   document embeddings stored during indexing; only the user query is embedded.
-  Final selection uses global cosine order. Source round-robin is an explicit
+  Final selection uses equal reciprocal-rank fusion of the representation
+  order and body/bridge semantic order. Source round-robin is an explicit
   query-only ablation rather than part of the primary method.
 - Query-time search is role-based and has no candidate-width multipliers. Q−
   and body provide direct-evidence candidates; Q+ provides dependency seeds
@@ -32,10 +33,15 @@ branch map is in `docs/ARCHITECTURE.md`.
   throughout. Q−/Q+ raw search uses the indexing schema's maximum three
   questions per owner rather than a tuned modality limit.
 - Vector/full-text fusion uses equal reciprocal ranks `1 / (rank + 1)`.
-  Representation results form a set union without cross-representation scores.
+  When representation lists are merged, each owner retains its reciprocal-rank
+  evidence per channel; the total defines a representation order without
+  comparing backend-specific raw scores.
 - Graph expansion batches the complete frontier once per depth, retains the
   structurally bounded result set without a reservoir multiplier, and scores
   a HOP target as `min(body similarity, best individual source-Q+ similarity)`.
+  A graph target inherits its source's applicable representation evidence with
+  reciprocal-path-length attenuation. With the required one-hop traversal,
+  indirect evidence receives one half of the direct source evidence.
 - Prehop has no query rewrite, rerank simplification prompt, continuation
   prompt, runtime HOP, company/domain gate, metadata boost, boilerplate
   penalty, table-to-text generation, or Q+ heuristic post-filter.
