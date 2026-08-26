@@ -490,8 +490,7 @@ class HopRetriever:
         sims = sims.tolist()
         # hybrid sims
         # print(visit_counter)
-        print("helpful nodes:")
-        print(helpful_nodes)
+        logger.debug("Helpful nodes selected during traversal: {}", len(helpful_nodes))
         for i in range(len(sims)):
             if sparse_sims[i]>=1: # helpful nodes
                 count = int(sparse_sims[i])
@@ -577,7 +576,7 @@ class HopRetriever:
         sims = sims.tolist()
         # hybrid sims
         # print(visit_counter)
-        print("helpful nodes:\n",helpful_nodes)
+        logger.debug("Helpful nodes selected during traversal: {}", len(helpful_nodes))
         sims = [0.5*sims[i]+0.5*sparse_sims[i] for i in range(len(sims))]
         sim_dict = {outcome[i]:sims[i] for i in range(len(outcome))}
         final_context, final_score = self.topk_filter(sim_dict)
