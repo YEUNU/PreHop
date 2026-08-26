@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from core.config import RAGConfig
+from core.neo4j_service import Neo4jService
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing.chunking import parse_pages_offline
@@ -255,6 +256,7 @@ def _write_runtime_stage_stats(
     status: str,
     corpus_manifest: dict | None = None,
     indexing_model_id: str = "default",
+    index_capacity: dict | None = None,
 ) -> None:
     """Persist timing even for official adapters that do not use our graph stats."""
     stats_dir = Path("data/index_stats")
@@ -270,11 +272,126 @@ def _write_runtime_stage_stats(
             "corpus_tag": corpus_tag,
             "dataset_path": dataset_path,
             "timing_seconds": dict(timing_seconds),
+            "index_capacity": index_capacity,
             "status": status,
             "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
             "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
         },
     )
+
+
+async def _collect_index_capacity(
+    strategy: str,
+    corpus_tag: str,
+    neo4j: Neo4jService | None = None,
+) -> dict[str, object]:
+    """Measure strategy storage with the fixed comparison-table definitions."""
+    safe_corpus = re.sub(r"[^A-Za-z0-9_]", "_", corpus_tag)
+    if strategy == "ms_graphrag":
+        root = Path("data/ms_graphrag_output") / corpus_tag
+        if not root.is_dir():
+            raise FileNotFoundError(f"MS GraphRAG retrieval artifact directory not found: {root}")
+        excluded = {"_cache", "_logs", "_input"}
+        total_bytes = sum(
+            path.stat().st_size
+            for path in root.rglob("*")
+            if path.is_file() and not any(part in excluded for part in path.relative_to(root).parts)
+        )
+        return {
+            "measurement": "physical_retrieval_artifact_size",
+            "bytes": total_bytes,
+            "gib": total_bytes / 1024**3,
+            "excluded_directories": sorted(excluded),
+            "definition_version": 1,
+        }
+
+    service = neo4j or Neo4jService()
+    if strategy == "prehop":
+        labels = [
+            f"PR_{safe_corpus}_Chunk",
+            f"PR_{safe_corpus}_Document",
+            f"PR_{safe_corpus}_QMinus",
+            f"PR_{safe_corpus}_QPlus",
+        ]
+        label_literal = json.dumps(labels)
+        queries = [
+            f"""
+            MATCH (n)
+            WHERE any(label IN labels(n) WHERE label IN {label_literal})
+            RETURN sum(coalesce(size(n.embedding), 0) + coalesce(size(n.query_embedding), 0)) AS floats,
+                   sum(coalesce(size(n.text), 0) + coalesce(size(n.id), 0) +
+                       coalesce(size(n.source), 0) + coalesce(size(n.title), 0) +
+                       coalesce(size(n.filename), 0)) AS chars,
+                   0 AS list_items, count(n) AS records
+            """,
+            f"""
+            MATCH (a)-[r]->()
+            WHERE any(label IN labels(a) WHERE label IN {label_literal})
+            RETURN 0 AS floats,
+                   sum(coalesce(size(r.question), 0) + coalesce(size(r.type), 0)) AS chars,
+                   sum(coalesce(size(r.source_question_texts), 0) +
+                       coalesce(size(r.direct_channels), 0) +
+                       coalesce(size(r.source_question_ids), 0) +
+                       coalesce(size(r.reciprocal_source_question_ids), 0)) AS list_items,
+                   count(r) AS records
+            """,
+        ]
+    elif strategy == "naive":
+        label = f"NA_{safe_corpus}_Chunk"
+        queries = [
+            f"""
+            MATCH (n:{label})
+            RETURN sum(coalesce(size(n.embedding), 0)) AS floats,
+                   sum(coalesce(size(n.text), 0) + coalesce(size(n.id), 0) +
+                       coalesce(size(n.source), 0) + coalesce(size(n.title), 0)) AS chars,
+                   0 AS list_items, count(n) AS records
+            """
+        ]
+    elif strategy == "hoprag":
+        label = f"HO_{safe_corpus}"
+        queries = [
+            f"""
+            MATCH (n:{label})
+            RETURN sum(coalesce(size(n.embed), 0)) AS floats,
+                   sum(coalesce(size(n.text), 0) + coalesce(size(n.source), 0) +
+                       coalesce(size(n.title), 0)) +
+                       sum(reduce(total = 0, item IN coalesce(n.keywords, []) |
+                           total + size(item))) AS chars,
+                   0 AS list_items, count(n) AS records
+            """,
+            f"""
+            MATCH (:{label})-[r]->(:{label})
+            RETURN sum(coalesce(size(r.embed), 0)) AS floats,
+                   sum(coalesce(size(r.question), 0)) +
+                       sum(reduce(total = 0, item IN coalesce(r.keywords, []) |
+                           total + size(item))) AS chars,
+                   0 AS list_items, count(r) AS records
+            """,
+        ]
+    else:
+        raise ValueError(f"Unsupported capacity measurement strategy: {strategy}")
+
+    rows = []
+    for query in queries:
+        result = await service.execute_query(query)
+        if len(result) != 1:
+            raise RuntimeError(f"Capacity query returned {len(result)} rows for strategy={strategy}")
+        rows.append(result[0])
+    vector_elements = sum(int(row.get("floats") or 0) for row in rows)
+    text_characters = sum(int(row.get("chars") or 0) for row in rows)
+    list_items = sum(int(row.get("list_items") or 0) for row in rows)
+    records = sum(int(row.get("records") or 0) for row in rows)
+    total_bytes = vector_elements * 8 + text_characters + list_items * 8 + records * 8
+    return {
+        "measurement": "estimated_logical_property_payload",
+        "bytes": total_bytes,
+        "gib": total_bytes / 1024**3,
+        "vector_elements": vector_elements,
+        "text_characters": text_characters,
+        "list_items": list_items,
+        "records": records,
+        "definition_version": 1,
+    }
 
 
 async def _collect_prehop_integrity(engine) -> dict[str, object]:
@@ -656,6 +773,7 @@ async def _run_indexing_unlocked(
         official_started = time.perf_counter()
         timing = {}
         official_status = "complete"
+        index_capacity = None
         try:
             adapter_timing = await run_ms_index(
                 dataset_path=dataset_path,
@@ -663,12 +781,15 @@ async def _run_indexing_unlocked(
                 corpus_manifest=corpus_manifest,
             )
             timing.update(adapter_timing or {})
+            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
+            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
+            index_capacity = await _collect_index_capacity(strategy, corpus_tag or "default")
         except BaseException:
             official_status = "failed"
             raise
         finally:
-            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
-            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
+            timing.setdefault("official_pipeline_seconds", time.perf_counter() - official_started)
+            timing.setdefault("total_elapsed_seconds", time.perf_counter() - started_at)
             _write_runtime_stage_stats(
                 strategy,
                 corpus_tag or "default",
@@ -677,6 +798,7 @@ async def _run_indexing_unlocked(
                 official_status,
                 corpus_manifest,
                 model_id,
+                index_capacity,
             )
         return
 
@@ -690,6 +812,7 @@ async def _run_indexing_unlocked(
         official_started = time.perf_counter()
         timing = {}
         official_status = "complete"
+        index_capacity = None
         try:
             adapter_timing = await run_hop_index(
                 dataset_path=dataset_path,
@@ -697,12 +820,15 @@ async def _run_indexing_unlocked(
                 corpus_manifest=corpus_manifest,
             )
             timing.update(adapter_timing or {})
+            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
+            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
+            index_capacity = await _collect_index_capacity(strategy, corpus_tag or "default")
         except BaseException:
             official_status = "failed"
             raise
         finally:
-            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
-            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
+            timing.setdefault("official_pipeline_seconds", time.perf_counter() - official_started)
+            timing.setdefault("total_elapsed_seconds", time.perf_counter() - started_at)
             _write_runtime_stage_stats(
                 strategy,
                 corpus_tag or "default",
@@ -711,6 +837,7 @@ async def _run_indexing_unlocked(
                 official_status,
                 corpus_manifest,
                 model_id,
+                index_capacity,
             )
         return
 
@@ -997,6 +1124,22 @@ async def _run_indexing_unlocked(
             logger.error("Active index snapshot validation failed: %s", exc)
             failed_files.append({"item": "__active_snapshot__", "stage": "active_snapshot", "error": str(exc)})
 
+    # Freeze comparable indexing time after finalization and integrity checks;
+    # the reporting-only capacity query below is not indexing work.
+    stage_timing["total_elapsed_seconds"] = time.perf_counter() - started_at
+
+    index_capacity = None
+    if not failed_files:
+        try:
+            index_capacity = await _collect_index_capacity(
+                strategy,
+                corpus_tag or "default",
+                engine.neo4j,
+            )
+        except Exception as exc:  # noqa: BLE001 - missing cost evidence invalidates the run artifact
+            logger.error("Index capacity measurement failed: %s", exc)
+            failed_files.append({"item": "__index_capacity__", "stage": "index_capacity", "error": str(exc)})
+
     logger.info(
         "Indexing complete for %d files. Success: %d | Failed: %d",
         len(files),
@@ -1034,11 +1177,6 @@ async def _run_indexing_unlocked(
         except (OSError, TypeError, ValueError) as exc:
             logger.error("Could not write failure log to %s: %s", failures_path, exc)
 
-    # Record one comparable wall-clock duration for every strategy. This ends
-    # after index finalization and integrity checks, immediately before the
-    # stats artifact is serialized.
-    stage_timing["total_elapsed_seconds"] = time.perf_counter() - started_at
-
     # Record structured graph and corpus statistics from the live database.
     # tables (chunk/HOP-edge counts, Q-/Q+ coverage) — queried from the live
     # graph so it's always consistent with what actually landed in Neo4j.
@@ -1064,6 +1202,7 @@ async def _run_indexing_unlocked(
                     "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
                     "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
                     "active_snapshot": snapshot_metadata,
+                    "index_capacity": index_capacity,
                     **graph_stats,
                 },
             )
@@ -1091,6 +1230,7 @@ async def _run_indexing_unlocked(
                     "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
                     "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
                     "active_snapshot": snapshot_metadata,
+                    "index_capacity": index_capacity,
                 },
             )
             logger.info("Index provenance stats written to %s", stats_path)
