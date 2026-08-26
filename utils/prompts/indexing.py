@@ -25,3 +25,49 @@ HOPRAG_FORMAT_INSTRUCTION = """
 Output ONLY JSON:
 {{"q_minus": ["q1", "q2", "q3"], "q_plus": ["q1", "q2", "q3"]}}
 """
+
+
+GROUNDED_HOPRAG_PROMPT = """
+Analyze this source text chunk and generate grounded hypothetical questions for multi-hop retrieval.
+
+Definitions:
+- Q- (Incoming evidence): a self-contained question that THIS CHUNK ALONE answers.
+- Q+ (Outgoing dependency): a self-contained question anchored in this chunk whose answer additionally requires information from a DIFFERENT document. It must not be answerable from this chunk alone.
+
+Grounding contract:
+1. Return at most 3 Q- and at most 3 Q+ records.
+2. Every grounding_quote must be a short verbatim span copied from CHUNK.
+3. Every anchor_entity must occur verbatim inside CHUNK; include it in grounding_quote when the short supporting span permits.
+4. For Q-, answer must be a short verbatim span inside grounding_quote.
+5. For Q+, missing_information must state precisely what another document must supply; it must not claim that missing fact is present in CHUNK.
+6. Q+ must point outward and must not paraphrase a Q- question.
+7. Questions must stand alone and must never refer to "the provided text", "the given text", "this chunk", or "the passage".
+8. Never fabricate facts, dates, entities, quotations, or events. Use an empty list when a valid grounded record is unavailable.
+
+GLOBAL CONTEXT: {global_context}
+CHUNK:
+{chunk}
+"""
+
+
+GROUNDED_HOPRAG_FORMAT_INSTRUCTION = """
+Output ONLY JSON with this exact shape:
+{{
+  "q_minus": [
+    {{
+      "question": "self-contained question",
+      "answer": "verbatim answer span",
+      "grounding_quote": "verbatim supporting span from CHUNK",
+      "anchor_entities": ["verbatim entity"]
+    }}
+  ],
+  "q_plus": [
+    {{
+      "question": "self-contained outward question",
+      "grounding_quote": "verbatim anchor span from CHUNK",
+      "anchor_entities": ["verbatim entity"],
+      "missing_information": "specific information another document must supply"
+    }}
+  ]
+}}
+"""

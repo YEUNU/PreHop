@@ -74,6 +74,9 @@ class RAGConfig:
     # final partial window.
     CHUNK_SENTENCES = 6
     QUESTIONS_PER_DIRECTION = 3
+    # Index-time question output contract. ``legacy`` keeps string-only Q-/Q+;
+    # ``grounded_v1`` requires source-verifiable structured provenance.
+    QUESTION_SCHEMA = os.environ.get("RAG_QUESTION_SCHEMA", "legacy").strip().lower() or "legacy"
     # HOP ANN sends high-dimensional vectors and candidate rows through bounded waves.
     HOP_GATHER_WAVE = int(os.environ.get("RAG_HOP_GATHER_WAVE", "64"))
     DEFAULT_TOP_K = 12
@@ -83,6 +86,24 @@ class RAGConfig:
     # bidirectional NEXT and outgoing HOP_ANSWER expansion.
     GRAPH_HOP_DEPTH = int(os.environ.get("RAG_GRAPH_HOP_DEPTH", "1"))
     GRAPH_EDGE_VARIANT = os.environ.get("RAG_GRAPH_EDGE_VARIANT", "full").strip().lower() or "full"
+    # Read-only traversal ablation over the existing offline graph.
+    # The sample-200 development winner is P2: reciprocal HOP filtering with
+    # owner-wide Q+ activation. Exact activation and the unfiltered graph stay
+    # available as explicit ablations.
+    HOP_EDGE_FILTER = (
+        os.environ.get("RAG_HOP_EDGE_FILTER", "reciprocal_offline").strip().lower()
+        or "reciprocal_offline"
+    )
+    # ``exact`` activates only HOP provenance attached to query-matched Q+ IDs;
+    # ``owner`` activates the winning owner-wide P2 path.
+    QPLUS_HOP_ACTIVATION = (
+        os.environ.get("RAG_QPLUS_HOP_ACTIVATION", "owner").strip().lower() or "owner"
+    )
+    # Optional index-time materialization avoids reverse vector ANN on every
+    # reciprocal-filtered query while preserving the same nearest-neighbour rule.
+    PRECOMPUTE_RECIPROCAL_HOPS = os.environ.get(
+        "RAG_PRECOMPUTE_RECIPROCAL_HOPS", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     QUERY_REWRITE_VARIANT = os.environ.get("RAG_QUERY_REWRITE_VARIANT", "none").strip().lower() or "none"
 
     # --- Ablation & Experimental Toggles ---
@@ -142,6 +163,17 @@ class RAGConfig:
             raise ValueError("RAG_GRAPH_HOP_DEPTH must be 0 or 1")
         if cls.GRAPH_EDGE_VARIANT not in {"full", "hop_only", "next_only"}:
             raise ValueError("RAG_GRAPH_EDGE_VARIANT must be full, hop_only, or next_only")
+        if cls.HOP_EDGE_FILTER not in {"none", "reciprocal", "reciprocal_offline"}:
+            raise ValueError("RAG_HOP_EDGE_FILTER must be none, reciprocal, or reciprocal_offline")
+        if cls.QPLUS_HOP_ACTIVATION not in {"exact", "owner"}:
+            raise ValueError("RAG_QPLUS_HOP_ACTIVATION must be exact or owner")
+        if cls.HOP_EDGE_FILTER == "reciprocal_offline" and not cls.PRECOMPUTE_RECIPROCAL_HOPS:
+            raise ValueError(
+                "RAG_HOP_EDGE_FILTER=reciprocal_offline requires "
+                "RAG_PRECOMPUTE_RECIPROCAL_HOPS=true"
+            )
+        if cls.QUESTION_SCHEMA not in {"legacy", "grounded_v1"}:
+            raise ValueError("RAG_QUESTION_SCHEMA must be legacy or grounded_v1")
         if cls.QUERY_REWRITE_VARIANT not in {"none", "role_aligned"}:
             raise ValueError("RAG_QUERY_REWRITE_VARIANT must be none or role_aligned")
         if not cls.EMBEDDING_QUERY_INSTRUCTION:

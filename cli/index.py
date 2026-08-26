@@ -104,8 +104,10 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
         policy.update(
             {
                 "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
+                "question_schema": RAGConfig.QUESTION_SCHEMA,
                 "q_minus_enabled": RAGConfig.ABLATION_Q_MINUS,
                 "q_plus_enabled": RAGConfig.ABLATION_Q_PLUS,
+                "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
                 "hop_construction": (
                     "qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation"
                 ),
@@ -326,6 +328,27 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         RETURN count(*) AS identical_cross_channel_questions
     """)
     cross_channel = cross_channel_rows[0] if cross_channel_rows else {}
+    grounding: dict[str, object] = {}
+    if RAGConfig.QUESTION_SCHEMA == "grounded_v1":
+        grounding_rows = await engine.neo4j.execute_query(f"""
+            CALL () {{
+                MATCH (q:{q_minus})
+                RETURN count(CASE WHEN q.question_schema <> 'grounded_v1'
+                                       OR trim(coalesce(q.grounding_quote, '')) = ''
+                                       OR size(coalesce(q.anchor_entities, [])) = 0
+                                       OR trim(coalesce(q.answer, '')) = ''
+                                  THEN 1 END) AS invalid_grounding
+                UNION ALL
+                MATCH (q:{q_plus})
+                RETURN count(CASE WHEN q.question_schema <> 'grounded_v1'
+                                       OR trim(coalesce(q.grounding_quote, '')) = ''
+                                       OR size(coalesce(q.anchor_entities, [])) = 0
+                                       OR trim(coalesce(q.missing_information, '')) = ''
+                                  THEN 1 END) AS invalid_grounding
+            }}
+            RETURN sum(invalid_grounding) AS invalid_grounding
+        """)
+        grounding = grounding_rows[0] if grounding_rows else {}
     q_plus_count_rows = await engine.neo4j.execute_query(
         f"MATCH (q:{q_plus}) RETURN count(q) AS count"
     )
@@ -410,6 +433,7 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         and int(questions.get("source_relative_questions", 0) or 0) == 0,
         "unique_questions_per_channel": int(questions.get("duplicate_question_groups", 0) or 0) == 0,
         "distinct_question_roles": int(cross_channel.get("identical_cross_channel_questions", 0) or 0) == 0,
+        "complete_question_grounding": int(grounding.get("invalid_grounding", 0) or 0) == 0,
         "exact_next_topology": int(next_topology.get("expected", 0) or 0)
         == int(next_topology.get("actual", 0) or 0)
         and int(next_topology.get("invalid", 0) or 0) == 0
@@ -428,6 +452,7 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         "diagnostics": {
             "representation": representation,
             "questions": questions,
+            "grounding": grounding,
             "cross_channel": cross_channel,
             "next_topology": next_topology,
             "hop_edges": len(hop_rows),

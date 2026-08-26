@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -187,6 +188,15 @@ def _paired(prehop: dict[str, dict], base: dict[str, dict], metric: str) -> np.n
     return np.asarray(diffs, dtype=float)
 
 
+def _dataset_marker(artifact: dict, corpus_tag: str) -> str:
+    """Normalize dataset identity independently of an experiment corpus tag."""
+    return re.sub(
+        r"[^a-z0-9]+",
+        "",
+        str(artifact.get("dataset") or corpus_tag).lower(),
+    )
+
+
 def _bootstrap(diffs: np.ndarray, rng: np.random.Generator) -> dict:
     n = len(diffs)
     if n == 0:
@@ -236,7 +246,7 @@ def main() -> None:
 
     fig_path = Path(args.fig) if args.fig else Path(f"fig/{corpus_tag}_bootstrap_forest.png")
 
-    dataset_marker = str(corpus_tag).lower()
+    dataset_marker = _dataset_marker(treatment_artifact, corpus_tag)
     if dataset_marker == "multihoprag":
         metrics = MULTIHOPRAG_METRICS
     elif dataset_marker == "musique":

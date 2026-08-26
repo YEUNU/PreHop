@@ -79,13 +79,39 @@ def _latest_index_manifest_metadata(strategy: str, corpus_tag: str, stats_dir: P
     )
     if not candidates:
         return None
-    path = candidates[0]
-    try:
-        payload = _read_json_file(path)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return {"path": str(path), "status": "invalid", "fingerprint": None, "paragraph_count": None}
-    if not isinstance(payload, dict):
-        return {"path": str(path), "status": "invalid", "fingerprint": None, "paragraph_count": None}
+    path: Path | None = None
+    payload: dict[str, Any] | None = None
+    for candidate in candidates:
+        try:
+            candidate_payload = _read_json_file(candidate)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            # The filename prefix is ambiguous when one corpus tag prefixes
+            # another. Preserve the invalid-artifact guard only when there is
+            # no payload available to disambiguate it.
+            return {
+                "path": str(candidate),
+                "status": "invalid",
+                "fingerprint": None,
+                "paragraph_count": None,
+            }
+        if not isinstance(candidate_payload, dict):
+            return {
+                "path": str(candidate),
+                "status": "invalid",
+                "fingerprint": None,
+                "paragraph_count": None,
+            }
+        payload_strategy = candidate_payload.get("strategy")
+        payload_corpus = candidate_payload.get("corpus_tag")
+        if payload_strategy is not None and str(payload_strategy) != strategy:
+            continue
+        if payload_corpus is not None and str(payload_corpus) != corpus_tag:
+            continue
+        path = candidate
+        payload = candidate_payload
+        break
+    if path is None or payload is None:
+        return None
     run_id = payload.get("run_id") or path.stem.removeprefix(f"{strategy}_{corpus_tag}_")
     index_code = payload.get("index_code_provenance")
     return {
@@ -324,9 +350,8 @@ def _extract_stage_timing(trace: Any) -> dict[str, float]:
                 timing["retrieve_ms"] = float(step.get("retrieve_ms") or 0.0)
             if "traversal_ms" in step:
                 timing["traversal_ms"] = float(step.get("traversal_ms") or 0.0)
-        elif step.get("step") == "synthesis":
-            if "synthesis_ms" in step:
-                timing["synthesis_ms"] = float(step.get("synthesis_ms") or 0.0)
+        elif step.get("step") == "synthesis" and "synthesis_ms" in step:
+            timing["synthesis_ms"] = float(step.get("synthesis_ms") or 0.0)
     return timing
 
 
@@ -1001,6 +1026,10 @@ async def run_benchmark(
                 "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
                 "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
                 "graph_edge_variant": RAGConfig.GRAPH_EDGE_VARIANT,
+                "hop_edge_filter": RAGConfig.HOP_EDGE_FILTER,
+                "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
+                "question_schema": RAGConfig.QUESTION_SCHEMA,
+                "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
                 "query_rewrite_variant": RAGConfig.QUERY_REWRITE_VARIANT,
                 "default_top_k": RAGConfig.DEFAULT_TOP_K,
                 "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,

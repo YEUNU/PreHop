@@ -1,10 +1,24 @@
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from core.config import RAGConfig
 from models.prehop.graphrag import GraphRAG
+
+
+class _AsyncRecords:
+    def __init__(self, rows):
+        self._rows = iter(rows)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._rows)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
 
 
 def test_retrieval_has_no_dataset_specific_metadata_gate():
@@ -182,8 +196,17 @@ async def test_retrieval_records_every_direct_representation_path():
 
     async def candidates(_query, *, query_embedding, limit, channel):
         _ = query_embedding, limit
-        if channel in {"q_minus", "q_plus"}:
+        if channel == "q_minus":
             return [{"id": "shared", "text": "evidence", "embedding": [1.0]}]
+        if channel == "q_plus":
+            return [
+                {
+                    "id": "shared",
+                    "text": "evidence",
+                    "embedding": [1.0],
+                    "matched_qplus_ids": ["qp-1"],
+                }
+            ]
         return []
 
     rag._hybrid_rrf_candidates = AsyncMock(side_effect=candidates)  # type: ignore[method-assign]
@@ -196,6 +219,8 @@ async def test_retrieval_records_every_direct_representation_path():
     ]
     assert pool[0]["representation_scores"] == {"q_minus": 1.0, "q_plus": 1.0}
     assert pool[0]["representation_score"] == 2.0
+    assert pool[0]["matched_qplus_ids"] == ["qp-1"]
+    assert pool[0]["dependency_seed"] is True
 
 
 @pytest.mark.asyncio
@@ -279,6 +304,61 @@ async def test_hybrid_search_derives_modality_width_from_owner_budget():
 
 
 @pytest.mark.asyncio
+async def test_hybrid_rrf_restores_each_modality_order_from_raw_score():
+    rag = GraphRAG(strategy="prehop")
+    # UNION/aggregation result order is intentionally scrambled.  Raw scores
+    # establish ranks only within each modality before equal RRF.
+    rag._run_channel_query = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {"id": "vector-low", "embedding": [1.0], "score": 0.1, "type": "vector"},
+            {"id": "text-low", "embedding": [1.0], "score": 1.0, "type": "text"},
+            {"id": "vector-high", "embedding": [1.0], "score": 0.9, "type": "vector"},
+            {"id": "text-high", "embedding": [1.0], "score": 9.0, "type": "text"},
+        ]
+    )
+
+    nodes = await rag._hybrid_rrf_candidates("query", [1.0], limit=4, channel="body")
+
+    assert [node["id"] for node in nodes] == [
+        "text-high",
+        "vector-high",
+        "text-low",
+        "vector-low",
+    ]
+    assert [node["rrf_score"] for node in nodes] == [1.0, 1.0, 0.5, 0.5]
+
+
+@pytest.mark.asyncio
+async def test_qplus_hybrid_preserves_exact_question_ids_across_modalities():
+    rag = GraphRAG(strategy="prehop")
+    rag._run_channel_query = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {
+                "id": "owner",
+                "embedding": [1.0],
+                "score": 0.9,
+                "type": "vector",
+                "matched_question_ids": ["qp-vector", "qp-shared"],
+            },
+            {
+                "id": "owner",
+                "embedding": [1.0],
+                "score": 9.0,
+                "type": "text",
+                "matched_question_ids": ["qp-text", "qp-shared"],
+            },
+        ]
+    )
+
+    nodes = await rag._hybrid_rrf_candidates("query", [1.0], limit=1, channel="q_plus")
+
+    assert nodes[0]["matched_qplus_ids"] == ["qp-shared", "qp-text", "qp-vector"]
+    assert "matched_question_ids" not in nodes[0]
+    query = rag._run_channel_query.await_args.args[0]
+    assert query.count("collect(DISTINCT node.id) AS matched_question_ids") == 2
+
+
+@pytest.mark.asyncio
 async def test_only_query_matched_dependency_seeds_can_initiate_hop_traversal():
     rag = GraphRAG(strategy="prehop")
     direct = {
@@ -294,6 +374,7 @@ async def test_only_query_matched_dependency_seeds_can_initiate_hop_traversal():
         "sent_id": 0,
         "text": "dependency",
         "dependency_seed": True,
+        "matched_qplus_ids": ["qp-exact"],
     }
     rag._retrieve_with_candidate_pool = AsyncMock(  # type: ignore[method-assign]
         return_value=([direct], [direct, dependency])
@@ -304,9 +385,104 @@ async def test_only_query_matched_dependency_seeds_can_initiate_hop_traversal():
 
     await rag.graph_search(["query"], depth=1, top_k=1)
 
+    assert rag._retrieve_with_candidate_pool.await_args.kwargs["select_final"] is False
     rag._expand_frontier.assert_awaited_once()
     assert set(rag._expand_frontier.await_args.args[0]) == {"direct", "dependency"}
-    assert rag._expand_frontier.await_args.args[2] == {"dependency"}
+    assert rag._expand_frontier.await_args.args[2] == {"dependency": {"qp-exact"}}
+
+
+@pytest.mark.asyncio
+async def test_exact_qplus_activation_passes_only_matched_question_ids(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "HOP_EDGE_FILTER", "none")
+    monkeypatch.setattr(RAGConfig, "QPLUS_HOP_ACTIVATION", "exact")
+    rag = GraphRAG(strategy="prehop")
+    session = AsyncMock()
+    session.run = AsyncMock(return_value=_AsyncRecords([]))
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = session
+    session_context.__aexit__.return_value = None
+    rag.neo4j.driver.session = MagicMock(return_value=session_context)
+
+    await rag._expand_frontier(
+        ["source", "direct"],
+        {"source", "direct"},
+        {"source": {"qp-matched-b", "qp-matched-a"}},
+    )
+
+    query, parameters = session.run.await_args.args
+    assert "question_id IN coalesce($hop_source_question_ids[src.id], [])" in query
+    assert "q.id IN coalesce($hop_source_question_ids[src.id], [])" in query
+    assert parameters["hop_source_ids"] == ["source"]
+    assert parameters["hop_source_question_ids"] == {
+        "source": ["qp-matched-a", "qp-matched-b"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_reciprocal_hop_filter_is_read_only_and_uses_reverse_qplus_ann(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "HOP_EDGE_FILTER", "reciprocal")
+    rag = GraphRAG(strategy="prehop")
+    session = AsyncMock()
+    session.run = AsyncMock(return_value=_AsyncRecords([]))
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = session
+    session_context.__aexit__.return_value = None
+    rag.neo4j.driver.session = MagicMock(return_value=session_context)
+
+    await rag._expand_frontier(["source"], {"source"}, {"source": {"qp-exact"}})
+
+    query, parameters = session.run.await_args.args
+    assert "ANSWERED_BY" in query
+    assert "db.index.vector.queryNodes" in query
+    assert "reverse_best.id = edge_qplus.id" in query
+    assert "edge_qplus.id IN coalesce($hop_source_question_ids[src.id], [])" in query
+    assert all(keyword not in query for keyword in ("CREATE", "MERGE", "SET ", "DELETE"))
+    assert parameters["qplus_vector_index"] == rag.q_plus_vector_index
+    assert "reciprocal_source_question_ids" not in query
+
+
+@pytest.mark.asyncio
+async def test_offline_reciprocal_filter_uses_materialized_ids_without_ann(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "HOP_EDGE_FILTER", "reciprocal_offline")
+    monkeypatch.setattr(RAGConfig, "QPLUS_HOP_ACTIVATION", "exact")
+    rag = GraphRAG(strategy="prehop")
+    session = AsyncMock()
+    session.run = AsyncMock(return_value=_AsyncRecords([]))
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = session
+    session_context.__aexit__.return_value = None
+    rag.neo4j.driver.session = MagicMock(return_value=session_context)
+
+    await rag._expand_frontier(["source"], {"source"}, {"source": {"qp-exact"}})
+
+    query, parameters = session.run.await_args.args
+    assert "reciprocal_source_question_ids" in query
+    assert "db.index.vector.queryNodes" not in query
+    assert parameters["qplus_hop_activation"] == "exact"
+
+
+@pytest.mark.asyncio
+async def test_graph_search_scores_candidates_only_after_expansion():
+    rag = GraphRAG(strategy="prehop")
+    seed = {
+        "id": "seed",
+        "title": "Seed",
+        "sent_id": 0,
+        "page": 0,
+        "text": "seed",
+        "embedding": [1.0],
+        "dependency_seed": False,
+        "representation_score": 1.0,
+    }
+    rag.llm.get_embedding = AsyncMock(return_value=[1.0])
+    rag._hybrid_rrf_candidates = AsyncMock(return_value=[seed])  # type: ignore[method-assign]
+    rag._expand_frontier = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    original = rag._score_and_select
+    rag._score_and_select = AsyncMock(side_effect=original)  # type: ignore[method-assign]
+
+    await rag.graph_search(["query"], depth=1, top_k=1)
+
+    assert rag._score_and_select.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -347,6 +523,46 @@ async def test_build_graph_stores_generated_q_plus_without_heuristic_filter(monk
     ]
     assert len({question["id"] for question in payload["q_plus"]}) == 2
     assert all(question["query_embedding"] == [0.1] for question in payload["q_plus"])
+
+
+@pytest.mark.asyncio
+async def test_build_graph_stores_grounded_question_metadata(monkeypatch):
+    monkeypatch.setenv("RAG_EMBEDDING_CACHE", "off")
+    rag = GraphRAG(strategy="prehop")
+    rag._ensure_index_ready = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    rag.vector_dimensions = 1
+    rag.llm.get_embeddings = AsyncMock(side_effect=lambda texts, encoding_type="document": [[0.1] for _ in texts])
+    knowledge = {
+        "chunks": [
+            {
+                "text": "Acme was founded by Kim.",
+                "title": "Acme",
+                "sent_id": 0,
+                "page": 1,
+                "q_minus": [{
+                    "text": "Who founded Acme?",
+                    "answer": "Kim",
+                    "grounding_quote": "Acme was founded by Kim.",
+                    "anchor_entities": ["Acme", "Kim"],
+                    "question_schema": "grounded_v1",
+                }],
+                "q_plus": [{
+                    "text": "Where was Acme incorporated?",
+                    "grounding_quote": "Acme was founded by Kim.",
+                    "anchor_entities": ["Acme"],
+                    "missing_information": "The jurisdiction.",
+                    "question_schema": "grounded_v1",
+                }],
+            }
+        ]
+    }
+
+    await rag.build_graph(knowledge, source="unit_test", document_filename="Acme.txt")
+
+    payload = rag._pending_batch[-1]["data"][0]
+    assert payload["q_minus"][0]["answer"] == "Kim"
+    assert payload["q_plus"][0]["missing_information"] == "The jurisdiction."
+    assert payload["q_plus"][0]["question_schema"] == "grounded_v1"
 
 
 @pytest.mark.asyncio

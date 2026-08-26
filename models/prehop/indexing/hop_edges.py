@@ -288,6 +288,84 @@ class HopEdgeMixin:
             f"MATCH (:{self.q_plus_label})-[r]->() DELETE r"
         )
 
+    async def _precompute_reciprocal_hop_provenance(self) -> int:
+        """Materialize the reciprocal Q+ rule once for query-time reuse.
+
+        This uses the same reverse nearest-neighbour definition as the legacy
+        query-time filter. Bounded keyset pages keep the high-dimensional ANN
+        work out of one unbounded transaction.
+        """
+        await self.retry_query(
+            f"MATCH (:{self.chunk_label})-[h:HOP_ANSWER]->(:{self.chunk_label}) "
+            "SET h.reciprocal_source_question_ids = []"
+        )
+        page_size = max(32, min(512, RAGConfig.HOP_GATHER_WAVE * 2))
+        last_id = ""
+        reciprocal_pairs = 0
+        while True:
+            id_rows = await self.retry_query(
+                f"""
+                MATCH (q:{self.q_plus_label})-[:ANSWERED_BY]->(:{self.q_minus_label})
+                WHERE q.id > $last_id
+                RETURN q.id AS id
+                ORDER BY q.id
+                LIMIT $limit
+                """,
+                {"last_id": last_id, "limit": page_size},
+            )
+            if not id_rows:
+                break
+            question_ids = [str(row["id"]) for row in id_rows]
+            last_id = question_ids[-1]
+            rows = await self.retry_query(
+                f"""
+                UNWIND $question_ids AS question_id
+                MATCH (source_owner:{self.chunk_label})-[:HAS_Q_PLUS]->
+                      (edge_qplus:{self.q_plus_label} {{id: question_id}})
+                      -[:ANSWERED_BY]->(edge_qminus:{self.q_minus_label})
+                MATCH (related:{self.chunk_label})-[:HAS_Q_MINUS]->(edge_qminus)
+                CALL (related, edge_qplus, edge_qminus) {{
+                    OPTIONAL MATCH (same_source_owner:{self.chunk_label})
+                                   -[:HAS_Q_PLUS]->(same_source_qplus:{self.q_plus_label})
+                    WHERE same_source_owner.source = related.source
+                    WITH related, edge_qplus, edge_qminus,
+                         count(same_source_qplus) + 1 AS reverse_pool
+                    CALL db.index.vector.queryNodes(
+                        $qplus_vector_index, reverse_pool, edge_qminus.embedding
+                    ) YIELD node, score
+                    MATCH (reverse_owner:{self.chunk_label})-[:HAS_Q_PLUS]->(node)
+                    WHERE reverse_owner.source <> related.source
+                    WITH edge_qplus, node, score
+                    ORDER BY score DESC, node.id
+                    WITH edge_qplus, collect(node)[0] AS reverse_best
+                    RETURN reverse_best.id = edge_qplus.id AS reciprocal
+                }}
+                WITH source_owner, related, edge_qplus, reciprocal
+                WHERE reciprocal
+                MATCH (source_owner)-[hop:HOP_ANSWER]->(related)
+                WHERE edge_qplus.id IN coalesce(hop.source_question_ids, [])
+                WITH hop, collect(DISTINCT edge_qplus.id) AS reciprocal_ids
+                SET hop.reciprocal_source_question_ids = reduce(
+                    ids = coalesce(hop.reciprocal_source_question_ids, []),
+                    question_id IN reciprocal_ids |
+                    CASE WHEN question_id IN ids THEN ids ELSE ids + question_id END
+                )
+                RETURN sum(size(reciprocal_ids)) AS reciprocal_pairs
+                """,
+                {
+                    "question_ids": question_ids,
+                    "qplus_vector_index": self.q_plus_vector_index,
+                },
+            )
+            reciprocal_pairs += int((rows[0] if rows else {}).get("reciprocal_pairs", 0) or 0)
+            if len(id_rows) < page_size:
+                break
+        logger.info(
+            "Precomputed %d reciprocal Q+ provenance pair(s) for query-time traversal.",
+            reciprocal_pairs,
+        )
+        return reciprocal_pairs
+
     async def build_all_hop_edges(self) -> None:
         """Build Q+-to-answer-owner HOP edges after the complete corpus is visible."""
         if not RAGConfig.ABLATION_Q_PLUS:
@@ -414,3 +492,5 @@ class HopEdgeMixin:
             total_edges,
             total_sources,
         )
+        if RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS and RAGConfig.ABLATION_Q_MINUS:
+            await self._precompute_reciprocal_hop_provenance()

@@ -4,6 +4,54 @@ The current system evaluates Prehop, Naive RAG, official HopRAG, and official
 MS GraphRAG on MultiHop-RAG and MuSiQue. The detailed module and
 branch map is in `docs/ARCHITECTURE.md`.
 
+## Documentation responsibilities
+
+Keep repository facts in one authoritative place and link to them elsewhere:
+
+- `CLAUDE.md` is the operational policy for maintainers and coding agents:
+  supported state, invariants, experiment hygiene, and documentation rules.
+- `README.md` is the user-facing overview: the method at a glance, repository
+  layout, setup, commands, and links to deeper contracts. It does not carry
+  development-result tables.
+- `docs/ARCHITECTURE.md` is the normative implementation map: module ownership,
+  indexing/query data flow, algorithmic behavior, and evaluation contracts.
+- `docs/CHANGELOG.md` is the chronological engineering record. It records what
+  changed and may summarize explicitly labelled exploratory validation, but it
+  is not the current architecture specification or a paper-results source.
+- `docs/prehop_paper.md` is the local, gitignored AI-research manuscript and
+  confirmatory evaluation specification. It contains the fixed method, claim
+  scope, final reportable results, their analysis, and limitations.
+  Development history, rejected variants, intermediate checkpoints, and
+  negative exploratory results belong in `docs/CHANGELOG.md`, not in the
+  manuscript.
+
+When behavior changes, update the implementation contract in
+`docs/ARCHITECTURE.md`, the concise user-facing description in `README.md` if
+externally relevant, and the chronological entry in `docs/CHANGELOG.md`.
+Update `docs/prehop_paper.md` only for method, protocol, analysis, or claim
+changes. Update this file when the supported state, workflow rules, or these
+document responsibilities change. Do not copy full sections between files.
+
+### Documentation style
+
+- Preserve each document's audience and tone: `README.md` is concise and
+  user-facing; `CLAUDE.md` is an operational policy; `ARCHITECTURE.md` is a
+  neutral implementation specification; `CHANGELOG.md` is a factual history;
+  and `prehop_paper.md` uses cautious, evidence-bound research prose.
+- Do not invent or capitalize labels for ordinary concepts merely to organize
+  the writing. Avoid AI-like management phrases, repeated slogans, ornamental
+  names, and unexplained shorthand when a direct description is clearer.
+- Use proper nouns only when they identify an actual dataset, model, system,
+  external project, published method, code symbol, configuration value, or
+  established research term required for precision or reproducibility.
+- Define necessary project shorthand once and keep it scoped to the document
+  that needs it. Historical experiment labels such as P1/P2 belong in
+  `CHANGELOG.md`; current documentation and paper prose describe the actual
+  configuration instead.
+- Prefer concrete statements about code, settings, artifacts, and measured
+  results. Do not turn hypotheses, development-sample outcomes, or structural
+  checks into named claims or qualitative judgments of quality.
+
 ## Supported state
 
 - Python 3.12, dependencies managed by `uv` from `pyproject.toml`.
@@ -18,35 +66,20 @@ branch map is in `docs/ARCHITECTURE.md`.
   generation endpoint's `VLLM_MAX_NUM_SEQS` limit.
 - Paper runs execute one dataset/strategy target at a time with an explicit
   run ID. `VLLM_MAX_NUM_SEQS` records endpoint capacity; each adapter's worker
-  controls must remain within that capacity. Embeddings default to batches of
-  512 and use the separately configured embedding endpoint.
-- A dedicated reranker is not used. Query-time scoring reuses body and Q+
-  document embeddings stored during indexing; only the user query is embedded.
-  Final selection uses equal reciprocal-rank fusion of the representation
-  order and body/bridge semantic order. Source round-robin is an explicit
-  query-only ablation rather than part of the primary method.
-- Query-time search is role-based and has no candidate-width multipliers. Q−
-  and body provide direct-evidence candidates; Q+ provides dependency seeds
-  for outgoing offline HOP traversal. Each enabled representation is searched
-  once and retains at most `top_k` owner chunks, so the fused base-pool bound
-  is `top_k × active_representation_count`. A single query embedding is reused
-  throughout. Q−/Q+ raw search uses the indexing schema's maximum three
-  questions per owner rather than a tuned modality limit.
-- Vector/full-text fusion uses equal reciprocal ranks `1 / (rank + 1)`.
-  When representation lists are merged, each owner retains its reciprocal-rank
-  evidence per channel; the total defines a representation order without
-  comparing backend-specific raw scores.
-- Graph expansion batches the complete frontier once per depth, retains the
-  structurally bounded result set without a reservoir multiplier, and scores
-  a HOP target as `min(body similarity, best individual source-Q+ similarity)`.
-  A graph target inherits its source's applicable representation evidence with
-  reciprocal-path-length attenuation. With the required one-hop traversal,
-  indirect evidence receives one half of the direct source evidence.
-- Prehop has no query rewrite, rerank simplification prompt, continuation
-  prompt, runtime HOP, company/domain gate, metadata boost, boilerplate
-  penalty, table-to-text generation, or Q+ heuristic post-filter.
-- Prehop retrieval has no generation call. Its only query-time generation is
-  final answer synthesis after deterministic retrieval/traversal.
+  controls must remain within that capacity.
+- The configuration selected for confirmatory evaluation uses legacy Q−/Q+,
+  owner activation, materialized reciprocal provenance, depth-one full
+  NEXT/HOP traversal, global selection, and no query rewrite. Exact activation
+  and online reciprocal filtering are explicit ablations. The complete
+  algorithm belongs in `ARCHITECTURE.md`.
+- Query-time retrieval is deterministic and uses no generation, learned
+  reranker, runtime HOP construction, or heuristic domain gate. A single final
+  synthesis call is made only when context is non-empty.
+- Query-time filtering must not mutate or replace the offline HOP graph. Fresh
+  indexes must materialize reciprocal provenance before the offline filter is
+  enabled.
+- This configuration was selected on a development sample and cannot support
+  an effectiveness claim until the pre-declared confirmatory evaluation.
 - Official baselines keep their upstream behavior. In particular, official
   HopRAG `bfs_node` uses its published LLM node judgement during retrieval;
   this is documented baseline behavior and is routed to the external endpoint.
@@ -55,18 +88,9 @@ branch map is in `docs/ARCHITECTURE.md`.
   silently falls back to synchronous paid calls. Without qualified-human
   validation, judge output is excluded from paper rankings and quantitative
   result tables.
-- Benchmark answer quality emits deterministic normalized EM/F1 (including
-  MuSiQue aliases) as a downstream signal and keeps LLM-judge semantic
-  correctness and context groundedness as separate diagnostic fields.
-  MultiHop-RAG emits official-compatible `official_hits@k`, `official_mrr@10`,
-  and `official_map@10` separately from custom `evidence_fact_recall@k`.
-  Gold-evidence retrieval is primary for the method claim. MuSiQue support
-  uses the official formula over stable global paragraph
-  identities and is named `paragraph_support_*`, not official query-local
-  `idx` support; title-level evidence precision/recall/F1 is diagnostic only.
-  Paragraph-ID headers are stripped before indexing. Negative sentinels and
-  runtime-error rows are excluded from aggregates, whose eligible counts are
-  recorded. Sample manifests are exploratory rather than full benchmark runs.
+- Deterministic dataset metrics remain authoritative. Negative sentinels and
+  runtime-error rows are excluded from aggregates with eligible counts
+  recorded; samples are exploratory rather than full benchmark runs.
 
 ## Data and tags
 
@@ -164,7 +188,7 @@ than relying only on progress logs:
 
 - sample `data/debug/<run-id>/prehop/<corpus>/<source>/final_chunks.json` when
   `--save-intermediate` is enabled;
-- verify raw chunk text, title/page/sent_id ordering, grounded Q-, outward Q+,
+- verify raw chunk text, title/page/sent_id ordering, answerable Q-, outward Q+,
   generated questions and absence of fabricated or converted text;
 - query total Documents/Chunks and Q-/Q+ coverage;
 - after the final pass, inspect HOP question/owner provenance, per-source
@@ -186,9 +210,14 @@ separately from official-baseline results.
 
 ## Paper specification rules
 
-`docs/prehop_paper.md` is a local, gitignored finalized evaluation
-specification. It records the current method, dataset-specific metrics, and
-reporting decisions; it is not a source of benchmark results. When editing it:
+`docs/prehop_paper.md` is a local, gitignored confirmatory evaluation
+specification. It records the fixed method, dataset-specific metrics, and
+reporting decisions; development numbers are not paper results. Only the fixed
+methodology and final results may appear in its main text. Do
+not narrate the development sequence or retain rejected/intermediate
+experiments merely to justify the final design; preserve those records in
+`docs/CHANGELOG.md`.
+When editing it:
 
 - Separate confirmed implementation facts, measured results, and hypotheses.
   Never invent a result, citation, author detail, dataset count, or statistical
@@ -200,8 +229,8 @@ reporting decisions; it is not a source of benchmark results. When editing it:
   that do not help a reader reproduce or understand the method.
 - Record the exact run ID, git revision, environment/model settings, dataset
   split, seed, judge status, and artifact path for every reported number. A
-  result is paper-eligible only when the target completed without integrity or
-  measurement failures. Optional judge output must be complete only when it is
+  result may be reported in the paper only when the target completed without
+  integrity or measurement failures. Optional judge output must be complete only when it is
   reported as a separately labelled supplemental analysis.
 - Keep official-baseline behavior and Prehop ablations clearly distinct. Do
   not silently equalize top-k/context budgets or alter upstream HopRAG/MS

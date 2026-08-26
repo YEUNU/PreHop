@@ -16,7 +16,12 @@ import threading
 from typing import Any
 
 from core.config import RAGConfig
-from utils.prompts import HOPRAG_FORMAT_INSTRUCTION, HOPRAG_PROMPT
+from utils.prompts import (
+    GROUNDED_HOPRAG_FORMAT_INSTRUCTION,
+    GROUNDED_HOPRAG_PROMPT,
+    HOPRAG_FORMAT_INSTRUCTION,
+    HOPRAG_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +57,11 @@ def _prompt_sig() -> str:
     entries are never reused under a changed prompt — they just sit
     untouched on disk under their old key (nothing is deleted) while a fresh
     run writes new entries under the new key."""
-    combined = HOPRAG_PROMPT + HOPRAG_FORMAT_INSTRUCTION
+    combined = (
+        GROUNDED_HOPRAG_PROMPT + GROUNDED_HOPRAG_FORMAT_INSTRUCTION
+        if RAGConfig.QUESTION_SCHEMA == "grounded_v1"
+        else HOPRAG_PROMPT + HOPRAG_FORMAT_INSTRUCTION
+    )
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:8]
 
 
@@ -64,6 +73,7 @@ def _ablation_signature() -> str:
         f"qm={int(RAGConfig.ABLATION_Q_MINUS)}"
         f"-qp={int(RAGConfig.ABLATION_Q_PLUS)}"
         f"-cs={RAGConfig.CHUNK_SENTENCES}"
+        f"-schema={RAGConfig.QUESTION_SCHEMA}"
         f"-prompt={_prompt_sig()}"
     )
 

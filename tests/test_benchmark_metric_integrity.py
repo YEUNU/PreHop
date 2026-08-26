@@ -28,6 +28,7 @@ from scripts.datasets import prepare_musique
 from scripts.paired_bootstrap import (
     MULTIHOPRAG_METRICS,
     MUSIQUE_METRICS,
+    _dataset_marker,
     _load,
     _paired,
     _validate_artifact_pair,
@@ -133,6 +134,27 @@ def test_latest_failed_index_artifact_is_not_bypassed_by_older_completed(tmp_pat
             latest,
             OFFICIAL_QUERY_ID_DIGESTS["musique"],
         )
+
+
+def test_index_manifest_selection_does_not_cross_prefixing_corpus_tags(tmp_path):
+    legacy = tmp_path / "prehop_multihoprag_legacy.json"
+    grounded = tmp_path / "prehop_multihoprag_grounded_v1_newer.json"
+    legacy.write_text(
+        json.dumps({"strategy": "prehop", "corpus_tag": "multihoprag", "status": "complete"}),
+        encoding="utf-8",
+    )
+    grounded.write_text(
+        json.dumps(
+            {"strategy": "prehop", "corpus_tag": "multihoprag_grounded_v1", "status": "complete"}
+        ),
+        encoding="utf-8",
+    )
+    os.utime(legacy, (1, 1))
+    os.utime(grounded, (2, 2))
+
+    selected = _latest_index_manifest_metadata("prehop", "multihoprag", tmp_path)
+
+    assert selected["path"] == str(legacy)
 
 
 @pytest.mark.asyncio
@@ -411,6 +433,10 @@ def test_paired_bootstrap_reports_all_document_diagnostics():
         assert "evidence_doc_precision" in metrics
         assert "evidence_doc_recall" in metrics
         assert "evidence_doc_f1" in metrics
+
+
+def test_paired_bootstrap_uses_dataset_identity_with_custom_corpus_tag():
+    assert _dataset_marker({"dataset": "MultiHop-RAG"}, "multihoprag_grounded_v1") == "multihoprag"
 
 
 def test_aggregates_exclude_runtime_errors_and_record_eligible_count():

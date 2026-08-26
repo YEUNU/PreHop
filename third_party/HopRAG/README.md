@@ -73,7 +73,7 @@ Follow this pipeline to build the graph, run retrieval, and generate answers.
 
 ### Step 1: Prepare the Dataset
 
-This project prepares its three supported corpora with
+This project prepares its two supported corpora with
 `scripts/datasets/prepare_multihoprag.py` and
 `scripts/datasets/prepare_musique.py`. The unused upstream standalone preprocessor was
 removed so there is one corpus contract.

@@ -3,6 +3,8 @@
 This is the module-level source of truth for the current indexing and query
 paths. All model inference is sent to configured external OpenAI-compatible
 generation and embedding endpoints. The repository never starts a local model.
+It describes current behavior, not chronological changes or paper claims;
+those belong in `CHANGELOG.md` and the local `prehop_paper.md`, respectively.
 
 ## Shared input contract
 
@@ -35,6 +37,7 @@ strategy == prehop
   -> external body/Q-/Q+ document embeddings + Q+ query embeddings
   -> atomic Neo4j Document/Chunk/question replacement + NEXT writes
   -> after every document succeeds: whole-corpus HOP edge pass
+  -> materialize reciprocal source-Q+ provenance on each HOP edge
 
 strategy == naive
   shared parser + shared fixed page windows
@@ -89,12 +92,17 @@ the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
   `HOPRAG_PROMPT`.
 - Uses greedy decoding (`temperature=0`) so indexing does not inherit a
   deployment-specific sampling default.
-- Returns `q_minus` and `q_plus`; missing keys, invalid JSON,
-  non-string list values, or more than three questions raise
-  after client retries. Empty Q-/Q+ lists are intentional valid outputs.
+- Returns `q_minus` and `q_plus`; missing keys, invalid JSON, schema-invalid
+  records, or more than three questions raise after client retries. Empty
+  Q-/Q+ lists are intentional valid outputs.
 - Empty strings, within-channel duplicates, source-relative wording, and exact
   Q−/Q+ duplicates are removed deterministically before storage. The filter
   does not score semantic quality or introduce a dataset-tuned threshold.
+- `RAG_QUESTION_SCHEMA=legacy` retains the string-only contract. The opt-in
+  `grounded_v1` contract requires a verbatim source quote and source anchors,
+  plus a quote-contained Q− answer or non-empty Q+ missing information.
+  Invalid individual records are logged and removed without discarding valid
+  siblings or failing the document.
 
 `indexing/embedding.py`
 
@@ -140,6 +148,9 @@ the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
 - There is no cosine threshold, same-company filter, runtime-HOP mode,
   cross-encoder, domain rule, or semantic verification call. If Q+ is disabled,
   the pass skips.
+- `RAG_PRECOMPUTE_RECIPROCAL_HOPS=true` evaluates reverse Q−→Q+ nearest
+  neighbors in bounded index-time pages and stores the accepted source Q+ IDs
+  on each HOP edge.
 
 ### Official baseline modules
 
@@ -177,7 +188,9 @@ RAG_QUERY_REWRITE_VARIANT == role_aligned
 RAG_GRAPH_HOP_DEPTH == 1 (default)
   -> retrieve(query) for seeds
   -> deterministic NEXT/HOP expansion for the configured depth
-  -> RAG_GRAPH_EDGE_VARIANT selects full, hop_only, or next_only for query-only ablation
+  -> RAG_GRAPH_EDGE_VARIANT selects the full, hop_only, or next_only path
+  -> owner activation admits reciprocal provenance on a matched Q+ seed owner
+  -> reciprocal_offline reads materialized reciprocal source-Q+ IDs
 
 empty context
   -> fixed "Insufficient evidence" result, no synthesis call
@@ -186,17 +199,29 @@ non-empty context
   -> one shared external synthesis call
 ```
 
+The current operational contract is legacy question schema, full Q−/body/Q+
+retrieval, depth-one full NEXT/HOP traversal, owner activation, materialized
+reciprocal filtering, global source selection, and no query rewrite. The
+`none`, online `reciprocal`, exact-activation, edge-variant, channel-variant,
+and no-graph paths are explicit experimental configurations rather than
+implicit fallbacks.
+
 `retrieval/hybrid.py` embeds the original query and runs vector plus Neo4j
 full-text search for one channel (`body`, `q_minus`, or `q_plus`). Vector and
 full-text branches share one Cypher request per representation; enabled
 representations run concurrently. Their results fuse into one ordered list
-using equal reciprocal ranks `1 / (rank + 1)`. There is no
-modality weight or query-time fusion constant.
+using equal reciprocal ranks `1 / (rank + 1)`. Because Cypher aggregation and
+`UNION ALL` do not guarantee result order, Python explicitly sorts each
+modality by its own raw score (descending) and stable chunk identity before
+assigning ranks. Raw vector and lexical scores never cross modality boundaries,
+and there is no modality weight or query-time fusion constant.
 
 `retrieval/retrieve.py` searches each enabled representation exactly once with
 the same query embedding. Q- and body hits have the direct-evidence role; Q+
-hits have the dependency-seed role and can expose outgoing offline HOP edges.
-Enabled representation results form a set union. Each owner retains
+hits have the dependency-seed role. Q+ vector and full-text rows retain the
+exact matched question-node IDs while collapsing to owner chunks, and their
+union is preserved when representation lists merge. Enabled representation
+results form a set union. Each owner retains
 `1 / (rank + 1)` evidence from every representation list in which it appears;
 these values define a representation order without mixing backend-specific
 vector or lexical scores. Direction remains expressed by graph role rather
@@ -224,7 +249,7 @@ fitted weight or threshold. There is no dedicated reranker model, rerank
 prompt, query rewrite, metadata boost, boilerplate penalty, company filter,
 or domain gate. Final top-k selection uses this fused global order by default.
 `RAG_SOURCE_SELECTION_VARIANT=round_robin` is an explicit ablation that takes
-one ranked chunk per source per round; it is not part of the primary method.
+one ranked chunk per source per round; it is not part of the operational default.
 
 Each representation retains at most `top_k` owner chunks, so the fused base
 pool is bounded by `top_k × active_representation_count` without a candidate
@@ -241,13 +266,30 @@ final top-k) as one frontier and expands it in one Neo4j request per depth. `NEX
 walked in both directions to recover preceding/following document context;
 `HOP_ANSWER` is exposed only by owner chunks actually matched through the Q+
 dependency channel and is walked only in the Q+→answer-evidence direction.
+The current operational default uses owner-wide activation: when an owner is
+retrieved through any Q+ node, all reciprocal source-Q+ provenance on that
+owner's outgoing HOP edges is eligible. Exact matched-Q+ intersection remains
+available through `RAG_QPLUS_HOP_ACTIVATION=exact`. Bridge embeddings and
+emitted path provenance follow the selected activation mode.
+The online `RAG_HOP_EDGE_FILTER=reciprocal` ablation leaves every stored
+node, provenance relation, HOP edge, and index unchanged. Inside the same
+frontier request, each activated Q+→Q− provenance pair is retained only when
+the target Q− independently retrieves that exact source Q+ as its highest-ranked
+cross-document Q+ representation. Its ANN pool is the number of Q+ nodes in
+the target document plus one, which is the structural minimum needed to admit
+one foreign-document result after exclusion; there is no acceptance threshold
+or tunable candidate width. The `none` ablation performs no reverse ANN.
+The default `reciprocal_offline` applies the same rule from materialized edge
+IDs and performs no query-time reverse ANN. Traversal constructs only the
+selected NEXT/HOP/filter Cypher branches, avoiding inactive ablations on the
+query hot path.
 Q−/body-only seeds and graph-discovered nodes expose NEXT only, preventing an
 unrelated Q+ attached to a direct-evidence chunk from triggering a HOP. NEXT and
 HOP paths are ranked separately per expansion step, then fused per target
 chunk. A NEXT target inherits the source's total representation evidence; a
 HOP target inherits only the source's Q+ evidence. In either case the inherited
-value is multiplied by reciprocal path length `1 / (depth + 1)`. The primary
-method requires depth one, so indirect evidence receives one half of its
+value is multiplied by reciprocal path length `1 / (depth + 1)`. The default
+configuration uses depth one, so indirect evidence receives one half of its
 direct source value. This structural attenuation prevents an expanded target
 from tying its directly retrieved owner without adding a fitted coefficient.
 The structurally bounded results are retained without a candidate reservoir or
@@ -256,6 +298,8 @@ source Q+ separately, take the best bridge similarity, and use
 `min(body, bridge)` as the semantic score. This requires agreement on both
 sides without a mixing weight. There is no query-time generation, continuation
 prompt, heuristic stop gate, or runtime ANN supplement in Prehop retrieval.
+Targets already present in the representation-union pool are excluded from
+the one-hop expansion result.
 
 `retrieval/text_utils.py` contains only normalization, Lucene sanitization,
 context formatting, node identity/dedup, and RRF helpers.
@@ -303,9 +347,10 @@ official baseline.
 ## Evaluation output contract
 
 The benchmark emits deterministic normalized answer EM/F1 as a downstream
-answer signal; benchmark-annotated gold-evidence retrieval is primary for the
-method claim. MuSiQue uses answer aliases. The LLM-as-a-judge `score` is an
-optional exploratory semantic-correctness field for aliases and equivalent wording;
+answer signal; benchmark-annotated gold-evidence retrieval is the primary
+effectiveness endpoint. MuSiQue uses answer aliases. The LLM-as-a-judge
+`score` is an optional exploratory semantic-correctness field for aliases and
+equivalent wording;
 `groundedness` and `hallucination` are separate context-directed diagnostics.
 None replaces deterministic answer scoring, and without qualified-human
 validation none enters quantitative submission results or system rankings.
@@ -328,16 +373,16 @@ rules, and reporting decisions are maintained in the local, intentionally
 untracked `docs/prehop_paper.md`. This architecture document summarizes the
 implemented evaluation contract but does not replace that paper specification.
 
-## Measured independent runs
+## Run measurements
 
 Every paper run invokes one dataset/strategy target with a unique `RAG_RUN_ID`.
 The run records wall time, phase timings exposed by the adapter, structural
 integrity, and failures without an orchestration-level retry or resume policy.
 `VLLM_MAX_NUM_SEQS` records endpoint capacity. Clients that share a generation
 endpoint and event loop share one request semaphore, and Prehop processes at
-most one generation request per active file. Embeddings use bounded batches. Naive flattens 32
-source documents into each embedding/write batch. Official adapters report
-only timing boundaries their upstream implementations expose.
+most one generation request per active file. Embeddings use bounded batches.
+Naive flattens 32 source documents into each embedding/write batch. Official
+adapters report only timing boundaries their upstream implementations expose.
 
 The measurement set directly addresses the indexing-time tradeoff: overall
 and Prehop phase latency, logical storage, document/chunk/question/edge counts,
@@ -347,7 +392,7 @@ answer-quality attribution remains a separate benchmark/ablation concern; an
 index with valid topology is not reported as evidence that HOP improves QA.
 Before publishing the corpus snapshot as complete, `cli/index.py` reads the
 live graph and enforces the index-quality contract: embeddings and ownership
-are complete; question representations are non-empty, source-independent,
+are complete; question representations are non-empty, not source-relative,
 deduplicated, and role-distinct; NEXT is exactly consecutive within each
 document; every HOP is cross-document, channel-consistent, provenance-complete,
 within the schema out-degree bound, and has the expected Q+→Q-→owner
@@ -355,6 +400,7 @@ provenance (or the explicit body-only ablation path); and all search indexes
 are online. Coverage, linkage rate, and graph density remain descriptive and
 do not become dataset-tuned pass thresholds. Held-out retrieval metrics test
 effectiveness separately.
+
 For official MS GraphRAG and HopRAG adapters, the stored timing includes the
 explicit aggregate `official_pipeline_seconds` plus adapter-observed workflow
 or stage timings; the runner does not fabricate boundaries that the upstream
@@ -363,6 +409,7 @@ Naive reports its aggregate pipeline and measurement timing only.
 MS GraphRAG relationship drops caused by missing extracted entities are
 recorded as integrity warnings in the target result rather than silently
 treated as a clean graph.
-For the semantic middle layer, the runner resolves every full-query evidence
-title against indexed documents, then reports the fraction of fully resolved
+
+As a HOP-connectivity diagnostic, the runner resolves every full-query
+evidence title against indexed documents, then reports the fraction of fully resolved
 gold queries and gold document pairs connected by at least one `HOP_ANSWER`.

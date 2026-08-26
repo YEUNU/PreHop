@@ -2,7 +2,8 @@
 
 Each enabled representation is searched exactly once with the original
 benchmark query. Q- and body hits are direct-evidence candidates; Q+ hits are
-dependency seeds whose owner chunks can expose offline ``HOP_ANSWER`` edges.
+dependency seeds whose owner chunks expose the configured ``HOP_ANSWER``
+provenance (owner-wide reciprocal by default, exact matched-Q+ for ablation).
 The representation results form an unweighted set union. Direction is
 expressed only by graph role.
 """
@@ -39,8 +40,13 @@ class RetrieveMixin:
         top_k: int,
         query_embedding: list[float] | None = None,
         channel_queries: dict[str, list[str]] | None = None,
+        select_final: bool = True,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Return semantic top-k nodes and the representation-union seed pool."""
+        """Return selected nodes and the representation-union seed pool.
+
+        Graph traversal consumes the complete pool and performs selection only
+        after expansion, so it skips the redundant pre-expansion scoring pass.
+        """
         top_k = max(1, int(top_k))
 
         variant = RAGConfig.HYPO_CHANNEL_VARIANT
@@ -105,12 +111,24 @@ class RetrieveMixin:
                     rank + 1
                 )
                 candidate["representation_score"] = sum(representation_scores.values())
+                if channel == "q_plus":
+                    matched_qplus_ids = {
+                        str(question_id).strip()
+                        for question_id in (candidate.get("matched_qplus_ids") or [])
+                        if str(question_id).strip()
+                    }
+                    matched_qplus_ids.update(
+                        str(question_id).strip()
+                        for question_id in (node.get("matched_qplus_ids") or [])
+                        if str(question_id).strip()
+                    )
+                    candidate["matched_qplus_ids"] = sorted(matched_qplus_ids)
                 paths = candidate.setdefault("retrieval_paths", [])
                 direct_path = {"kind": "direct", "channel": channel, "query_view": view, "depth": 0}
                 if direct_path not in paths:
                     paths.append(direct_path)
                 if channel == "q_plus":
-                    candidate["dependency_seed"] = True
+                    candidate["dependency_seed"] = bool(candidate.get("matched_qplus_ids"))
         for node in merged.values():
             node.setdefault("dependency_seed", False)
 
@@ -118,6 +136,8 @@ class RetrieveMixin:
         # union is already structurally bounded.
         base_candidates = list(merged.values())
 
+        if not select_final:
+            return [], base_candidates
         final_nodes, _ = await self._score_and_select(query_embedding, base_candidates, top_k)
         return final_nodes, base_candidates
 
@@ -130,6 +150,7 @@ class RetrieveMixin:
             "representation_scores",
             "rank_fusion_score",
             "dependency_seed",
+            "matched_qplus_ids",
             "embedding",
             "bridge_embeddings",
         ):

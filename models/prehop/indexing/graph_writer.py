@@ -35,6 +35,41 @@ def _scoped_document_text(title: str, text: str) -> str:
     return f"Document title: {title}\n{text}".strip()
 
 
+def _question_record(value: Any, channel: str, source: str, sent_id: int) -> dict[str, Any]:
+    if isinstance(value, str):
+        text = value.strip()
+        record: dict[str, Any] = {"text": text, "question_schema": "legacy"}
+    elif isinstance(value, dict):
+        text = str(value.get("text") or "").strip()
+        record = dict(value)
+        record["text"] = text
+    else:
+        raise TypeError(
+            f"Cached/generated {channel} item must be a string or grounded object: "
+            f"source={source!r} sent_id={sent_id}"
+        )
+    if not text:
+        raise ValueError(f"Cached/generated {channel} item has blank text: source={source!r} sent_id={sent_id}")
+    return record
+
+
+def _dedupe_question_records(values: list[Any], channel: str, source: str, sent_id: int) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, dict) and not str(value.get("text") or "").strip():
+            continue
+        record = _question_record(value, channel, source, sent_id)
+        identity = " ".join(record["text"].casefold().split())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(record)
+    return unique
+
+
 class GraphWriterMixin:
     async def setup_index(self):
         analyzer = re.sub(r"[^a-zA-Z0-9_\-]", "", RAGConfig.FULLTEXT_ANALYZER) or "english"
@@ -158,32 +193,33 @@ class GraphWriterMixin:
             _scoped_document_text(str(chunk.get("title", "") or ""), str(chunk.get("text", "") or ""))
             for chunk in chunks
         ]
-        q_minus_items: list[tuple[int, int, str]] = []
-        q_plus_items: list[tuple[int, int, str]] = []
+        q_minus_items: list[tuple[int, int, dict[str, Any]]] = []
+        q_plus_items: list[tuple[int, int, dict[str, Any]]] = []
         for chunk_index, chunk in enumerate(chunks):
             for channel in ("q_minus", "q_plus"):
                 values = chunk.get(channel, [])
-                if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                if not isinstance(values, list):
                     raise TypeError(
-                        f"Cached/generated {channel} must be a list of strings: "
+                        f"Cached/generated {channel} must be a list: "
                         f"source={source!r} sent_id={chunk.get('sent_id', -1)}"
                     )
-            q_minus = self._dedupe_preserve_order(chunk.get("q_minus", []))
-            q_plus = self._dedupe_preserve_order(chunk.get("q_plus", []))
+            sent_id = int(chunk.get("sent_id", -1))
+            q_minus = _dedupe_question_records(chunk.get("q_minus", []), "q_minus", source, sent_id)
+            q_plus = _dedupe_question_records(chunk.get("q_plus", []), "q_plus", source, sent_id)
             if RAGConfig.ABLATION_Q_MINUS:
-                q_minus_items.extend((chunk_index, ordinal, text) for ordinal, text in enumerate(q_minus))
+                q_minus_items.extend((chunk_index, ordinal, record) for ordinal, record in enumerate(q_minus))
             if RAGConfig.ABLATION_Q_PLUS:
-                q_plus_items.extend((chunk_index, ordinal, text) for ordinal, text in enumerate(q_plus))
+                q_plus_items.extend((chunk_index, ordinal, record) for ordinal, record in enumerate(q_plus))
 
         q_minus_document_texts = [
-            _scoped_document_text(str(chunks[chunk_index].get("title", "") or ""), text)
-            for chunk_index, _ordinal, text in q_minus_items
+            _scoped_document_text(str(chunks[chunk_index].get("title", "") or ""), record["text"])
+            for chunk_index, _ordinal, record in q_minus_items
         ]
         q_plus_document_texts = [
-            _scoped_document_text(str(chunks[chunk_index].get("title", "") or ""), text)
-            for chunk_index, _ordinal, text in q_plus_items
+            _scoped_document_text(str(chunks[chunk_index].get("title", "") or ""), record["text"])
+            for chunk_index, _ordinal, record in q_plus_items
         ]
-        q_plus_query_texts = [text for _chunk_index, _ordinal, text in q_plus_items]
+        q_plus_query_texts = [record["text"] for _chunk_index, _ordinal, record in q_plus_items]
 
         body_embeds, q_minus_embeds, q_plus_embeds, q_plus_query_embeds = await asyncio.gather(
             self._embed_sparse_texts(body_texts),
@@ -213,33 +249,41 @@ class GraphWriterMixin:
         await self._ensure_index_ready()
 
         q_minus_by_chunk: dict[int, list[dict[str, Any]]] = {index: [] for index in range(len(chunks))}
-        for flat_index, (chunk_index, ordinal, text) in enumerate(q_minus_items):
+        for flat_index, (chunk_index, ordinal, record) in enumerate(q_minus_items):
             chunk = chunks[chunk_index]
             chunk_id = _make_semantic_chunk_id(source, chunk["title"], chunk["sent_id"])
             q_minus_by_chunk[chunk_index].append(
                 {
-                    "id": _make_question_id(chunk_id, "q_minus", ordinal, text),
-                    "text": text,
+                    "id": _make_question_id(chunk_id, "q_minus", ordinal, record["text"]),
+                    "text": record["text"],
                     "ordinal": ordinal,
                     "source": source,
                     "title": chunk["title"],
                     "embedding": q_minus_embeds[flat_index],
+                    "question_schema": record.get("question_schema", "legacy"),
+                    "grounding_quote": record.get("grounding_quote"),
+                    "anchor_entities": record.get("anchor_entities", []),
+                    "answer": record.get("answer"),
                 }
             )
 
         q_plus_by_chunk: dict[int, list[dict[str, Any]]] = {index: [] for index in range(len(chunks))}
-        for flat_index, (chunk_index, ordinal, text) in enumerate(q_plus_items):
+        for flat_index, (chunk_index, ordinal, record) in enumerate(q_plus_items):
             chunk = chunks[chunk_index]
             chunk_id = _make_semantic_chunk_id(source, chunk["title"], chunk["sent_id"])
             q_plus_by_chunk[chunk_index].append(
                 {
-                    "id": _make_question_id(chunk_id, "q_plus", ordinal, text),
-                    "text": text,
+                    "id": _make_question_id(chunk_id, "q_plus", ordinal, record["text"]),
+                    "text": record["text"],
                     "ordinal": ordinal,
                     "source": source,
                     "title": chunk["title"],
                     "embedding": q_plus_embeds[flat_index],
                     "query_embedding": q_plus_query_embeds[flat_index],
+                    "question_schema": record.get("question_schema", "legacy"),
+                    "grounding_quote": record.get("grounding_quote"),
+                    "anchor_entities": record.get("anchor_entities", []),
+                    "missing_information": record.get("missing_information"),
                 }
             )
 
@@ -315,7 +359,11 @@ class GraphWriterMixin:
                         MERGE (q:{self.q_minus_label} {{id: question.id}})
                         SET q.text = question.text, q.ordinal = question.ordinal,
                             q.source = question.source, q.title = question.title,
-                            q.embedding = question.embedding
+                            q.embedding = question.embedding,
+                            q.question_schema = question.question_schema,
+                            q.grounding_quote = question.grounding_quote,
+                            q.anchor_entities = question.anchor_entities,
+                            q.answer = question.answer
                         MERGE (c)-[:HAS_Q_MINUS]->(q)
                     )
                     FOREACH (question IN item.q_plus |
@@ -323,7 +371,11 @@ class GraphWriterMixin:
                         SET q.text = question.text, q.ordinal = question.ordinal,
                             q.source = question.source, q.title = question.title,
                             q.embedding = question.embedding,
-                            q.query_embedding = question.query_embedding
+                            q.query_embedding = question.query_embedding,
+                            q.question_schema = question.question_schema,
+                            q.grounding_quote = question.grounding_quote,
+                            q.anchor_entities = question.anchor_entities,
+                            q.missing_information = question.missing_information
                         MERGE (c)-[:HAS_Q_PLUS]->(q)
                     )
                     RETURN count(c) AS chunks_written

@@ -155,6 +155,31 @@ def test_config_rejects_unknown_graph_edge_variant(monkeypatch):
         RAGConfig.validate()
 
 
+def test_config_rejects_unknown_hop_edge_filter(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "HOP_EDGE_FILTER", "typo")
+    with pytest.raises(ValueError, match="HOP_EDGE_FILTER"):
+        RAGConfig.validate()
+
+
+def test_config_rejects_unknown_qplus_hop_activation(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "QPLUS_HOP_ACTIVATION", "typo")
+    with pytest.raises(ValueError, match="QPLUS_HOP_ACTIVATION"):
+        RAGConfig.validate()
+
+
+def test_offline_reciprocal_filter_requires_precomputed_index_contract(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "HOP_EDGE_FILTER", "reciprocal_offline")
+    monkeypatch.setattr(RAGConfig, "PRECOMPUTE_RECIPROCAL_HOPS", False)
+    with pytest.raises(ValueError, match="PRECOMPUTE_RECIPROCAL_HOPS"):
+        RAGConfig.validate()
+
+
 def test_config_rejects_unknown_query_rewrite_variant(monkeypatch):
     from core.config import RAGConfig
 
@@ -312,6 +337,105 @@ async def test_knowledge_mapping_removes_source_relative_and_conflicting_questio
         "q_minus": ["Who founded Acme?"],
         "q_plus": ["Where was Acme incorporated?"],
     }
+
+
+@pytest.mark.asyncio
+async def test_grounded_question_schema_preserves_source_verifiable_fields(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "QUESTION_SCHEMA", "grounded_v1")
+    rag = GraphRAG(strategy="prehop")
+    rag.indexing_llm = AsyncMock()
+    rag.indexing_llm.generate_json.return_value = {
+        "q_minus": [
+            {
+                "question": "Who founded Acme?",
+                "answer": "Kim",
+                "grounding_quote": "Acme was founded by Kim.",
+                "anchor_entities": ["Acme", "Kim"],
+            }
+        ],
+        "q_plus": [
+            {
+                "question": "Where was Acme incorporated?",
+                "grounding_quote": "Acme was founded by Kim.",
+                "anchor_entities": ["Acme"],
+                "missing_information": "The jurisdiction of incorporation.",
+            }
+        ],
+    }
+
+    result = await rag.extract_hoprag_queries("Acme was founded by Kim.", "Acme")
+
+    assert result["q_minus"][0]["answer"] == "Kim"
+    assert result["q_minus"][0]["question_schema"] == "grounded_v1"
+    assert result["q_plus"][0]["missing_information"] == "The jurisdiction of incorporation."
+    assert result["q_plus"][0]["anchor_entities"] == ["Acme"]
+
+
+def test_grounded_question_schema_rejects_unverifiable_quote():
+    with pytest.raises(ValueError, match="not present in source chunk"):
+        GraphRAG._validate_grounded_items(
+            [
+                {
+                    "question": "Who founded Acme?",
+                    "answer": "Kim",
+                    "grounding_quote": "Invented evidence.",
+                    "anchor_entities": ["Invented"],
+                }
+            ],
+            "Q-",
+            "Acme was founded by Kim.",
+            "Acme",
+        )
+
+
+def test_grounded_anchor_may_be_outside_short_quote_but_must_be_in_chunk():
+    records = GraphRAG._validate_grounded_items(
+        [
+            {
+                "question": "What did Acme's CEO report?",
+                "answer": "40 percent",
+                "grounding_quote": "reduced processing time by 40 percent",
+                "anchor_entities": ["Acme", "CEO Mira Chen"],
+            }
+        ],
+        "Q-",
+        "Acme CEO Mira Chen said the platform reduced processing time by 40 percent.",
+        "Acme",
+    )
+
+    assert records[0]["anchor_entities"] == ["Acme", "CEO Mira Chen"]
+
+
+@pytest.mark.asyncio
+async def test_grounded_generation_drops_only_invalid_records(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "QUESTION_SCHEMA", "grounded_v1")
+    rag = GraphRAG(strategy="prehop")
+    rag.indexing_llm = AsyncMock()
+    rag.indexing_llm.generate_json.return_value = {
+        "q_minus": [
+            {
+                "question": "Who founded Acme?",
+                "answer": "Kim",
+                "grounding_quote": "Acme was founded by Kim.",
+                "anchor_entities": ["Acme"],
+            },
+            {
+                "question": "What was invented?",
+                "answer": "Nothing",
+                "grounding_quote": "Invented evidence.",
+                "anchor_entities": ["Invented"],
+            },
+        ],
+        "q_plus": [],
+    }
+
+    result = await rag.extract_hoprag_queries("Acme was founded by Kim.", "Acme")
+
+    assert [record["text"] for record in result["q_minus"]] == ["Who founded Acme?"]
 
 
 @pytest.mark.asyncio

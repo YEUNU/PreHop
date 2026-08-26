@@ -1,5 +1,231 @@
 # Changelog
 
+This file is the chronological engineering record. `ARCHITECTURE.md` defines
+current behavior, `README.md` is the user-facing guide, `CLAUDE.md` defines
+maintenance policy, and the local `prehop_paper.md` owns paper prose and claims.
+Entries are newest first. Older entries describe behavior at that point in
+development and may be superseded; they are not a current configuration guide
+or a source of paper claims.
+
+## 2026-08-26 — Paper and architecture synchronized to the fixed configuration
+
+The manuscript now describes the selected configuration without promoting its
+sample-200 development result to a paper claim: legacy Q−/Q+, owner-wide
+activation, materialized reciprocal provenance, full depth-one NEXT/HOP
+traversal, and no rewrite. The method is fixed pending the
+pre-declared confirmatory evaluation. The primary hypothesis explicitly
+requires improvement over representation-matched NEXT-only/no-HOP controls,
+not only over external systems.
+
+The approved main ablation is now the cumulative A0–A5 ladder: body only,
+questions without graph, NEXT only, raw HOP, reciprocal HOP, and exact
+activation. Adjacent paired contrasts isolate each addition; online/offline
+reciprocal is classified separately as an implementation equivalence and
+efficiency study. `ARCHITECTURE.md` now expresses the same current defaults in
+implementation terms and removes P1/P2 experimental shorthand. No benchmark,
+index, or code behavior changed in this documentation-only update.
+
+A repository-wide Markdown audit also removed duplicated operating details,
+corrected stale Exact-Q+ default descriptions, distinguished hypotheses from
+established claims, and reduced private submission history. The vendored
+HopRAG guide was otherwise preserved; only its local supported-corpus count was
+corrected.
+
+`CLAUDE.md` now requires each document to retain its audience-specific tone and
+prohibits unnecessary proper nouns, invented management labels, repeated
+slogans, and unexplained experimental shorthand. Actual dataset, system, code,
+configuration, and established research names remain available where needed
+for precision and reproducibility.
+
+## 2026-08-26 — Development-winning P2 default and traversal specialization
+
+The current operational defaults reproduce the selected legacy sample-200
+query-time result: `RAG_QUESTION_SCHEMA=legacy`, owner-wide Q+
+activation, materialized reciprocal filtering, full NEXT/HOP traversal, and no query
+rewrite. Both `core/config.py` and the project `.env` specify that contract;
+P1 exact activation, the unfiltered graph, and P1+P2 remain explicit
+ablations. This default was selected on the development sample and is not a
+held-out paper result.
+
+Traversal now emits only the configured NEXT/HOP and HOP-filter Cypher
+branches. The previous query sent inactive `none`, `reciprocal`, and
+`reciprocal_offline` branches together and guarded them with runtime
+parameters, increasing query text and planner work. Candidate construction,
+ranking, reciprocal semantics, and the stored graph remain unchanged.
+
+The legacy graph was augmented in place without changing its 21,843 HOP edge
+count. Materialization stored 2,772 reciprocal provenance pairs in 284.7 s;
+fresh indexes now enable this step by default. The online implementation
+remains available for equivalence and ablation checks.
+
+The optimized offline default completed the same sample-200 with zero errors.
+Every per-query deterministic retrieval metric matched online P2. Average
+traversal fell from 478.0 ms to 167.1 ms (-65.0%) and end-to-end latency from
+3.681 s to 3.408 s (-7.4%). Answer F1 is shown below for completeness but is
+not used to establish implementation equivalence because synthesis was not
+seeded; retrieval/evidence metrics are deterministic.
+
+All rows below are completed artifacts with the same 200-query digest
+`d5facf87...`. Official ranking and evidence aggregates have 150 eligible
+non-null queries. Prehop and Naive use top-k 12; HopRAG retains official top-k
+20 and MS GraphRAG retains its official LocalSearch context budget, so latency
+and resource-cost comparisons are descriptive rather than equal-budget.
+
+| System | Hits@4 | Hits@10 | MRR@10 | MAP@10 | Doc P | Doc R | Doc F1 | Fact R@10 | Answer F1 | Latency |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Prehop P2 offline** | **0.7267** | **0.8600** | **0.5679** | **0.2770** | **0.4331** | 0.7000 | **0.5122** | **0.5822** | 0.1472 | 3.408 s |
+| Naive RAG | 0.6400 | 0.8533 | 0.5307 | 0.2525 | 0.4247 | 0.7117 | 0.5013 | 0.5444 | 0.1421 | **2.929 s** |
+| HopRAG | 0.6533 | 0.8200 | 0.5366 | 0.2715 | 0.3357 | **0.7900** | 0.4442 | 0.5278 | **0.1551** | 153.163 s |
+| MS GraphRAG | 0.4267 | 0.4867 | 0.2841 | 0.1395 | 0.2390 | 0.3967 | 0.2885 | 0.5722 | 0.0105 | 17.652 s |
+
+Benchmark index-manifest lookup now checks the artifact payload's exact corpus
+tag. Previously the `multihoprag` filename glob could select a newer
+`multihoprag_grounded_v1` artifact because one tag prefixes the other; this did
+not change the queried Neo4j labels, but it recorded the wrong index policy in
+the result provenance.
+
+The complete suite passes with 232 tests and 4 skips; Ruff and whitespace
+checks also pass.
+
+## 2026-08-26 — Grounded schema result and reciprocal query-path cleanup
+
+Added the opt-in `grounded_v1` question schema without changing the legacy
+default or existing `multihoprag` index. Q− stores a verbatim answer, source
+quote, and anchors; Q+ stores a source quote, anchors, and missing information.
+Every stored field is checked against source text. An invalid generated record
+is discarded while valid siblings are retained, so one bad record cannot fail
+an entire document. The integrated gate verifies all stored grounding fields.
+
+A cold full-corpus build under the separate `multihoprag_grounded_v1` tag
+completed 609/609 documents with zero errors and all integrity checks passing.
+It stored 8,529 chunks, 22,088 Q−, 18,999 Q+, and 18,277 HOP edges. Compared
+with the legacy graph's 21,843 HOP edges, strict grounding reduced HOP density
+by 16.3%. Indexing took 5,459 s, including 454 s for HOP construction.
+
+The reciprocal Q−→Q+ nearest-neighbor check can now be materialized once at
+index time. This build stored 2,455 reciprocal provenance pairs;
+`reciprocal_offline` reads those IDs without query-time reverse ANN. A live
+200-pair comparison matched the original rule 200/200 with zero mismatches.
+Graph search also skips a pre-expansion scoring pass that was always superseded
+after traversal. Both changes preserve ranking semantics.
+
+The grounded sample-200 ablation used identical query IDs, models, top-k 12,
+disabled rewrite/judge, and zero runtime errors:
+
+| Variant | Hits@4 | Hits@10 | MRR@10 | MAP@10 | Doc P | Doc F1 | Latency |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| P1 exact | 0.7133 | 0.8267 | 0.5406 | 0.2640 | 0.3861 | 0.4821 | 3.81 s |
+| P2 owner + reciprocal offline | 0.7000 | 0.8400 | 0.5415 | 0.2647 | 0.4146 | 0.4990 | 3.74 s |
+| P1+P2 exact + reciprocal offline | 0.7000 | 0.8400 | 0.5414 | 0.2647 | 0.4157 | 0.4999 | 3.72 s |
+
+Relative to grounded P1, P1+P2 significantly improved document precision by
+0.0296 (95% CI [0.0142, 0.0460]) and document F1 by 0.0178
+([0.0048, 0.0314]); ranking-metric intervals included zero. P1+P2 and P2 were
+effectively identical. All grounded variants were below the legacy leading
+reciprocal result (0.7267/0.8600/0.5679/0.2770), so `grounded_v1` is rejected
+as Primary and remains an auditable development ablation. These are sample
+results without a complete corpus manifest, so the final paper configuration
+remains on hold rather than being tuned on this exploratory sample.
+
+The paired-bootstrap tool now identifies the dataset from the artifact's
+`dataset` field rather than assuming a custom corpus tag is the dataset name.
+The full suite completed with 231 passed and 4 skipped.
+
+## 2026-08-26 — Exact Q+ activation and Primary-selection hold
+
+Query-time Q+ retrieval now preserves the exact question-node IDs returned by
+vector and full-text search when results collapse to owner chunks. Traversal
+admits a stored `HOP_ANSWER` only when those IDs intersect the edge's
+`source_question_ids`; bridge embeddings and emitted path provenance use the
+same intersection. Reciprocal filtering applies after this exact activation.
+This is a read-only provenance correction: the full existing index, indexes,
+and all 21,843 stored HOP edges remained unchanged. Static checks and the full
+suite completed with 221 passed and 4 skipped.
+
+All following runs used the same MultiHop-RAG sample-200 query digest, full
+existing corpus index, top-k 12, generation and embedding models, disabled
+query rewrite, disabled judge, and zero runtime-error rows. They are
+exploratory development evidence, not results on the complete prepared split.
+Exact Q+ alone
+(`prehop_exact_qplus_p1_20260826`) selected 189 HOP paths and produced
+Hits@4 0.7267, Hits@10 0.8467, MRR@10 0.5657, and MAP@10 0.2755. Exact Q+ plus
+reciprocal filtering (`prehop_exact_qplus_reciprocal_p2_20260826`) selected 23
+HOP paths and produced 0.7267, 0.8533, 0.5672, and 0.2768 respectively.
+Relative to Exact alone, paired bootstrap differences were +0.0015 for MRR
+(95% CI [0.0001, 0.0035]), +0.0013 for MAP ([0.0003, 0.0024]), +0.0375 for
+document precision ([0.0234, 0.0530]), and +0.0267 for document F1
+([0.0161, 0.0382]). Exact plus reciprocal is therefore the best HOP-enabled
+query-time candidate tested here.
+
+Causal controls prevent promoting that candidate to the final Primary. With
+the same code and index, `NEXT`-only produced Hits@4 0.7267, Hits@10 0.8533,
+MRR 0.5673, MAP 0.2766, and latency 3.39 s, while the HOP-enabled candidate
+produced 3.69 s latency. Their official-ranking differences all had intervals
+spanning zero, but HOP-enabled document precision and F1 were lower by 0.0097
+and 0.0098 with intervals excluding zero. The approved no-graph control
+produced Hits@4 0.7267, Hits@10 0.8600, MRR 0.5630, MAP 0.2795, and higher
+fact recall; none of its official-ranking differences versus the HOP-enabled
+candidate excluded zero. The sample therefore does not establish a causal HOP
+benefit. Final Primary selection remains on hold until the pre-declared
+grounded Q−/Q+ schema is rebuilt over the full corpus and evaluated without
+adding sample-tuned thresholds or heuristics.
+
+## 2026-08-26 — Deterministic modality ranks and rejected graph corroboration
+
+An additional read-only reciprocal-link ablation was evaluated without
+rebuilding or mutating the existing Prehop index. For an activated stored
+Q+→Q− provenance pair, traversal retained the HOP only when the target Q−
+reverse-retrieved that exact source Q+ as its best cross-document Q+
+representation. The reverse ANN pool is determined by target-document Q+
+cardinality plus one; the ablation has no similarity threshold or fitted
+candidate width. The sample-200 run (`prehop_reciprocal_20260826`, 200/200,
+zero errors, judge disabled) reduced selected HOP occurrences from 220 to 27.
+Relative to `prehop_order_only_20260826`, Hits@4 was unchanged, Hits@10 changed
+by +0.0133 (95% CI [0.0000, 0.0333]), MRR@10 by +0.0021
+([0.0003, 0.0046]), MAP@10 by +0.0016 ([0.0005, 0.0029]), document precision
+by +0.0359 ([0.0229, 0.0503]), and document F1 by +0.0246
+([0.0144, 0.0355]); document recall changed by -0.0006 with an interval
+spanning zero. This is retained only as an explicit query-time ablation because
+it was identified on the same exploratory sample and the artifacts lack a
+complete corpus manifest. It is not included in the paper manuscript.
+
+Prehop now explicitly sorts vector and full-text rows by descending
+within-modality backend score with a stable node-ID tie break before applying
+equal reciprocal-rank fusion. Neo4j procedure, aggregation, or `UNION ALL`
+return order is no longer an implicit ranking input. Backend scores remain
+isolated within each modality and are not interpolated, so this is a
+correctness/reproducibility fix rather than a new weight or tuned parameter.
+
+An isolated sample-200 check (`prehop_order_only_20260826`, 200/200 rows,
+zero errors, judge disabled) reproduced the accepted checkpoint's Hits@4,
+Hits@10, MRR@10, fact-recall, and document diagnostics exactly. MAP@10 changed
+by -0.0003 with a paired 95% interval spanning zero. The run is exploratory
+and was produced from a dirty development tree, so it is validation evidence,
+not a replacement paper result.
+
+A second development variant allowed an already-direct candidate to receive
+additional NEXT/HOP rank evidence. Relative to the accepted checkpoint it
+increased document precision by 0.0494 (95% CI [0.0321, 0.0674]) and document
+F1 by 0.0355 ([0.0195, 0.0517]), but decreased MAP@10 by 0.0116
+([-0.0209, -0.0027]). Hits@4 changed by +0.0133 with an interval spanning
+zero. Because the primary official ranking metric regressed significantly,
+the corroboration behavior was rejected and is not present in the current
+query path.
+
+A subsequent read-only graph diagnosis separated routing from endpoint
+quality on the same 150 non-null sample queries. All gold facts resolved to
+indexed chunks. Although at least one gold-document pair had a HOP edge for
+114/150 queries, at least one exact gold-fact-owner pair had a HOP edge for
+only 21/150. A query-only variant therefore treated HOP as a document route
+and selected one target chunk per offline edge inside Neo4j. It increased
+selected HOP-path occurrences from 220 to 1,013, but changed neither Hits@4,
+Hits@10, nor MRR@10; MAP@10 changed by only +0.00004 with an interval spanning
+zero. Among eligible queries, 118 selected at least one localized HOP target,
+44 selected a gold target document, and only two selected an exact gold-fact
+chunk through HOP. The variant was rejected and removed. In this sample,
+query-activated edge precision was a more plausible bottleneck than
+target-document chunk localization; this was not a general error decomposition.
+
 ## 2026-08-26 — Parameter-free representation fusion and baseline integrity
 
 Prehop now preserves reciprocal-rank evidence when Q−, body, and Q+ owner
@@ -18,7 +244,7 @@ query-ID digest, with the optional judge disabled and no runtime-error rows.
 The checkpoint is exploratory because its corpus manifest is absent and it is
 not the complete 2,556-query split. It therefore validates implementation
 direction but is not a submission result. Paired analysis showed that the
-final Prehop revision improved the pre-fusion checkpoint on Hits@4, MRR@10,
+then-current Prehop revision improved the pre-fusion checkpoint on Hits@4, MRR@10,
 MAP@10, and diagnostic fact recall@4, while diagnostic document F1 remained
 lower; the paper claim remains scoped to official evidence ranking and
 discloses the document-level tradeoff.
@@ -156,26 +382,26 @@ only chunk from a second, lower-scoring gold document. `scoring.py` now caps
 each source at `RAG_MAX_CHUNKS_PER_SOURCE_FRACTION` (default 0.34) of top_k
 in final selection (`floor(top_k * fraction)`, minimum 1); capped-out
 candidates still backfill by score if too few distinct sources exist to fill
-top_k. A dataset-structure check on the multihoprag sample confirmed this is
-well-motivated, not overfit: 60/60 sampled queries have gold evidence
-spanning 2+ distinct documents (avg 2.4).
+top_k. A dataset-structure check found that all 60 development queries had
+gold evidence spanning at least two documents (mean 2.4). This motivated the
+experiment but did not rule out sample-specific tuning.
 
 Tuning used `fact_recall` (does retrieved chunk text actually contain the
 gold evidence fact), not `doc_recall` (does the gold title merely appear
 anywhere in results) — doc_recall turned out gameable: capping at 1 chunk
 per document pushed doc_recall to 0.903 but dropped fact_recall to 0.531,
-below the 0.589 true-baseline (pre-fix, pre-incremental-traversal) figure,
+below the 0.589 earlier-baseline (pre-fix, pre-incremental-traversal) figure,
 because forcing maximal spread away from the strongest passages reduces the
 odds of landing on the specific relevant one. 0.34 gave both doc_recall
 0.787 and the best fact_recall 0.619. A follow-up sweep of
 `MAX_CHUNKS_PER_SOURCE_FRACTION`, `GRAPH_HOP_DEPTH`, `GRAPH_SEARCH_LIMIT`,
-`HOP_LINK_LIMIT`, and `HOP_SAME_NEED_WEIGHT` confirmed every existing default
-(including 0.34) already sits at its local optimum; no further change was
-needed. A 10,000-resample paired bootstrap over the 60-query fact_recall
+`HOP_LINK_LIMIT`, and `HOP_SAME_NEED_WEIGHT` produced no better setting on
+that development sample, so no further change was made. A 10,000-resample
+paired bootstrap over the 60-query fact_recall
 delta (+0.031, 95% CI [-0.014, +0.076]) does not yet exclude zero — the
 improvement is directional, not proven significant at this sample size.
 
-A full 200-query official benchmark on MultiHop-RAG with the fix and the
+A 200-query development benchmark on MultiHop-RAG with the fix and the
 0.34 default (LLM judge excluded from this figure set — same served model
 as generation, so self-judged and unreliable): avg_doc_match 0.735,
 avg_evidence_doc_recall 0.582, avg_hits@10 0.432, avg_hits@4 0.304,
@@ -263,12 +489,6 @@ explicit warning and a measured skip count; if every paragraph is skipped,
 the resulting empty document still fails the target. No alternative indexing
 or retrieval method is substituted.
 
-What was tried, what changed, and why — kept separate from `CLAUDE.md` so
-that file can stay pure current-state reference. Newest first. Entries
-reconstructed from earlier (compacted) session history are ordered as named
-milestones rather than forced into exact dates; entries from directly
-observed recent work carry dates.
-
 ## End-to-end consistency and fail-loud completion (2026-08-22)
 
 Completed the repository-wide audit beyond Prehop's mixins. Missing dataset
@@ -318,16 +538,12 @@ sampler now covered by `data/make_sample.py`.
 
 ## Full-corpus exhaustive scan (not sampling) after a deep content audit (2026-08-22)
 
-User asked for a deeper audit than the pattern-regression monitor — actually
-reading real Q-/Q+/chunk content, not just counting known-pattern matches
-over a random sample. Two outcomes:
+This audit inspected real Q-/Q+/chunk content in addition to counting known
+patterns. Two outcomes:
 
-- **Q-/Q+ generation quality is genuinely good** across all three datasets:
-  Q⁻ consistently self-contained/answerable from its own chunk, Q⁺
-  consistently points at real information the chunk doesn't contain (not
-  restating the chunk) — read ~20 real samples by hand across
-  multihoprag/hotpotqa/musique to confirm this, not just trusted the
-  pipeline's own design intent.
+- A manual check of roughly 20 records across the then-active datasets found
+  the expected Q−/Q+ roles in those examples. This spot check was diagnostic,
+  not evidence of corpus-wide generation quality.
 - **A full-corpus frequency scan (not sampling) found more residual
   HotpotQA/MuSiQue markup** the earlier wiki-markup fix's narrow
   `<nowiki>`/`<br>`/`[[...]]`/`{{...}}` patterns missed: ruby-annotation
@@ -529,9 +745,8 @@ sites — a clear signal a shared helper was overdue.
 
 ## Data-quality bugs found via code-intent audit
 
-A background subagent audited real indexed Neo4j data against what the
-source code's own docstrings/comments claimed it should look like, across
-all three in-progress corpora.
+An audit compared indexed Neo4j data with the source code's documented
+contracts across the three then-active corpora.
 
 - MultiHop-RAG: 665/8,442 chunks carried raw source-file header boilerplate
   (`Title:`/`Source:`/`Category:`/`Published:` lines) leaking into chunk
@@ -560,7 +775,7 @@ Two MultiHop-RAG-specific engineering features — injecting `Source:`/
 `Published:` metadata lines into the synthesis context, and decomposing "A
 vs B" comparison queries into per-entity retrieval variants — were removed
 entirely from the code (not just disabled behind a flag), after deciding
-they sat outside the paper's three headline claims and broke the
+they sat outside the paper's three main claims and broke the
 dataset-general/domain-agnostic parity the benchmark suite is built around.
 `_build_context_from_nodes` now always uses the single `[[title, Page N,
 Chunk N]]` format; `QUERY_REWRITE_PROMPT` always does plain paraphrase
@@ -590,9 +805,9 @@ periods, or a related metric in the same period, naturally drop one signal.
 
 ## Model infra migrated to LiteLLM proxy
 
-Generation and embeddings now route through a LiteLLM proxy
-(OpenAI-compatible, internal network) rather than directly-served local
-vLLM models. Verified working: `gemma-4-31b-it` (chat) and
+Generation and embeddings now route through configured OpenAI-compatible
+endpoints rather than repository-managed local model processes. The migration
+used `gemma-4-31b-it` (chat) and
 `qwen3-embedding-4b` (embeddings, dim=2560) — a dimension change from
 whatever was configured before, requiring `NEO4J_VECTOR_DIMENSIONS` to be
 updated and the vector indexes rebuilt from scratch (dimension is fixed at
@@ -627,15 +842,3 @@ Package directory, strategy id, Neo4j label prefix, docker container name,
 and loggers all renamed from the project's original working name
 (`prehypo`) to `prehop` — `hypohop` is the paper's title only, not used
 anywhere in code/config.
-
-## Original scope narrowing (pre-dates this session)
-
-An earlier submission under a different name/scope was rejected, with three
-pieces of criticism: too many bundled components obscuring the real
-contribution, a directional Q-/Q+ weighting claim that wasn't statistically
-significant, and low absolute performance. The project was deliberately
-narrowed to the three core claims `CLAUDE.md`'s "Project identity" section
-now states. Directional Q-/Q+ weighting stays explicitly out of the
-headline claim as a direct result of this. (Target venue/deadline/cycle
-specifics are intentionally not named here — see `SUBMISSION_TARGET.md`,
-local-only and gitignored.)
