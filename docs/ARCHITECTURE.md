@@ -385,7 +385,7 @@ Naive flattens 32 source documents into each embedding/write batch. Official
 adapters report only timing boundaries their upstream implementations expose.
 
 The measurement set directly addresses the indexing-time tradeoff: overall
-and Prehop phase latency, logical storage, document/chunk/question/edge counts,
+and Prehop phase latency, index-storage size, document/chunk/question/edge counts,
 Q-/Q+ and Q+-direction coverage, provenance completeness, exact NEXT topology,
 cross-document HOP invariants, and observed endpoint pressure. Retrieval and
 answer-quality attribution remains a separate benchmark/ablation concern; an
@@ -409,6 +409,29 @@ Naive reports its aggregate pipeline and measurement timing only.
 MS GraphRAG relationship drops caused by missing extracted entities are
 recorded as integrity warnings in the target result rather than silently
 treated as a clean graph.
+
+`index_capacity` records the size of the persisted index that each strategy
+uses during retrieval. Prehop, Naive RAG, and HopRAG retrieve from their
+strategy-scoped Neo4j nodes, relationships, properties, and search indexes.
+Their recorded value is a versioned logical-payload estimate: vector elements,
+list elements, and graph records are counted at eight bytes, with selected text
+property characters added directly. It does not represent the physical Neo4j
+store size and excludes Neo4j record, page, transaction-log, and search-index
+file overhead. MS GraphRAG does not use Neo4j in this repository; it retrieves
+from files under `data/ms_graphrag_output/<corpus-tag>/`. Its recorded value is
+the physical size of those local retrieval artifacts, excluding copied input,
+cache, and log directories (`_input`, `_cache`, and `_logs`). Original corpus
+files, debug output, run logs, and temporary files are not index storage for
+any strategy.
+
+These values share the reporting concept *index-storage size* but not the same
+physical measurement method: the Neo4j values are logical estimates, whereas
+the MS GraphRAG value is an on-disk file total. The measurement method and
+definition version are stored with the value, so reports must retain that
+distinction rather than describe the numbers as directly equivalent database
+sizes. Capacity is measured after `timing_seconds.total_elapsed_seconds` is
+frozen; reporting overhead is therefore excluded from indexing time. A
+capacity-measurement failure marks the indexing run incomplete.
 
 As a HOP-connectivity diagnostic, the runner resolves every full-query
 evidence title against indexed documents, then reports the fraction of fully resolved

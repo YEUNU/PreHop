@@ -215,9 +215,13 @@ RAG_RUN_ID=mhr-ms-graphrag-cold ./run_multihoprag.sh index --model ms_graphrag
 Use a new explicit run ID for every cold paper run. An interrupted or failed
 run is incomplete; start a replacement run after resolving the cause rather
 than combining partial state. Run artifacts record phase timings, graph
-integrity, provenance coverage, and failures. Detailed measurement fields and
-adapter-specific timing boundaries are defined in
-[ARCHITECTURE](docs/ARCHITECTURE.md#run-measurements).
+integrity, provenance coverage, index-storage size, and failures. Index-storage
+size means the persisted index used during retrieval: a logical-payload
+estimate for the Neo4j-backed Prehop, Naive RAG, and HopRAG indexes, and the
+physical local retrieval-artifact size for MS GraphRAG. Inputs, caches, logs,
+debug output, and temporary files are excluded. Detailed measurement fields,
+storage-method limitations, and adapter-specific timing boundaries are defined
+in [ARCHITECTURE](docs/ARCHITECTURE.md#run-measurements).
 
 LLM judging is disabled by default. When it is explicitly enabled, OpenAI Batch
 is the default transport. An interrupted submitted batch can be resumed without

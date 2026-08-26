@@ -11,14 +11,17 @@ or a source of paper claims.
 
 Each index run now stores its capacity measurement in the strategy-scoped index
 statistics before a later isolated run can clear or replace the artifacts.
+The common reporting concept is the size of the persisted index each strategy
+uses during retrieval, rather than total workspace or process disk usage.
 Prehop, Naive RAG, and HopRAG use the same versioned logical-payload estimate as
 the existing MultiHop-RAG table: vector and list elements and graph records are
 counted at eight bytes, with selected text-property characters added directly.
-MS GraphRAG records physical retrieval artifact bytes while excluding `_cache`,
-`_logs`, and `_input`. Capacity reporting runs after `total_elapsed_seconds` is
-frozen, so reporting overhead is not included in indexing time. A failed
-capacity measurement marks the corresponding index run incomplete rather than
-silently leaving the final cost table blank.
+MS GraphRAG does not use Neo4j in this repository and records the physical bytes
+of its local retrieval artifacts while excluding `_cache`, `_logs`, and
+`_input`. Capacity reporting runs after `total_elapsed_seconds` is frozen, so
+reporting overhead is not included in indexing time. A failed capacity
+measurement marks the corresponding index run incomplete rather than silently
+leaving the final cost table blank.
 
 ## 2026-08-27 — Complete indexing wall-clock time in run artifacts
 
