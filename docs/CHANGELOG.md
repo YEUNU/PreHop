@@ -37,6 +37,11 @@ slogans, and unexplained experimental shorthand. Actual dataset, system, code,
 configuration, and established research names remain available where needed
 for precision and reproducibility.
 
+Direct `run_servers.sh` invocation now loads `.env` before applying the empty
+API-key fallback. Previously the fallback was exported first and then preserved
+as a caller override, causing authenticated external endpoints to fail their
+preflight with HTTP 401 even when `.env` contained a valid key.
+
 ## 2026-08-26 — Development-winning P2 default and traversal specialization
 
 The current operational defaults reproduce the selected legacy sample-200

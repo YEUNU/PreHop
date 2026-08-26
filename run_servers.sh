@@ -8,13 +8,14 @@
 
 set -e
 
-# Environment
-export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 . "$SCRIPT_DIR/scripts/lib.sh"
 load_project_env "$SCRIPT_DIR/.env"
+# Apply the fallback only after loading project configuration. Setting it
+# earlier makes load_project_env preserve EMPTY as an explicit caller override.
+export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
 : "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}"
 
 SERVICE=$1
