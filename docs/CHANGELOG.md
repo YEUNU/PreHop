@@ -7,6 +7,17 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-08-27 — Complete indexing wall-clock time in run artifacts
+
+All four indexers now write `timing_seconds.total_elapsed_seconds` to their
+strategy-scoped index statistics. The value uses one wall-clock definition: it
+starts when the indexing command enters the strategy run and ends after index
+finalization and integrity checks, immediately before statistics serialization.
+This removes the need to recover total indexing time from console logs. Storage
+capacity remains a separately reported measurement because the Neo4j systems
+use estimated logical property payload while MS GraphRAG uses physical retrieval
+artifact size.
+
 ## 2026-08-26 — Full-query Prehop and Naive development comparison
 
 The current Prehop default and the controlled Naive RAG baseline completed all

@@ -668,6 +668,7 @@ async def _run_indexing_unlocked(
             raise
         finally:
             timing["official_pipeline_seconds"] = time.perf_counter() - official_started
+            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
             _write_runtime_stage_stats(
                 strategy,
                 corpus_tag or "default",
@@ -701,6 +702,7 @@ async def _run_indexing_unlocked(
             raise
         finally:
             timing["official_pipeline_seconds"] = time.perf_counter() - official_started
+            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
             _write_runtime_stage_stats(
                 strategy,
                 corpus_tag or "default",
@@ -1032,6 +1034,11 @@ async def _run_indexing_unlocked(
         except (OSError, TypeError, ValueError) as exc:
             logger.error("Could not write failure log to %s: %s", failures_path, exc)
 
+    # Record one comparable wall-clock duration for every strategy. This ends
+    # after index finalization and integrity checks, immediately before the
+    # stats artifact is serialized.
+    stage_timing["total_elapsed_seconds"] = time.perf_counter() - started_at
+
     # Record structured graph and corpus statistics from the live database.
     # tables (chunk/HOP-edge counts, Q-/Q+ coverage) — queried from the live
     # graph so it's always consistent with what actually landed in Neo4j.
@@ -1090,7 +1097,7 @@ async def _run_indexing_unlocked(
         except (OSError, TypeError, ValueError) as exc:
             logger.error("Could not write index provenance stats to %s: %s", stats_path, exc)
 
-    elapsed_seconds = time.perf_counter() - started_at
+    elapsed_seconds = stage_timing["total_elapsed_seconds"]
     logger.info(
         "Indexing timing | elapsed_seconds=%.3f files_per_second=%.3f",
         elapsed_seconds,
