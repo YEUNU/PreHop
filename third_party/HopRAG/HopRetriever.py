@@ -183,7 +183,7 @@ class HopRetriever:
                     try:
                         return "Follow-up",que2node[[x for x in que2node.keys() if x[-7:]==choice[-7:]][0]]
                     except:
-                        print("fail extraction")
+                        logger.warning("Hop extraction returned no usable choice")
                         return "Lack Queries"
 
     def get_llm_hop2(self,current_node,context,query,judged_outcome,helpful_nodes):
@@ -219,7 +219,12 @@ class HopRetriever:
                 hops_nodes[node['text']]=node
             if edge_cnt>=8:
                 break # limit to 8 edges
-        print(f"current_node has {len(que2node)} edges, uses {edge_cnt} edges and brings out {len(hops_nodes)} hops")
+        logger.debug(
+            "Traversal expansion: {} candidate edges, {} used, {} hop nodes",
+            len(que2node),
+            edge_cnt,
+            len(hops_nodes),
+        )
         judged_outcome[current_node['text']]=list(hops_nodes.values())
         return judged_outcome,helpful_nodes
     
@@ -396,7 +401,7 @@ class HopRetriever:
                             queue_irrelevant.append(new_text)
                         else:
                             queue.append(new_text) # Neighbors of completely Irrelevant nodes won't be directly added to the queue, they have lower priority, unless the queue is empty and needs to be filled
-                print(f"current count:{count},calling times:{api_call_time}")
+                logger.debug("Traversal depth: {}, judgement calls: {}", count, api_call_time)
                 helpful=[]
                 relevant=[]
                 irrelevant=[]
@@ -467,7 +472,12 @@ class HopRetriever:
                     for node in next_node_list:
                         if node['text'] not in real_next_hop_node:
                             real_next_hop_node[node['text']]=node
-                print(f"current count:{count}, new nodes count: {len(real_next_hop_node)}, judging nodes:{api_call_time}")
+                logger.debug(
+                    "Traversal depth: {}, new nodes: {}, judgement calls: {}",
+                    count,
+                    len(real_next_hop_node),
+                    api_call_time,
+                )
                 if api_call_time==0: # no more new nodes mean no more hops
                     break
                 queue=list(real_next_hop_node.values()) # add to queue, but different next_node_list from for loop share common nodes!
@@ -545,7 +555,7 @@ class HopRetriever:
                         else:
                             visit_counter[node_content] -= 1
                     else:
-                        print(f"Unexpected LLM choice output. label: {label}") # should never arrive here
+                        logger.warning("Unexpected LLM choice output: {}", label)
                         continue
                     if node_content not in node2emb:
                         node2emb[node_content]=current_node['embed']
@@ -555,7 +565,12 @@ class HopRetriever:
                     for record in result:
                         new_node=record['logic_node']
                         real_next_hop_node[new_node['text']]=new_node
-                print(f"current count:{count},calling times:{api_call_time}, new nodes count: {len(real_next_hop_node)}")
+                logger.debug(
+                    "Traversal depth: {}, judgement calls: {}, new nodes: {}",
+                    count,
+                    api_call_time,
+                    len(real_next_hop_node),
+                )
                 if api_call_time==0: # no more new nodes mean no more hops
                     break
                 queue=list(real_next_hop_node.values())
