@@ -15,7 +15,7 @@ load_project_env "$SCRIPT_DIR/.env"
 # Environment (.env values override defaults; exported values override .env).
 export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
 export NEO4J_VECTOR_DIMENSIONS="${NEO4J_VECTOR_DIMENSIONS:-1024}"
-export MAX_EMBEDDING_LENGTH="${MAX_EMBEDDING_LENGTH:-16384}"
+export MAX_EMBEDDING_LENGTH="${MAX_EMBEDDING_LENGTH:-32768}"
 export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 
@@ -56,7 +56,13 @@ export RAG_INDEX_LOG_DIR="$INDEX_LOG_DIR"
 echo "========================================="
 echo "     Indexing Pre-flight Check           "
 echo "========================================="
-echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, chunk_sentences=6"
+if [ "$MODEL" = "naive" ]; then
+    echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, retrieval_unit=source_document, embedding_tokens=${MAX_EMBEDDING_LENGTH}"
+elif [ "$MODEL" = "prehop" ]; then
+    echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, chunk_sentences=6"
+else
+    echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, chunking=official"
+fi
 
 # Validate one strategy per invocation.
 if [ "$MODEL" = "all" ]; then

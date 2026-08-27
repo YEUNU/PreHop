@@ -56,11 +56,11 @@ never mixed across modalities.
 Evaluation is dataset-specific. MultiHop-RAG reports official-compatible
 Hits@k, MRR@10, and MAP@10 plus separate fact-coverage and null-refusal
 diagnostics. MuSiQue reports answer EM/F1 and supporting-paragraph metrics.
-The in-repo Naive RAG is a controlled vector-search baseline: it deliberately
-uses the same six-sentence chunks, synthesis prompt, and top-k as Prehop. It is
-not presented as a uniquely canonical Naive RAG configuration. A
-one-source-paragraph-per-chunk MuSiQue comparison, if run, is reported
-separately as a post-hoc chunking sensitivity analysis.
+The in-repo Naive RAG is the document-level vector-search baseline: one
+prepared news article or paragraph source is embedded and retrieved as one
+unit. It uses its reference top-k 10 and the shared answer prompt. Prehop keeps
+its own six-sentence chunk architecture; no shared-chunk Naive result is part
+of the comparison protocol.
 The optional LLM judge is disabled by default and is not a primary metric.
 Samples are development artifacts; paper claims require the complete prepared
 split and the eligibility rules in the local paper specification.
@@ -84,7 +84,7 @@ prehop/
 │   │   ├── graphrag.py              # GraphRAG facade; run_workflow() is the query entry point
 │   │   ├── indexing/                 # chunking (fixed-size), knowledge_mapping (Q-/Q+), hop_edges, graph_writer
 │   │   └── retrieval/                # hybrid (RRF), cosine ordering, deterministic traversal
-│   ├── naive/                       # baseline (shared fixed-window chunking + vector search)
+│   ├── naive/                       # baseline (one source document per vector + search)
 │   ├── hoprag/                      # baseline (runtime hop traversal via official HopRAG)
 │   └── ms_graphrag/                 # baseline (community-report retrieval via graphrag package)
 ├── utils/
@@ -336,7 +336,10 @@ Full list in the paper appendix; the most important:
 
 | Parameter | Value | Where |
 |---|---|---|
-| `CHUNK_SENTENCES` | 6 | fixed-size chunking window (sentences per chunk) |
+| Prehop chunk size | 6 sentences | fixed-size page-scoped window |
+| Naive retrieval unit | 1 prepared source | complete article or paragraph; embedding truncation forbidden |
+| Retrieval depth | Prehop 12; Naive 10 | architecture-level defaults |
+| Input capacity | generation 262,144; embedding 32,768 tokens | configured endpoint limits |
 | Questions per direction | 3 | fixed output-schema bound for Q− and Q+ |
 | HOP targets | at most one candidate per Q+ | nearest cross-document Q− owner |
 | Query representations | set union | $Q^-$ / body direct evidence and $Q^+$ dependency seeds, each searched once |

@@ -100,8 +100,16 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
         "embedding_max_input_tokens": RAGConfig.MAX_EMBEDDING_LENGTH,
         "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
     }
-    if strategy in {"prehop", "naive"}:
+    if strategy == "prehop":
         policy["chunk_sentences"] = RAGConfig.CHUNK_SENTENCES
+    if strategy == "naive":
+        policy.update(
+            {
+                "retrieval_unit": "source_document",
+                "chunks_per_source": 1,
+                "embedding_input_truncation": "forbidden",
+            }
+        )
     if strategy == "prehop":
         policy.update(
             {

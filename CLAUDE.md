@@ -100,8 +100,9 @@ document responsibilities change. Do not copy full sections between files.
 | `musique` | `data/musique_corpus` | `data/musique_queries.json` |
 
 Corpus files use `Title: ...`, optional `--- Page N ---` markers, then raw
-text. Prehop and Naive share the parser and page-scoped fixed sentence-window
-chunker. Raw pipe text remains raw.
+text. Prehop uses page-scoped fixed sentence windows. Naive uses the same
+metadata-removing parser but joins parsed pages into one source-document
+retrieval unit. Raw pipe text remains raw.
 
 ## Common commands
 
@@ -218,13 +219,12 @@ cannot overwrite one another.
 
 ## Comparison policy
 
-Prehop and Naive use the same chunks, shared synthesis prompt, and top-k 12.
-Call this the controlled Naive RAG baseline, not the canonical or standard
-Naive configuration: Naive RAG has no single required chunk unit. A MuSiQue
-one-source-paragraph-per-chunk run is allowed only under a distinct run and
-index identity and must be labelled as a post-hoc chunking sensitivity
-analysis. It does not replace the controlled baseline and cannot be used by
-itself to attribute a difference to Prehop's question or graph components.
+Naive is the architecture-level document retrieval baseline: one prepared
+source is one vector, input truncation is forbidden, and retrieval uses top-k
+10. Prehop retains six-sentence chunks and top-k 12. They share the synthesis
+prompt but not their retrieval unit. Do not add a shared-chunk Naive comparison
+to result tables; Prehop component attribution comes from its A0–A5 internal
+ablations.
 HopRAG retains the upstream official end-to-end top-k 20; MS GraphRAG retains
 its official context budget. These unequal official settings must be stated in
 the paper. A controlled equal-budget retrieval experiment is reported

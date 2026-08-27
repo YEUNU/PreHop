@@ -6,15 +6,15 @@ import re
 from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient
-from models.prehop.indexing.chunking import parse_pages_offline, split_fixed_sentence_windows
+from models.prehop.indexing.chunking import parse_pages_offline
 from utils.prompts.shared import build_answer_prompt
 
 
 class NaiveRAG:
     """
-    [Baseline] Standard RAG implementation for comparison.
-    - The same fixed sentence-window chunking as Prehop.
-    - Standard Vector Search.
+    Architecture-level document RAG baseline.
+    - One prepared source document is one retrieval unit.
+    - Standard vector search over complete source bodies.
     """
 
     def __init__(self, strategy: str = "naive", corpus_tag: str | None = "default"):
@@ -98,13 +98,10 @@ class NaiveRAG:
     @staticmethod
     def _parse_document(filename: str, content: str) -> tuple[str, list[dict]]:
         parsed = parse_pages_offline(filename, content)
-        chunks: list[dict] = []
-        sent_id = 0
-        for page in parsed["pages"]:
-            for text in split_fixed_sentence_windows(page["content"]):
-                chunks.append({"text": text, "page": page["num"], "sent_id": sent_id})
-                sent_id += 1
-        return parsed["title"], chunks
+        body = "\n\n".join(str(page["content"]).strip() for page in parsed["pages"] if str(page["content"]).strip())
+        if not body:
+            return parsed["title"], []
+        return parsed["title"], [{"text": body, "page": 0, "sent_id": 0}]
 
     async def index_documents(self, documents: list[tuple[str, str]]) -> int:
         """Embed and atomically replace a batch of source documents."""
@@ -120,11 +117,9 @@ class NaiveRAG:
             # Keep document/version scope in the vector representation.
             texts.extend(f"Document title: {title}\n{chunk['text']}" for chunk in chunks)
 
-        # Flattening across source files is essential for short-document
-        # short-document corpora usually have one chunk per file, so per-document
-        # calls silently turned a configured batch size of 32 into 66k
-        # one-item requests.
-        embeddings = await self.vllm.get_embeddings(texts)
+        # Submit source documents together so the configured embedding batch
+        # size applies across files instead of producing one request per file.
+        embeddings = await self.vllm.get_embeddings(texts, allow_truncation=False)
         if len(embeddings) != len(texts) or any(
             len(embedding) != RAGConfig.EMBEDDING_DIMENSIONS for embedding in embeddings
         ):
@@ -184,7 +179,7 @@ class NaiveRAG:
             await result.consume()
 
         self.logger.info(
-            "NaiveRAG: indexed %d fixed-window chunks for %d documents in one embedding/write batch",
+            "NaiveRAG: indexed %d document units for %d documents in one embedding/write batch",
             len(batch_data),
             len(prepared),
         )
@@ -194,7 +189,7 @@ class NaiveRAG:
         """Compatibility wrapper for one-document callers and live smoke tests."""
         await self.index_documents([(filename, content)])
 
-    async def retrieve(self, query: str, top_k: int = RAGConfig.DEFAULT_TOP_K) -> tuple:
+    async def _retrieve_nodes(self, query: str, top_k: int) -> list[dict]:
         query_embedding = await self.vllm.get_embedding(query)
         if not query_embedding:
             raise ValueError(f"NaiveRAG query embedding is missing for query={query!r}")
@@ -214,20 +209,50 @@ class NaiveRAG:
                 },
             )
 
-            nodes = [dict(rec) async for rec in result]
+            return [dict(rec) async for rec in result]
 
-        context_parts = [f"[[{n['title']}, {n['sent_id']}]]\n{n['text']}" for n in nodes]
-        return "\n\n---\n\n".join(context_parts), nodes
+    async def retrieve(self, query: str, top_k: int = RAGConfig.NAIVE_TOP_K) -> tuple:
+        nodes = await self._retrieve_nodes(query, top_k)
+        return self._build_context_from_nodes(nodes), nodes
+
+    @staticmethod
+    def _build_context_from_nodes(nodes: list[dict]) -> str:
+        return "\n\n---\n\n".join(f"[[{node['title']}, document]]\n{node['text']}" for node in nodes)
+
+    def _fit_ranked_context(self, nodes: list[dict], query: str) -> tuple[str, list[dict]]:
+        """Pack complete documents in retrieval order without silent truncation."""
+        accepted: list[dict] = []
+        for node in nodes:
+            candidate = self._build_context_from_nodes([*accepted, node])
+            prompt = build_answer_prompt(candidate, query)
+            messages = [{"role": "user", "content": prompt}]
+            prompt_tokens = self.vllm._count_tokens(messages)
+            if prompt_tokens + RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS > RAGConfig.MAX_CONTEXT_LENGTH:
+                break
+            accepted.append(node)
+        return self._build_context_from_nodes(accepted), accepted
 
     async def run_workflow(self, query: str, history: list[dict] | None = None) -> tuple:
         """Entry point for benchmark. Returns (answer, sources, trace)."""
         _ = history
-        # Naive RAG has no upstream/official top-k to preserve. Use the same
-        # synthesis-context budget as Prehop so the benchmark comparison does
-        # not give the two in-repo methods different evidence counts by default.
-        context, nodes = await self.retrieve(query, top_k=RAGConfig.DEFAULT_TOP_K)
-        if not context:
+        nodes = await self._retrieve_nodes(query, top_k=RAGConfig.NAIVE_TOP_K)
+        if not nodes:
             return "Insufficient evidence.", [], [{"step": "naive_qa", "output": "empty_context"}]
+
+        context, context_nodes = self._fit_ranked_context(nodes, query)
+        if not context:
+            return (
+                "Insufficient evidence.",
+                [],
+                [
+                    {
+                        "step": "naive_qa",
+                        "output": "context_budget",
+                        "retrieved_documents": len(nodes),
+                        "synthesis_documents": 0,
+                    }
+                ],
+            )
 
         prompt = build_answer_prompt(context, query)
         messages = [{"role": "user", "content": prompt}]
@@ -241,7 +266,15 @@ class NaiveRAG:
             raise ValueError("Answer synthesis returned an empty response")
         # Preserve source filename as an opaque identity; MuSiQue uses it to
         # distinguish different paragraphs with the same Wikipedia title.
-        trace = [{"step": "naive_qa", "input": messages, "output": answer}]
+        trace = [
+            {
+                "step": "naive_qa",
+                "output": answer,
+                "retrieved_documents": len(nodes),
+                "synthesis_documents": len(context_nodes),
+                "synthesis_prompt_tokens": self.vllm._count_tokens(messages),
+            }
+        ]
         sources = [
             {
                 "doc": n["title"],
@@ -249,6 +282,7 @@ class NaiveRAG:
                 "page": n.get("page", 0),
                 "text": n["text"],
                 "sent_id": n["sent_id"],
+                "used_for_synthesis": n in context_nodes,
             }
             for n in nodes
         ]

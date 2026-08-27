@@ -235,18 +235,41 @@ async def test_run_workflow_strips_benchmark_format_marker_before_retrieving():
 
 
 @pytest.mark.asyncio
-async def test_naive_run_workflow_uses_shared_default_top_k():
+async def test_naive_run_workflow_uses_document_baseline_top_k():
     from core.config import RAGConfig
     from models.naive.naive_rag import NaiveRAG
 
     rag = NaiveRAG(strategy="naive")
-    rag.retrieve = AsyncMock(return_value=("context", []))
+    node = {"title": "Doc", "text": "context", "source": "doc.txt", "page": 0, "sent_id": 0}
+    rag._retrieve_nodes = AsyncMock(return_value=[node])
     rag.vllm = MagicMock()
+    rag.vllm._count_tokens.return_value = 10
     rag.vllm.generate_response = AsyncMock(return_value="answer")
 
     await rag.run_workflow("question")
 
-    rag.retrieve.assert_awaited_once_with("question", top_k=RAGConfig.DEFAULT_TOP_K)
+    rag._retrieve_nodes.assert_awaited_once_with("question", top_k=RAGConfig.NAIVE_TOP_K)
+
+
+def test_naive_context_budget_keeps_complete_documents_in_rank_order(monkeypatch):
+    from core.config import RAGConfig
+    from models.naive.naive_rag import NaiveRAG
+
+    monkeypatch.setattr(RAGConfig, "MAX_CONTEXT_LENGTH", 100)
+    monkeypatch.setattr(RAGConfig, "SYNTHESIS_MAX_OUTPUT_TOKENS", 10)
+    rag = NaiveRAG(strategy="naive")
+    rag.vllm = MagicMock()
+    rag.vllm._count_tokens.side_effect = [50, 95]
+    nodes = [
+        {"title": "First", "text": "first body"},
+        {"title": "Second", "text": "second body"},
+    ]
+
+    context, accepted = rag._fit_ranked_context(nodes, "question")
+
+    assert accepted == [nodes[0]]
+    assert "first body" in context
+    assert "second body" not in context
 
 
 def test_hoprag_adapter_keeps_official_top_k():

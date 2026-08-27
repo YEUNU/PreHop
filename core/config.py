@@ -42,7 +42,7 @@ class RAGConfig:
     # (multi-seed benchmarking). Empty/missing => no seed (engine default).
     _LLM_SEED_RAW = os.environ.get("RAG_LLM_SEED", "").strip()
     LLM_SEED = int(_LLM_SEED_RAW) if _LLM_SEED_RAW.lstrip("-").isdigit() else None
-    MAX_CONTEXT_LENGTH = int(os.environ.get("RAG_MAX_CONTEXT_LENGTH", "16384"))
+    MAX_CONTEXT_LENGTH = int(os.environ.get("RAG_MAX_CONTEXT_LENGTH", "262144"))
     # Capped below the configured context limit so input has output headroom.
     # Indexing prompts for Q-/Q+ generation rarely exceed 1–2K output;
     # 4K is comfortable headroom.
@@ -51,7 +51,7 @@ class RAGConfig:
     # generation. This fixed cap reserves context space and bounds latency; it
     # is shared by controlled answer-synthesis paths and is not swept.
     SYNTHESIS_MAX_OUTPUT_TOKENS = 128
-    MAX_EMBEDDING_LENGTH = int(os.environ.get("MAX_EMBEDDING_LENGTH", "16384"))
+    MAX_EMBEDDING_LENGTH = int(os.environ.get("MAX_EMBEDDING_LENGTH", "32768"))
     EMBEDDING_QUERY_INSTRUCTION = os.environ.get(
         "EMBEDDING_QUERY_INSTRUCTION",
         "Given a web search query, retrieve relevant passages that answer the query",
@@ -80,6 +80,9 @@ class RAGConfig:
     # HOP ANN sends high-dimensional vectors and candidate rows through bounded waves.
     HOP_GATHER_WAVE = int(os.environ.get("RAG_HOP_GATHER_WAVE", "64"))
     DEFAULT_TOP_K = 12
+    # Architecture-level Naive RAG retrieves complete source documents. Its
+    # reference retrieval depth follows MultiHop-RAG's basic RAG entrypoint.
+    NAIVE_TOP_K = 10
     FULLTEXT_ANALYZER = os.environ.get("NEO4J_FULLTEXT_ANALYZER", "english")
 
     # Zero disables graph expansion for ablation; one enables the fixed
@@ -145,6 +148,7 @@ class RAGConfig:
             "QUESTIONS_PER_DIRECTION": cls.QUESTIONS_PER_DIRECTION,
             "HOP_GATHER_WAVE": cls.HOP_GATHER_WAVE,
             "DEFAULT_TOP_K": cls.DEFAULT_TOP_K,
+            "NAIVE_TOP_K": cls.NAIVE_TOP_K,
         }
         invalid = {name: value for name, value in positive.items() if value < 1}
         if invalid:

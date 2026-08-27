@@ -275,7 +275,13 @@ class VLLMClient:
             finally:
                 cls._generation_inflight[key] -= 1
 
-    async def _embed_batch_itemwise(self, batch: list[str], encoding_type: str) -> list[list[float]]:
+    async def _embed_batch_itemwise(
+        self,
+        batch: list[str],
+        encoding_type: str,
+        *,
+        allow_truncation: bool = True,
+    ) -> list[list[float]]:
         embeddings: list[list[float]] = []
         for idx, text in enumerate(batch):
             try:
@@ -285,8 +291,13 @@ class VLLMClient:
                 else:
                     self.logger.error("Embedding item response missing data at idx=%d.", idx)
                     embeddings.append([])
-            except Exception as e:  # noqa: BLE001 - OpenAI clients expose provider-specific exceptions
+            except Exception as e:
                 recovered = False
+                if self._is_context_length_error(e) and not allow_truncation:
+                    raise ValueError(
+                        "Embedding input exceeds the configured server limit and truncation is forbidden "
+                        f"for encoding_type={encoding_type!r}, item={idx}"
+                    ) from e
                 if self._is_context_length_error(e):
                     aggressive_text = self._truncate_text(text, max_tokens=self._embedding_token_limit(aggressive=True))
                     if aggressive_text and aggressive_text != text:
@@ -540,7 +551,13 @@ class VLLMClient:
             self.logger.error(f"Error calling evaluation LLM ({model}): {e}")
             raise
 
-    async def get_embeddings(self, texts: list[str], encoding_type: str = "document") -> list[list[float]]:
+    async def get_embeddings(
+        self,
+        texts: list[str],
+        encoding_type: str = "document",
+        *,
+        allow_truncation: bool = True,
+    ) -> list[list[float]]:
         if not texts:
             return []
 
@@ -550,14 +567,18 @@ class VLLMClient:
             if cached is not None:
                 return [cached]
 
-        # Truncate and format query texts to prevent embedding model overflow.
+        # Most call sites retain bounded truncation for defensive compatibility.
+        # A whole-document index can forbid it so one source is never silently
+        # represented by only a prefix.
         embed_max_tokens = self._embedding_token_limit()
         truncated_texts: list[str] = []
         for t in texts:
-            candidate = self._truncate_text(t, max_tokens=embed_max_tokens)
+            candidate = self._truncate_text(t, max_tokens=embed_max_tokens) if allow_truncation else t
             if encoding_type == "query" and self._is_qwen_embedding_model():
                 candidate = self._format_query_for_embedding(candidate)
-            truncated_texts.append(self._truncate_text(candidate, max_tokens=embed_max_tokens))
+            truncated_texts.append(
+                self._truncate_text(candidate, max_tokens=embed_max_tokens) if allow_truncation else candidate
+            )
 
         if RAGConfig.EMBEDDING_BATCH_SIZE < 1:
             raise ValueError("RAG_EMBEDDING_BATCH_SIZE must be at least 1")
@@ -578,7 +599,13 @@ class VLLMClient:
                     encoding_type,
                     e,
                 )
-                all_embeddings.extend(await self._embed_batch_itemwise(batch, encoding_type=encoding_type))
+                all_embeddings.extend(
+                    await self._embed_batch_itemwise(
+                        batch,
+                        encoding_type=encoding_type,
+                        allow_truncation=allow_truncation,
+                    )
+                )
 
         if single_query and all_embeddings and all_embeddings[0]:
             if len(self._query_embed_cache) >= self._QUERY_EMBED_CACHE_LIMIT:

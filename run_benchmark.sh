@@ -54,7 +54,13 @@ echo "========================================="
 echo "     Benchmark Pre-flight Check          "
 echo "========================================="
 echo "Python: $PYTHON_BIN"
-echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, top_k=12"
+if [ "$MODEL" = "naive" ]; then
+    echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, unit=source_document, top_k=10"
+elif [ "$MODEL" = "prehop" ]; then
+    echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, top_k=12"
+else
+    echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, budget=official"
+fi
 
 echo "Step 0: Python/Dependency preflight..."
 if [ "$MODEL" = "hoprag" ] || [ "$MODEL" = "ms_graphrag" ] || [ "$RUN_ALL" = true ]; then

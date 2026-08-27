@@ -172,7 +172,7 @@ def split_fixed_sentence_windows(
     text: str,
     chunk_sentences: int | None = None,
 ) -> list[str]:
-    """Split one page into the exact fixed sentence windows used by all in-repo methods."""
+    """Split one page into Prehop's exact fixed sentence windows."""
     chunk_sentences = RAGConfig.CHUNK_SENTENCES if chunk_sentences is None else chunk_sentences
     if chunk_sentences < 1:
         raise ValueError("chunk_sentences must be positive")

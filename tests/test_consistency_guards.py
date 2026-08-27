@@ -232,6 +232,12 @@ def test_index_policy_records_semantic_embedding_and_hop_identity(monkeypatch):
     assert policy["embedding_revision"] == "revision-1"
     assert policy["hop_construction"] == "qplus_to_qminus_owner"
 
+    naive_policy = _resolved_index_policy("naive", "default")
+    assert naive_policy["retrieval_unit"] == "source_document"
+    assert naive_policy["chunks_per_source"] == 1
+    assert naive_policy["embedding_input_truncation"] == "forbidden"
+    assert "chunk_sentences" not in naive_policy
+
 
 @pytest.mark.asyncio
 async def test_generation_budget_is_shared_across_client_instances(monkeypatch):
@@ -545,20 +551,13 @@ def test_cli_has_no_domain_gate():
     assert "--domain" not in parser.format_help()
 
 
-def test_naive_uses_shared_page_scoped_fixed_windows(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "CHUNK_SENTENCES", 2)
+def test_naive_uses_one_complete_source_document():
     title, chunks = NaiveRAG._parse_document(
         "doc.txt",
         "Title: Shared\n--- Page 1 ---\nOne. Two. Three.\n--- Page 2 ---\nFour. Five.",
     )
     assert title == "Shared"
-    assert chunks == [
-        {"text": "One. Two.", "page": 1, "sent_id": 0},
-        {"text": "Three.", "page": 1, "sent_id": 1},
-        {"text": "Four. Five.", "page": 2, "sent_id": 2},
-    ]
+    assert chunks == [{"text": "One. Two. Three.\n\nFour. Five.", "page": 0, "sent_id": 0}]
 
 
 @pytest.mark.asyncio
@@ -587,7 +586,17 @@ async def test_naive_batches_embeddings_across_source_documents(monkeypatch):
     assert indexed == 2
     rag.vllm.get_embeddings.assert_awaited_once()
     assert len(rag.vllm.get_embeddings.await_args.args[0]) == 2
+    assert rag.vllm.get_embeddings.await_args.kwargs == {"allow_truncation": False}
     assert session.run.await_args.kwargs["sources"] == ["first.txt", "second.txt"]
+
+
+@pytest.mark.asyncio
+async def test_embedding_strict_input_rejects_provider_context_overflow(monkeypatch):
+    client = VLLMClient()
+    monkeypatch.setattr(client, "_create_embedding_request", AsyncMock(side_effect=ValueError("maximum context length")))
+
+    with pytest.raises(ValueError, match="truncation is forbidden"):
+        await client.get_embeddings(["complete document"], allow_truncation=False)
 
 
 def test_debug_output_is_namespaced_by_run_strategy_and_corpus(monkeypatch):

@@ -7,21 +7,20 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
-## 2026-08-28 — Naive chunking comparison classified
+## 2026-08-28 — Naive changed to document-level retrieval
 
-The six-sentence Naive RAG path is now described consistently as a controlled
-baseline, not as a uniquely standard Naive configuration. It shares Prehop's
-chunks, synthesis prompt, and top-k so the primary comparison does not add a
-chunking difference. The current prepared corpora contain 8,529 fixed-window
-chunks from 609 MultiHop-RAG sources and 23,280 chunks from 21,099 MuSiQue
-paragraph sources. Every MultiHop-RAG source is split; 2,072 MuSiQue sources
-(9.82%) are split.
+Naive RAG now embeds and retrieves exactly one complete prepared source per
+unit: one news article for MultiHop-RAG and one paragraph source for MuSiQue.
+It uses top-k 10. Embedding input truncation is forbidden, so an input rejected
+by the configured 32k endpoint fails indexing. Answer synthesis packs complete
+documents in retrieval order within the configured 256k generation budget and
+records retrieved and used document counts separately.
 
-A one-source-paragraph-per-chunk MuSiQue Naive run is reserved for a separately
-identified post-hoc chunking sensitivity analysis. It cannot replace the
-controlled baseline or serve as a component ablation because Naive alone would
-then use a different retrieval unit. No indexing or benchmark implementation
-was changed by this documentation decision.
+This architecture-level baseline replaces the earlier six-sentence Naive
+configuration. Its artifacts are retired and must be removed before the
+replacement benchmark is run. Prehop's A0–A5 internal ablations provide its
+component controls. The generation and embedding input limits in `.env.example`
+are now 262,144 and 32,768 tokens respectively.
 
 ## 2026-08-28 — Reproducible corpus identity and cold-run entrypoint
 
@@ -85,56 +84,6 @@ This removes the need to recover total indexing time from console logs. Storage
 capacity remains a separately reported measurement because the Neo4j systems
 use estimated logical property payload while MS GraphRAG uses physical retrieval
 artifact size.
-
-## 2026-08-26 — Full-query Prehop and Naive development comparison
-
-The current Prehop default and the controlled Naive RAG baseline completed all
-2,556 prepared MultiHop-RAG queries with zero runtime errors, the same query-ID
-digest, top-k 12, generation and embedding models, four concurrent queries,
-and disabled optional judge. The 301 null queries are excluded from official
-retrieval denominators, leaving 2,255 eligible retrieval queries.
-
-| System | Hits@4 | Hits@10 | MRR@10 | MAP@10 |
-|---|---:|---:|---:|---:|
-| Prehop | 0.7259 | 0.8506 | 0.5784 | 0.2795 |
-| Naive RAG | 0.6816 | 0.8399 | 0.5457 | 0.2594 |
-
-Paired bootstrap used 10,000 resamples and seed 42. Prehop improved Hits@4 by
-0.0443 (95% CI [0.0293, 0.0590]), MRR@10 by 0.0327 ([0.0222, 0.0432]), and
-MAP@10 by 0.0201 ([0.0151, 0.0251]). Hits@10 changed by 0.0106 with an
-interval spanning zero ([-0.0027, 0.0235]). Diagnostic document precision,
-recall, F1, fact recall@4/@10, and answer F1 also had intervals excluding zero;
-answer EM did not.
-
-| System | Doc P | Doc R | Doc F1 | Fact R@10 | Answer F1 | Mean latency |
-|---|---:|---:|---:|---:|---:|---:|
-| Prehop | 0.4634 | 0.7017 | 0.5321 | 0.5728 | 0.1588 | 4.861 s |
-| Naive RAG | 0.4371 | 0.6792 | 0.5012 | 0.5400 | 0.1459 | 3.824 s |
-
-The existing full-corpus indexing artifacts record the following costs. For
-Neo4j systems, capacity is an estimated logical property payload: stored vector
-elements at eight bytes plus text, scalar, list, node, and relationship
-payloads. It excludes shared Neo4j store and search-index overhead. MS GraphRAG
-capacity is the physical retrieval artifact size excluding cache, logs, and
-staged input, so its storage mechanism is not directly equivalent.
-
-| System | Indexing time | Capacity |
-|---|---:|---:|
-| Prehop | 41 min 53 s | 1.544 GiB |
-| Naive RAG | 1 min 44 s | 0.170 GiB |
-| HopRAG | 2 h 24 min 16 s | 5.324 GiB |
-| MS GraphRAG | 25 min 16 s | 0.395 GiB |
-
-Result artifacts are
-`data/results/prehop_full_default_20260826/prehop/multihoprag/prehop_multihoprag.json`
-and
-`data/results/naive_full_20260826/naive/multihoprag/naive_multihoprag.json`;
-the paired artifact is under
-`data/results/prehop_full_default_20260826/comparison_vs_naive_full/`.
-Both benchmark artifacts are complete, but the older indexes lack the current
-corpus fingerprint manifest. These values are therefore full-query development
-results, not final paper results. A clean reindex under the current manifest
-contract is required before paper reporting.
 
 ## 2026-08-26 — Paper and architecture synchronized to the fixed configuration
 
@@ -218,16 +167,15 @@ traversal fell from 478.0 ms to 167.1 ms (-65.0%) and end-to-end latency from
 not used to establish implementation equivalence because synthesis was not
 seeded; retrieval/evidence metrics are deterministic.
 
-All rows below are completed artifacts with the same 200-query digest
-`d5facf87...`. Official ranking and evidence aggregates have 150 eligible
-non-null queries. Prehop and Naive use top-k 12; HopRAG retains official top-k
-20 and MS GraphRAG retains its official LocalSearch context budget, so latency
-and resource-cost comparisons are descriptive rather than equal-budget.
+The Prehop artifact has the 200-query digest `d5facf87...`, with 150 eligible
+non-null queries. The obsolete six-sentence Naive row was removed when Naive
+changed to document-level retrieval. HopRAG retains official top-k 20 and MS
+GraphRAG retains its official LocalSearch context budget, so latency and
+resource-cost comparisons are descriptive rather than equal-budget.
 
 | System | Hits@4 | Hits@10 | MRR@10 | MAP@10 | Doc P | Doc R | Doc F1 | Fact R@10 | Answer F1 | Latency |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **Prehop P2 offline** | **0.7267** | **0.8600** | **0.5679** | **0.2770** | **0.4331** | 0.7000 | **0.5122** | **0.5822** | 0.1472 | 3.408 s |
-| Naive RAG | 0.6400 | 0.8533 | 0.5307 | 0.2525 | 0.4247 | 0.7117 | 0.5013 | 0.5444 | 0.1421 | **2.929 s** |
 | HopRAG | 0.6533 | 0.8200 | 0.5366 | 0.2715 | 0.3357 | **0.7900** | 0.4442 | 0.5278 | **0.1551** | 153.163 s |
 | MS GraphRAG | 0.4267 | 0.4867 | 0.2841 | 0.1395 | 0.2390 | 0.3967 | 0.2885 | 0.5722 | 0.0105 | 17.652 s |
 

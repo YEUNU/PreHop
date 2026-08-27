@@ -8,7 +8,7 @@ those belong in `CHANGELOG.md` and the local `prehop_paper.md`, respectively.
 
 ## Shared input contract
 
-`models/prehop/indexing/chunking.py` owns the only in-repo parser and fixed
+`models/prehop/indexing/chunking.py` owns the in-repo parser and Prehop's fixed
 window splitter:
 
 - `parse_pages_offline(filename, content)` reads an optional first-line
@@ -19,17 +19,13 @@ window splitter:
   six-sentence windows, and retains the final partial window.
 - Page boundaries are never crossed. Pipe-delimited text is preserved exactly;
   there is no table-to-text branch.
-- Prehop and Naive both call these functions, so their chunk synthesis
-  condition is identical. Official HopRAG and MS GraphRAG retain their own
-  upstream chunkers because changing those would no longer be an official
-  baseline comparison.
-
-Naive is the controlled in-repo vector-search baseline, not an assertion that
-Naive RAG has one canonical chunker. Sharing Prehop's chunks isolates the
-retrieval and graph construction difference. The repository does not currently
-implement a separate one-source-one-vector Naive strategy. Such a run must use
-a distinct strategy or corpus tag and be labelled as a chunking sensitivity
-analysis; it cannot replace the controlled Naive comparison silently.
+- Prehop applies the fixed window splitter after parsing.
+- Naive uses the same metadata-removing parser, then joins all parsed pages and
+  stores one complete body vector per source. Its embedding call forbids
+  truncation; a document rejected by the 32k embedding endpoint fails the
+  index rather than becoming a silent prefix representation.
+- Official HopRAG and MS GraphRAG retain their own upstream chunkers because
+  changing those would no longer be an official baseline comparison.
 
 ## Strategy dispatch and every indexing branch
 
@@ -47,9 +43,10 @@ strategy == prehop
   -> materialize reciprocal source-Q+ provenance on each HOP edge
 
 strategy == naive
-  shared parser + shared fixed page windows
-  -> external body embeddings
-  -> Neo4j Chunk writes
+  shared metadata-removing parser
+  -> join parsed pages into one source-document body
+  -> strict external body embedding with no input truncation
+  -> one Neo4j retrieval unit per source
 
 strategy == hoprag
   -> official HopRAG stage 1 node/question generation
@@ -354,8 +351,9 @@ prompts are baseline algorithms, not hidden Prehop gates.
 
 ## Comparison settings
 
-- Prehop and Naive use the same fixed chunks and shared final synthesis prompt.
-- Prehop and Naive use top-k 12.
+- Prehop uses six-sentence chunks and top-k 12.
+- Naive uses one prepared source per retrieval unit and top-k 10.
+- Prehop and Naive use the same final synthesis prompt.
 - HopRAG keeps the official repository's end-to-end top-k 20.
 - MS GraphRAG uses the official LocalSearch API and context-budget
   configuration for entity-grounded passage QA. The adapter does not route
@@ -366,12 +364,11 @@ identical, paper tables and captions must state them. A separate controlled
 retrieval-only study is a clearly named ablation and never silently changes an
 official baseline.
 
-The prepared MuSiQue source files each represent one dataset paragraph. A
-one-source-paragraph-per-chunk Naive run is therefore a meaningful supplemental
-baseline, but it changes chunking relative to Prehop and is not a component
-ablation. MultiHop-RAG source files are long documents, so treating an entire
-source as one vector is neither the current controlled comparison nor a shared
-corpus-unit convention.
+The prepared MuSiQue source files each represent one dataset paragraph, so one
+Naive retrieval unit is one paragraph. A MultiHop-RAG source is one complete
+news article. Naive's ranked documents are added whole to the synthesis prompt
+until the 256k generation input budget is reached. Retrieval count and actual
+synthesis-document count are recorded separately.
 
 ## Evaluation output contract
 
@@ -392,8 +389,8 @@ Evidence metrics follow the prepared gold unit for each dataset:
   report refusal and attempted-answer hallucination separately and do not
   enter retrieval denominators.
 - MuSiQue reports supporting-paragraph/title precision, recall, and F1. Its
-  paragraph-level gold evidence is not compared with the six-sentence fact
-  matcher.
+  paragraph-level gold evidence is not compared with the Prehop six-sentence
+  fact matcher.
 
 Missing gold units are emitted as `-1`, while an evaluated query with no match
 is zero. Paper aggregates exclude failed, incomplete, and unreconciled rows.

@@ -141,6 +141,49 @@ def test_shell_preflight_reports_fixed_protocol_values(tmp_path):
     assert "=99" not in indexing.stdout + benchmark.stdout
 
 
+def test_shell_preflight_reports_naive_document_protocol(tmp_path):
+    env = _entrypoint_env(tmp_path)
+
+    indexing = subprocess.run(
+        [
+            "./run_index.sh",
+            "--skip-server",
+            "--model",
+            "naive",
+            "--dataset",
+            "data/corpus",
+            "--corpus-tag",
+            "test",
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    benchmark = subprocess.run(
+        [
+            "./run_benchmark.sh",
+            "--skip-server",
+            "--model",
+            "naive",
+            "--queries",
+            "data/queries.json",
+            "--corpus-tag",
+            "test",
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "retrieval_unit=source_document" in indexing.stdout
+    assert "embedding_tokens=32768" in indexing.stdout
+    assert "unit=source_document, top_k=10" in benchmark.stdout
+
+
 def test_ms_graphrag_internal_log_is_dataset_scoped(tmp_path, monkeypatch):
     monkeypatch.setattr(official_indexer, "_OUTPUT_ROOT", tmp_path / "ms-output")
     monkeypatch.setattr(official_indexer, "_register_external_models_with_litellm", lambda: None)
