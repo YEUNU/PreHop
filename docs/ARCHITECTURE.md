@@ -375,11 +375,26 @@ rules, and reporting decisions are maintained in the local, intentionally
 untracked `docs/prehop_paper.md`. This architecture document summarizes the
 implemented evaluation contract but does not replace that paper specification.
 
+The runner checkpoints its result and report artifacts every ten completed
+queries by default and always writes once more at completion. This bounds lost
+work after interruption without rewriting the growing result and trace files
+after every query. `RAG_BENCHMARK_CHECKPOINT_EVERY` can change the interval;
+the chosen value is recorded in the artifact and does not enter measured query
+latency.
+
+`RAG_BENCHMARK_RESUME=true` resumes only an existing `in_progress`
+deterministic benchmark. It rejects an enabled supplemental judge, mismatched
+query identity, configuration, model, corpus/index identity, duplicate or
+foreign query IDs, and missing or misaligned traces. Successful rows are
+retained and error rows are run again. The final artifact records the retained
+and resumed query sets and their code provenance separately. This is query
+execution recovery, not indexing recovery or an orchestration-level retry.
+
 ## Run measurements
 
 Every paper run invokes one dataset/strategy target with a unique `RAG_RUN_ID`.
 The run records wall time, phase timings exposed by the adapter, structural
-integrity, and failures without an orchestration-level retry or resume policy.
+integrity, and failures without an orchestration-level retry policy.
 `VLLM_MAX_NUM_SEQS` records endpoint capacity. Clients that share a generation
 endpoint and event loop share one request semaphore, and Prehop processes at
 most one generation request per active file. Embeddings use bounded batches.

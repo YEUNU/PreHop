@@ -212,10 +212,13 @@ RAG_RUN_ID=mhr-hoprag-cold ./run_multihoprag.sh index --model hoprag
 RAG_RUN_ID=mhr-ms-graphrag-cold ./run_multihoprag.sh index --model ms_graphrag
 ```
 
-Use a new explicit run ID for every cold paper run. An interrupted or failed
-run is incomplete; start a replacement run after resolving the cause rather
-than combining partial state. Run artifacts record phase timings, graph
-integrity, provenance coverage, index-storage size, and failures. Index-storage
+Use a new explicit run ID for every cold indexing run. An interrupted or failed
+index is incomplete and must be rebuilt after resolving the cause. A
+deterministic benchmark interrupted after valid checkpoints can resume under
+the same run ID only when the runner verifies identical queries, models,
+configuration, and index identity. Retained and resumed code provenance remain
+separate in the result. Run artifacts record phase timings, graph integrity,
+provenance coverage, index-storage size, and failures. Index-storage
 size means the persisted index used during retrieval: a logical-payload
 estimate for the Neo4j-backed Prehop, Naive RAG, and HopRAG indexes, and the
 physical local retrieval-artifact size for MS GraphRAG. Inputs, caches, logs,
@@ -229,6 +232,15 @@ re-running retrieval:
 
 ```bash
 .venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
+```
+
+An interrupted deterministic benchmark uses its original run ID and timestamp:
+
+```bash
+RAG_RUN_ID=<original-run-id> \
+RAG_BENCHMARK_TIMESTAMP=<original-run-id> \
+RAG_BENCHMARK_RESUME=true \
+./run_benchmark.sh --model <strategy> --queries <queries.json> --corpus-tag <tag>
 ```
 
 Batch payloads must contain valid explicit `score` and `groundedness` fields;

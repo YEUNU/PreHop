@@ -730,6 +730,13 @@ def _resume_benchmark_rows(
     return retained, resume_metadata
 
 
+def _benchmark_checkpoint_due(completed: int, total: int, every: int) -> bool:
+    """Return whether an incremental artifact checkpoint is due."""
+    if every < 1:
+        raise ValueError("Benchmark checkpoint interval must be at least 1")
+    return completed == total or completed % every == 0
+
+
 def _result_json_in_seed_dir(seed_dir: Path) -> Path:
     candidates = [
         path
@@ -1068,6 +1075,7 @@ async def run_benchmark(
         logger.info("Supplemental judge: disabled (deterministic/official metrics only)")
 
     benchmark_concurrency = max(1, int(os.environ.get("RAG_BENCHMARK_CONCURRENCY", "4")))
+    benchmark_checkpoint_every = max(1, int(os.environ.get("RAG_BENCHMARK_CHECKPOINT_EVERY", "10")))
     query_sem = asyncio.Semaphore(benchmark_concurrency)
     write_lock = asyncio.Lock()
     total_queries = len(benchmark_data)
@@ -1166,6 +1174,7 @@ async def run_benchmark(
             "judge_independent": judge_independent,
             "judge_self_override": judge_self_override,
             "benchmark_concurrency": benchmark_concurrency,
+            "benchmark_checkpoint_every": benchmark_checkpoint_every,
             "queries_count": len(results),
             "total_queries": total_queries,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1360,7 +1369,8 @@ async def run_benchmark(
                     f"| DocMatch: {metrics['doc_match']:.0f} | Latency: {latency:.1f}s"
                 )
 
-                summary = _recompute_and_persist()
+                if _benchmark_checkpoint_due(len(results), total_queries, benchmark_checkpoint_every):
+                    summary = _recompute_and_persist()
 
     pending_items = [
         (i, item)
@@ -1374,6 +1384,11 @@ async def run_benchmark(
 
     if not results:
         return None
+
+    # The final write is unconditional so an empty pending set after a valid
+    # resume, or a non-divisible checkpoint interval, cannot leave stale
+    # aggregate metadata behind.
+    summary = _recompute_and_persist()
 
     if batch_collector is not None and batch_collector.count > 0:
         pending_path = output_results_dir / f"{strategy}_{corpus_tag}.pending_judge.json"

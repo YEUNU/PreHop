@@ -7,6 +7,23 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-08-27 — Strict benchmark recovery and bounded checkpoints
+
+The deterministic benchmark runner can now continue an interrupted
+`in_progress` artifact when `RAG_BENCHMARK_RESUME=true`. It validates the full
+query identity, strategy, model and retrieval configuration, corpus/index
+identity, prior status, unique query IDs, query text, and trace alignment
+before retaining any row. Rows with runtime errors are run again. Resume is
+rejected when supplemental judging is enabled. Retained and newly executed
+query sets keep separate code-provenance records, so recovery does not present
+two source states as one.
+
+Incremental artifacts are now written every ten completed queries rather than
+after every query, with an unconditional final write. The interval is
+configurable and recorded. This bounds repeat work after an interruption while
+avoiding repeated rewrites of the complete result, detail, and trace files.
+The benchmark log is appended rather than truncated during an explicit resume.
+
 ## 2026-08-27 — Index capacity captured before strategy isolation cleanup
 
 Each index run now stores its capacity measurement in the strategy-scoped index

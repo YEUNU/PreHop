@@ -117,6 +117,11 @@ chunker. Raw pipe text remains raw.
   --queries data/multihoprag_sample200_queries.json \
   --corpus-tag multihoprag
 
+# Resume a checkpointed deterministic benchmark under its original identity
+RAG_RUN_ID=<original-run-id> RAG_BENCHMARK_TIMESTAMP=<original-run-id> \
+RAG_BENCHMARK_RESUME=true ./run_benchmark.sh \
+  --model <strategy> --queries <queries.json> --corpus-tag <tag>
+
 # Remove all graph data and application schema
 .venv/bin/python main.py --mode clear_graph
 
@@ -173,6 +178,12 @@ A measured cold run must:
 Each target writes an isolated stdout/stderr log. A target with any document,
 workflow, graph-finalization, or integrity failure is failed, never silently
 classified as complete.
+
+Indexing is never combined across interrupted runs. Deterministic benchmark
+resume is allowed only through the runner's strict identity gate; do not merge
+or hand-edit result rows. Supplemental-judge runs use their separate batch
+reconciliation path. The default ten-query checkpoint interval reduces report
+rewrites and is recorded in each new benchmark artifact.
 
 For Prehop, completion also requires the live index-quality gate in
 `cli/index.py`. The gate checks representation ownership and embeddings,

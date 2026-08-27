@@ -10,6 +10,7 @@ from cli.benchmark import (
     _aggregate_seed_summaries,
     _apply_judge_label,
     _assert_benchmark_complete,
+    _benchmark_checkpoint_due,
     _evaluation_scope,
     _judge_independence,
     _latest_index_manifest_metadata,
@@ -38,6 +39,14 @@ from scripts.paired_bootstrap import (
 
 def test_musique_preparation_defaults_to_the_full_split():
     assert prepare_musique.DEFAULT_LIMIT == 0
+
+
+def test_benchmark_checkpoint_interval_is_bounded_and_always_writes_final_state():
+    assert not _benchmark_checkpoint_due(1, 25, 10)
+    assert _benchmark_checkpoint_due(10, 25, 10)
+    assert _benchmark_checkpoint_due(25, 25, 10)
+    with pytest.raises(ValueError, match="at least 1"):
+        _benchmark_checkpoint_due(1, 25, 0)
 
 
 def _write_resume_fixture(tmp_path, rows, *, status="in_progress", strategy="hoprag"):
