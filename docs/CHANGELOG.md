@@ -156,7 +156,8 @@ corrected.
 Repository hygiene now ignores root-level PDF, PPTX, ZIP, and CSV handoff
 exports as well as `_tmp.py` scripts. These are local generated artifacts;
 publishable release copies remain deliberate additions rather than accidental
-working-tree files. `CLAUDE.md` records the same policy.
+working-tree files. Local PPT generation code, source files, outputs, and
+`_workspace/` drafts follow the same rule. `CLAUDE.md` records this policy.
 
 `CLAUDE.md` now requires each document to retain its audience-specific tone and
 prohibits unnecessary proper nouns, invented management labels, repeated

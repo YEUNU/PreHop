@@ -240,6 +240,8 @@ output/
 # Local debug, report/PPT generation, and one-off helper scripts.
 scripts/_test_*.py
 scripts/*_tmp.py
+_workspace/
+ppt/
 
 # Downloadable dataset files; recreate them with scripts/datasets/prepare_*.py.
 # Small curated query subsets remain tracked.
