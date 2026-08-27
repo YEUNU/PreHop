@@ -237,8 +237,9 @@ data/hoprag_output/
 # isn't overridden (separate from our explicit output_storage).
 output/
 
-# Local debug / one-off probe scripts under scripts/_test_*.py
+# Local debug, report/PPT generation, and one-off helper scripts.
 scripts/_test_*.py
+scripts/*_tmp.py
 
 # Downloadable dataset files; recreate them with scripts/datasets/prepare_*.py.
 # Small curated query subsets remain tracked.
@@ -263,3 +264,10 @@ SUBMISSION_TARGET.md
 # Working paper draft — keep the editable manuscript local until a release
 # copy is deliberately prepared.
 docs/prehop_paper.md
+
+# Local report and handoff exports. Source documents stay in Markdown; release
+# copies are added deliberately when they are ready to publish.
+/*.pdf
+/*.pptx
+/*.zip
+/*.csv

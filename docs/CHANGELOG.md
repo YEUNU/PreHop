@@ -94,19 +94,33 @@ pre-declared confirmatory evaluation. The primary hypothesis explicitly
 requires improvement over representation-matched NEXT-only/no-HOP controls,
 not only over external systems.
 
-The approved main ablation is now the cumulative A0–A5 ladder: body only,
-questions without graph, NEXT only, raw HOP, reciprocal HOP, and exact
-activation. Adjacent paired contrasts isolate each addition; online/offline
-reciprocal is classified separately as an implementation equivalence and
-efficiency study. `ARCHITECTURE.md` now expresses the same current defaults in
-implementation terms and removes P1/P2 experimental shorthand. No benchmark,
-index, or code behavior changed in this documentation-only update.
+The approved primary ablation is cumulative from body only through questions
+without graph and NEXT only. Raw HOP and reciprocal HOP are two branches from
+the same NEXT-only control; A4−A3 measures reciprocal filtering, while A4−A2
+measures the complete reciprocal-HOP contribution beyond NEXT.
+A5 exact matched-Q+ activation is reported separately as a stricter activation
+scope sensitivity analysis, not as an additional component of the main method.
+Online/offline reciprocal is classified separately as an implementation
+equivalence and efficiency study. `ARCHITECTURE.md` now expresses the same
+current defaults in implementation terms and removes P1/P2 experimental
+shorthand. No benchmark, index, or code behavior changed in this
+documentation synchronization.
+
+The query-time channel selector now includes `body_only`, allowing A0 to reuse
+the same complete index as the other performance ablations. The default `full`
+path is unchanged. Retrieval tests verify that this variant searches only the
+body channel.
 
 A repository-wide Markdown audit also removed duplicated operating details,
 corrected stale Exact-Q+ default descriptions, distinguished hypotheses from
 established claims, and reduced private submission history. The vendored
 HopRAG guide was otherwise preserved; only its local supported-corpus count was
 corrected.
+
+Repository hygiene now ignores root-level PDF, PPTX, ZIP, and CSV handoff
+exports as well as `_tmp.py` scripts. These are local generated artifacts;
+publishable release copies remain deliberate additions rather than accidental
+working-tree files. `CLAUDE.md` records the same policy.
 
 `CLAUDE.md` now requires each document to retain its audience-specific tone and
 prohibits unnecessary proper nouns, invented management labels, repeated

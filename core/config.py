@@ -117,6 +117,7 @@ class RAGConfig:
 
     # Select which Q-/Q+ representation channels retrieve.py queries.
     # Values:
+    #   "body_only"       -> body direct evidence only.
     #   "full"            -> Q-/body direct evidence plus Q+
     #                        dependency seeds in one set union.
     #   "qminus_only"     -> Q- only, direct evidence role.
@@ -179,7 +180,7 @@ class RAGConfig:
         if not cls.EMBEDDING_QUERY_INSTRUCTION:
             raise ValueError("EMBEDDING_QUERY_INSTRUCTION must not be empty")
 
-        allowed_variants = {"full", "qminus_only", "qplus_only", "single_combined"}
+        allowed_variants = {"body_only", "full", "qminus_only", "qplus_only", "single_combined"}
         if cls.HYPO_CHANNEL_VARIANT not in allowed_variants:
             raise ValueError(
                 f"RAG_HYPO_CHANNEL_VARIANT={cls.HYPO_CHANNEL_VARIANT!r} is invalid; "

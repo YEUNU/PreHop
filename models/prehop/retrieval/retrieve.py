@@ -50,7 +50,9 @@ class RetrieveMixin:
         top_k = max(1, int(top_k))
 
         variant = RAGConfig.HYPO_CHANNEL_VARIANT
-        if variant == "qminus_only":
+        if variant == "body_only":
+            channels = ["body"]
+        elif variant == "qminus_only":
             channels = ["q_minus"]
         elif variant == "qplus_only":
             channels = ["q_plus"]

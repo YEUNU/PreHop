@@ -227,7 +227,9 @@ these values define a representation order without mixing backend-specific
 vector or lexical scores. Direction remains expressed by graph role rather
 than a learned or fitted channel weight.
 
-- `HYPO_CHANNEL_VARIANT=qminus_only`: Q- direct evidence only.
+- `HYPO_CHANNEL_VARIANT=body_only`: body direct evidence only; this is the
+  query-time A0 control and does not require rebuilding the complete index.
+- `qminus_only`: Q- direct evidence only.
 - `qplus_only`: Q+ dependency seeds only.
 - `single_combined`: Q-/Q+ once each, set union, no body.
 - `full`: Q-/body direct evidence plus Q+ dependency seeds.

@@ -190,6 +190,19 @@ async def test_retrieval_embeds_query_once_before_parallel_channels():
 
 
 @pytest.mark.asyncio
+async def test_body_only_variant_searches_only_body_without_rebuilding_index(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "body_only")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm.get_embedding = AsyncMock(return_value=[1.0, 0.0])
+    rag._hybrid_rrf_candidates = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    await rag._retrieve_with_candidate_pool("one query", top_k=12)
+
+    rag._hybrid_rrf_candidates.assert_awaited_once()
+    assert rag._hybrid_rrf_candidates.await_args.kwargs["channel"] == "body"
+
+
+@pytest.mark.asyncio
 async def test_retrieval_records_every_direct_representation_path():
     rag = GraphRAG(strategy="prehop")
     rag.llm.get_embedding = AsyncMock(return_value=[1.0])

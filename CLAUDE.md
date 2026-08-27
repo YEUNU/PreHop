@@ -250,4 +250,7 @@ When editing it:
 Generated logs, caches, debug output, graphs, results, and index outputs
 artifacts are not source files and must remain ignored. Do not commit virtual
 environments, `__pycache__`, model weights, server logs, or partial indexes.
+Root-level PDF, presentation, archive, and CSV handoff exports remain local;
+add a release copy deliberately only after its contents and version are fixed.
+Temporary scripts under `scripts/` use the `_tmp.py` suffix and remain ignored.
 Obsolete scripts should be removed instead of kept as compatibility wrappers.

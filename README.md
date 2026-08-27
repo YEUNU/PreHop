@@ -253,7 +253,7 @@ Query-only ablations do not require rebuilding the index:
 
 | Variable | Default | Alternatives |
 |---|---|---|
-| `RAG_HYPO_CHANNEL_VARIANT` | `full` | `qminus_only`, `qplus_only`, `single_combined` |
+| `RAG_HYPO_CHANNEL_VARIANT` | `full` | `body_only`, `qminus_only`, `qplus_only`, `single_combined` |
 | `RAG_GRAPH_HOP_DEPTH` | `1` | `0` disables graph expansion |
 | `RAG_GRAPH_EDGE_VARIANT` | `full` | `hop_only` or `next_only` isolates traversal-edge contributions |
 | `RAG_HOP_EDGE_FILTER` | `reciprocal_offline` | `none` disables the filter; `reciprocal` recomputes the same reverse-Q+ rule online |
@@ -261,10 +261,12 @@ Query-only ablations do not require rebuilding the index:
 | `RAG_QUERY_REWRITE_VARIANT` | `none` | `role_aligned` generates Q−/Q+ retrieval views at query time |
 | `RAG_SOURCE_SELECTION_VARIANT` | `global` | `round_robin` enables source diversification as an ablation |
 
-The main causal ablation proceeds from body-only retrieval through question
-representations, NEXT-only traversal, raw HOP, reciprocal HOP, and exact
-activation. Direction-only variants are supporting diagnostics. The complete
-protocol is fixed in the local paper specification.
+The primary causal ablation is cumulative through body-only retrieval, question
+representations, and NEXT-only traversal. Raw and reciprocal HOP then form two
+branches from the same NEXT-only control. Exact matched-Q+ activation is a
+stricter sensitivity analysis of the reciprocal-HOP configuration.
+Direction-only variants are supporting diagnostics. The complete protocol is
+fixed in the local paper specification.
 
 Index-changing ablations use distinct corpus tags. Query-only ablations reuse
 the same immutable index and are recorded in result metadata.
