@@ -56,6 +56,11 @@ never mixed across modalities.
 Evaluation is dataset-specific. MultiHop-RAG reports official-compatible
 Hits@k, MRR@10, and MAP@10 plus separate fact-coverage and null-refusal
 diagnostics. MuSiQue reports answer EM/F1 and supporting-paragraph metrics.
+The in-repo Naive RAG is a controlled vector-search baseline: it deliberately
+uses the same six-sentence chunks, synthesis prompt, and top-k as Prehop. It is
+not presented as a uniquely canonical Naive RAG configuration. A
+one-source-paragraph-per-chunk MuSiQue comparison, if run, is reported
+separately as a post-hoc chunking sensitivity analysis.
 The optional LLM judge is disabled by default and is not a primary metric.
 Samples are development artifacts; paper claims require the complete prepared
 split and the eligibility rules in the local paper specification.

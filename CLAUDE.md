@@ -219,6 +219,12 @@ cannot overwrite one another.
 ## Comparison policy
 
 Prehop and Naive use the same chunks, shared synthesis prompt, and top-k 12.
+Call this the controlled Naive RAG baseline, not the canonical or standard
+Naive configuration: Naive RAG has no single required chunk unit. A MuSiQue
+one-source-paragraph-per-chunk run is allowed only under a distinct run and
+index identity and must be labelled as a post-hoc chunking sensitivity
+analysis. It does not replace the controlled baseline and cannot be used by
+itself to attribute a difference to Prehop's question or graph components.
 HopRAG retains the upstream official end-to-end top-k 20; MS GraphRAG retains
 its official context budget. These unequal official settings must be stated in
 the paper. A controlled equal-budget retrieval experiment is reported

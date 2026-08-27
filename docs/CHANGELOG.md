@@ -7,6 +7,22 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-08-28 — Naive chunking comparison classified
+
+The six-sentence Naive RAG path is now described consistently as a controlled
+baseline, not as a uniquely standard Naive configuration. It shares Prehop's
+chunks, synthesis prompt, and top-k so the primary comparison does not add a
+chunking difference. The current prepared corpora contain 8,529 fixed-window
+chunks from 609 MultiHop-RAG sources and 23,280 chunks from 21,099 MuSiQue
+paragraph sources. Every MultiHop-RAG source is split; 2,072 MuSiQue sources
+(9.82%) are split.
+
+A one-source-paragraph-per-chunk MuSiQue Naive run is reserved for a separately
+identified post-hoc chunking sensitivity analysis. It cannot replace the
+controlled baseline or serve as a component ablation because Naive alone would
+then use a different retrieval unit. No indexing or benchmark implementation
+was changed by this documentation decision.
+
 ## 2026-08-28 — Reproducible corpus identity and cold-run entrypoint
 
 MultiHop-RAG preparation now writes a content-bound corpus manifest with

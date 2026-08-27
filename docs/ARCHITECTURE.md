@@ -24,6 +24,13 @@ window splitter:
   upstream chunkers because changing those would no longer be an official
   baseline comparison.
 
+Naive is the controlled in-repo vector-search baseline, not an assertion that
+Naive RAG has one canonical chunker. Sharing Prehop's chunks isolates the
+retrieval and graph construction difference. The repository does not currently
+implement a separate one-source-one-vector Naive strategy. Such a run must use
+a distinct strategy or corpus tag and be labelled as a chunking sensitivity
+analysis; it cannot replace the controlled Naive comparison silently.
+
 ## Strategy dispatch and every indexing branch
 
 `cli/index.py::run_indexing` obtains a per-`(strategy, corpus_tag)` file lock,
@@ -358,6 +365,13 @@ Because these retrieval budgets are intentionally method-official rather than
 identical, paper tables and captions must state them. A separate controlled
 retrieval-only study is a clearly named ablation and never silently changes an
 official baseline.
+
+The prepared MuSiQue source files each represent one dataset paragraph. A
+one-source-paragraph-per-chunk Naive run is therefore a meaningful supplemental
+baseline, but it changes chunking relative to Prehop and is not a component
+ablation. MultiHop-RAG source files are long documents, so treating an entire
+source as one vector is neither the current controlled comparison nor a shared
+corpus-unit convention.
 
 ## Evaluation output contract
 
