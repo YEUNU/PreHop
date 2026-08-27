@@ -202,6 +202,8 @@ async def _verify_active_neo4j_snapshot(
                m.corpus_manifest_paragraph_count AS paragraph_count,
                m.source_count AS source_count,
                m.source_set_sha256 AS source_set_sha256,
+               m.omitted_source_count AS omitted_source_count,
+               m.omitted_source_set_sha256 AS omitted_source_set_sha256,
                m.snapshot_version AS snapshot_version
         ORDER BY m.completed_at_epoch DESC
         LIMIT 1
@@ -235,7 +237,17 @@ async def _verify_active_neo4j_snapshot(
             for row in rows
         }
     )
-    if actual_source_ids != sorted(expected_source_ids):
+    expected_source_ids = sorted(expected_source_ids)
+    omitted_source_ids: list[str] = []
+    if strategy == "hoprag":
+        unexpected = sorted(set(actual_source_ids) - set(expected_source_ids))
+        if unexpected:
+            raise RuntimeError(
+                "Active hoprag source snapshot contains sources outside the prepared corpus "
+                f"(unexpected={unexpected[:5]})"
+            )
+        omitted_source_ids = sorted(set(expected_source_ids) - set(actual_source_ids))
+    elif actual_source_ids != expected_source_ids:
         raise RuntimeError(
             f"Active {strategy} source snapshot does not match prepared corpus "
             f"(expected={len(expected_source_ids)}, actual={len(actual_source_ids)})"
@@ -243,10 +255,31 @@ async def _verify_active_neo4j_snapshot(
     source_digest = _source_set_sha256(actual_source_ids)
     if metadata.get("source_count") != len(actual_source_ids) or metadata.get("source_set_sha256") != source_digest:
         raise RuntimeError(f"Active {strategy} metadata does not match its live source snapshot")
+    omitted_digest = _source_set_sha256(omitted_source_ids)
+    if strategy == "hoprag":
+        recorded_omitted_count = metadata.get("omitted_source_count")
+        recorded_omitted_digest = metadata.get("omitted_source_set_sha256")
+        if omitted_source_ids:
+            omitted_metadata_matches = (
+                recorded_omitted_count == len(omitted_source_ids)
+                and recorded_omitted_digest == omitted_digest
+            )
+        else:
+            # Snapshot v2 predates explicit omission fields. It remains valid
+            # only when the live representation has no omitted sources.
+            omitted_metadata_matches = recorded_omitted_count in (None, 0) and recorded_omitted_digest in (
+                None,
+                omitted_digest,
+            )
+        if not omitted_metadata_matches:
+            raise RuntimeError("Active hoprag metadata does not match its omitted-source snapshot")
     return {
         "status": "matched",
+        "input_source_count": len(expected_source_ids),
         "source_count": len(actual_source_ids),
         "source_set_sha256": source_digest,
+        "omitted_source_count": len(omitted_source_ids),
+        "omitted_source_set_sha256": omitted_digest,
         "snapshot_version": metadata.get("snapshot_version"),
     }
 

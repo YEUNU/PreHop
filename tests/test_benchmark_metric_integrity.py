@@ -381,6 +381,8 @@ async def test_hoprag_active_readback_preserves_periods_in_stored_stems(tmp_path
                         "paragraph_count": 1,
                         "source_count": 1,
                         "source_set_sha256": digest,
+                        "omitted_source_count": 0,
+                        "omitted_source_set_sha256": hashlib.sha256(b"").hexdigest(),
                         "snapshot_version": 2,
                     }
                 ]
@@ -393,6 +395,51 @@ async def test_hoprag_active_readback_preserves_periods_in_stored_stems(tmp_path
     verified = await _verify_active_index_snapshot(Engine(), "hoprag", "multihoprag", manifest, strict=True)
 
     assert verified["status"] == "matched"
+    assert verified["omitted_source_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_hoprag_active_snapshot_records_officially_skipped_sources(tmp_path):
+    represented = "musique_alpha"
+    omitted = "musique_beta"
+    represented_digest = hashlib.sha256(represented.encode("utf-8")).hexdigest()
+    omitted_digest = hashlib.sha256(omitted.encode("utf-8")).hexdigest()
+    corpus_dir = tmp_path / "musique_corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / f"{represented}.txt").write_text("alpha", encoding="utf-8")
+    (corpus_dir / f"{omitted}.txt").write_text("beta", encoding="utf-8")
+    manifest_path = corpus_dir / "corpus_manifest.json"
+    manifest_path.write_text(json.dumps({"fingerprint": "fp", "paragraph_count": 2}), encoding="utf-8")
+    manifest = {"path": str(manifest_path), "fingerprint": "fp", "paragraph_count": 2}
+
+    class Neo4j:
+        async def execute_query(self, query, parameters=None):
+            _ = parameters
+            if "RAGIndexSnapshot" in query:
+                return [
+                    {
+                        "status": "complete",
+                        "fingerprint": "fp",
+                        "paragraph_count": 2,
+                        "source_count": 1,
+                        "source_set_sha256": represented_digest,
+                        "omitted_source_count": 1,
+                        "omitted_source_set_sha256": omitted_digest,
+                        "snapshot_version": 2,
+                    }
+                ]
+            return [{"source": represented}]
+
+    class Engine:
+        chunk_label = "HO_musique"
+        neo4j = Neo4j()
+
+    verified = await _verify_active_index_snapshot(Engine(), "hoprag", "musique", manifest, strict=True)
+
+    assert verified["status"] == "matched"
+    assert verified["input_source_count"] == 2
+    assert verified["source_count"] == 1
+    assert verified["omitted_source_count"] == 1
 
 
 def test_ms_snapshot_metadata_is_sidecar_and_requires_actual_document_sources(tmp_path, monkeypatch):
@@ -450,6 +497,8 @@ def test_hoprag_snapshot_preserves_periods_in_stored_source_ids():
     )
 
     assert payload["source_count"] == 1
+    assert payload["input_source_count"] == 1
+    assert payload["omitted_source_count"] == 0
 
 
 def test_musique_corpus_keeps_same_title_distinct_paragraphs(tmp_path, monkeypatch):

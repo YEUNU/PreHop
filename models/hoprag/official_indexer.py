@@ -237,7 +237,7 @@ def _set_snapshot_state(config, corpus_tag: str, corpus_manifest: dict | None, s
 
 
 def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str], corpus_manifest: dict | None) -> dict:
-    """Prove the active HopRAG label contains exactly the staged sources."""
+    """Bind the active HopRAG representation to the complete staged corpus."""
     if builder.driver is None:
         raise RuntimeError("HopRAG active snapshot cannot be verified without its Neo4j driver")
     with builder.driver.session() as session:
@@ -253,15 +253,16 @@ def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str]
         # (for example ``U.S._...``) by treating the tail as another suffix.
         actual_ids = sorted({str(row["source"] or "") for row in rows})
         expected = sorted(source_ids)
-        if actual_ids != expected:
-            missing = sorted(set(expected) - set(actual_ids))
-            unexpected = sorted(set(actual_ids) - set(expected))
+        unexpected = sorted(set(actual_ids) - set(expected))
+        if unexpected:
             raise RuntimeError(
-                "HopRAG active Neo4j source snapshot does not match staged corpus: "
+                "HopRAG active Neo4j source snapshot contains sources outside the staged corpus: "
                 f"expected={len(expected)} actual={len(actual_ids)} "
-                f"missing={missing[:5]} unexpected={unexpected[:5]}"
+                f"unexpected={unexpected[:5]}"
             )
+        omitted = sorted(set(expected) - set(actual_ids))
         source_digest = _source_set_sha256(actual_ids)
+        omitted_digest = _source_set_sha256(omitted)
         session.run(
             f"""
             MERGE (m:{_SNAPSHOT_LABEL} {{strategy: 'hoprag', corpus_tag: $corpus_tag}})
@@ -271,6 +272,8 @@ def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str]
                 m.corpus_manifest_paragraph_count = $paragraph_count,
                 m.source_count = $source_count,
                 m.source_set_sha256 = $source_digest,
+                m.omitted_source_count = $omitted_source_count,
+                m.omitted_source_set_sha256 = $omitted_source_digest,
                 m.completed_at_epoch = $completed_at,
                 m.updated_at_epoch = $completed_at
             """,
@@ -281,10 +284,19 @@ def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str]
                 "paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
                 "source_count": len(actual_ids),
                 "source_digest": source_digest,
+                "omitted_source_count": len(omitted),
+                "omitted_source_digest": omitted_digest,
                 "completed_at": time.time(),
             },
         ).consume()
-    return {"status": "complete", "source_count": len(actual_ids), "source_set_sha256": source_digest}
+    return {
+        "status": "complete",
+        "input_source_count": len(expected),
+        "source_count": len(actual_ids),
+        "source_set_sha256": source_digest,
+        "omitted_source_count": len(omitted),
+        "omitted_source_set_sha256": omitted_digest,
+    }
 
 
 # ---------------------------------------------------------------- file staging
@@ -947,8 +959,6 @@ def _patch_create_nodes_offline_parallel() -> None:
                 with open(doc_path, "r") as fh:
                     doc = _hoprag_indexable_text(fh.read())
                 sentence2node = self.get_single_doc_qa(doc)
-                if not sentence2node:
-                    raise RuntimeError("HopRAG produced no indexable nodes for the document")
                 local_nodes = []
                 local_n2q = {}
                 for tup in sentence2node.values():
@@ -1702,7 +1712,11 @@ def _run_stage2_group_streaming(
         except Exception as exc:
             raise RuntimeError(f"HopRAG corrupt Stage 2 cache for {doc_id}") from exc
         if not local_n2q:
-            raise RuntimeError(f"HopRAG Stage 2 cache has no nodes for {doc_id}")
+            # Upstream records an empty node list when every paragraph is
+            # skipped by question generation. Preserve that method outcome.
+            nodes_done.add(doc_id)
+            _atomic_pickle_dump(nodes_done_path, nodes_done)
+            continue
 
         stem = Path(doc_id).stem
         existing_ids = existing_by_source.get(stem, [])
@@ -1778,7 +1792,10 @@ def _run_stage2_group_streaming(
                 group_n2q[(real_id, did)] = questiondict
                 group_docid2nodes.setdefault(did, []).append(real_id)
         if not group_n2q:
-            raise RuntimeError(f"HopRAG edge group {group_id} has no nodes")
+            # Upstream create_edges_musique skips an all-empty problem group.
+            edges_done.add(group_id)
+            _atomic_pickle_dump(edges_done_path, edges_done)
+            continue
         try:
             builder.create_edge(group_n2q, group_docid2nodes)
         except Exception as exc:
@@ -1861,7 +1878,9 @@ def _run_official_index_blocking(
     timing["stage3_index_creation_seconds"] = time.perf_counter() - stage_started
     snapshot = _verify_and_publish_snapshot(builder, corpus_tag, source_ids, corpus_manifest)
     timing["active_snapshot_verified"] = 1.0
+    timing["active_snapshot_input_source_count"] = float(snapshot["input_source_count"])
     timing["active_snapshot_source_count"] = float(snapshot["source_count"])
+    timing["active_snapshot_omitted_source_count"] = float(snapshot["omitted_source_count"])
     if builder.driver is not None:
         builder.driver.close()
         builder.driver = None
