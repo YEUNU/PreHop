@@ -7,6 +7,25 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-08-28 — Reproducible corpus identity and cold-run entrypoint
+
+MultiHop-RAG preparation now writes a content-bound corpus manifest with
+source-content, query-ID, and canonical query-record digests. Full benchmarks
+validate available query-record digests as well as the corpus/index
+fingerprint before retrieval. The existing MuSiQue manifest contract remains
+supported.
+
+`scripts/run_paper_target.sh` now provides one clean-worktree entrypoint for a
+single cold index and full benchmark. It disables shared Prehop caches, assigns
+run-specific HopRAG and MS GraphRAG output roots, clears Neo4j, fixes query
+concurrency at four, and refuses reused run IDs. Model revision identifiers are
+recorded in index and benchmark artifacts.
+
+The HopRAG adapter no longer turns an upstream empty document representation
+into an indexing failure. Represented and omitted source counts and digests are
+recorded separately while the complete input manifest remains the evaluation
+identity. No HopRAG generation, retry, or retrieval setting was changed.
+
 ## 2026-08-27 — Strict benchmark recovery and bounded checkpoints
 
 The deterministic benchmark runner can now continue an interrupted

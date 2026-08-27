@@ -129,8 +129,8 @@ RAG_BENCHMARK_RESUME=true ./run_benchmark.sh \
 .venv/bin/python main.py --mode hop_rebuild --strategy prehop --corpus-tag multihoprag
 
 # Run each dataset and strategy independently. Use a new run id for each cold run.
-RAG_RUN_ID=<run-id> ./run_index.sh \
-  --model prehop --dataset data/multihoprag_corpus --corpus-tag multihoprag
+./scripts/run_paper_target.sh <multihoprag|musique> \
+  <prehop|naive|hoprag|ms_graphrag> <run-id>
 
 # Resume an already submitted OpenAI Batch judge after interruption
 .venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
@@ -174,6 +174,11 @@ A measured cold run must:
 4. set `RAG_CHUNK_CACHE=off` and disable baseline cache reuse;
 5. use a new `RAG_RUN_ID`;
 6. run endpoint/model/dimension preflight before launching the target.
+
+The supported paper wrapper satisfies these rules without deleting another
+run's baseline cache: it uses run-specific HopRAG and MS GraphRAG output roots
+and disables the shared Prehop chunk and embedding caches. It also requires
+explicit generation and embedding revision identifiers in `.env`.
 
 Each target writes an isolated stdout/stderr log. A target with any document,
 workflow, graph-finalization, or integrity failure is failed, never silently

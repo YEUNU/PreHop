@@ -63,6 +63,13 @@ no unsupported-dataset fallback grouping. HopRAG accepts only the active known
 corpus tags (`multihoprag`, `musique`) because each needs its
 official problem-context grouping; another tag fails explicitly.
 
+Both preparation scripts publish `corpus_manifest.json` beside the corpus.
+The fingerprint binds the prepared source set and content; the manifest also
+binds the complete query ID set, and MultiHop-RAG additionally records a
+canonical prepared-query record digest. Full benchmarks require the manifest
+fingerprint to match the completed index artifact. Query IDs, and query records
+when that digest is present, are checked before any retrieval client starts.
+
 The in-repo path limits simultaneously active files with
 `RAG_MAX_PARALLEL_FILES`. CPU parsing uses a spawn-based `ProcessPoolExecutor`
 (`RAG_PARSE_WORKERS`) so forked HTTP clients cannot corrupt the async inference
@@ -161,9 +168,15 @@ the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
 - Edges are constructed inside official problem contexts: MuSiQue paragraph
   groups or MultiHop-RAG evidence lists.
 - Per-document caches and stage markers support safe resume for ordinary runs;
-  the measured cold runner removes them first.
+  the measured cold runner assigns a new run-specific output root instead of
+  reusing or deleting another run's cache.
 - Stage 2 inserts each document once and then streams each problem group to
   bound memory. No company metadata is stored.
+- Upstream HopRAG can return no nodes when both question lists are empty. The
+  adapter preserves this as an empty document representation rather than a
+  runtime failure. The complete input manifest remains attached to the index;
+  represented and omitted source counts and digests are stored separately, so
+  the omission is retained as baseline behavior and affects all full queries.
 
 `models/ms_graphrag/official_indexer.py`
 
@@ -423,6 +436,11 @@ explicit aggregate `official_pipeline_seconds` plus adapter-observed workflow
 or stage timings; the runner does not fabricate boundaries that the upstream
 package does not expose. Prehop retains its finer adapter phase timings;
 Naive reports its aggregate pipeline and measurement timing only.
+`scripts/run_paper_target.sh` creates a cold target without deleting shared
+state: it disables the in-repo chunk and embedding caches, gives HopRAG and MS
+GraphRAG new run-specific output roots, clears Neo4j, and runs the complete
+prepared split at query concurrency 4. Existing run IDs and dirty tracked
+worktrees are rejected.
 MS GraphRAG relationship drops caused by missing extracted entities are
 recorded as integrity warnings in the target result rather than silently
 treated as a clean graph.

@@ -1,6 +1,7 @@
 """Prepare the MultiHop-RAG corpus and benchmark queries."""
 
 import argparse
+import hashlib
 import html
 import json
 import re
@@ -55,6 +56,7 @@ CORPUS_DIR = DATA_DIR / "multihoprag_corpus"
 QUERIES_PATH = DATA_DIR / "multihoprag_queries.json"
 RAW_CORPUS_PATH = DATA_DIR / "multihoprag_corpus.json"
 RAW_QUERIES_PATH = DATA_DIR / "MultiHopRAG.json"
+CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
 
 
 def sanitize_filename(name: str) -> str:
@@ -161,6 +163,53 @@ def build_queries(queries: list[dict]) -> list[dict]:
     return out
 
 
+def query_ids_sha256(queries: list[dict]) -> str:
+    """Digest the complete prepared query identity set."""
+    query_ids = sorted(str(row.get("_id") or "") for row in queries)
+    if any(not query_id for query_id in query_ids) or len(query_ids) != len(set(query_ids)):
+        raise ValueError("Prepared MultiHop-RAG query ids are missing or duplicated")
+    return hashlib.sha256("\n".join(query_ids).encode("utf-8")).hexdigest()
+
+
+def query_records_sha256(queries: list[dict]) -> str:
+    """Digest canonical prepared query records, independent of file formatting."""
+    records = [
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        for row in sorted(queries, key=lambda item: str(item.get("_id") or ""))
+    ]
+    return hashlib.sha256("\n".join(records).encode("utf-8")).hexdigest()
+
+
+def build_corpus_manifest(corpus_dir: Path, queries: list[dict]) -> dict:
+    """Build a content-bound identity for the prepared corpus and queries."""
+    files = sorted(path for path in corpus_dir.iterdir() if path.is_file() and path.suffix in (".txt", ".md"))
+    source_ids = [path.stem for path in files]
+    if len(source_ids) != len(set(source_ids)):
+        raise ValueError("Prepared MultiHop-RAG corpus has duplicate filename stems")
+    file_records = [f"{path.name}\0{hashlib.sha256(path.read_bytes()).hexdigest()}" for path in files]
+    payload = {
+        "schema_version": 1,
+        "paragraph_count": len(files),
+        "source_ids_sha256": hashlib.sha256("\n".join(source_ids).encode("utf-8")).hexdigest(),
+        "corpus_files_sha256": hashlib.sha256("\n".join(file_records).encode("utf-8")).hexdigest(),
+        "query_ids_sha256": query_ids_sha256(queries),
+        "query_records_sha256": query_records_sha256(queries),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {**payload, "fingerprint": fingerprint}
+
+
+def write_corpus_manifest(corpus_dir: Path, queries: list[dict]) -> dict:
+    manifest = build_corpus_manifest(corpus_dir, queries)
+    (corpus_dir / CORPUS_MANIFEST_FILENAME).write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def print_stats(queries: list[dict]):
     print("\n=== MultiHop-RAG Statistics ===")
     print(f"Total queries: {len(queries)}")
@@ -196,7 +245,9 @@ def main():
         print("Corpus generation skipped (--skip-corpus).")
 
     queries = build_queries(queries_raw)
+    manifest = write_corpus_manifest(CORPUS_DIR, queries)
     print_stats(queries)
+    print(f"Corpus fingerprint: {manifest['fingerprint']}")
     print("\nMultiHop-RAG data preparation complete!")
 
 

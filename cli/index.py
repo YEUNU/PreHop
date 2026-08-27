@@ -92,6 +92,7 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
     policy = {
         "strategy": strategy,
         "indexing_model": resolved_generation_model,
+        "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
         "embedding_model": embedding_model,
         "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
         "embedding_query_instruction": RAGConfig.EMBEDDING_QUERY_INSTRUCTION,

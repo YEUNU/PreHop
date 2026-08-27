@@ -108,9 +108,7 @@ prehop/
 
 ```bash
 # Python 3.12+ (pinned in .python-version). The env is managed with uv.
-uv venv --python 3.12 .venv
-VIRTUAL_ENV=.venv uv pip install -e .   # clients, Neo4j, and baseline libraries
-.venv/bin/python -m spacy download en_core_web_sm   # required by the hoprag baseline
+uv sync --locked
 
 # Neo4j 5.x — Docker is simplest:
 docker run -d --name prehop-neo4j -p 7474:7474 -p 7687:7687 \
@@ -121,12 +119,28 @@ cp .env.example .env
 # Required: NEO4J_PASSWORD and the external generation/embedding endpoint settings
 ```
 
-`pyproject.toml` is the canonical dependency list. The run scripts
+`pyproject.toml` and `uv.lock` are the dependency contract, including the
+HopRAG spaCy model. The run scripts
 auto-discover `.venv/bin/python` (override with `PYTHON_BIN`), so you do not
 need to activate the environment.
 
 `run_servers.sh` validates the configured external generation and embedding
 endpoints. It never launches local model processes.
+
+The paper configuration uses the following served model identities. The
+immutable checkpoint identifiers belong in `RAG_GENERATION_REVISION` and
+`RAG_EMBEDDING_REVISION`; a served name alone is not a checkpoint identity.
+
+| Role | Served model | Required setting |
+|---|---|---|
+| Generation and synthesis | `gemma-4-31b-it` | `VLLM_SERVED_MODEL_NAME` |
+| Embeddings | `qwen3-embedding-4b`, 2560 dimensions | `VLLM_SERVED_EMBED_MODEL_NAME` |
+
+Prehop and MS GraphRAG generation calls use temperature 0. HopRAG retains its
+upstream indexing temperature 0.1 and retrieval-time node judgement. Therefore
+the repository fixes the procedure and records provenance, but bitwise-identical
+generation also depends on the external inference server, model checkpoint,
+and serving software.
 
 ---
 
@@ -134,7 +148,7 @@ endpoints. It never launches local model processes.
 
 ```bash
 # 0) Prepare a dataset (downloads + builds corpus + queries)
-python3 scripts/datasets/prepare_multihoprag.py
+.venv/bin/python scripts/datasets/prepare_multihoprag.py
 
 # 1) Start Neo4j and validate external generation/embedding endpoints
 ./run_servers.sh all
@@ -180,14 +194,14 @@ dataset's corpus, queries, and tags so you don't pass them by hand:
 ./run_servers.sh all            # services first
 
 # MultiHop-RAG
-python3 scripts/datasets/prepare_multihoprag.py  # downloads corpus + full queries
+.venv/bin/python scripts/datasets/prepare_multihoprag.py  # downloads corpus + full queries
 ./run_multihoprag.sh index --model prehop      # one strategy at a time
 ./run_multihoprag.sh benchmark --model prehop --queries full
 
 # MuSiQue: preparation defaults to all 2,417 answerable dev rows.
 # Create exploratory samples only with make_sample.py.
-python3 scripts/datasets/prepare_musique.py
-python3 scripts/datasets/make_sample.py --dataset musique --per-type 67
+.venv/bin/python scripts/datasets/prepare_musique.py
+.venv/bin/python scripts/datasets/make_sample.py --dataset musique --per-type 67
 ./run_dataset.sh musique all --model prehop
 ```
 
@@ -195,25 +209,41 @@ See `CLAUDE.md` "Data and tags" for corpus/query file details per dataset.
 
 ### Independent paper runs
 
-Run each dataset/strategy pair independently. This keeps failures, resource
-measurements, logs, and corpus state attributable to one experimental target
-and avoids matrix-level retry or resume policy. Clear Neo4j only before the
-first target when multiple corpus tags must coexist.
+Prepare both datasets once, then run each dataset/strategy pair independently.
+The preparation scripts write a content-bound `corpus_manifest.json`; retain
+the printed fingerprint with every reported result.
 
 ```bash
-RAG_RUN_ID=mhr-prehop-cold ./run_multihoprag.sh index \
-  --model prehop --clear-graph
-RAG_RUN_ID=musique-prehop-cold ./run_dataset.sh musique index \
-  --model prehop
+.venv/bin/python scripts/datasets/prepare_multihoprag.py
+.venv/bin/python scripts/datasets/prepare_musique.py
 
-# Repeat explicitly for controlled and official baselines.
-RAG_RUN_ID=mhr-naive-cold ./run_multihoprag.sh index --model naive
-RAG_RUN_ID=mhr-hoprag-cold ./run_multihoprag.sh index --model hoprag
-RAG_RUN_ID=mhr-ms-graphrag-cold ./run_multihoprag.sh index --model ms_graphrag
+# One cold index and full benchmark per invocation. Repeat for every strategy.
+./scripts/run_paper_target.sh multihoprag prehop mhr-prehop-cold-01
+./scripts/run_paper_target.sh multihoprag naive mhr-naive-cold-01
+./scripts/run_paper_target.sh multihoprag hoprag mhr-hoprag-cold-01
+./scripts/run_paper_target.sh multihoprag ms_graphrag mhr-ms-cold-01
+
+./scripts/run_paper_target.sh musique prehop musique-prehop-cold-01
+./scripts/run_paper_target.sh musique naive musique-naive-cold-01
+./scripts/run_paper_target.sh musique hoprag musique-hoprag-cold-01
+./scripts/run_paper_target.sh musique ms_graphrag musique-ms-cold-01
 ```
 
-Use a new explicit run ID for every cold indexing run. An interrupted or failed
-index is incomplete and must be rebuilt after resolving the cause. A
+For the dataset files used by this revision, preparation must print the
+following identities. A different fingerprint is a different prepared corpus
+and must not be mixed with these runs.
+
+| Dataset | Sources | Full queries | Corpus fingerprint |
+|---|---:|---:|---|
+| MultiHop-RAG | 609 | 2,556 | `87781bfec56d944e9e57c3f0e96dc28ba473d837bf4a48d17fdc5b8690a4a0b8` |
+| MuSiQue answerable dev | 21,099 | 2,417 | `7560a2113c736776b7d4970ec02e3a8c8a2c04bf495f1b5ee4bf67718c323735` |
+
+The wrapper requires a clean tracked worktree, disables Prehop chunk and
+embedding caches, assigns run-specific HopRAG/MS GraphRAG output roots, clears
+Neo4j, fixes benchmark concurrency at 4, disables the optional judge, and uses
+the full prepared query file. It refuses an existing run ID instead of reusing
+artifacts. An interrupted or failed index is incomplete and must be rebuilt
+under a new run ID after resolving the cause. A
 deterministic benchmark interrupted after valid checkpoints can resume under
 the same run ID only when the runner verifies identical queries, models,
 configuration, and index identity. Retained and resumed code provenance remain
@@ -225,6 +255,9 @@ physical local retrieval-artifact size for MS GraphRAG. Inputs, caches, logs,
 debug output, and temporary files are excluded. Detailed measurement fields,
 storage-method limitations, and adapter-specific timing boundaries are defined
 in [ARCHITECTURE](docs/ARCHITECTURE.md#run-measurements).
+
+Use `--check` as the fourth argument to validate the worktree, revision fields,
+prepared manifest, run ID, and isolated output paths without starting a run.
 
 LLM judging is disabled by default. When it is explicitly enabled, OpenAI Batch
 is the default transport. An interrupted submitted batch can be resumed without

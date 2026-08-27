@@ -221,11 +221,13 @@ def test_index_policy_records_semantic_embedding_and_hop_identity(monkeypatch):
 
     monkeypatch.setattr(RAGConfig, "ABLATION_Q_MINUS", True)
     monkeypatch.setattr(RAGConfig, "EMBEDDING_QUERY_INSTRUCTION", "resolved instruction")
+    monkeypatch.setenv("RAG_GENERATION_REVISION", "generation-revision-1")
     monkeypatch.setenv("RAG_EMBEDDING_REVISION", "revision-1")
 
     policy = _resolved_index_policy("prehop", "default")
 
     assert policy["indexing_model"] == RAGConfig.DEFAULT_MODEL
+    assert policy["generation_revision"] == "generation-revision-1"
     assert policy["embedding_query_instruction"] == "resolved instruction"
     assert policy["embedding_revision"] == "revision-1"
     assert policy["hop_construction"] == "qplus_to_qminus_owner"

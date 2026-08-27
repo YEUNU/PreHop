@@ -54,6 +54,7 @@ def _load_benchmark_corpus_manifest(dataset: str, queries_file: str | Path) -> d
     fingerprint = manifest.get("fingerprint") if isinstance(manifest, dict) else None
     paragraph_count = manifest.get("paragraph_count") if isinstance(manifest, dict) else None
     query_digest = manifest.get("query_ids_sha256") if isinstance(manifest, dict) else None
+    query_records_digest = manifest.get("query_records_sha256") if isinstance(manifest, dict) else None
     if not isinstance(fingerprint, str) or not fingerprint.strip():
         raise ValueError(f"Corpus manifest has no fingerprint: {manifest_path}")
     if not isinstance(paragraph_count, int) or paragraph_count < 0:
@@ -63,6 +64,7 @@ def _load_benchmark_corpus_manifest(dataset: str, queries_file: str | Path) -> d
         "fingerprint": fingerprint,
         "paragraph_count": paragraph_count,
         "query_ids_sha256": query_digest,
+        "query_records_sha256": query_records_digest,
     }
 
 
@@ -131,18 +133,22 @@ def _validate_corpus_index_fingerprint(
     corpus_manifest: dict | None,
     index_manifest: dict | None,
     evaluated_query_ids_sha256: str,
+    evaluated_query_records_sha256: str | None = None,
 ) -> str:
-    """Protect full benchmarks from a MuSiQue corpus/index identity mismatch."""
+    """Protect full benchmarks from corpus, index, or query identity mismatch."""
     if corpus_manifest is None:
-        if evaluation_scope == "full_benchmark" and dataset == "musique":
-            raise RuntimeError("Full MuSiQue benchmark requires corpus_manifest.json")
+        if evaluation_scope == "full_benchmark" and dataset in {"multihoprag", "musique"}:
+            raise RuntimeError(f"Full {dataset} benchmark requires corpus_manifest.json")
         return "manifest_absent"
+    if evaluation_scope == "full_benchmark" and corpus_manifest.get("query_ids_sha256") != evaluated_query_ids_sha256:
+        raise RuntimeError(f"{dataset} corpus manifest query-id digest does not match evaluated queries")
+    expected_query_records_digest = corpus_manifest.get("query_records_sha256")
     if (
         evaluation_scope == "full_benchmark"
-        and dataset == "musique"
-        and corpus_manifest.get("query_ids_sha256") != evaluated_query_ids_sha256
+        and expected_query_records_digest is not None
+        and expected_query_records_digest != evaluated_query_records_sha256
     ):
-        raise RuntimeError("MuSiQue corpus manifest query-id digest does not match evaluated queries")
+        raise RuntimeError(f"{dataset} corpus manifest query-record digest does not match evaluated queries")
     if (
         index_manifest is None
         or index_manifest.get("status") != "complete"
@@ -160,6 +166,14 @@ def _validate_corpus_index_fingerprint(
 
 def _query_ids_sha256(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(sorted(str(row["_id"]) for row in rows)).encode()).hexdigest()
+
+
+def _query_records_sha256(rows: list[dict[str, Any]]) -> str:
+    records = [
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        for row in sorted(rows, key=lambda item: str(item["_id"]))
+    ]
+    return hashlib.sha256("\n".join(records).encode("utf-8")).hexdigest()
 
 
 def _manifest_source_ids(corpus_manifest: dict | None) -> list[str] | None:
@@ -966,6 +980,7 @@ async def run_benchmark(
         queries_file,
     )
     manifest_queries_count = len(benchmark_data)
+    manifest_query_records_sha256 = _query_records_sha256(benchmark_data)
     judge_enabled = bool(RAGConfig.JUDGE_ENABLED)
     judge_independent: bool | None = None
     judge_self_override = False
@@ -1018,6 +1033,7 @@ async def run_benchmark(
         corpus_manifest,
         index_manifest,
         evaluated_query_ids_sha256,
+        manifest_query_records_sha256,
     )
     # Identity validation runs before constructing adapters, some of which
     # open external-service clients during initialization.
@@ -1136,7 +1152,9 @@ async def run_benchmark(
                 "judge_enabled": judge_enabled,
                 "models": {
                     "default": RAGConfig.DEFAULT_MODEL,
+                    "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
                     "embedding": RAGConfig.EMBEDDING_MODEL,
+                    "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
                     "eval": RAGConfig.EVAL_MODEL,
                 },
                 "ablation": {
@@ -1214,7 +1232,9 @@ async def run_benchmark(
             "status": "in_progress",
             "models": {
                 "default": RAGConfig.DEFAULT_MODEL,
+                "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
                 "embedding": RAGConfig.EMBEDDING_MODEL,
+                "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
                 "eval": RAGConfig.EVAL_MODEL,
             },
             "ablation": {

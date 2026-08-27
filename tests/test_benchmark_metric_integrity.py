@@ -26,7 +26,7 @@ from cli.index import _load_corpus_manifest, _verify_and_publish_neo4j_snapshot
 from models.hoprag import official_indexer as hop_official_indexer
 from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
-from scripts.datasets import prepare_musique
+from scripts.datasets import prepare_multihoprag, prepare_musique
 from scripts.paired_bootstrap import (
     MULTIHOPRAG_METRICS,
     MUSIQUE_METRICS,
@@ -39,6 +39,24 @@ from scripts.paired_bootstrap import (
 
 def test_musique_preparation_defaults_to_the_full_split():
     assert prepare_musique.DEFAULT_LIMIT == 0
+
+
+def test_multihoprag_manifest_binds_corpus_and_query_content(tmp_path):
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    source = corpus_dir / "Alpha.txt"
+    source.write_text("Title: Alpha\n\nEvidence", encoding="utf-8")
+    queries = [{"_id": "multihoprag_00000", "query": "Question", "dataset": "multihoprag"}]
+
+    first = prepare_multihoprag.build_corpus_manifest(corpus_dir, queries)
+    assert first == prepare_multihoprag.build_corpus_manifest(corpus_dir, queries)
+    assert first["paragraph_count"] == 1
+    assert first["query_ids_sha256"] == prepare_multihoprag.query_ids_sha256(queries)
+
+    source.write_text("Title: Alpha\n\nChanged evidence", encoding="utf-8")
+    assert prepare_multihoprag.build_corpus_manifest(corpus_dir, queries)["fingerprint"] != first["fingerprint"]
+    changed_queries = [{**queries[0], "query": "Changed question"}]
+    assert prepare_multihoprag.build_corpus_manifest(corpus_dir, changed_queries)["fingerprint"] != first["fingerprint"]
 
 
 def test_benchmark_checkpoint_interval_is_bounded_and_always_writes_final_state():
@@ -189,10 +207,8 @@ def test_corpus_manifest_is_optional_but_full_benchmark_requires_matching_index(
     bad_manifest = {**corpus_manifest, "query_ids_sha256": "wrong"}
     with pytest.raises(RuntimeError, match="query-id digest"):
         _validate_corpus_index_fingerprint("musique", "full_benchmark", bad_manifest, index_manifest, query_digest)
-    assert (
+    with pytest.raises(RuntimeError, match="requires corpus_manifest"):
         _validate_corpus_index_fingerprint("multihoprag", "full_benchmark", None, None, query_digest)
-        == "manifest_absent"
-    )
     with pytest.raises(RuntimeError, match="requires corpus_manifest"):
         _validate_corpus_index_fingerprint("musique", "full_benchmark", None, None, query_digest)
 
