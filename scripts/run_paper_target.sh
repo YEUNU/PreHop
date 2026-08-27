@@ -41,7 +41,7 @@ fi
 generation_revision=$(awk -F= '$1 == "RAG_GENERATION_REVISION" {sub(/^[^=]*=/, ""); print; exit}' .env)
 embedding_revision=$(awk -F= '$1 == "RAG_EMBEDDING_REVISION" {sub(/^[^=]*=/, ""); print; exit}' .env)
 if [ -z "$generation_revision" ] || [ -z "$embedding_revision" ]; then
-    echo "Paper targets require RAG_GENERATION_REVISION and RAG_EMBEDDING_REVISION in .env." >&2
+    echo "Paper targets require the generation and embedding model identifiers in .env." >&2
     exit 1
 fi
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then

@@ -18,7 +18,7 @@ supported.
 `scripts/run_paper_target.sh` now provides one clean-worktree entrypoint for a
 single cold index and full benchmark. It disables shared Prehop caches, assigns
 run-specific HopRAG and MS GraphRAG output roots, clears Neo4j, fixes query
-concurrency at four, and refuses reused run IDs. Model revision identifiers are
+concurrency at four, and refuses reused run IDs. Model identifiers are
 recorded in index and benchmark artifacts.
 
 The HopRAG adapter no longer turns an upstream empty document representation

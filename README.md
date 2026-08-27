@@ -127,9 +127,9 @@ need to activate the environment.
 `run_servers.sh` validates the configured external generation and embedding
 endpoints. It never launches local model processes.
 
-The paper configuration uses the following served model identities. The
-immutable checkpoint identifiers belong in `RAG_GENERATION_REVISION` and
-`RAG_EMBEDDING_REVISION`; a served name alone is not a checkpoint identity.
+The paper configuration uses the following model identities. The same names
+are copied to `RAG_GENERATION_REVISION` and `RAG_EMBEDDING_REVISION` so index
+and benchmark artifacts retain them directly.
 
 | Role | Served model | Required setting |
 |---|---|---|
@@ -137,10 +137,9 @@ immutable checkpoint identifiers belong in `RAG_GENERATION_REVISION` and
 | Embeddings | `qwen3-embedding-4b`, 2560 dimensions | `VLLM_SERVED_EMBED_MODEL_NAME` |
 
 Prehop and MS GraphRAG generation calls use temperature 0. HopRAG retains its
-upstream indexing temperature 0.1 and retrieval-time node judgement. Therefore
-the repository fixes the procedure and records provenance, but bitwise-identical
-generation also depends on the external inference server, model checkpoint,
-and serving software.
+upstream indexing temperature 0.1 and retrieval-time node judgement. External
+server hardware and launch options are not part of the reported method
+configuration.
 
 ---
 

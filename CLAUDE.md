@@ -178,7 +178,7 @@ A measured cold run must:
 The supported paper wrapper satisfies these rules without deleting another
 run's baseline cache: it uses run-specific HopRAG and MS GraphRAG output roots
 and disables the shared Prehop chunk and embedding caches. It also requires
-explicit generation and embedding revision identifiers in `.env`.
+explicit generation and embedding model identifiers in `.env`.
 
 Each target writes an isolated stdout/stderr log. A target with any document,
 workflow, graph-finalization, or integrity failure is failed, never silently
