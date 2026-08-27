@@ -15,6 +15,7 @@ from cli.benchmark import (
     _latest_index_manifest_metadata,
     _load_benchmark_corpus_manifest,
     _recompute_aggregates,
+    _resume_benchmark_rows,
     _update_summary_status,
     _validate_benchmark_data,
     _validate_corpus_index_fingerprint,
@@ -37,6 +38,94 @@ from scripts.paired_bootstrap import (
 
 def test_musique_preparation_defaults_to_the_full_split():
     assert prepare_musique.DEFAULT_LIMIT == 0
+
+
+def _write_resume_fixture(tmp_path, rows, *, status="in_progress", strategy="hoprag"):
+    result_file = tmp_path / "hoprag_multihoprag.json"
+    result_file.write_text(
+        json.dumps({"status": status, "strategy": strategy, "details": rows}),
+        encoding="utf-8",
+    )
+    trace_rows = [
+        {"idx": idx, "query": row["query"], "interaction_trace": [{"step": f"trace-{idx}"}]}
+        for idx, row in enumerate(rows, start=1)
+    ]
+    result_file.with_name("hoprag_multihoprag.traces.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in trace_rows),
+        encoding="utf-8",
+    )
+    return result_file
+
+
+def test_benchmark_resume_retains_successes_and_reruns_errors(tmp_path):
+    benchmark_data = [
+        {"_id": "q1", "query": "first"},
+        {"_id": "q2", "query": "second"},
+        {"_id": "q3", "query": "third"},
+    ]
+    result_file = _write_resume_fixture(
+        tmp_path,
+        [
+            {"query_id": "q1", "query": "first", "answer": "ok"},
+            {"query_id": "q2", "query": "second", "error": "interrupted"},
+        ],
+    )
+
+    retained, metadata = _resume_benchmark_rows(
+        result_file,
+        benchmark_data,
+        {"strategy": "hoprag"},
+        judge_enabled=False,
+    )
+
+    assert [row["query_id"] for row in retained] == ["q1"]
+    assert retained[0]["interaction_trace"] == [{"step": "trace-1"}]
+    assert metadata["initial_rows"] == 2
+    assert metadata["retained_rows"] == 1
+    assert metadata["rerun_error_rows"] == 1
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        (
+            [
+                {"query_id": "q1", "query": "first"},
+                {"query_id": "q1", "query": "first"},
+            ],
+            "duplicate query_id",
+        ),
+        ([{"query_id": "foreign", "query": "first"}], "outside the current manifest"),
+    ],
+)
+def test_benchmark_resume_rejects_invalid_query_identity(tmp_path, rows, message):
+    result_file = _write_resume_fixture(tmp_path, rows)
+    with pytest.raises(RuntimeError, match=message):
+        _resume_benchmark_rows(
+            result_file,
+            [{"_id": "q1", "query": "first"}],
+            {"strategy": "hoprag"},
+            judge_enabled=False,
+        )
+
+
+def test_benchmark_resume_rejects_metadata_mismatch_and_enabled_judge(tmp_path):
+    result_file = _write_resume_fixture(tmp_path, [{"query_id": "q1", "query": "first"}])
+    benchmark_data = [{"_id": "q1", "query": "first"}]
+    with pytest.raises(RuntimeError, match="metadata mismatch"):
+        _resume_benchmark_rows(
+            result_file,
+            benchmark_data,
+            {"strategy": "prehop"},
+            judge_enabled=False,
+        )
+    with pytest.raises(RuntimeError, match="judge is enabled"):
+        _resume_benchmark_rows(
+            result_file,
+            benchmark_data,
+            {"strategy": "hoprag"},
+            judge_enabled=True,
+        )
 
 
 def test_evaluation_scope_uses_actual_evaluated_count_before_filename():

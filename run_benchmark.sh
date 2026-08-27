@@ -114,7 +114,11 @@ else
 fi
 [ -n "$CORPUS_TAG" ] && BENCHMARK_ARGS+=(--corpus-tag "$CORPUS_TAG")
 
-"$PYTHON_BIN" "${BENCHMARK_ARGS[@]}" 2>&1 | tee "$BENCHMARK_LOG_DIR/${LOG_NAME}.log"
+if [[ "${RAG_BENCHMARK_RESUME:-}" =~ ^(1|true|yes|on)$ ]]; then
+    "$PYTHON_BIN" "${BENCHMARK_ARGS[@]}" 2>&1 | tee -a "$BENCHMARK_LOG_DIR/${LOG_NAME}.log"
+else
+    "$PYTHON_BIN" "${BENCHMARK_ARGS[@]}" 2>&1 | tee "$BENCHMARK_LOG_DIR/${LOG_NAME}.log"
+fi
 echo "Log: $BENCHMARK_LOG_DIR/${LOG_NAME}.log"
 
 # JSON/JSONL report artifacts are written by cli/benchmark.py during the run.

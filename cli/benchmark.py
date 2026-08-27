@@ -630,6 +630,106 @@ def _write_slim_main(s: dict[str, Any], result_file: Path) -> None:
     _write_json(result_file, {**s, "details": _slim_details(s.get("details"))})
 
 
+def _read_jsonl_file(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSONL at {path}:{line_number}: {exc}") from exc
+            if not isinstance(row, dict):
+                raise TypeError(f"JSONL row at {path}:{line_number} must be an object")
+            rows.append(row)
+    return rows
+
+
+def _resume_benchmark_rows(
+    result_file: Path,
+    benchmark_data: list[dict[str, Any]],
+    expected_metadata: dict[str, Any],
+    *,
+    judge_enabled: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load a crash-interrupted deterministic benchmark without duplicating rows.
+
+    Resume is deliberately strict: the immutable query identity, runtime
+    configuration, model selection and active index identity must match.
+    Runtime-error rows are not retained and are scheduled again.
+    """
+    if judge_enabled:
+        raise RuntimeError("Benchmark resume is not supported when the supplemental judge is enabled")
+    if not result_file.is_file():
+        raise FileNotFoundError(f"Resume requested but result artifact does not exist: {result_file}")
+
+    prior = _read_json_file(result_file)
+    if not isinstance(prior, dict):
+        raise TypeError(f"Resume artifact must be a JSON object: {result_file}")
+    if prior.get("status") != "in_progress":
+        raise RuntimeError(
+            f"Resume requires an in_progress artifact, found status={prior.get('status')!r}: {result_file}"
+        )
+    for field, expected in expected_metadata.items():
+        if prior.get(field) != expected:
+            raise RuntimeError(
+                f"Resume metadata mismatch for {field}: prior={prior.get(field)!r}, current={expected!r}"
+            )
+
+    manifest_by_id = {str(item["_id"]): item for item in benchmark_data}
+    prior_rows = prior.get("details")
+    if not isinstance(prior_rows, list):
+        raise TypeError(f"Resume artifact details must be a list: {result_file}")
+
+    trace_file = result_file.with_name(f"{result_file.stem}.traces.jsonl")
+    if not trace_file.is_file():
+        raise FileNotFoundError(f"Resume requires the matching trace artifact: {trace_file}")
+    trace_rows = _read_jsonl_file(trace_file)
+    if len(trace_rows) != len(prior_rows):
+        raise RuntimeError(
+            f"Resume trace count mismatch: details={len(prior_rows)}, traces={len(trace_rows)}"
+        )
+
+    retained: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    rerun_error_count = 0
+    for position, (raw_row, trace_row) in enumerate(zip(prior_rows, trace_rows, strict=True), start=1):
+        if not isinstance(raw_row, dict):
+            raise TypeError(f"Resume detail row {position} must be an object")
+        query_id = str(raw_row.get("query_id") or "")
+        if not query_id:
+            raise RuntimeError(f"Resume detail row {position} has no query_id")
+        if query_id in seen_ids:
+            raise RuntimeError(f"Resume artifact contains duplicate query_id {query_id!r}")
+        seen_ids.add(query_id)
+        manifest_item = manifest_by_id.get(query_id)
+        if manifest_item is None:
+            raise RuntimeError(f"Resume artifact contains query_id outside the current manifest: {query_id!r}")
+        expected_query = str(manifest_item["query"])
+        if raw_row.get("query") != expected_query or trace_row.get("query") != expected_query:
+            raise RuntimeError(f"Resume query text mismatch for query_id {query_id!r}")
+        if trace_row.get("idx") != position:
+            raise RuntimeError(f"Resume trace ordering mismatch at row {position}")
+        if raw_row.get("error"):
+            rerun_error_count += 1
+            continue
+        retained.append({**raw_row, "interaction_trace": trace_row.get("interaction_trace", [])})
+
+    retained_ids = sorted(str(row["query_id"]) for row in retained)
+    resume_metadata = {
+        "requested": True,
+        "prior_status": prior.get("status"),
+        "initial_rows": len(prior_rows),
+        "retained_rows": len(retained),
+        "rerun_error_rows": rerun_error_count,
+        "retained_query_ids_sha256": hashlib.sha256("\n".join(retained_ids).encode()).hexdigest(),
+        "prior_query_provenance": prior.get("query_provenance"),
+        "prior_evaluation_provenance": prior.get("evaluation_provenance"),
+    }
+    return retained, resume_metadata
+
+
 def _result_json_in_seed_dir(seed_dir: Path) -> Path:
     candidates = [
         path
@@ -911,8 +1011,8 @@ async def run_benchmark(
         corpus_manifest,
         strict=evaluation_scope == "full_benchmark",
     )
-    results = []
-    category_results = {}
+    results: list[dict[str, Any]] = []
+    category_results: dict[str, list[dict[str, Any]]] = {}
 
     logger.info(
         "Starting benchmark [%s] on %s | Queries: %d",
@@ -971,6 +1071,61 @@ async def run_benchmark(
     query_sem = asyncio.Semaphore(benchmark_concurrency)
     write_lock = asyncio.Lock()
     total_queries = len(benchmark_data)
+    resume_metadata: dict[str, Any] | None = None
+    retained_query_ids: set[str] = set()
+    if os.environ.get("RAG_BENCHMARK_RESUME", "").strip().lower() in {"1", "true", "yes", "on"}:
+        results, resume_metadata = _resume_benchmark_rows(
+            result_file,
+            benchmark_data,
+            {
+                "strategy": strategy,
+                "corpus_tag": corpus_tag,
+                "dataset": dataset_name,
+                "evaluation_scope": evaluation_scope,
+                "official_split_expected_queries": official_split_expected_queries,
+                "manifest_queries_count": manifest_queries_count,
+                "evaluated_queries_count": total_queries,
+                "evaluated_query_ids_sha256": evaluated_query_ids_sha256,
+                "limit": limit,
+                "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
+                "index_manifest_fingerprint": (index_manifest or {}).get("fingerprint"),
+                "index_manifest_status": (index_manifest or {}).get("status"),
+                "corpus_index_fingerprint_status": corpus_index_fingerprint_status,
+                "active_index_snapshot": active_index_snapshot,
+                "judge_enabled": judge_enabled,
+                "models": {
+                    "default": RAGConfig.DEFAULT_MODEL,
+                    "embedding": RAGConfig.EMBEDDING_MODEL,
+                    "eval": RAGConfig.EVAL_MODEL,
+                },
+                "ablation": {
+                    "q_minus": RAGConfig.ABLATION_Q_MINUS,
+                    "q_plus": RAGConfig.ABLATION_Q_PLUS,
+                    "chunk_sentences": RAGConfig.CHUNK_SENTENCES,
+                    "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
+                    "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
+                    "graph_edge_variant": RAGConfig.GRAPH_EDGE_VARIANT,
+                    "hop_edge_filter": RAGConfig.HOP_EDGE_FILTER,
+                    "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
+                    "question_schema": RAGConfig.QUESTION_SCHEMA,
+                    "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
+                    "query_rewrite_variant": RAGConfig.QUERY_REWRITE_VARIANT,
+                    "default_top_k": RAGConfig.DEFAULT_TOP_K,
+                    "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
+                    "hypo_channel_variant": RAGConfig.HYPO_CHANNEL_VARIANT,
+                    "source_selection_variant": RAGConfig.SOURCE_SELECTION_VARIANT,
+                },
+            },
+            judge_enabled=judge_enabled,
+        )
+        retained_query_ids = {str(row["query_id"]) for row in results}
+        for row in results:
+            category_results.setdefault(str(row.get("category", "Uncategorized")), []).append(row)
+        logger.info(
+            "Resuming benchmark with %d retained rows; %d queries remain",
+            len(results),
+            total_queries - len(results),
+        )
     if benchmark_concurrency > 1:
         logger.info("Benchmark concurrency: %d queries in flight", benchmark_concurrency)
 
@@ -1010,6 +1165,7 @@ async def run_benchmark(
             "judge_policy": "supplemental_optional",
             "judge_independent": judge_independent,
             "judge_self_override": judge_self_override,
+            "benchmark_concurrency": benchmark_concurrency,
             "queries_count": len(results),
             "total_queries": total_queries,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1037,6 +1193,29 @@ async def run_benchmark(
                 "source_selection_variant": RAGConfig.SOURCE_SELECTION_VARIANT,
             },
         }
+        if resume_metadata is not None:
+            resumed_rows = [row for row in results if str(row.get("query_id")) not in retained_query_ids]
+            s["resume"] = {
+                **resume_metadata,
+                "resumed_rows": len(resumed_rows),
+                "remaining_rows": total_queries - len(results),
+            }
+            s["evaluation_provenance_segments"] = [
+                {
+                    "segment": "retained_before_resume",
+                    "query_count": len(retained_query_ids),
+                    "query_ids_sha256": resume_metadata["retained_query_ids_sha256"],
+                    "code": resume_metadata.get("prior_evaluation_provenance"),
+                },
+                {
+                    "segment": "executed_after_resume",
+                    "query_count": len(resumed_rows),
+                    "query_ids_sha256": hashlib.sha256(
+                        "\n".join(sorted(str(row["query_id"]) for row in resumed_rows)).encode()
+                    ).hexdigest(),
+                    "code": dict(benchmark_code),
+                },
+            ]
         s["details"] = results
         _recompute_aggregates(s)
         _update_summary_status(s)
@@ -1183,8 +1362,13 @@ async def run_benchmark(
 
                 summary = _recompute_and_persist()
 
+    pending_items = [
+        (i, item)
+        for i, item in enumerate(benchmark_data)
+        if str(item["_id"]) not in retained_query_ids
+    ]
     await asyncio.gather(
-        *[_process_query(i, it) for i, it in enumerate(benchmark_data)],
+        *[_process_query(i, item) for i, item in pending_items],
         return_exceptions=False,
     )
 
