@@ -110,9 +110,9 @@ prehop/
 # Python 3.12+ (pinned in .python-version). The env is managed with uv.
 uv sync --locked
 
-# Neo4j 5.x — Docker is simplest:
+# Neo4j version used by the paper runs:
 docker run -d --name prehop-neo4j -p 7474:7474 -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/<your_password> neo4j:5
+  -e NEO4J_AUTH=neo4j/<your_password> neo4j:5.26.21-community
 
 # Configure env vars
 cp .env.example .env
