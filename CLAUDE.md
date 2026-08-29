@@ -69,17 +69,22 @@ document responsibilities change. Do not copy full sections between files.
   controls must remain within that capacity.
 - The configuration selected for confirmatory evaluation uses legacy Q−/Q+,
   owner activation, materialized reciprocal provenance, depth-one full
-  NEXT/HOP traversal, global selection, and no query rewrite. Exact activation
+  NEXT/HOP traversal, global selection, and role-aligned rewriting for
+  questions of at most 32 words. Exact activation, rewrite-all, no-rewrite,
   and online reciprocal filtering are explicit ablations. The complete
   algorithm belongs in `ARCHITECTURE.md`.
-- Query-time retrieval is deterministic and uses no generation, learned
-  reranker, runtime HOP construction, or heuristic domain gate. A single final
-  synthesis call is made only when context is non-empty.
+- Query-time retrieval makes at most one bounded role-rewrite call and uses no
+  learned reranker, runtime HOP construction, iterative generation, or
+  heuristic domain gate. A single final synthesis call is made only when
+  context is non-empty.
 - Query-time filtering must not mutate or replace the offline HOP graph. Fresh
   indexes must materialize reciprocal provenance before the offline filter is
   enabled.
 - This configuration was selected on a development sample and cannot support
-  an effectiveness claim until the pre-declared confirmatory evaluation.
+  an effectiveness claim until the pre-declared confirmatory evaluation. Full
+  benchmark tables remain useful for compatibility, but confirmatory paired
+  claims exclude the fixed MultiHop-RAG sample-200 and MuSiQue sample-201 IDs.
+  No method or parameter may change after that disjoint remainder is inspected.
 - Official baselines keep their upstream behavior. In particular, official
   HopRAG `bfs_node` uses its published LLM node judgement during retrieval;
   this is documented baseline behavior and is routed to the external endpoint.
@@ -100,9 +105,13 @@ document responsibilities change. Do not copy full sections between files.
 | `musique` | `data/musique_corpus` | `data/musique_queries.json` |
 
 Corpus files use `Title: ...`, optional `--- Page N ---` markers, then raw
-text. Prehop uses page-scoped fixed sentence windows. Naive uses the same
-metadata-removing parser but joins parsed pages into one source-document
-retrieval unit. Raw pipe text remains raw.
+text. Prehop and Naive share the parser and page-scoped fixed sentence-window
+chunker. Raw pipe text remains raw.
+
+The committed sample files are immutable development query-ID sets. After a
+full dataset preparation changes evaluation annotations, run
+`scripts/datasets/refresh_sample_records.py` to replace records by ID without
+resampling. Do not run `make_sample.py` over an established development path.
 
 ## Common commands
 
@@ -219,12 +228,13 @@ cannot overwrite one another.
 
 ## Comparison policy
 
-Naive is the architecture-level document retrieval baseline: one prepared
-source is one vector, input truncation is forbidden, and retrieval uses top-k
-10. Prehop retains six-sentence chunks and top-k 12. They share the synthesis
-prompt but not their retrieval unit. Do not add a shared-chunk Naive comparison
-to result tables; Prehop component attribution comes from its A0–A5 internal
-ablations.
+Prehop and Naive use the same six-sentence chunks, top-k 12, and final
+synthesis prompt. Call this the controlled Naive RAG baseline, not the
+canonical or standard Naive configuration: Naive RAG has no single required
+chunk unit. The controlled comparison changes the retrieval architecture while
+holding the evidence unit and budget fixed. A one-source-one-vector run is a
+separately labelled chunking sensitivity analysis and cannot replace the
+controlled baseline or a Prehop component ablation.
 HopRAG retains the upstream official end-to-end top-k 20; MS GraphRAG retains
 its official context budget. These unequal official settings must be stated in
 the paper. A controlled equal-budget retrieval experiment is reported
@@ -263,6 +273,10 @@ When editing it:
 - For every table or figure, retain its metric definition, denominator,
   aggregation rule, uncertainty estimate, and source artifact. Do not publish
   self-judged or partial Batch-judge numbers as final results.
+- Generate selection-free paired intervals from full artifacts with
+  `scripts/paired_bootstrap.py --exclude-queries <fixed-sample.json>` and keep
+  the recorded excluded-ID digest. A complete-split aggregate and a disjoint
+  confirmatory interval answer different reporting needs and must be labelled.
 - Keep the local specification ignored. A submission copy is a deliberate
   tracked export only after its venue/version is fixed and secrets, local
   endpoints, generated logs, and private submission notes are removed.

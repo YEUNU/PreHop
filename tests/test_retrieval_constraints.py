@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,6 +28,29 @@ def test_retrieval_has_no_dataset_specific_metadata_gate():
     assert not hasattr(rag, "_apply_retrieval_calibration")
     assert not hasattr(RAGConfig, "COMPANY_ANCHORING")
     assert not hasattr(RAGConfig, "RERANKER_THRESHOLD")
+
+
+@pytest.mark.asyncio
+async def test_hop_page_collection_bounds_concurrency_and_preserves_order(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "HOP_GATHER_WAVE", 2)
+    monkeypatch.setattr(RAGConfig, "HOP_BUILD_CONCURRENCY", 2)
+    rag = GraphRAG(strategy="prehop")
+    active = 0
+    peak = 0
+
+    async def resolve(wave):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return [[{"id": item["id"]}] for item in wave]
+
+    rag._collect_hop_wave_candidates = resolve  # type: ignore[method-assign]
+    rows = await rag._collect_hop_page_candidates([{"id": str(index)} for index in range(7)])
+
+    assert [row[0]["id"] for row in rows] == [str(index) for index in range(7)]
+    assert peak == 2
 
 
 def test_primary_source_selection_is_global_cosine_order():
@@ -87,6 +111,23 @@ async def test_hop_candidate_scoring_preserves_bridge_question_semantics():
     assert selected[0]["final_score"] == pytest.approx(0.6)
 
 
+@pytest.mark.asyncio
+async def test_bridge_only_hop_scoring_does_not_require_direct_query_body_match(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "HOP_SEMANTIC_VARIANT", "bridge_only")
+    rag = GraphRAG(strategy="prehop")
+    candidate = {
+        "id": "target",
+        "embedding": [0.6, 0.8],
+        "bridge_embeddings": [[0.8, 0.6]],
+    }
+
+    selected, _ = await rag._score_and_select([1.0, 0.0], [candidate], top_k=1)
+
+    assert selected[0]["similarity_score"] == pytest.approx(0.6)
+    assert selected[0]["bridge_similarity_score"] == pytest.approx(0.8)
+    assert selected[0]["final_score"] == pytest.approx(0.8)
+
+
 def test_final_selection_round_robins_sources_without_fraction_parameter():
     rag = GraphRAG(strategy="prehop")
     ordered = [
@@ -101,6 +142,93 @@ def test_final_selection_round_robins_sources_without_fraction_parameter():
 
     assert [node["id"] for node in selected] == ["a1", "b1", "a2", "b2"]
     assert not hasattr(RAGConfig, "MAX_CHUNKS_PER_SOURCE_FRACTION")
+
+
+def test_source_balanced_selection_can_revisit_a_strong_source():
+    ordered = [
+        {"id": "a1", "source": "a", "rank_fusion_score": 2.0, "final_score": 1.0},
+        {"id": "a2", "source": "a", "rank_fusion_score": 1.8, "final_score": 0.9},
+        {"id": "b1", "source": "b", "rank_fusion_score": 0.8, "final_score": 0.8},
+        {"id": "c1", "source": "c", "rank_fusion_score": 0.7, "final_score": 0.7},
+    ]
+
+    selected = GraphRAG._source_balanced(ordered, top_k=3)
+
+    assert [node["id"] for node in selected] == ["a1", "a2", "b1"]
+
+
+def test_source_balancing_uses_document_title_before_paragraph_file():
+    ordered = [
+        {
+            "id": "a1",
+            "title": "A",
+            "source": "paragraph-a1",
+            "rank_fusion_score": 1.0,
+            "final_score": 1.0,
+        },
+        {
+            "id": "a2",
+            "title": "A",
+            "source": "paragraph-a2",
+            "rank_fusion_score": 0.9,
+            "final_score": 0.9,
+        },
+        {
+            "id": "b1",
+            "title": "B",
+            "source": "paragraph-b1",
+            "rank_fusion_score": 0.6,
+            "final_score": 0.6,
+        },
+    ]
+
+    round_robin = GraphRAG._source_round_robin(ordered, top_k=2)
+    balanced = GraphRAG._source_balanced(ordered, top_k=2)
+
+    assert [row["id"] for row in round_robin] == ["a1", "b1"]
+    assert [row["id"] for row in balanced] == ["a1", "b1"]
+
+
+def test_graph_pair_selection_keeps_hop_source_with_high_ranked_target():
+    ordered = [
+        {
+            "id": "target",
+            "retrieval_paths": [
+                {"kind": "hop", "source_chunk_id": "source", "depth": 1}
+            ],
+        },
+        {"id": "other-1"},
+        {"id": "other-2"},
+        {"id": "source"},
+    ]
+
+    selected = GraphRAG._graph_pairs(ordered, top_k=3)
+
+    assert [row["id"] for row in selected] == ["target", "source", "other-1"]
+
+
+@pytest.mark.asyncio
+async def test_document_balance_and_graph_pair_policies_compose(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "source_balanced_graph_pairs")
+    rag = GraphRAG(strategy="prehop")
+    candidates = [
+        {
+            "id": "target",
+            "title": "A",
+            "source": "a-target",
+            "embedding": [1.0, 0.0],
+            "retrieval_paths": [
+                {"kind": "hop", "source_chunk_id": "source", "depth": 1}
+            ],
+        },
+        {"id": "a-repeat", "title": "A", "source": "a-repeat", "embedding": [0.99, 0.01]},
+        {"id": "other", "title": "B", "source": "b", "embedding": [0.8, 0.2]},
+        {"id": "source", "title": "C", "source": "c", "embedding": [0.7, 0.3]},
+    ]
+
+    selected, _ = await rag._score_and_select([1.0, 0.0], candidates, top_k=3)
+
+    assert [row["id"] for row in selected] == ["target", "source", "other"]
 
 
 @pytest.mark.asyncio
@@ -187,6 +315,19 @@ async def test_retrieval_embeds_query_once_before_parallel_channels():
         "q_plus",
     ]
     assert all(call.kwargs["query_embedding"] == [1.0, 0.0] for call in rag._hybrid_rrf_candidates.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_candidate_pool_multiplier_widens_search_not_final_evidence(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "CANDIDATE_POOL_MULTIPLIER", 2)
+    rag = GraphRAG(strategy="prehop")
+    rag.llm.get_embedding = AsyncMock(return_value=[1.0, 0.0])
+    rag._hybrid_rrf_candidates = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    selected, _pool = await rag._retrieve_with_candidate_pool("one query", top_k=12)
+
+    assert selected == []
+    assert all(call.kwargs["limit"] == 24 for call in rag._hybrid_rrf_candidates.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -280,6 +421,72 @@ async def test_hop_target_inherits_only_the_qplus_seed_rank():
 
 
 @pytest.mark.asyncio
+async def test_direct_target_keeps_score_and_records_graph_path():
+    rag = GraphRAG(strategy="prehop")
+    source = {
+        "id": "source",
+        "title": "Source",
+        "sent_id": 0,
+        "text": "dependency",
+        "embedding": [1.0],
+        "dependency_seed": True,
+        "matched_qplus_ids": ["qp"],
+        "representation_score": 1.0,
+        "representation_scores": {"q_plus": 1.0},
+    }
+    target = {
+        "id": "target",
+        "title": "Target",
+        "sent_id": 0,
+        "text": "answer",
+        "embedding": [1.0],
+        "dependency_seed": False,
+        "representation_score": 0.8,
+    }
+    rag._retrieve_with_candidate_pool = AsyncMock(  # type: ignore[method-assign]
+        return_value=([], [source, target])
+    )
+    rag.llm.get_embedding = AsyncMock(return_value=[1.0])
+    rag._expand_frontier = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {
+                "source_id": "source",
+                "id": "target",
+                "title": "Target",
+                "sent_id": 0,
+                "text": "answer",
+                "embedding": [1.0],
+                "path_type": "hop",
+                "bridge_embeddings": [[0.5]],
+                "activated_question_ids": ["qp"],
+            }
+        ]
+    )
+    captured: list[dict] = []
+
+    async def capture_scores(_query_embedding, candidates, _top_k):
+        captured.extend(candidates)
+        return candidates, candidates
+
+    rag._score_and_select = AsyncMock(side_effect=capture_scores)  # type: ignore[method-assign]
+
+    await rag.graph_search(["query"], depth=1, top_k=2)
+
+    enriched = next(candidate for candidate in captured if candidate["id"] == "target")
+    assert enriched["representation_score"] == 0.8
+    assert "bridge_embeddings" not in enriched
+    assert enriched["retrieval_paths"] == [
+        {
+            "kind": "hop",
+            "source_chunk_id": "source",
+            "source_question_ids": ["qp"],
+            "depth": 1,
+            "edge_rank": 0,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_role_aligned_views_search_only_their_matching_channels(monkeypatch):
     rag = GraphRAG(strategy="prehop")
     monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "single_combined")
@@ -297,6 +504,42 @@ async def test_role_aligned_views_search_only_their_matching_channels(monkeypatc
         (call.args[0], call.kwargs["channel"])
         for call in rag._hybrid_rrf_candidates.await_args_list
     ] == [("minus one", "q_minus"), ("minus two", "q_minus"), ("plus one", "q_plus")]
+
+
+@pytest.mark.asyncio
+async def test_query_views_fuse_once_inside_each_role(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "single_combined")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm.get_embeddings = AsyncMock(return_value=[[1.0], [0.9], [0.8], [0.7]])
+
+    async def candidates(view, *, query_embedding, limit, channel):
+        _ = query_embedding, limit
+        if channel == "q_minus":
+            return [{"id": "shared", "text": view, "embedding": [1.0]}]
+        return [
+            {
+                "id": "shared",
+                "text": view,
+                "embedding": [1.0],
+                "matched_qplus_ids": ["qp"],
+            }
+        ]
+
+    rag._hybrid_rrf_candidates = AsyncMock(side_effect=candidates)  # type: ignore[method-assign]
+
+    _selected, pool = await rag._retrieve_with_candidate_pool(
+        "original",
+        top_k=12,
+        channel_queries={"q_minus": ["minus one", "minus two"], "q_plus": ["plus one"]},
+    )
+
+    assert pool[0]["representation_scores"] == {"q_minus": 1.0, "q_plus": 1.0}
+    assert pool[0]["representation_score"] == 2.0
+    assert [path["query_view"] for path in pool[0]["retrieval_paths"]] == [
+        "minus one",
+        "minus two",
+        "plus one",
+    ]
 
 
 @pytest.mark.asyncio
@@ -418,7 +661,7 @@ async def test_exact_qplus_activation_passes_only_matched_question_ids(monkeypat
 
     await rag._expand_frontier(
         ["source", "direct"],
-        {"source", "direct"},
+        set(),
         {"source": {"qp-matched-b", "qp-matched-a"}},
     )
 
@@ -442,7 +685,7 @@ async def test_reciprocal_hop_filter_is_read_only_and_uses_reverse_qplus_ann(mon
     session_context.__aexit__.return_value = None
     rag.neo4j.driver.session = MagicMock(return_value=session_context)
 
-    await rag._expand_frontier(["source"], {"source"}, {"source": {"qp-exact"}})
+    await rag._expand_frontier(["source"], set(), {"source": {"qp-exact"}})
 
     query, parameters = session.run.await_args.args
     assert "ANSWERED_BY" in query
@@ -466,7 +709,7 @@ async def test_offline_reciprocal_filter_uses_materialized_ids_without_ann(monke
     session_context.__aexit__.return_value = None
     rag.neo4j.driver.session = MagicMock(return_value=session_context)
 
-    await rag._expand_frontier(["source"], {"source"}, {"source": {"qp-exact"}})
+    await rag._expand_frontier(["source"], set(), {"source": {"qp-exact"}})
 
     query, parameters = session.run.await_args.args
     assert "reciprocal_source_question_ids" in query

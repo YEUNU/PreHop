@@ -48,6 +48,7 @@ class RetrieveMixin:
         after expansion, so it skips the redundant pre-expansion scoring pass.
         """
         top_k = max(1, int(top_k))
+        candidate_k = top_k * RAGConfig.CANDIDATE_POOL_MULTIPLIER
 
         variant = RAGConfig.HYPO_CHANNEL_VARIANT
         if variant == "body_only":
@@ -91,28 +92,25 @@ class RetrieveMixin:
                 self._hybrid_rrf_candidates(
                     view,
                     query_embedding=embedding_by_text[view],
-                    limit=top_k,
+                    limit=candidate_k,
                     channel=channel,
                 )
                 for channel, view in search_specs
             ]
         )
 
-        merged: dict[str, dict[str, Any]] = {}
+        # Fuse multiple query views inside their role before roles are fused
+        # together. Without this boundary, a channel with three rewritten
+        # views receives three times the reciprocal-rank mass of the unchanged
+        # body channel. A single-view channel is bit-for-bit the established
+        # ordering; multi-view channels still contribute exactly one ranked
+        # list to the later Q-/body/Q+ union.
+        per_channel: dict[str, dict[str, dict[str, Any]]] = {}
         for (channel, view), nodes in zip(search_specs, searches):
             for rank, node in enumerate(nodes):
                 node_id = self._node_identity(node)
-                candidate = merged.setdefault(node_id, dict(node))
-                # The rank returned by a representation already fuses its
-                # vector and lexical modalities. Preserve that evidence when
-                # representation lists are merged instead of discarding it
-                # during the later body-only ordering. Reciprocal rank has no
-                # fitted scale or dataset-dependent threshold.
-                representation_scores = candidate.setdefault("representation_scores", {})
-                representation_scores[channel] = float(representation_scores.get(channel, 0.0)) + 1.0 / (
-                    rank + 1
-                )
-                candidate["representation_score"] = sum(representation_scores.values())
+                candidate = per_channel.setdefault(channel, {}).setdefault(node_id, dict(node))
+                candidate["view_rank_score"] = float(candidate.get("view_rank_score", 0.0)) + 1.0 / (rank + 1)
                 if channel == "q_plus":
                     matched_qplus_ids = {
                         str(question_id).strip()
@@ -129,13 +127,48 @@ class RetrieveMixin:
                 direct_path = {"kind": "direct", "channel": channel, "query_view": view, "depth": 0}
                 if direct_path not in paths:
                     paths.append(direct_path)
+
+        channel_ranked: dict[str, list[dict[str, Any]]] = {}
+        for channel, candidates_by_id in per_channel.items():
+            ordered = sorted(
+                candidates_by_id.values(),
+                key=lambda item: (-float(item.get("view_rank_score", 0.0)), self._node_identity(item)),
+            )[:candidate_k]
+            for rank, candidate in enumerate(ordered):
+                candidate["channel_rank_score"] = 1.0 / (rank + 1)
+            channel_ranked[channel] = ordered
+
+        merged: dict[str, dict[str, Any]] = {}
+        for channel in channels:
+            for node in channel_ranked.get(channel, []):
+                node_id = self._node_identity(node)
+                candidate = merged.setdefault(node_id, dict(node))
+                representation_scores = candidate.setdefault("representation_scores", {})
+                representation_scores[channel] = float(node["channel_rank_score"])
+                candidate["representation_score"] = sum(representation_scores.values())
                 if channel == "q_plus":
+                    matched_qplus_ids = {
+                        str(question_id).strip()
+                        for question_id in (candidate.get("matched_qplus_ids") or [])
+                        if str(question_id).strip()
+                    }
+                    matched_qplus_ids.update(
+                        str(question_id).strip()
+                        for question_id in (node.get("matched_qplus_ids") or [])
+                        if str(question_id).strip()
+                    )
+                    candidate["matched_qplus_ids"] = sorted(matched_qplus_ids)
                     candidate["dependency_seed"] = bool(candidate.get("matched_qplus_ids"))
+                paths = candidate.setdefault("retrieval_paths", [])
+                for path in node.get("retrieval_paths") or []:
+                    if path not in paths:
+                        paths.append(path)
         for node in merged.values():
             node.setdefault("dependency_seed", False)
 
-        # Each representation returns at most top_k owner chunks, so the set
-        # union is already structurally bounded.
+        # Each representation returns a bounded owner pool. The default
+        # multiplier is one; a wider pool remains a query-time ablation and
+        # never changes the final evidence count.
         base_candidates = list(merged.values())
 
         if not select_final:
@@ -155,6 +188,8 @@ class RetrieveMixin:
             "matched_qplus_ids",
             "embedding",
             "bridge_embeddings",
+            "view_rank_score",
+            "channel_rank_score",
         ):
             output.pop(key, None)
         return output

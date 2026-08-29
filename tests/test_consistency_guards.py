@@ -171,6 +171,14 @@ def test_config_rejects_unknown_qplus_hop_activation(monkeypatch):
         RAGConfig.validate()
 
 
+def test_config_rejects_unknown_hop_semantic_variant(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "HOP_SEMANTIC_VARIANT", "typo")
+    with pytest.raises(ValueError, match="HOP_SEMANTIC_VARIANT"):
+        RAGConfig.validate()
+
+
 def test_offline_reciprocal_filter_requires_precomputed_index_contract(monkeypatch):
     from core.config import RAGConfig
 
@@ -185,6 +193,14 @@ def test_config_rejects_unknown_query_rewrite_variant(monkeypatch):
 
     monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_VARIANT", "typo")
     with pytest.raises(ValueError, match="QUERY_REWRITE_VARIANT"):
+        RAGConfig.validate()
+
+
+def test_config_rejects_negative_query_rewrite_word_limit(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_MAX_WORDS", -1)
+    with pytest.raises(ValueError, match="QUERY_REWRITE_MAX_WORDS"):
         RAGConfig.validate()
 
 
@@ -233,10 +249,8 @@ def test_index_policy_records_semantic_embedding_and_hop_identity(monkeypatch):
     assert policy["hop_construction"] == "qplus_to_qminus_owner"
 
     naive_policy = _resolved_index_policy("naive", "default")
-    assert naive_policy["retrieval_unit"] == "source_document"
-    assert naive_policy["chunks_per_source"] == 1
-    assert naive_policy["embedding_input_truncation"] == "forbidden"
-    assert "chunk_sentences" not in naive_policy
+    assert naive_policy["chunk_sentences"] == RAGConfig.CHUNK_SENTENCES
+    assert "retrieval_unit" not in naive_policy
 
 
 @pytest.mark.asyncio
@@ -551,13 +565,20 @@ def test_cli_has_no_domain_gate():
     assert "--domain" not in parser.format_help()
 
 
-def test_naive_uses_one_complete_source_document():
+def test_naive_uses_shared_page_scoped_fixed_windows(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "CHUNK_SENTENCES", 2)
     title, chunks = NaiveRAG._parse_document(
         "doc.txt",
         "Title: Shared\n--- Page 1 ---\nOne. Two. Three.\n--- Page 2 ---\nFour. Five.",
     )
     assert title == "Shared"
-    assert chunks == [{"text": "One. Two. Three.\n\nFour. Five.", "page": 0, "sent_id": 0}]
+    assert chunks == [
+        {"text": "One. Two.", "page": 1, "sent_id": 0},
+        {"text": "Three.", "page": 1, "sent_id": 1},
+        {"text": "Four. Five.", "page": 2, "sent_id": 2},
+    ]
 
 
 @pytest.mark.asyncio
@@ -586,7 +607,7 @@ async def test_naive_batches_embeddings_across_source_documents(monkeypatch):
     assert indexed == 2
     rag.vllm.get_embeddings.assert_awaited_once()
     assert len(rag.vllm.get_embeddings.await_args.args[0]) == 2
-    assert rag.vllm.get_embeddings.await_args.kwargs == {"allow_truncation": False}
+    assert rag.vllm.get_embeddings.await_args.kwargs == {}
     assert session.run.await_args.kwargs["sources"] == ["first.txt", "second.txt"]
 
 

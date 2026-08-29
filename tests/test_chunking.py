@@ -5,6 +5,7 @@ import pytest
 
 from core.config import RAGConfig
 from models.prehop.graphrag import GraphRAG
+from models.prehop.indexing.chunking import _chunk_cache_load, _chunk_cache_save
 
 
 @pytest.fixture(autouse=True)
@@ -130,3 +131,28 @@ async def test_pipe_delimited_text_is_preserved_without_conversion(monkeypatch):
     assert "Here is a summary table." in all_text
     assert "| Year | Event |" in all_text
     assert "| 2020 | Pandemic |" in all_text
+
+
+def test_legacy_chunk_cache_backfills_per_chunk_title(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAG_CHUNK_CACHE", "on")
+    monkeypatch.setenv("RAG_CHUNK_CACHE_DIR", str(tmp_path))
+    content = "Title: Cached Document\nBody."
+    legacy_knowledge = {
+        "title": "Cached Document",
+        "chunks": [
+            {
+                "sent_id": 0,
+                "page": 1,
+                "text": "Body.",
+                "q_minus": [],
+                "q_plus": [],
+            }
+        ],
+    }
+    _chunk_cache_save("test", "cached.txt", content, legacy_knowledge)
+
+    loaded = _chunk_cache_load("test", "cached.txt", content)
+
+    assert loaded is not None
+    assert loaded["chunks"][0]["title"] == "Cached Document"
+    assert "title" not in legacy_knowledge["chunks"][0]

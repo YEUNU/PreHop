@@ -96,11 +96,12 @@ def test_build_answer_prompt_contains_context_and_query():
     prompt = GraphRAG._build_answer_prompt("CTX_BLOCK", "QUESTION_TEXT")
     assert "CTX_BLOCK" in prompt
     assert "QUESTION_TEXT" in prompt
-    # Voice-of-the-prompt: cite-only synthesis, abstain on insufficient.
+    # Dataset-neutral multi-hop synthesis with conservative abstention.
     assert "only the provided context" in prompt
-    assert "insufficient" in prompt.lower() or "do not know" in prompt.lower()
-    assert "Do not include reasoning" in prompt
-    assert "respond exactly: Insufficient evidence." in prompt
+    assert "connect the intermediate entities and relationships" in prompt
+    assert "do not show reasoning" in prompt
+    assert "lacks a required link" in prompt
+    assert "do not refuse merely because multiple passages must be combined" in prompt
 
 
 def test_role_query_validation_deduplicates_without_silently_truncating():
@@ -115,13 +116,18 @@ def test_role_query_validation_deduplicates_without_silently_truncating():
     }
 
 
-def test_role_query_validation_rejects_missing_or_excessive_roles():
-    with pytest.raises(ValueError, match="between 1 and"):
-        GraphRAG._validate_role_queries({"q_minus": [], "q_plus": ["bridge?"]})
-    with pytest.raises(ValueError, match="between 1 and"):
-        GraphRAG._validate_role_queries(
-            {"q_minus": ["one?"], "q_plus": ["one?", "two?", "three?", "four?"]}
-        )
+def test_role_query_validation_allows_empty_roles_and_bounds_excessive_roles():
+    assert GraphRAG._validate_role_queries({"q_minus": ["direct?"], "q_plus": []}) == {
+        "q_minus": ["direct?"],
+        "q_plus": [],
+    }
+    assert GraphRAG._validate_role_queries({"q_minus": [], "q_plus": ["bridge?"]}) == {
+        "q_minus": [],
+        "q_plus": ["bridge?"],
+    }
+    assert GraphRAG._validate_role_queries(
+        {"q_minus": ["one?"], "q_plus": ["one?", "two?", "three?", "four?"]}
+    ) == {"q_minus": ["one?"], "q_plus": ["one?", "two?", "three?"]}
 
 
 @pytest.mark.asyncio
@@ -141,6 +147,19 @@ async def test_role_aligned_rewrite_is_schema_constrained(monkeypatch):
     assert rag.llm.generate_json.await_args.kwargs["temperature"] == 0.0
 
 
+@pytest.mark.asyncio
+async def test_role_aligned_rewrite_skips_queries_above_word_limit(monkeypatch):
+    rag = GraphRAG(strategy="prehop")
+    monkeypatch.setattr("core.config.RAGConfig.QUERY_REWRITE_VARIANT", "role_aligned")
+    monkeypatch.setattr("core.config.RAGConfig.QUERY_REWRITE_MAX_WORDS", 3)
+    rag.llm.generate_json = AsyncMock()
+
+    rewritten = await rag._rewrite_query_roles("one two three four")
+
+    assert rewritten is None
+    rag.llm.generate_json.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # run_workflow — full path with mocked retrieve + LLM
 # ---------------------------------------------------------------------------
@@ -158,8 +177,13 @@ def _make_rag_with_mocks(
     rag.llm.generate_response = AsyncMock(return_value=llm_answer)
     rag.graph_search = AsyncMock(return_value=(context, nodes or [], {"retrieve_ms": 0.0, "traversal_ms": 0.0}))
     rag.retrieve = AsyncMock(return_value=(context, nodes or []))
-    # Pin graph_depth at the config layer so we test both branches.
-    rag_patch = patch("core.config.RAGConfig.GRAPH_HOP_DEPTH", graph_depth)
+    # Pin unrelated policy choices so these tests isolate the workflow branch.
+    # Role rewriting has dedicated tests above.
+    rag_patch = patch.multiple(
+        "core.config.RAGConfig",
+        GRAPH_HOP_DEPTH=graph_depth,
+        QUERY_REWRITE_VARIANT="none",
+    )
     rag_patch.start()
     return rag, rag_patch
 
@@ -175,6 +199,8 @@ async def test_run_workflow_returns_answer_sources_trace_tuple():
         assert sources == [{"doc": "AAPL_10K", "page": 41, "sent_id": 3, "text": "Revenue $394B"}]
         assert isinstance(trace, list) and len(trace) == 2
         assert trace[0]["step"] == "retrieve"
+        assert trace[0]["output"]["retrieved_chunks"] == 1
+        assert trace[0]["output"]["retrieved_sources"] == 1
         assert trace[1]["step"] == "synthesis"
     finally:
         p.stop()
@@ -235,7 +261,7 @@ async def test_run_workflow_strips_benchmark_format_marker_before_retrieving():
 
 
 @pytest.mark.asyncio
-async def test_naive_run_workflow_uses_document_baseline_top_k():
+async def test_naive_run_workflow_uses_shared_default_top_k():
     from core.config import RAGConfig
     from models.naive.naive_rag import NaiveRAG
 
@@ -248,10 +274,10 @@ async def test_naive_run_workflow_uses_document_baseline_top_k():
 
     await rag.run_workflow("question")
 
-    rag._retrieve_nodes.assert_awaited_once_with("question", top_k=RAGConfig.NAIVE_TOP_K)
+    rag._retrieve_nodes.assert_awaited_once_with("question", top_k=RAGConfig.DEFAULT_TOP_K)
 
 
-def test_naive_context_budget_keeps_complete_documents_in_rank_order(monkeypatch):
+def test_naive_context_budget_keeps_complete_chunks_in_rank_order(monkeypatch):
     from core.config import RAGConfig
     from models.naive.naive_rag import NaiveRAG
 
@@ -261,8 +287,8 @@ def test_naive_context_budget_keeps_complete_documents_in_rank_order(monkeypatch
     rag.vllm = MagicMock()
     rag.vllm._count_tokens.side_effect = [50, 95]
     nodes = [
-        {"title": "First", "text": "first body"},
-        {"title": "Second", "text": "second body"},
+        {"title": "First", "text": "first body", "sent_id": 0},
+        {"title": "Second", "text": "second body", "sent_id": 1},
     ]
 
     context, accepted = rag._fit_ranked_context(nodes, "question")

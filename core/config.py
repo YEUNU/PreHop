@@ -79,10 +79,9 @@ class RAGConfig:
     QUESTION_SCHEMA = os.environ.get("RAG_QUESTION_SCHEMA", "legacy").strip().lower() or "legacy"
     # HOP ANN sends high-dimensional vectors and candidate rows through bounded waves.
     HOP_GATHER_WAVE = int(os.environ.get("RAG_HOP_GATHER_WAVE", "64"))
+    HOP_BUILD_CONCURRENCY = int(os.environ.get("RAG_HOP_BUILD_CONCURRENCY", "4"))
     DEFAULT_TOP_K = 12
-    # Architecture-level Naive RAG retrieves complete source documents. Its
-    # reference retrieval depth follows MultiHop-RAG's basic RAG entrypoint.
-    NAIVE_TOP_K = 10
+    CANDIDATE_POOL_MULTIPLIER = int(os.environ.get("RAG_CANDIDATE_POOL_MULTIPLIER", "1"))
     FULLTEXT_ANALYZER = os.environ.get("NEO4J_FULLTEXT_ANALYZER", "english")
 
     # Zero disables graph expansion for ablation; one enables the fixed
@@ -102,12 +101,27 @@ class RAGConfig:
     QPLUS_HOP_ACTIVATION = (
         os.environ.get("RAG_QPLUS_HOP_ACTIVATION", "owner").strip().lower() or "owner"
     )
+    # Query-time semantic evidence for traversed HOP targets. The conservative
+    # default requires both query-to-body and query-to-source-Q+ similarity;
+    # ``bridge_only`` is a parameter-free structural ablation because the
+    # offline Q+->Q- edge has already selected the answering target.
+    HOP_SEMANTIC_VARIANT = (
+        os.environ.get("RAG_HOP_SEMANTIC_VARIANT", "body_bridge_min").strip().lower()
+        or "body_bridge_min"
+    )
     # Optional index-time materialization avoids reverse vector ANN on every
     # reciprocal-filtered query while preserving the same nearest-neighbour rule.
     PRECOMPUTE_RECIPROCAL_HOPS = os.environ.get(
         "RAG_PRECOMPUTE_RECIPROCAL_HOPS", "true"
     ).strip().lower() in {"1", "true", "yes", "on"}
-    QUERY_REWRITE_VARIANT = os.environ.get("RAG_QUERY_REWRITE_VARIANT", "none").strip().lower() or "none"
+    QUERY_REWRITE_VARIANT = (
+        os.environ.get("RAG_QUERY_REWRITE_VARIANT", "role_aligned").strip().lower()
+        or "role_aligned"
+    )
+    # Role rewriting is useful for compact compositional questions but can
+    # perturb the explicit source and relation constraints already present in
+    # long questions. Zero disables this input-length gate for ablations.
+    QUERY_REWRITE_MAX_WORDS = int(os.environ.get("RAG_QUERY_REWRITE_MAX_WORDS", "32"))
 
     # --- Ablation & Experimental Toggles ---
     # Q-/Q+ channel ablations.
@@ -147,8 +161,9 @@ class RAGConfig:
             "CHUNK_SENTENCES": cls.CHUNK_SENTENCES,
             "QUESTIONS_PER_DIRECTION": cls.QUESTIONS_PER_DIRECTION,
             "HOP_GATHER_WAVE": cls.HOP_GATHER_WAVE,
+            "HOP_BUILD_CONCURRENCY": cls.HOP_BUILD_CONCURRENCY,
             "DEFAULT_TOP_K": cls.DEFAULT_TOP_K,
-            "NAIVE_TOP_K": cls.NAIVE_TOP_K,
+            "CANDIDATE_POOL_MULTIPLIER": cls.CANDIDATE_POOL_MULTIPLIER,
         }
         invalid = {name: value for name, value in positive.items() if value < 1}
         if invalid:
@@ -172,6 +187,8 @@ class RAGConfig:
             raise ValueError("RAG_HOP_EDGE_FILTER must be none, reciprocal, or reciprocal_offline")
         if cls.QPLUS_HOP_ACTIVATION not in {"exact", "owner"}:
             raise ValueError("RAG_QPLUS_HOP_ACTIVATION must be exact or owner")
+        if cls.HOP_SEMANTIC_VARIANT not in {"body_bridge_min", "bridge_only"}:
+            raise ValueError("RAG_HOP_SEMANTIC_VARIANT must be body_bridge_min or bridge_only")
         if cls.HOP_EDGE_FILTER == "reciprocal_offline" and not cls.PRECOMPUTE_RECIPROCAL_HOPS:
             raise ValueError(
                 "RAG_HOP_EDGE_FILTER=reciprocal_offline requires "
@@ -179,8 +196,12 @@ class RAGConfig:
             )
         if cls.QUESTION_SCHEMA not in {"legacy", "grounded_v1"}:
             raise ValueError("RAG_QUESTION_SCHEMA must be legacy or grounded_v1")
-        if cls.QUERY_REWRITE_VARIANT not in {"none", "role_aligned"}:
-            raise ValueError("RAG_QUERY_REWRITE_VARIANT must be none or role_aligned")
+        if cls.QUERY_REWRITE_VARIANT not in {"none", "role_aligned", "role_aligned_additive"}:
+            raise ValueError(
+                "RAG_QUERY_REWRITE_VARIANT must be none, role_aligned, or role_aligned_additive"
+            )
+        if cls.QUERY_REWRITE_MAX_WORDS < 0:
+            raise ValueError("RAG_QUERY_REWRITE_MAX_WORDS must be zero or positive")
         if not cls.EMBEDDING_QUERY_INSTRUCTION:
             raise ValueError("EMBEDDING_QUERY_INSTRUCTION must not be empty")
 
@@ -198,5 +219,14 @@ class RAGConfig:
             cls.ABLATION_Q_MINUS and cls.ABLATION_Q_PLUS
         ):
             raise ValueError("single_combined requires both Q- and Q+ channels")
-        if cls.SOURCE_SELECTION_VARIANT not in {"round_robin", "global"}:
-            raise ValueError("RAG_SOURCE_SELECTION_VARIANT must be round_robin or global")
+        if cls.SOURCE_SELECTION_VARIANT not in {
+            "graph_pairs",
+            "source_balanced_graph_pairs",
+            "source_balanced",
+            "round_robin",
+            "global",
+        }:
+            raise ValueError(
+                "RAG_SOURCE_SELECTION_VARIANT must be graph_pairs, source_balanced, "
+                "source_balanced_graph_pairs, round_robin, or global"
+            )

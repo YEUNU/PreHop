@@ -8,7 +8,7 @@ those belong in `CHANGELOG.md` and the local `prehop_paper.md`, respectively.
 
 ## Shared input contract
 
-`models/prehop/indexing/chunking.py` owns the in-repo parser and Prehop's fixed
+`models/prehop/indexing/chunking.py` owns the in-repo parser and fixed
 window splitter:
 
 - `parse_pages_offline(filename, content)` reads an optional first-line
@@ -19,11 +19,9 @@ window splitter:
   six-sentence windows, and retains the final partial window.
 - Page boundaries are never crossed. Pipe-delimited text is preserved exactly;
   there is no table-to-text branch.
-- Prehop applies the fixed window splitter after parsing.
-- Naive uses the same metadata-removing parser, then joins all parsed pages and
-  stores one complete body vector per source. Its embedding call forbids
-  truncation; a document rejected by the 32k embedding endpoint fails the
-  index rather than becoming a silent prefix representation.
+- Prehop and Naive apply the same fixed window splitter after parsing. This
+  makes the in-repo Naive path a controlled retrieval baseline rather than a
+  claim that Naive RAG has one canonical chunker.
 - Official HopRAG and MS GraphRAG retain their own upstream chunkers because
   changing those would no longer be an official baseline comparison.
 
@@ -43,10 +41,9 @@ strategy == prehop
   -> materialize reciprocal source-Q+ provenance on each HOP edge
 
 strategy == naive
-  shared metadata-removing parser
-  -> join parsed pages into one source-document body
-  -> strict external body embedding with no input truncation
-  -> one Neo4j retrieval unit per source
+  shared parser + shared fixed page windows
+  -> external body embeddings
+  -> Neo4j Chunk writes
 
 strategy == hoprag
   -> official HopRAG stage 1 node/question generation
@@ -124,6 +121,11 @@ the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
 - Restores sparse results to original positions and verifies response count,
   non-empty vectors, and consistent dimensions.
 
+The Q−/Q+ generation cache accepts early v1 records whose title was stored
+only at document level and backfills that title on each in-memory chunk before
+graph writing. This compatibility normalization does not rewrite the cache or
+change its generated questions.
+
 `indexing/graph_writer.py`
 
 - Creates corpus-tagged body/Q-/Q+ vector and full-text indexes plus id indexes.
@@ -160,8 +162,9 @@ the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
   cross-encoder, domain rule, or semantic verification call. If Q+ is disabled,
   the pass skips.
 - `RAG_PRECOMPUTE_RECIPROCAL_HOPS=true` evaluates reverse Q−→Q+ nearest
-  neighbors in bounded index-time pages and stores the accepted source Q+ IDs
-  on each HOP edge.
+  neighbors in bounded concurrent index-time pages, groups accepted IDs by
+  HOP edge, and writes each edge once. The grouped write prevents lost list
+  updates while retaining the same nearest-neighbour rule.
 
 ### Official baseline modules
 
@@ -199,8 +202,12 @@ RAG_GRAPH_HOP_DEPTH == 0
   -> retrieve(query, top_k=12)
 
 RAG_QUERY_REWRITE_VARIANT == role_aligned
+  and input question has at most RAG_QUERY_REWRITE_MAX_WORDS words
   -> one schema-constrained query-time rewrite into Q-/Q+ retrieval views
   -> each view searches only its matching representation channel
+
+question exceeds the rewrite limit
+  -> use the original question without a rewrite call
 
 RAG_GRAPH_HOP_DEPTH == 1 (default)
   -> retrieve(query) for seeds
@@ -218,10 +225,10 @@ non-empty context
 
 The current operational contract is legacy question schema, full Q−/body/Q+
 retrieval, depth-one full NEXT/HOP traversal, owner activation, materialized
-reciprocal filtering, global source selection, and no query rewrite. The
-`none`, online `reciprocal`, exact-activation, edge-variant, channel-variant,
-and no-graph paths are explicit experimental configurations rather than
-implicit fallbacks.
+reciprocal filtering, global source selection, and role-aligned rewriting for
+questions of at most 32 words. The `none`, rewrite-all, additive-view, online
+`reciprocal`, exact-activation, edge-variant, channel-variant, and no-graph
+paths are explicit experimental configurations rather than implicit fallbacks.
 
 `retrieval/hybrid.py` embeds the original query and runs vector plus Neo4j
 full-text search for one channel (`body`, `q_minus`, or `q_plus`). Vector and
@@ -233,9 +240,13 @@ modality by its own raw score (descending) and stable chunk identity before
 assigning ranks. Raw vector and lexical scores never cross modality boundaries,
 and there is no modality weight or query-time fusion constant.
 
-`retrieval/retrieve.py` searches each enabled representation exactly once with
-the same query embedding. Q- and body hits have the direct-evidence role; Q+
-hits have the dependency-seed role. Q+ vector and full-text rows retain the
+`retrieval/retrieve.py` searches the body representation with the original
+question. When rewriting is active for a compact question, Q− and Q+ each use
+their generated role-specific views; otherwise they also use the original
+question. Multiple views are fused inside their role first, so Q−, body, and
+Q+ each contribute one ranked list rather than gaining weight from the number
+of generated views. Q- and body hits have the direct-evidence role; Q+ hits
+have the dependency-seed role. Q+ vector and full-text rows retain the
 exact matched question-node IDs while collapsing to owner chunks, and their
 union is preserved when representation lists merge. Enabled representation
 results form a set union. Each owner retains
@@ -265,8 +276,10 @@ ordered once by this semantic score and once by their retained representation
 evidence. Equal reciprocal ranks from the two orders are summed for final
 selection. This avoids calibrated raw-score interpolation and introduces no
 fitted weight or threshold. There is no dedicated reranker model, rerank
-prompt, query rewrite, metadata boost, boilerplate penalty, company filter,
-or domain gate. Final top-k selection uses this fused global order by default.
+prompt, metadata boost, boilerplate penalty, company filter, or domain gate.
+The optional role rewrite changes channel queries before retrieval but does
+not score or verify candidates. Final top-k selection uses this fused global
+order by default.
 `RAG_SOURCE_SELECTION_VARIANT=round_robin` is an explicit ablation that takes
 one ranked chunk per source per round; it is not part of the operational default.
 
@@ -315,10 +328,12 @@ The structurally bounded results are retained without a candidate reservoir or
 graph-search floor. HOP candidates compare the query against each indexed
 source Q+ separately, take the best bridge similarity, and use
 `min(body, bridge)` as the semantic score. This requires agreement on both
-sides without a mixing weight. There is no query-time generation, continuation
-prompt, heuristic stop gate, or runtime ANN supplement in Prehop retrieval.
-Targets already present in the representation-union pool are excluded from
-the one-hop expansion result.
+sides without a mixing weight. After the optional initial role rewrite, there
+is no continuation prompt, heuristic stop gate, per-hop generation, or runtime
+ANN supplement in Prehop retrieval.
+Targets already present in the representation-union pool retain their direct
+rank evidence and semantic inputs; traversal only adds path provenance to
+them. Graph-only targets receive inherited rank evidence and bridge semantics.
 
 `retrieval/text_utils.py` contains only normalization, Lucene sanitization,
 context formatting, node identity/dedup, and RRF helpers.
@@ -328,8 +343,13 @@ context formatting, node identity/dedup, and RRF helpers.
 Project-owned prompt templates are deliberately limited to:
 
 - `utils/prompts/indexing.py`: indexing-time Q-/Q+ generation.
+- `utils/prompts/query_rewrite.py`: bounded Q−/Q+ retrieval views for compact
+  query-time questions.
 - `utils/prompts/shared.py`: one dataset-neutral final-answer prompt shared by
-  Prehop, Naive, and the HopRAG adapter.
+  Prehop, Naive, and the HopRAG adapter. It asks the model to connect required
+  intermediate entities silently, return only the short final answer, and
+  abstain only when a required evidence link is absent. It does not expose or
+  request chain-of-thought.
 - `utils/prompts/evaluation.py`: the offline benchmark judge.
 
 LLM-as-a-judge is disabled by default (`RAG_JUDGE_ENABLED=false`). When it is
@@ -342,33 +362,28 @@ reported as incomplete runs and never fall back silently to more expensive
 synchronous judge calls. `RAG_JUDGE_BATCH=false` is reserved for explicit
 debug runs.
 
-Prehop retrieval contains no prompt. Official HopRAG is the documented
-baseline exception: its upstream `bfs_node` traversal includes its published
-LLM helpful/helpless node judgement. The adapter routes that call externally
-and does not add a local reranker or new prompt. MS GraphRAG also retains the
-official package's extraction/community/report/search prompts. Those upstream
-prompts are baseline algorithms, not hidden Prehop gates.
+Prehop makes at most one role-rewrite call before retrieval, and only for
+questions within the fixed input-length limit. It has no per-candidate prompt
+or iterative retrieval loop. Official HopRAG's upstream `bfs_node` traversal
+includes its published LLM helpful/helpless node judgement. The adapter routes
+that call externally and does not add a local reranker or new prompt. MS
+GraphRAG also retains the official package's extraction/community/report/search
+prompts. Those upstream prompts are baseline algorithms, not hidden Prehop
+gates.
 
 ## Comparison settings
 
-- Prehop uses six-sentence chunks and top-k 12.
-- Naive uses one prepared source per retrieval unit and top-k 10.
-- Prehop and Naive use the same final synthesis prompt.
+- Prehop and Naive use the same six-sentence chunks, top-k 12, and final
+  synthesis prompt.
 - HopRAG keeps the official repository's end-to-end top-k 20.
 - MS GraphRAG uses the official LocalSearch API and context-budget
   configuration for entity-grounded passage QA. The adapter does not route
   between LocalSearch and GlobalSearch using query keywords.
 
-Because these retrieval budgets are intentionally method-official rather than
-identical, paper tables and captions must state them. A separate controlled
-retrieval-only study is a clearly named ablation and never silently changes an
-official baseline.
-
-The prepared MuSiQue source files each represent one dataset paragraph, so one
-Naive retrieval unit is one paragraph. A MultiHop-RAG source is one complete
-news article. Naive's ranked documents are added whole to the synthesis prompt
-until the 256k generation input budget is reached. Retrieval count and actual
-synthesis-document count are recorded separately.
+HopRAG and MS GraphRAG retain their official budgets, so paper tables and
+captions state the unequal settings. A one-source-one-vector Naive run changes
+the evidence unit and is reported, if used, only as a separate chunking
+sensitivity analysis.
 
 ## Evaluation output contract
 
@@ -394,6 +409,11 @@ Evidence metrics follow the prepared gold unit for each dataset:
 
 Missing gold units are emitted as `-1`, while an evaluated query with no match
 is zero. Paper aggregates exclude failed, incomplete, and unreconciled rows.
+The fixed sample files are development ID sets, not confirmatory subsets.
+Complete-split tables remain available for benchmark comparability. Paired
+confirmatory analysis passes the relevant sample file to
+`scripts/paired_bootstrap.py --exclude-queries`, records the excluded-ID
+digest, and evaluates only the disjoint remainder.
 The exact metric definitions, official evaluator references, paper-eligibility
 rules, and reporting decisions are maintained in the local, intentionally
 untracked `docs/prehop_paper.md`. This architecture document summarizes the

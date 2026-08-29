@@ -26,12 +26,13 @@ from cli.index import _load_corpus_manifest, _verify_and_publish_neo4j_snapshot
 from models.hoprag import official_indexer as hop_official_indexer
 from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
-from scripts.datasets import prepare_multihoprag, prepare_musique
+from scripts.datasets import prepare_multihoprag, prepare_musique, refresh_sample_records
 from scripts.paired_bootstrap import (
     MULTIHOPRAG_METRICS,
     MUSIQUE_METRICS,
     _dataset_marker,
     _load,
+    _load_excluded_query_ids,
     _paired,
     _validate_artifact_pair,
 )
@@ -39,6 +40,20 @@ from scripts.paired_bootstrap import (
 
 def test_musique_preparation_defaults_to_the_full_split():
     assert prepare_musique.DEFAULT_LIMIT == 0
+
+
+def test_refresh_sample_records_preserves_ids_and_uses_current_annotations():
+    full = [
+        {"_id": "q1", "query": "new one", "evidence_paragraph_ids": ["p1"]},
+        {"_id": "q2", "query": "new two", "evidence_paragraph_ids": ["p2"]},
+    ]
+    sample = [{"_id": "q2", "query": "old two"}, {"_id": "q1", "query": "old one"}]
+
+    refreshed = refresh_sample_records.refresh_records(full, sample)
+
+    assert [row["_id"] for row in refreshed] == ["q2", "q1"]
+    assert refreshed[0]["query"] == "new two"
+    assert refreshed[0]["evidence_paragraph_ids"] == ["p2"]
 
 
 def test_multihoprag_manifest_binds_corpus_and_query_content(tmp_path):
@@ -600,6 +615,13 @@ def test_paired_bootstrap_reports_all_document_diagnostics():
 
 def test_paired_bootstrap_uses_dataset_identity_with_custom_corpus_tag():
     assert _dataset_marker({"dataset": "MultiHop-RAG"}, "multihoprag_grounded_v1") == "multihoprag"
+
+
+def test_paired_bootstrap_loads_fixed_development_ids(tmp_path):
+    path = tmp_path / "development.json"
+    path.write_text(json.dumps([{"_id": "q2"}, {"query_id": "q1"}]), encoding="utf-8")
+
+    assert _load_excluded_query_ids(str(path)) == {"q1", "q2"}
 
 
 def test_aggregates_exclude_runtime_errors_and_record_eligible_count():

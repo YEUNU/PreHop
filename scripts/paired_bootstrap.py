@@ -27,6 +27,7 @@ Usage:
   python scripts/paired_bootstrap.py \
     --prehop data/results/<new>/prehop/multihoprag/prehop_multihoprag.json \
     --baselines data/results/<base>/{naive,hoprag,ms_graphrag}/multihoprag/*.json \
+    --exclude-queries data/multihoprag_sample200_queries.json \
     --out-dir data/results/<new>
 
 """
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -197,6 +199,23 @@ def _dataset_marker(artifact: dict, corpus_tag: str) -> str:
     )
 
 
+def _load_excluded_query_ids(path: str | None) -> set[str]:
+    if not path:
+        return set()
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise TypeError("Excluded-query file must contain a JSON list")
+    query_ids = {
+        str(row.get("_id") or row.get("query_id") or "").strip()
+        if isinstance(row, dict)
+        else str(row or "").strip()
+        for row in payload
+    }
+    if not query_ids or "" in query_ids:
+        raise ValueError("Excluded-query file contains a blank or empty query-ID set")
+    return query_ids
+
+
 def _bootstrap(diffs: np.ndarray, rng: np.random.Generator) -> dict:
     n = len(diffs)
     if n == 0:
@@ -222,6 +241,11 @@ def main() -> None:
     ap.add_argument("--include-judge", action="store_true", help="also run supplemental LLM-judge bootstrap metrics")
     ap.add_argument("--allow-exploratory", action="store_true", help="allow non-full but otherwise compatible artifacts")
     ap.add_argument(
+        "--exclude-queries",
+        default=None,
+        help="JSON list of fixed development rows/IDs to exclude from confirmatory pairs",
+    )
+    ap.add_argument(
         "--allow-legacy-exploratory",
         action="store_true",
         help="allow old artifacts without query IDs/fingerprint metadata; never use for paper claims",
@@ -233,6 +257,15 @@ def main() -> None:
         args.prehop,
         allow_legacy=args.allow_legacy_exploratory,
     )
+    excluded_query_ids = _load_excluded_query_ids(args.exclude_queries)
+    unknown_exclusions = excluded_query_ids - set(prehop)
+    if unknown_exclusions:
+        raise ValueError(
+            f"Excluded query IDs are absent from the treatment artifact: {sorted(unknown_exclusions)[:5]}"
+        )
+    prehop = {
+        query_id: row for query_id, row in prehop.items() if query_id not in excluded_query_ids
+    }
     baselines = {}
     for p in args.baselines:
         strat, _, baseline_artifact, rows = _load(p, allow_legacy=args.allow_legacy_exploratory)
@@ -242,7 +275,9 @@ def main() -> None:
             allow_exploratory=args.allow_exploratory or args.allow_legacy_exploratory,
             allow_legacy=args.allow_legacy_exploratory,
         )
-        baselines[strat] = rows
+        baselines[strat] = {
+            query_id: row for query_id, row in rows.items() if query_id not in excluded_query_ids
+        }
 
     fig_path = Path(args.fig) if args.fig else Path(f"fig/{corpus_tag}_bootstrap_forest.png")
 
@@ -272,6 +307,17 @@ def main() -> None:
                 "n_boot": N_BOOT,
                 "seed": SEED,
                 "pair_key": "legacy_query_text" if args.allow_legacy_exploratory else "query_id",
+                "analysis_scope": (
+                    "heldout_excluding_fixed_development_ids"
+                    if excluded_query_ids
+                    else "complete_artifact_query_set"
+                ),
+                "excluded_query_count": len(excluded_query_ids),
+                "excluded_query_ids_sha256": (
+                    hashlib.sha256("\n".join(sorted(excluded_query_ids)).encode()).hexdigest()
+                    if excluded_query_ids
+                    else None
+                ),
                 "exploratory_override": bool(args.allow_exploratory or args.allow_legacy_exploratory),
                 "primary_metrics": metrics,
                 "supplemental_judge_metrics": judge_metrics,

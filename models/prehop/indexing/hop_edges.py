@@ -1,5 +1,6 @@
 """Build cross-document evidence edges from dependency questions."""
 
+import asyncio
 import logging
 import os
 from typing import Any
@@ -235,6 +236,26 @@ class HopEdgeMixin:
         tentative_by_source = await self._collect_hop_wave_candidates(wave)
         return await self._merge_hop_candidates(tentative_by_source)
 
+    async def _collect_hop_page_candidates(
+        self,
+        page_items: list[dict[str, Any]],
+    ) -> list[list[dict[str, Any]]]:
+        """Resolve bounded ANN waves concurrently while preserving source order."""
+        wave_size = RAGConfig.HOP_GATHER_WAVE
+        concurrent_span = wave_size * RAGConfig.HOP_BUILD_CONCURRENCY
+        tentative_by_source: list[list[dict[str, Any]]] = []
+        for group_start in range(0, len(page_items), concurrent_span):
+            group = page_items[group_start : group_start + concurrent_span]
+            resolved_waves = await asyncio.gather(
+                *(
+                    self._collect_hop_wave_candidates(group[offset : offset + wave_size])
+                    for offset in range(0, len(group), wave_size)
+                )
+            )
+            for resolved in resolved_waves:
+                tentative_by_source.extend(resolved)
+        return tentative_by_source
+
     async def _flush_hop_edges(self, edges: list[dict[str, Any]]) -> None:
         if not edges:
             return
@@ -292,8 +313,9 @@ class HopEdgeMixin:
         """Materialize the reciprocal Q+ rule once for query-time reuse.
 
         This uses the same reverse nearest-neighbour definition as the legacy
-        query-time filter. Bounded keyset pages keep the high-dimensional ANN
-        work out of one unbounded transaction.
+        query-time filter. Bounded ANN pages are resolved concurrently, then
+        grouped by HOP edge and written once so concurrent updates cannot lose
+        provenance IDs.
         """
         await self.retry_query(
             f"MATCH (:{self.chunk_label})-[h:HOP_ANSWER]->(:{self.chunk_label}) "
@@ -301,7 +323,7 @@ class HopEdgeMixin:
         )
         page_size = max(32, min(512, RAGConfig.HOP_GATHER_WAVE * 2))
         last_id = ""
-        reciprocal_pairs = 0
+        question_pages: list[list[str]] = []
         while True:
             id_rows = await self.retry_query(
                 f"""
@@ -317,7 +339,12 @@ class HopEdgeMixin:
                 break
             question_ids = [str(row["id"]) for row in id_rows]
             last_id = question_ids[-1]
-            rows = await self.retry_query(
+            question_pages.append(question_ids)
+            if len(id_rows) < page_size:
+                break
+
+        async def resolve_page(question_ids: list[str]) -> list[dict[str, Any]]:
+            return await self.retry_query(
                 f"""
                 UNWIND $question_ids AS question_id
                 MATCH (source_owner:{self.chunk_label})-[:HAS_Q_PLUS]->
@@ -344,22 +371,49 @@ class HopEdgeMixin:
                 WHERE reciprocal
                 MATCH (source_owner)-[hop:HOP_ANSWER]->(related)
                 WHERE edge_qplus.id IN coalesce(hop.source_question_ids, [])
-                WITH hop, collect(DISTINCT edge_qplus.id) AS reciprocal_ids
-                SET hop.reciprocal_source_question_ids = reduce(
-                    ids = coalesce(hop.reciprocal_source_question_ids, []),
-                    question_id IN reciprocal_ids |
-                    CASE WHEN question_id IN ids THEN ids ELSE ids + question_id END
-                )
-                RETURN sum(size(reciprocal_ids)) AS reciprocal_pairs
+                RETURN source_owner.id AS source_id, related.id AS target_id,
+                       edge_qplus.id AS question_id
                 """,
                 {
                     "question_ids": question_ids,
                     "qplus_vector_index": self.q_plus_vector_index,
                 },
             )
-            reciprocal_pairs += int((rows[0] if rows else {}).get("reciprocal_pairs", 0) or 0)
-            if len(id_rows) < page_size:
-                break
+
+        resolved_rows: list[dict[str, Any]] = []
+        concurrency = RAGConfig.HOP_BUILD_CONCURRENCY
+        for start in range(0, len(question_pages), concurrency):
+            resolved_pages = await asyncio.gather(
+                *(resolve_page(page) for page in question_pages[start : start + concurrency])
+            )
+            for rows in resolved_pages:
+                resolved_rows.extend(rows)
+
+        reciprocal_by_edge: dict[tuple[str, str], set[str]] = {}
+        for row in resolved_rows:
+            edge = (str(row["source_id"]), str(row["target_id"]))
+            reciprocal_by_edge.setdefault(edge, set()).add(str(row["question_id"]))
+        write_rows = [
+            {
+                "source_id": source_id,
+                "target_id": target_id,
+                "question_ids": sorted(question_ids),
+            }
+            for (source_id, target_id), question_ids in sorted(reciprocal_by_edge.items())
+        ]
+        for start in range(0, len(write_rows), page_size):
+            await self.retry_query(
+                f"""
+                UNWIND $rows AS row
+                MATCH (source:{self.chunk_label} {{id: row.source_id}})
+                      -[hop:HOP_ANSWER]->
+                      (target:{self.chunk_label} {{id: row.target_id}})
+                SET hop.reciprocal_source_question_ids = row.question_ids
+                """,
+                {"rows": write_rows[start : start + page_size]},
+            )
+
+        reciprocal_pairs = sum(len(row["question_ids"]) for row in write_rows)
         logger.info(
             "Precomputed %d reciprocal Q+ provenance pair(s) for query-time traversal.",
             reciprocal_pairs,
@@ -408,6 +462,7 @@ class HopEdgeMixin:
 
         page_size = max(100, int(os.environ.get("RAG_HOP_PAGE_SIZE", "5000")))
         wave_size = RAGConfig.HOP_GATHER_WAVE
+        wave_concurrency = RAGConfig.HOP_BUILD_CONCURRENCY
         total_sources = 0
         total_edges = 0
         last_id = ""
@@ -457,19 +512,14 @@ class HopEdgeMixin:
             if total_sources == 0:
                 logger.info(
                     "build_all_hop_edges: Q+ answer-owner resolution "
-                    "(page=%d wave=%d per-source-ann-pool-maxima=%s).",
+                    "(page=%d wave=%d concurrent_waves=%d per-source-ann-pool-maxima=%s).",
                     page_size,
                     wave_size,
+                    wave_concurrency,
                     pool_maxima,
                 )
 
-            tentative_by_source: list[list[dict[str, Any]]] = []
-            for wave_start in range(0, page_count, wave_size):
-                tentative_by_source.extend(
-                    await self._collect_hop_wave_candidates(
-                        page_items[wave_start : wave_start + wave_size]
-                    )
-                )
+            tentative_by_source = await self._collect_hop_page_candidates(page_items)
             edges = await self._merge_hop_candidates(tentative_by_source)
             for edge_start in range(0, len(edges), wave_size):
                 await self._flush_hop_edges(edges[edge_start : edge_start + wave_size])

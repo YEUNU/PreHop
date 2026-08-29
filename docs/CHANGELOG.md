@@ -7,6 +7,112 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-08-29 — Compact-query rewrite selected and indexing path tightened
+
+Query rewriting was corrected so multiple generated views are fused within
+Q− or Q+ before the three representation lists are combined. This prevents a
+role with three views from receiving three times the rank mass of the unchanged
+body role. The rewrite contract now permits an empty role, retains at most the
+first three unique questions, and provides replacement and additive-original
+view variants.
+
+The unrestricted variants improved MuSiQue sample-201 support retrieval, but
+both lowered MultiHop-RAG sample-200 Hits@4. A dataset-neutral input gate was
+therefore evaluated on the fixed development IDs. Rewriting is now applied
+only to questions of at most 32 words; longer questions preserve their
+original explicit source and relation constraints. The body channel always
+uses the original question. This setting rewrote 190/201 MuSiQue rows and
+8/200 MultiHop-RAG rows.
+
+| Development setting | Mu Answer EM | Mu Answer F1 | Mu Support F1 | MHR Hits@4 | MHR Hits@10 | MHR MRR@10 | MHR MAP@10 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| No rewrite | 0.1393 | 0.1739 | 0.2394 | 0.7267 | 0.8533 | 0.5654 | 0.2750 |
+| Rewrite every query, replacement | 0.1642 | 0.2027 | 0.2474 | 0.7133 | 0.8533 | 0.5764 | 0.2891 |
+| Rewrite every query, additive | 0.1642 | 0.1968 | 0.2490 | 0.7200 | 0.8533 | 0.5689 | 0.2809 |
+| **Replacement, at most 32 words** | **0.1493** | **0.1955** | **0.2463** | **0.7400** | **0.8600** | **0.5726** | **0.2766** |
+
+The unrestricted MuSiQue support-F1 gains were positive under paired
+bootstrap, while the gated gain was +0.0062 with a 95% interval spanning zero.
+These are development results, not paper claims. The gate was retained because
+it improved all four MultiHop-RAG official ranking aggregates instead of
+trading Hits@4 for later-rank recall. End-to-end development latency changed
+from 2.168 s to 4.038 s on MuSiQue and from 3.358 s to 3.419 s on
+MultiHop-RAG.
+
+Exact matched-Q+ activation was rerun with the gated rewrite. With benchmark
+seed 42, MuSiQue owner and exact activation had identical answer EM/F1;
+support F1 differed by +0.00025 for exact with a paired interval spanning zero.
+Owner activation retained the stronger MultiHop-RAG Hits@10 result and remains
+the default. Seeded runs still differed on four generated rewrites, so answer
+generation is not presented as bitwise deterministic; deterministic retrieval
+comparisons and seed metadata remain separate.
+
+MuSiQue graph diagnosis found that most graph effects came from rank changes
+among the representation-union candidates rather than large numbers of new
+graph-only chunks. No-graph versus exact reciprocal traversal differed by only
++0.0005 support F1 with an interval spanning zero. Depth two, direct-anchored
+ranking, source balancing, graph-pair selection, round-robin selection,
+candidate-pool doubling, bridge-only scoring, route hints, and adjacency
+reordering were rejected on the development IDs. These diagnostics motivate
+the pre-declared no-graph, NEXT-only, raw-HOP, and reciprocal-HOP confirmatory
+ablations rather than a graph-effect claim from the development sample.
+
+Index-cache loading now backfills the per-chunk title stored only at the top
+level by early v1 cache files. Previously a cache hit could fail later graph
+writing with a missing `title` key. HOP ANN waves and reciprocal reverse-ANN
+pages now run in bounded concurrent groups. Reciprocal results are collected
+read-only, grouped per HOP edge, and written once so concurrent updates cannot
+lose question IDs. On the current MultiHop-RAG graph the optimized pass
+reproduced all 2,753 reciprocal triples exactly with zero additions or
+omissions and took 68.8 s. Development rebuilds completed 609/609 and
+21,099/21,099 sources with zero failures and all integrity checks passing.
+Their cache-assisted wall times are not eligible as paper indexing costs; the
+final cost table requires the cold runner with both project caches disabled.
+
+## 2026-08-29 — Controlled Naive configuration restored
+
+The document-level Naive configuration produced a useful architecture-level
+sensitivity result, but it changed both the retrieval unit and top-k relative
+to Prehop. Naive has therefore returned to the earlier controlled setting:
+the shared page-scoped six-sentence chunks, top-k 12, and the shared final
+answer prompt. Its vector-only retrieval remains the changed component. The
+document-level artifacts are superseded and are not reused as results for this
+configuration; both datasets require fresh indexing and benchmarking.
+
+The shared answer prompt now explicitly asks the model to connect intermediate
+entities and relations silently and to abstain only when a required evidence
+link is missing. A paired development check used frozen retrieved contexts, so
+it changed synthesis only. On MuSiQue sample-201, answer EM changed from
+0.1095 to 0.1443 and F1 from 0.1506 to 0.1832. On the 150 non-null
+MultiHop-RAG sample queries, answer EM changed from 0.1400 to 0.2133 and F1
+from 0.1461 to 0.2182; all 50 null queries remained correctly refused. These
+are exploratory sample results, not paper results.
+
+The same frozen-context prompt check was applied to HopRAG rather than treating
+the shared wording as a Prehop-only advantage. On the MuSiQue development IDs,
+HopRAG answer EM changed from 0.1393 to 0.1891 and F1 from 0.1790 to 0.2260.
+Accordingly, the final comparison must rerun every shared-prompt system; the
+old answer scores are not a valid target under the new prompt. Reordering
+Prehop's selected passages so graph neighbours were adjacent was rejected:
+MuSiQue F1 changed from 0.18318 to 0.18254 and EM lost one query.
+
+Exposing selected HOP routes as passage-to-passage hints in the synthesis
+context was also rejected. With identical frozen passages and the revised
+shared answer prompt, MuSiQue sample-201 answer EM/F1 changed from
+0.1443/0.1832 to 0.1244/0.1621; the F1 difference was -0.0211 with a paired
+95% bootstrap interval of [-0.0437, -0.0013]. On the 150 eligible
+MultiHop-RAG development queries, EM/F1 changed from 0.2133/0.2182 to
+0.2067/0.2117, while all 50 null queries remained correctly refused. Graph
+routes therefore remain retrieval provenance and are not injected into the
+answer context.
+
+The fixed MuSiQue development file predated paragraph-identity annotations and
+therefore failed the current support-metric input contract. Its 201 IDs and
+order were preserved exactly while records were refreshed from the current
+full preparation. `refresh_sample_records.py` now performs this annotation
+sync without drawing a new sample; the ordered ID digest remained
+`f7c5782a...` before and after the update.
+
 ## 2026-08-28 — Naive changed to document-level retrieval
 
 Naive RAG now embeds and retrieves exactly one complete prepared source per

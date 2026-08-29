@@ -63,7 +63,7 @@ class TraversalMixin:
             for node in base_candidates
             if self._node_identity(node) and self._node_identity(node) not in excluded_ids
         }
-        discovered_ids = set(excluded_ids) | set(collected)
+        base_candidate_ids = set(collected)
         frontier_ids = list(collected)
         hop_source_question_ids = {
             self._node_identity(node): {
@@ -79,12 +79,13 @@ class TraversalMixin:
             for source_id, question_ids in hop_source_question_ids.items()
             if source_id and question_ids
         }
-        rows = await self._expand_frontier(frontier_ids, discovered_ids, hop_source_question_ids)
+        rows = await self._expand_frontier(frontier_ids, excluded_ids, hop_source_question_ids)
         for row, edge_rank in self._rank_frontier_rows(rows):
             target_id = str(row.get("id") or "").strip()
             path_type = str(row.get("path_type") or "").strip().lower()
-            if not target_id or target_id in discovered_ids or path_type not in {"next", "hop"}:
+            if not target_id or target_id in excluded_ids or path_type not in {"next", "hop"}:
                 continue
+            already_direct = target_id in base_candidate_ids
             candidate = collected.setdefault(
                 target_id,
                 {
@@ -94,20 +95,22 @@ class TraversalMixin:
             )
             source_candidate = collected.get(str(row.get("source_id") or ""), {})
             source_channel_scores = source_candidate.get("representation_scores") or {}
-            if path_type == "hop":
-                inherited_score = float(source_channel_scores.get("q_plus", 0.0))
-            else:
-                inherited_score = float(source_candidate.get("representation_score", 0.0))
-            # A graph target is supported indirectly through one edge. Its
-            # inherited rank evidence therefore receives the reciprocal path
-            # length 1 / (depth + 1), rather than being treated as strongly as
-            # a directly retrieved owner. Depth is structural provenance, not
-            # a fitted attenuation hyperparameter.
-            inherited_score *= 1.0 / (int(depth) + 1)
-            if inherited_score > float(candidate.get("representation_score", 0.0)):
-                candidate["representation_score"] = inherited_score
+            if not already_direct:
+                if path_type == "hop":
+                    inherited_score = float(source_channel_scores.get("q_plus", 0.0))
+                else:
+                    inherited_score = float(source_candidate.get("representation_score", 0.0))
+                # A graph-only target is supported indirectly through one
+                # edge. Its inherited rank evidence therefore receives the
+                # reciprocal path length 1 / (depth + 1), rather than being
+                # treated as strongly as a directly retrieved owner. Direct
+                # candidates retain their original score; only their path
+                # provenance is enriched below.
+                inherited_score *= 1.0 / (int(depth) + 1)
+                if inherited_score > float(candidate.get("representation_score", 0.0)):
+                    candidate["representation_score"] = inherited_score
             bridge_embeddings = [embedding for embedding in (row.get("bridge_embeddings") or []) if embedding]
-            if path_type == "hop" and bridge_embeddings:
+            if not already_direct and path_type == "hop" and bridge_embeddings:
                 existing = candidate.setdefault("bridge_embeddings", [])
                 for embedding in bridge_embeddings:
                     if embedding not in existing:
@@ -132,7 +135,7 @@ class TraversalMixin:
     async def _expand_frontier(
         self,
         frontier_ids: list[str],
-        discovered_ids: set[str],
+        excluded_ids: set[str],
         hop_source_question_ids: dict[str, set[str]],
     ) -> list[dict[str, Any]]:
         branches: list[str] = []
@@ -228,7 +231,7 @@ class TraversalMixin:
                     {expansion_query}
                 }}
                 WITH src, related, path_type, bridge_embeddings, activated_question_ids
-                WHERE NOT related.id IN $discovered_ids
+                WHERE NOT related.id IN $excluded_ids
                 RETURN src.id AS source_id, related.id AS id,
                        related.title AS title, related.sent_id AS sent_id,
                        related.page AS page, related.text AS text,
@@ -240,7 +243,7 @@ class TraversalMixin:
                 query,
                 {
                     "frontier_ids": frontier_ids,
-                    "discovered_ids": list(discovered_ids),
+                    "excluded_ids": list(excluded_ids),
                     "hop_source_ids": sorted(hop_source_question_ids),
                     "hop_source_question_ids": {
                         source_id: sorted(question_ids)

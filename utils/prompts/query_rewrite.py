@@ -12,7 +12,7 @@ Definitions:
 Rules:
 1. Preserve all named entities, source distinctions, dates, comparison direction, temporal order, and negation from the user question.
 2. Do not introduce facts or assumptions absent from the user question.
-3. Produce between 1 and {max_per_role} non-duplicate questions for each role.
+3. Produce up to {max_per_role} non-duplicate questions per role. Use an empty list when no faithful question exists for that role; the original user question remains available as the retrieval fallback.
 4. Make every question stand alone; do not refer to "the user question" or "the text".
 5. Return JSON only, using exactly this schema:
 {{"q_minus": ["question"], "q_plus": ["question"]}}

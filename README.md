@@ -35,8 +35,11 @@ Core indexing-time design, currently evaluated on MultiHop-RAG and MuSiQue:
 Chunking is fixed-size (page-scoped sentence windows) — see
 [ARCHITECTURE](docs/ARCHITECTURE.md#shared-input-contract) for details.
 
-The query path searches Q⁻/body direct evidence and Q⁺ dependency seeds in
-parallel, applies reciprocal-rank
+For questions of at most 32 words, the query path first produces bounded Q⁻
+and Q⁺ retrieval views; longer questions retain their original explicit
+constraints. The body channel always uses the original question. Retrieval
+then searches Q⁻/body direct evidence and Q⁺ dependency seeds in parallel,
+applies reciprocal-rank
 fusion of representation and semantic orders, deterministic batched 1-hop
 traversal over bidirectional `NEXT` and outgoing `HOP_ANSWER` edges, and a
 single LLM synthesis call. Rank evidence propagated over a graph edge is
@@ -56,14 +59,15 @@ never mixed across modalities.
 Evaluation is dataset-specific. MultiHop-RAG reports official-compatible
 Hits@k, MRR@10, and MAP@10 plus separate fact-coverage and null-refusal
 diagnostics. MuSiQue reports answer EM/F1 and supporting-paragraph metrics.
-The in-repo Naive RAG is the document-level vector-search baseline: one
-prepared news article or paragraph source is embedded and retrieved as one
-unit. It uses its reference top-k 10 and the shared answer prompt. Prehop keeps
-its own six-sentence chunk architecture; no shared-chunk Naive result is part
-of the comparison protocol.
+The in-repo Naive RAG is a controlled vector-search baseline. It uses the same
+six-sentence chunks, top-k 12, and final answer prompt as Prehop, but does not
+index question representations or construct and traverse graph edges. This
+isolates Prehop's retrieval architecture instead of adding a chunk-size or
+evidence-budget difference to the comparison.
 The optional LLM judge is disabled by default and is not a primary metric.
-Samples are development artifacts; paper claims require the complete prepared
-split and the eligibility rules in the local paper specification.
+Samples are development artifacts. Complete-split tables are reported for
+benchmark comparability, while selection-free paired claims exclude the fixed
+development query IDs as specified in the local paper protocol.
 
 ---
 
@@ -84,7 +88,7 @@ prehop/
 │   │   ├── graphrag.py              # GraphRAG facade; run_workflow() is the query entry point
 │   │   ├── indexing/                 # chunking (fixed-size), knowledge_mapping (Q-/Q+), hop_edges, graph_writer
 │   │   └── retrieval/                # hybrid (RRF), cosine ordering, deterministic traversal
-│   ├── naive/                       # baseline (one source document per vector + search)
+│   ├── naive/                       # baseline (shared fixed-window chunks + vector search)
 │   ├── hoprag/                      # baseline (runtime hop traversal via official HopRAG)
 │   └── ms_graphrag/                 # baseline (community-report retrieval via graphrag package)
 ├── utils/
@@ -203,11 +207,15 @@ dataset's corpus, queries, and tags so you don't pass them by hand:
 ./run_multihoprag.sh benchmark --model prehop --queries full
 
 # MuSiQue: preparation defaults to all 2,417 answerable dev rows.
-# Create exploratory samples only with make_sample.py.
+# Keep the committed development IDs fixed while refreshing their annotations.
 .venv/bin/python scripts/datasets/prepare_musique.py
-.venv/bin/python scripts/datasets/make_sample.py --dataset musique --per-type 67
+.venv/bin/python scripts/datasets/refresh_sample_records.py \
+  --dataset musique --sample data/musique_sample201_queries.json
 ./run_dataset.sh musique all --model prehop
 ```
+
+Use `make_sample.py` only to create a newly named exploratory sample. It must
+not overwrite the fixed development sets after method selection begins.
 
 See `CLAUDE.md` "Data and tags" for corpus/query file details per dataset.
 
@@ -307,7 +315,8 @@ Query-only ablations do not require rebuilding the index:
 | `RAG_GRAPH_EDGE_VARIANT` | `full` | `hop_only` or `next_only` isolates traversal-edge contributions |
 | `RAG_HOP_EDGE_FILTER` | `reciprocal_offline` | `none` disables the filter; `reciprocal` recomputes the same reverse-Q+ rule online |
 | `RAG_QPLUS_HOP_ACTIVATION` | `owner` | `exact` restricts activation to the matched Q+ IDs as an ablation |
-| `RAG_QUERY_REWRITE_VARIANT` | `none` | `role_aligned` generates Q−/Q+ retrieval views at query time |
+| `RAG_QUERY_REWRITE_VARIANT` | `role_aligned` | `none` disables rewriting; `role_aligned_additive` also retains the original question in Q−/Q+ views |
+| `RAG_QUERY_REWRITE_MAX_WORDS` | `32` | Questions above the limit skip rewriting; `0` rewrites every question |
 | `RAG_SOURCE_SELECTION_VARIANT` | `global` | `round_robin` enables source diversification as an ablation |
 
 The primary causal ablation is cumulative through body-only retrieval, question
@@ -324,9 +333,10 @@ the same immutable index and are recorded in result metadata.
 source-verifiable structured Q−/Q+, and the latter enables the
 `reciprocal_offline` query filter.
 
-The query-time defaults selected from the development sample use the legacy
-schema, owner activation, materialized reciprocal filtering, and no rewrite.
-This selection is not a held-out paper result.
+The query-time defaults selected from the development samples use the legacy
+schema, owner activation, materialized reciprocal filtering, and role-aligned
+rewriting for questions of at most 32 words. This selection is not a held-out
+paper result.
 
 ---
 
@@ -336,13 +346,13 @@ Full list in the paper appendix; the most important:
 
 | Parameter | Value | Where |
 |---|---|---|
-| Prehop chunk size | 6 sentences | fixed-size page-scoped window |
-| Naive retrieval unit | 1 prepared source | complete article or paragraph; embedding truncation forbidden |
-| Retrieval depth | Prehop 12; Naive 10 | architecture-level defaults |
+| `CHUNK_SENTENCES` | 6 | page-scoped Prehop and controlled-Naive window |
+| Retrieval depth | Prehop 12; Naive 12 | common evidence budget |
 | Input capacity | generation 262,144; embedding 32,768 tokens | configured endpoint limits |
 | Questions per direction | 3 | fixed output-schema bound for Q− and Q+ |
 | HOP targets | at most one candidate per Q+ | nearest cross-document Q− owner |
-| Query representations | set union | $Q^-$ / body direct evidence and $Q^+$ dependency seeds, each searched once |
+| Query representations | role-normalized set union | original body query; bounded Q−/Q+ views only for questions of at most 32 words |
+| Query rewrite | role-aligned, at most 32 input words | up to three Q− and three Q+ views; longer questions skip the call |
 | Query-time rank fusion | equal reciprocal ranks | representation order + body/bridge semantic order; no fitted weight |
 | Graph rank propagation | reciprocal path length | a one-edge target inherits half of its source rank evidence |
 | Offline HOP selection | reciprocal Q+→Q− owner resolution | reverse Q−→Q+ agreement is materialized on the HOP edge |

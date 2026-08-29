@@ -56,9 +56,7 @@ export RAG_INDEX_LOG_DIR="$INDEX_LOG_DIR"
 echo "========================================="
 echo "     Indexing Pre-flight Check           "
 echo "========================================="
-if [ "$MODEL" = "naive" ]; then
-    echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, retrieval_unit=source_document, embedding_tokens=${MAX_EMBEDDING_LENGTH}"
-elif [ "$MODEL" = "prehop" ]; then
+if [ "$MODEL" = "naive" ] || [ "$MODEL" = "prehop" ]; then
     echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, chunk_sentences=6"
 else
     echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, chunking=official"

@@ -100,6 +100,25 @@ def _chunk_cache_load(corpus_tag: str, source: str, content: str) -> "dict[str, 
         data = json.load(fh)
     if not isinstance(data, dict) or "chunks" not in data:
         return None
+    chunks = data.get("chunks")
+    if not isinstance(chunks, list):
+        return None
+
+    # Early v1 cache files stored the document title only at the top level,
+    # while the graph writer consumes a title on every chunk. Keep those
+    # expensive generation results reusable by upgrading the loaded value in
+    # memory. New cache files already contain the per-chunk field.
+    title = str(data.get("title") or source or "Unknown")
+    normalized_chunks: list[dict[str, Any]] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            return None
+        normalized = dict(chunk)
+        normalized["title"] = str(normalized.get("title") or title)
+        normalized_chunks.append(normalized)
+    data = dict(data)
+    data["title"] = title
+    data["chunks"] = normalized_chunks
     return data
 
 

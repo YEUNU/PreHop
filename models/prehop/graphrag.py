@@ -160,16 +160,23 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 if identity not in seen:
                     seen.add(identity)
                     questions.append(question)
-            if not questions or len(questions) > RAGConfig.QUESTIONS_PER_DIRECTION:
-                raise ValueError(
-                    f"Role-aligned query rewrite field {role!r} must contain between 1 and "
-                    f"{RAGConfig.QUESTIONS_PER_DIRECTION} unique questions"
+            if len(questions) > RAGConfig.QUESTIONS_PER_DIRECTION:
+                logger.warning(
+                    "Role-aligned query rewrite returned %d unique %s questions; retaining the first %d",
+                    len(questions),
+                    role,
+                    RAGConfig.QUESTIONS_PER_DIRECTION,
                 )
+                questions = questions[: RAGConfig.QUESTIONS_PER_DIRECTION]
             validated[role] = questions
         return validated
 
     async def _rewrite_query_roles(self, query: str) -> dict[str, list[str]] | None:
         if RAGConfig.QUERY_REWRITE_VARIANT == "none":
+            return None
+        max_words = RAGConfig.QUERY_REWRITE_MAX_WORDS
+        word_count = len(re.findall(r"\b\w+[\w'-]*\b", query))
+        if max_words > 0 and word_count > max_words:
             return None
         prompt = build_role_aligned_query_prompt(query, RAGConfig.QUESTIONS_PER_DIRECTION)
         payload = await generate_json_or_raise(
@@ -206,9 +213,14 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         rewrite_ms = (time.perf_counter() - rewrite_started) * 1000 if role_queries is not None else 0.0
         channel_queries = None
         if role_queries is not None:
+            additive = RAGConfig.QUERY_REWRITE_VARIANT == "role_aligned_additive"
             channel_queries = {
-                "q_minus": role_queries["q_minus"],
-                "q_plus": role_queries["q_plus"],
+                "q_minus": list(
+                    dict.fromkeys([*([retrieval_query] if additive else []), *role_queries["q_minus"]])
+                ),
+                "q_plus": list(
+                    dict.fromkeys([*([retrieval_query] if additive else []), *role_queries["q_plus"]])
+                ),
                 "body": [retrieval_query],
             }
 
@@ -240,6 +252,11 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 channel = str(path.get("channel") or "")
                 label = f"{kind}:{channel}" if channel else kind
                 path_counts[label] = path_counts.get(label, 0) + 1
+        retrieved_source_ids = {
+            str(source.get("source") or source.get("doc") or "").strip()
+            for source in sources
+            if str(source.get("source") or source.get("doc") or "").strip()
+        }
 
         trace: list[dict[str, Any]] = []
         if role_queries is not None:
@@ -255,7 +272,11 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             {
                 "step": "retrieve",
                 "input": {"query": user_query, "top_k": RAGConfig.DEFAULT_TOP_K, "graph_depth": graph_depth},
-                "output": {"retrieved_sources": len(sources), "retrieval_path_counts": path_counts},
+                "output": {
+                    "retrieved_chunks": len(sources),
+                    "retrieved_sources": len(retrieved_source_ids),
+                    "retrieval_path_counts": path_counts,
+                },
                 "retrieve_ms": timing.get("retrieve_ms", 0.0),
                 "traversal_ms": timing.get("traversal_ms", 0.0),
             }

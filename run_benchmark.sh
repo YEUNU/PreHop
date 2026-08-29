@@ -54,9 +54,7 @@ echo "========================================="
 echo "     Benchmark Pre-flight Check          "
 echo "========================================="
 echo "Python: $PYTHON_BIN"
-if [ "$MODEL" = "naive" ]; then
-    echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, unit=source_document, top_k=10"
-elif [ "$MODEL" = "prehop" ]; then
+if [ "$MODEL" = "naive" ] || [ "$MODEL" = "prehop" ]; then
     echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, top_k=12"
 else
     echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, budget=official"
