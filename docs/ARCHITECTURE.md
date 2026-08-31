@@ -111,6 +111,13 @@ the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
   plus a quote-contained Q− answer or non-empty Q+ missing information.
   Invalid individual records are logged and removed without discarding valid
   siblings or failing the document.
+- The experimental `linked_v2` schema retains that grounding contract and
+  adds `continuation_anchor` to Q−. A non-empty value must equal the complete
+  Q− answer and is requested only for a specific named entity that can anchor
+  a relation in another document. Empty anchors are valid. Auxiliary
+  `anchor_entities` that cannot be verified against the chunk are removed
+  without discarding an otherwise grounded question; `grounded_v1` retains
+  its stricter all-fields-valid behavior.
 
 `indexing/embedding.py`
 
@@ -121,7 +128,9 @@ the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
 - Restores sparse results to original positions and verifies response count,
   non-empty vectors, and consistent dimensions.
 
-The Q−/Q+ generation cache accepts early v1 records whose title was stored
+The Q−/Q+ generation cache key includes the generation model, declared model
+revision, sampling seed, question schema, prompt digest, source digest, and
+chunking flags. It accepts early v1 records whose title was stored
 only at document level and backfills that title on each in-memory chunk before
 graph writing. This compatibility normalization does not rewrite the cache or
 change its generated questions.
@@ -166,6 +175,18 @@ change its generated questions.
   HOP edge, and writes each edge once. The grouped write prevents lost list
   updates while retaining the same nearest-neighbour rule.
 
+`indexing/answer_links.py`
+
+- Runs only for `linked_v2`, after all chunks and grounded questions are
+  visible. It token-normalizes complete continuation anchors and finds exact
+  contiguous mentions in one corpus scan.
+- Each normalized answer is stored once as an `AnswerAnchor`. `ANSWER_ANCHOR`
+  joins grounded Q− nodes to that shared record and `MENTIONED_IN` joins it to
+  exact corpus mentions. This preserves the same source-question-to-target
+  paths without materializing their Cartesian product for common answers.
+  Benchmark questions, gold paragraphs, hop labels, score thresholds, and
+  semantic candidate widths are not inputs to this pass.
+
 ### Official baseline modules
 
 `models/hoprag/official_indexer.py`
@@ -201,10 +222,12 @@ format suffix and then:
 RAG_GRAPH_HOP_DEPTH == 0
   -> retrieve(query, top_k=12)
 
-RAG_QUERY_REWRITE_VARIANT == role_aligned
+RAG_QUERY_REWRITE_VARIANT == role_aligned_evidence_iterative
   and input question has at most RAG_QUERY_REWRITE_MAX_WORDS words
-  -> one schema-constrained query-time rewrite into Q-/Q+ retrieval views
+  -> schema-constrained initial Q-/Q+ retrieval views
   -> each view searches only its matching representation channel
+  -> retrieved evidence proposes non-duplicate Q-/Q+ views
+  -> stop when no new view or selected chunk appears
 
 question exceeds the rewrite limit
   -> use the original question without a rewrite call
@@ -213,8 +236,12 @@ RAG_GRAPH_HOP_DEPTH == 1 (default)
   -> retrieve(query) for seeds
   -> deterministic NEXT/HOP expansion for the configured depth
   -> RAG_GRAPH_EDGE_VARIANT selects the full, hop_only, or next_only path
-  -> owner activation admits reciprocal provenance on a matched Q+ seed owner
-  -> reciprocal_offline reads materialized reciprocal source-Q+ IDs
+  -> owner activation admits stored provenance on a matched Q+ seed owner
+  -> HOP_EDGE_FILTER=none retains every activated HOP provenance item
+
+RAG_SOURCE_SELECTION_VARIANT == role_body_list_ranking
+  -> rank the complete established candidate union by opaque paragraph IDs
+  -> return the first top_k known IDs, deterministically completing omissions
 
 empty context
   -> fixed "Insufficient evidence" result, no synthesis call
@@ -224,11 +251,12 @@ non-empty context
 ```
 
 The current operational contract is legacy question schema, full Q−/body/Q+
-retrieval, depth-one full NEXT/HOP traversal, owner activation, materialized
-reciprocal filtering, global source selection, and role-aligned rewriting for
-questions of at most 32 words. The `none`, rewrite-all, additive-view, online
-`reciprocal`, exact-activation, edge-variant, channel-variant, and no-graph
-paths are explicit experimental configurations rather than implicit fallbacks.
+retrieval, depth-one full NEXT/HOP traversal, owner activation, unfiltered
+stored HOP edges, evidence-conditioned iterative role rewriting for questions
+of at most 32 words, and complete candidate-list ranking. The one-pass,
+rewrite-all, additive-view, `global`, reciprocal-filter, exact-activation,
+edge-variant, channel-variant, and no-graph paths are explicit experimental
+configurations rather than implicit fallbacks.
 
 `retrieval/hybrid.py` embeds the original query and runs vector plus Neo4j
 full-text search for one channel (`body`, `q_minus`, or `q_plus`). Vector and
@@ -246,9 +274,11 @@ their generated role-specific views; otherwise they also use the original
 question. Multiple views are fused inside their role first, so Q−, body, and
 Q+ each contribute one ranked list rather than gaining weight from the number
 of generated views. Q- and body hits have the direct-evidence role; Q+ hits
-have the dependency-seed role. Q+ vector and full-text rows retain the
+have the dependency-seed role. Q− and Q+ vector and full-text rows retain the
 exact matched question-node IDs while collapsing to owner chunks, and their
-union is preserved when representation lists merge. Enabled representation
+union is preserved when representation lists merge. Q+ IDs activate the
+established dependency edges; under `linked_v2`, Q− IDs activate grounded
+continuation edges. Enabled representation
 results form a set union. Each owner retains
 `1 / (rank + 1)` evidence from every representation list in which it appears;
 these values define a representation order without mixing backend-specific
@@ -275,13 +305,17 @@ semantic score for direct/NEXT candidates; a HOP candidate uses
 ordered once by this semantic score and once by their retained representation
 evidence. Equal reciprocal ranks from the two orders are summed for final
 selection. This avoids calibrated raw-score interpolation and introduces no
-fitted weight or threshold. There is no dedicated reranker model, rerank
-prompt, metadata boost, boilerplate penalty, company filter, or domain gate.
-The optional role rewrite changes channel queries before retrieval but does
-not score or verify candidates. Final top-k selection uses this fused global
-order by default.
-`RAG_SOURCE_SELECTION_VARIANT=round_robin` is an explicit ablation that takes
-one ranked chunk per source per round; it is not part of the operational default.
+fitted weight or threshold. There is no dedicated reranker model, score
+threshold, metadata boost, boilerplate penalty, company filter, or domain
+gate. Role rewriting changes channel queries before retrieval but does not
+score or verify candidates. The default selection passes the complete fused
+candidate union to one opaque-ID list-ranking prompt and returns its first
+`top_k` known IDs. Unknown IDs are ignored, duplicates collapse, and omitted
+known IDs retain the deterministic input order. Publisher, publication time,
+author, and category are included only when present in the source-manifest
+sidecar; no dataset identity, gold label, retrieval path, score, or rank is
+exposed. `global`, `round_robin`, and the body-round policies remain explicit
+query-time ablations.
 
 Each representation retains at most `top_k` owner chunks, so the fused base
 pool is bounded by `top_k × active_representation_count` without a candidate
@@ -298,9 +332,20 @@ final top-k) as one frontier and expands it in one Neo4j request per depth. `NEX
 walked in both directions to recover preceding/following document context;
 `HOP_ANSWER` is exposed only by owner chunks actually matched through the Q+
 dependency channel and is walked only in the Q+→answer-evidence direction.
+When a `linked_v2` index is selected and
+`RAG_CONTINUATION_EDGES_ENABLED=true`, the
+`QMinus`→`AnswerAnchor`→`Chunk` path is exposed only by the exact Q− IDs matched
+through the direct-evidence channel. The flag is query-time only, allowing an
+on/off comparison on the identical stored graph.
+Each source retains
+at most the final evidence budget of continuation targets after query-to-body
+cosine ordering inside Neo4j; this is the existing top-k contract rather than
+a separate candidate-width setting. A continuation target inherits the
+source's Q− rank evidence and uses the matched Q− embeddings as its stored
+bridge representation.
 The current operational default uses owner-wide activation: when an owner is
-retrieved through any Q+ node, all reciprocal source-Q+ provenance on that
-owner's outgoing HOP edges is eligible. Exact matched-Q+ intersection remains
+retrieved through any Q+ node, all stored source-Q+ provenance on that owner's
+outgoing HOP edges is eligible. Exact matched-Q+ intersection remains
 available through `RAG_QPLUS_HOP_ACTIVATION=exact`. Bridge embeddings and
 emitted path provenance follow the selected activation mode.
 The online `RAG_HOP_EDGE_FILTER=reciprocal` ablation leaves every stored
@@ -310,11 +355,11 @@ the target Q− independently retrieves that exact source Q+ as its highest-rank
 cross-document Q+ representation. Its ANN pool is the number of Q+ nodes in
 the target document plus one, which is the structural minimum needed to admit
 one foreign-document result after exclusion; there is no acceptance threshold
-or tunable candidate width. The `none` ablation performs no reverse ANN.
-The default `reciprocal_offline` applies the same rule from materialized edge
-IDs and performs no query-time reverse ANN. Traversal constructs only the
-selected NEXT/HOP/filter Cypher branches, avoiding inactive ablations on the
-query hot path.
+or tunable candidate width. The default `none` policy performs no reverse ANN
+and does not filter activated provenance. `reciprocal_offline` applies the
+same reverse rule from materialized edge IDs and performs no query-time reverse
+ANN. Traversal constructs only the selected NEXT/HOP/filter Cypher branches,
+avoiding inactive ablations on the query hot path.
 Q−/body-only seeds and graph-discovered nodes expose NEXT only, preventing an
 unrelated Q+ attached to a direct-evidence chunk from triggering a HOP. NEXT and
 HOP paths are ranked separately per expansion step, then fused per target
@@ -328,9 +373,11 @@ The structurally bounded results are retained without a candidate reservoir or
 graph-search floor. HOP candidates compare the query against each indexed
 source Q+ separately, take the best bridge similarity, and use
 `min(body, bridge)` as the semantic score. This requires agreement on both
-sides without a mixing weight. After the optional initial role rewrite, there
-is no continuation prompt, heuristic stop gate, per-hop generation, or runtime
-ANN supplement in Prehop retrieval.
+sides without a mixing weight. The default evidence-conditioned rewrite
+repeats retrieval only while newly proposed role questions select at least one
+unseen chunk. Exact normalized question and chunk identities provide the stop
+rule; there is no fitted round count, score gate, hop label, dataset branch,
+per-edge generation, or runtime ANN supplement.
 Targets already present in the representation-union pool retain their direct
 rank evidence and semantic inputs; traversal only adds path provenance to
 them. Graph-only targets receive inherited rank evidence and bridge semantics.
@@ -344,7 +391,8 @@ Project-owned prompt templates are deliberately limited to:
 
 - `utils/prompts/indexing.py`: indexing-time Q-/Q+ generation.
 - `utils/prompts/query_rewrite.py`: bounded Q−/Q+ retrieval views for compact
-  query-time questions.
+  questions, evidence-conditioned follow-up views, and opaque-ID ranking of
+  the complete candidate union.
 - `utils/prompts/shared.py`: one dataset-neutral final-answer prompt shared by
   Prehop, Naive, and the HopRAG adapter. It asks the model to connect required
   intermediate entities silently, return only the short final answer, and
@@ -362,9 +410,10 @@ reported as incomplete runs and never fall back silently to more expensive
 synchronous judge calls. `RAG_JUDGE_BATCH=false` is reserved for explicit
 debug runs.
 
-Prehop makes at most one role-rewrite call before retrieval, and only for
-questions within the fixed input-length limit. It has no per-candidate prompt
-or iterative retrieval loop. Official HopRAG's upstream `bfs_node` traversal
+Prehop begins rewriting only for questions within the fixed input-length
+limit. It can add evidence-conditioned role views while exact identities keep
+changing, then makes one complete-list ranking call; it never calls the model
+once per candidate or graph edge. Official HopRAG's upstream `bfs_node` traversal
 includes its published LLM helpful/helpless node judgement. The adapter routes
 that call externally and does not add a local reranker or new prompt. MS
 GraphRAG also retains the official package's extraction/community/report/search
@@ -414,6 +463,19 @@ Complete-split tables remain available for benchmark comparability. Paired
 confirmatory analysis passes the relevant sample file to
 `scripts/paired_bootstrap.py --exclude-queries`, records the excluded-ID
 digest, and evaluates only the disjoint remainder.
+For query-only ablations, `--expected-ablation-difference` requires the named
+metadata key and no other ablation key to differ. The active-index snapshot,
+models and seed, code provenance, benchmark concurrency, and judge state must
+also be identical. An index-changing paired analysis must opt into
+`--allow-index-variant`; corpus fingerprints and stable query identities
+remain mandatory even under that override.
+`scripts/performance_gate.py` fixes the final effectiveness gate to the four
+official MultiHop-RAG ranking metrics and the five official MuSiQue
+answer/support metrics. It chooses the strongest supplied non-Prehop baseline
+separately for every metric and requires the declared relative gain on all of
+them. It rejects incomplete, fingerprint-mismatched, query-mismatched, and
+non-full artifacts unless an explicitly non-paper exploratory override is
+used.
 The exact metric definitions, official evaluator references, paper-eligibility
 rules, and reporting decisions are maintained in the local, intentionally
 untracked `docs/prehop_paper.md`. This architecture document summarizes the

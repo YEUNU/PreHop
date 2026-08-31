@@ -88,35 +88,46 @@ class RAGConfig:
     # bidirectional NEXT and outgoing HOP_ANSWER expansion.
     GRAPH_HOP_DEPTH = int(os.environ.get("RAG_GRAPH_HOP_DEPTH", "1"))
     GRAPH_EDGE_VARIANT = os.environ.get("RAG_GRAPH_EDGE_VARIANT", "full").strip().lower() or "full"
-    # Read-only traversal ablation over the existing offline graph.
-    # The sample-200 development winner is P2: reciprocal HOP filtering with
-    # owner-wide Q+ activation. Exact activation and the unfiltered graph stay
-    # available as explicit ablations.
-    HOP_EDGE_FILTER = (
-        os.environ.get("RAG_HOP_EDGE_FILTER", "reciprocal_offline").strip().lower()
-        or "reciprocal_offline"
-    )
+    # Read-only traversal policy over the existing offline graph. The final
+    # cross-dataset selection uses every materialized HOP edge; reciprocal
+    # filtering remains available as an explicit ablation.
+    HOP_EDGE_FILTER = os.environ.get("RAG_HOP_EDGE_FILTER", "none").strip().lower() or "none"
     # ``exact`` activates only HOP provenance attached to query-matched Q+ IDs;
-    # ``owner`` activates the winning owner-wide P2 path.
-    QPLUS_HOP_ACTIVATION = (
-        os.environ.get("RAG_QPLUS_HOP_ACTIVATION", "owner").strip().lower() or "owner"
+    # ``owner`` activates all provenance on a matched Q+ owner.
+    QPLUS_HOP_ACTIVATION = os.environ.get("RAG_QPLUS_HOP_ACTIVATION", "owner").strip().lower() or "owner"
+    # Query-time ablation over the separately indexed linked_v2 continuation
+    # relations. Indexing always materializes them for that schema so on/off
+    # comparisons share the exact same question and graph snapshot.
+    CONTINUATION_EDGES_ENABLED = os.environ.get("RAG_CONTINUATION_EDGES_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    # Index-time structural policy for linked_v2 answer anchors. ``named_only``
+    # uses the generation contract's optional specific-entity marker;
+    # ``all_grounded`` uses every complete source-verifiable Q- answer.
+    CONTINUATION_ANCHOR_POLICY = (
+        os.environ.get("RAG_CONTINUATION_ANCHOR_POLICY", "named_only").strip().lower() or "named_only"
     )
     # Query-time semantic evidence for traversed HOP targets. The conservative
     # default requires both query-to-body and query-to-source-Q+ similarity;
     # ``bridge_only`` is a parameter-free structural ablation because the
     # offline Q+->Q- edge has already selected the answering target.
     HOP_SEMANTIC_VARIANT = (
-        os.environ.get("RAG_HOP_SEMANTIC_VARIANT", "body_bridge_min").strip().lower()
-        or "body_bridge_min"
+        os.environ.get("RAG_HOP_SEMANTIC_VARIANT", "body_bridge_min").strip().lower() or "body_bridge_min"
     )
     # Optional index-time materialization avoids reverse vector ANN on every
     # reciprocal-filtered query while preserving the same nearest-neighbour rule.
-    PRECOMPUTE_RECIPROCAL_HOPS = os.environ.get(
-        "RAG_PRECOMPUTE_RECIPROCAL_HOPS", "true"
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    PRECOMPUTE_RECIPROCAL_HOPS = os.environ.get("RAG_PRECOMPUTE_RECIPROCAL_HOPS", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     QUERY_REWRITE_VARIANT = (
-        os.environ.get("RAG_QUERY_REWRITE_VARIANT", "role_aligned").strip().lower()
-        or "role_aligned"
+        os.environ.get("RAG_QUERY_REWRITE_VARIANT", "role_aligned_evidence_iterative").strip().lower()
+        or "role_aligned_evidence_iterative"
     )
     # Role rewriting is useful for compact compositional questions but can
     # perturb the explicit source and relation constraints already present in
@@ -131,6 +142,16 @@ class RAGConfig:
     # selection is anchored on Q+ embeddings.
     ABLATION_Q_MINUS = os.environ.get("RAG_ABLATION_Q_MINUS", "True").lower() == "true"
     ABLATION_Q_PLUS = os.environ.get("RAG_ABLATION_Q_PLUS", "True").lower() == "true"
+    # Optional fine-grained retrieval representation. Sentence nodes are
+    # deterministic children of the fixed output chunks and always collapse
+    # back to those owners before ranking, so enabling this changes candidate
+    # generation without changing the evidence unit or final top-k.
+    SENTENCE_CHANNEL_ENABLED = os.environ.get("RAG_SENTENCE_CHANNEL_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     # Select which Q-/Q+ representation channels retrieve.py queries.
     # Values:
@@ -144,7 +165,8 @@ class RAGConfig:
     # No re-indexing required; only retrieval-time channel selection changes.
     HYPO_CHANNEL_VARIANT = os.environ.get("RAG_HYPO_CHANNEL_VARIANT", "full").strip().lower() or "full"
     SOURCE_SELECTION_VARIANT = (
-        os.environ.get("RAG_SOURCE_SELECTION_VARIANT", "global").strip().lower() or "global"
+        os.environ.get("RAG_SOURCE_SELECTION_VARIANT", "role_body_list_ranking").strip().lower()
+        or "role_body_list_ranking"
     )
 
     @classmethod
@@ -187,18 +209,31 @@ class RAGConfig:
             raise ValueError("RAG_HOP_EDGE_FILTER must be none, reciprocal, or reciprocal_offline")
         if cls.QPLUS_HOP_ACTIVATION not in {"exact", "owner"}:
             raise ValueError("RAG_QPLUS_HOP_ACTIVATION must be exact or owner")
+        if cls.CONTINUATION_EDGES_ENABLED and cls.QUESTION_SCHEMA != "linked_v2":
+            raise ValueError("RAG_CONTINUATION_EDGES_ENABLED=true requires RAG_QUESTION_SCHEMA=linked_v2")
+        if cls.CONTINUATION_EDGES_ENABLED and not cls.ABLATION_Q_MINUS:
+            raise ValueError("RAG_CONTINUATION_EDGES_ENABLED=true requires Q- retrieval")
+        if cls.CONTINUATION_ANCHOR_POLICY not in {"named_only", "all_grounded"}:
+            raise ValueError("RAG_CONTINUATION_ANCHOR_POLICY must be named_only or all_grounded")
+        if cls.CONTINUATION_ANCHOR_POLICY != "named_only" and cls.QUESTION_SCHEMA != "linked_v2":
+            raise ValueError("RAG_CONTINUATION_ANCHOR_POLICY=all_grounded requires RAG_QUESTION_SCHEMA=linked_v2")
         if cls.HOP_SEMANTIC_VARIANT not in {"body_bridge_min", "bridge_only"}:
             raise ValueError("RAG_HOP_SEMANTIC_VARIANT must be body_bridge_min or bridge_only")
         if cls.HOP_EDGE_FILTER == "reciprocal_offline" and not cls.PRECOMPUTE_RECIPROCAL_HOPS:
+            raise ValueError("RAG_HOP_EDGE_FILTER=reciprocal_offline requires RAG_PRECOMPUTE_RECIPROCAL_HOPS=true")
+        if cls.QUESTION_SCHEMA not in {"legacy", "grounded_v1", "linked_v2"}:
+            raise ValueError("RAG_QUESTION_SCHEMA must be legacy, grounded_v1, or linked_v2")
+        if cls.QUERY_REWRITE_VARIANT not in {
+            "none",
+            "role_aligned",
+            "role_aligned_additive",
+            "role_aligned_evidence",
+            "role_aligned_evidence_iterative",
+        }:
             raise ValueError(
-                "RAG_HOP_EDGE_FILTER=reciprocal_offline requires "
-                "RAG_PRECOMPUTE_RECIPROCAL_HOPS=true"
-            )
-        if cls.QUESTION_SCHEMA not in {"legacy", "grounded_v1"}:
-            raise ValueError("RAG_QUESTION_SCHEMA must be legacy or grounded_v1")
-        if cls.QUERY_REWRITE_VARIANT not in {"none", "role_aligned", "role_aligned_additive"}:
-            raise ValueError(
-                "RAG_QUERY_REWRITE_VARIANT must be none, role_aligned, or role_aligned_additive"
+                "RAG_QUERY_REWRITE_VARIANT must be none, role_aligned, "
+                "role_aligned_additive, role_aligned_evidence, or "
+                "role_aligned_evidence_iterative"
             )
         if cls.QUERY_REWRITE_MAX_WORDS < 0:
             raise ValueError("RAG_QUERY_REWRITE_MAX_WORDS must be zero or positive")
@@ -215,18 +250,20 @@ class RAGConfig:
             raise ValueError("qminus_only requires RAG_ABLATION_Q_MINUS=true")
         if cls.HYPO_CHANNEL_VARIANT == "qplus_only" and not cls.ABLATION_Q_PLUS:
             raise ValueError("qplus_only requires RAG_ABLATION_Q_PLUS=true")
-        if cls.HYPO_CHANNEL_VARIANT == "single_combined" and not (
-            cls.ABLATION_Q_MINUS and cls.ABLATION_Q_PLUS
-        ):
+        if cls.HYPO_CHANNEL_VARIANT == "single_combined" and not (cls.ABLATION_Q_MINUS and cls.ABLATION_Q_PLUS):
             raise ValueError("single_combined requires both Q- and Q+ channels")
         if cls.SOURCE_SELECTION_VARIANT not in {
             "graph_pairs",
             "source_balanced_graph_pairs",
             "source_balanced",
             "round_robin",
+            "role_body_owners",
+            "role_body_rounds",
+            "role_body_list_ranking",
             "global",
         }:
             raise ValueError(
                 "RAG_SOURCE_SELECTION_VARIANT must be graph_pairs, source_balanced, "
-                "source_balanced_graph_pairs, round_robin, or global"
+                "source_balanced_graph_pairs, round_robin, role_body_owners, "
+                "role_body_rounds, role_body_list_ranking, or global"
             )

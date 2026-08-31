@@ -1,11 +1,16 @@
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from core.config import RAGConfig
 from models.prehop.graphrag import GraphRAG
-from models.prehop.indexing.chunking import _chunk_cache_load, _chunk_cache_save
+from models.prehop.indexing.chunking import (
+    _chunk_cache_load,
+    _chunk_cache_path,
+    _chunk_cache_save,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -156,3 +161,27 @@ def test_legacy_chunk_cache_backfills_per_chunk_title(tmp_path, monkeypatch):
     assert loaded is not None
     assert loaded["chunks"][0]["title"] == "Cached Document"
     assert "title" not in legacy_knowledge["chunks"][0]
+
+
+def test_question_cache_identity_includes_generation_model_revision_and_seed(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAG_CHUNK_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("RAG_GENERATION_REVISION", "revision-a")
+    monkeypatch.setenv("RAG_LLM_SEED", "42")
+
+    first = _chunk_cache_path("test", "cached.txt", "digest", "model-a")
+    second_model = _chunk_cache_path("test", "cached.txt", "digest", "model-b")
+    monkeypatch.setenv("RAG_GENERATION_REVISION", "revision-b")
+    second_revision = _chunk_cache_path("test", "cached.txt", "digest", "model-a")
+    monkeypatch.setenv("RAG_GENERATION_REVISION", "revision-a")
+    monkeypatch.setenv("RAG_LLM_SEED", "7")
+    second_seed = _chunk_cache_path("test", "cached.txt", "digest", "model-a")
+
+    assert len({first, second_model, second_revision, second_seed}) == 4
+
+
+def test_chunk_cache_path_bounds_long_source_component():
+    path = _chunk_cache_path("metadata-development-index", "very-long-" * 40, "digest", "model")
+    filename = Path(path).name
+
+    assert len(filename.encode()) < 220
+    assert len(f"{filename}.1234567.123456789012345.tmp".encode()) <= 255

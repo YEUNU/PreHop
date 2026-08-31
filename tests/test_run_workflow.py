@@ -1,16 +1,18 @@
-"""Tests for the retrieval-only query path on GraphRAG.run_workflow().
+"""Tests for the retrieval path on GraphRAG.run_workflow().
 
-The Prehop query path is deliberately thin: retrieve -> single LLM call,
-no agent loop, no reflection, no refinement. These tests pin the public
-contract of run_workflow() and the small helpers it composes
-(_ensure_answer_prefix, _strip_format_instruction, _build_unique_sources,
-_build_answer_prompt).
+The default Prehop query path is retrieve -> single synthesis call. A discrete
+evidence-conditioned rewrite ablation adds one preview stage, while an
+iterative ablation continues only while new questions select new chunks.
+These tests pin the public contract of run_workflow() and the small helpers it
+composes (_ensure_answer_prefix, _strip_format_instruction,
+_build_unique_sources, _build_answer_prompt).
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.config import RAGConfig
 from models.prehop.graphrag import GraphRAG
 
 # ---------------------------------------------------------------------------
@@ -85,7 +87,16 @@ def test_build_unique_sources_uses_source_identity_before_display_title():
 def test_build_unique_sources_preserves_retrieval_provenance():
     paths = [{"kind": "hop", "source_chunk_id": "seed", "depth": 1, "edge_rank": 0}]
     out = GraphRAG._build_unique_sources(
-        [{"id": "target", "title": "Doc", "source": "doc.txt", "sent_id": 2, "text": "evidence", "retrieval_paths": paths}]
+        [
+            {
+                "id": "target",
+                "title": "Doc",
+                "source": "doc.txt",
+                "sent_id": 2,
+                "text": "evidence",
+                "retrieval_paths": paths,
+            }
+        ]
     )
 
     assert out[0]["chunk_id"] == "target"
@@ -125,9 +136,10 @@ def test_role_query_validation_allows_empty_roles_and_bounds_excessive_roles():
         "q_minus": [],
         "q_plus": ["bridge?"],
     }
-    assert GraphRAG._validate_role_queries(
-        {"q_minus": ["one?"], "q_plus": ["one?", "two?", "three?", "four?"]}
-    ) == {"q_minus": ["one?"], "q_plus": ["one?", "two?", "three?"]}
+    assert GraphRAG._validate_role_queries({"q_minus": ["one?"], "q_plus": ["one?", "two?", "three?", "four?"]}) == {
+        "q_minus": ["one?"],
+        "q_plus": ["one?", "two?", "three?"],
+    }
 
 
 @pytest.mark.asyncio
@@ -158,6 +170,27 @@ async def test_role_aligned_rewrite_skips_queries_above_word_limit(monkeypatch):
 
     assert rewritten is None
     rag.llm.generate_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_evidence_conditioned_rewrite_is_grounded_in_preview(monkeypatch):
+    rag = GraphRAG(strategy="prehop")
+    rag.llm.generate_json = AsyncMock(return_value={"q_minus": ["Where is British Aerospace based?"], "q_plus": []})
+
+    rewritten = await rag._refine_query_roles(
+        "Which company follows the maker of ALARM?",
+        "British Aerospace offered ALARM.",
+        ["Which company makes ALARM?"],
+    )
+
+    assert rewritten == {
+        "q_minus": ["Where is British Aerospace based?"],
+        "q_plus": [],
+    }
+    prompt = rag.llm.generate_json.await_args.args[0][0]["content"]
+    assert "British Aerospace offered ALARM." in prompt
+    assert "Which company makes ALARM?" in prompt
+    assert rag.llm.generate_json.await_args.kwargs["temperature"] == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +291,196 @@ async def test_run_workflow_strips_benchmark_format_marker_before_retrieving():
         assert "[Benchmark Output Format]" not in synthesis_prompt
     finally:
         p.stop()
+
+
+@pytest.mark.asyncio
+async def test_evidence_conditioned_variant_previews_then_searches_new_role_queries(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "GRAPH_HOP_DEPTH", 1)
+    monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_VARIANT", "role_aligned_evidence")
+    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "global")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm = MagicMock()
+    rag.llm.generate_response = AsyncMock(return_value="final answer")
+    rag._rewrite_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["Which company makes ALARM?"], "q_plus": []}
+    )
+    rag._refine_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["Which company does British Aerospace follow?"], "q_plus": []}
+    )
+    preview_node = {
+        "id": "preview",
+        "title": "ALARM",
+        "sent_id": 0,
+        "text": "British Aerospace offered ALARM.",
+        "embedding": [1.0],
+    }
+    final_node = {
+        "id": "final",
+        "title": "Answer",
+        "sent_id": 0,
+        "text": "Final evidence.",
+        "embedding": [1.0],
+    }
+    rag.graph_search = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            ("preview context", [preview_node], {"retrieve_ms": 1.0, "traversal_ms": 2.0}),
+            ("final context", [final_node], {"retrieve_ms": 3.0, "traversal_ms": 4.0}),
+        ]
+    )
+
+    _answer, _sources, trace = await rag.run_workflow("Which company follows the maker of ALARM?")
+
+    assert rag.graph_search.await_count == 2
+    final_queries = rag.graph_search.await_args_list[1].kwargs["channel_queries"]
+    assert final_queries["q_minus"] == [
+        "Which company makes ALARM?",
+        "Which company does British Aerospace follow?",
+    ]
+    retrieve_trace = next(item for item in trace if item["step"] == "retrieve")
+    assert retrieve_trace["retrieve_ms"] == 4.0
+    assert retrieve_trace["traversal_ms"] == 6.0
+    assert any(item["step"] == "evidence_query_rewrite" for item in trace)
+
+
+@pytest.mark.asyncio
+async def test_evidence_conditioned_variant_reuses_preview_when_no_new_question(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "GRAPH_HOP_DEPTH", 1)
+    monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_VARIANT", "role_aligned_evidence")
+    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "global")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm = MagicMock()
+    rag.llm.generate_response = AsyncMock(return_value="answer")
+    rag._rewrite_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["direct?"], "q_plus": []}
+    )
+    rag._refine_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["direct?"], "q_plus": []}
+    )
+    node = {
+        "id": "one",
+        "title": "Doc",
+        "sent_id": 0,
+        "text": "Evidence.",
+        "embedding": [1.0],
+    }
+    rag.graph_search = AsyncMock(  # type: ignore[method-assign]
+        return_value=("context", [node], {"retrieve_ms": 1.0, "traversal_ms": 2.0})
+    )
+
+    await rag.run_workflow("question")
+
+    rag.graph_search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_list_ranking_runs_once_after_evidence_refinement(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "GRAPH_HOP_DEPTH", 1)
+    monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_VARIANT", "role_aligned_evidence_iterative")
+    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "role_body_list_ranking")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm = MagicMock()
+    rag.llm.generate_response = AsyncMock(return_value="answer")
+    rag._rewrite_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["direct?"], "q_plus": []}
+    )
+    rag._refine_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["direct?"], "q_plus": []}
+    )
+    preview = {
+        "id": "preview",
+        "title": "Preview",
+        "sent_id": 0,
+        "text": "preview evidence",
+    }
+    final = {"id": "final", "title": "Final", "sent_id": 0, "text": "final evidence"}
+    rag.graph_search = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            ("preview context", [preview], {"retrieve_ms": 1.0, "traversal_ms": 2.0}),
+            ("final context", [final], {"retrieve_ms": 3.0, "traversal_ms": 4.0}),
+        ]
+    )
+
+    _answer, sources, trace = await rag.run_workflow("question")
+
+    assert rag.graph_search.await_count == 2
+    assert rag.graph_search.await_args_list[0].kwargs["selection_variant"] == "role_body_rounds"
+    assert "selection_variant" not in rag.graph_search.await_args_list[1].kwargs
+    assert sources[0]["doc"] == "Final"
+    retrieve_trace = next(item for item in trace if item["step"] == "retrieve")
+    assert retrieve_trace["retrieve_ms"] == 4.0
+    assert retrieve_trace["traversal_ms"] == 6.0
+
+
+@pytest.mark.asyncio
+async def test_iterative_evidence_variant_continues_until_no_new_question(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "GRAPH_HOP_DEPTH", 1)
+    monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_VARIANT", "role_aligned_evidence_iterative")
+    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "global")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm = MagicMock()
+    rag.llm.generate_response = AsyncMock(return_value="final answer")
+    rag._rewrite_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["first dependency?"], "q_plus": []}
+    )
+    rag._refine_query_roles = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            {"q_minus": ["second dependency?"], "q_plus": []},
+            {"q_minus": [], "q_plus": ["third dependency?"]},
+            {"q_minus": [], "q_plus": ["third dependency?"]},
+        ]
+    )
+    nodes = [
+        {"id": identity, "title": identity, "sent_id": 0, "text": f"evidence {identity}", "embedding": [1.0]}
+        for identity in ("first", "second", "third")
+    ]
+    rag.graph_search = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            ("first context", [nodes[0]], {"retrieve_ms": 1.0, "traversal_ms": 2.0}),
+            ("second context", [nodes[1]], {"retrieve_ms": 3.0, "traversal_ms": 4.0}),
+            ("third context", [nodes[2]], {"retrieve_ms": 5.0, "traversal_ms": 6.0}),
+        ]
+    )
+
+    _answer, _sources, trace = await rag.run_workflow("multi-step question")
+
+    assert rag.graph_search.await_count == 3
+    assert rag._refine_query_roles.await_count == 3
+    final_queries = rag.graph_search.await_args_list[-1].kwargs["channel_queries"]
+    assert final_queries["q_minus"] == ["first dependency?", "second dependency?"]
+    assert final_queries["q_plus"] == ["third dependency?"]
+    refinements = [item for item in trace if item["step"] == "evidence_query_rewrite"]
+    assert len(refinements) == 3
+    retrieve_trace = next(item for item in trace if item["step"] == "retrieve")
+    assert retrieve_trace["retrieve_ms"] == 9.0
+    assert retrieve_trace["traversal_ms"] == 12.0
+
+
+@pytest.mark.asyncio
+async def test_iterative_evidence_variant_stops_when_selected_chunks_do_not_change(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "GRAPH_HOP_DEPTH", 1)
+    monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_VARIANT", "role_aligned_evidence_iterative")
+    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "global")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm = MagicMock()
+    rag.llm.generate_response = AsyncMock(return_value="final answer")
+    rag._rewrite_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["first dependency?"], "q_plus": []}
+    )
+    rag._refine_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["second dependency?"], "q_plus": []}
+    )
+    node = {"id": "same", "title": "Doc", "sent_id": 0, "text": "evidence", "embedding": [1.0]}
+    rag.graph_search = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            ("first context", [node], {"retrieve_ms": 1.0, "traversal_ms": 2.0}),
+            ("same context", [node], {"retrieve_ms": 3.0, "traversal_ms": 4.0}),
+        ]
+    )
+
+    await rag.run_workflow("multi-step question")
+
+    assert rag.graph_search.await_count == 2
+    rag._refine_query_roles.assert_awaited_once()
 
 
 @pytest.mark.asyncio

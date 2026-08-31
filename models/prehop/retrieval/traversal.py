@@ -23,6 +23,7 @@ class TraversalMixin:
         top_k: int,
         excluded_chunk_ids: set[str] | None = None,
         channel_queries: dict[str, list[str]] | None = None,
+        selection_variant: str | None = None,
     ) -> tuple:
         """Retrieve evidence through level-batched, duplicate-free graph expansion."""
         t0 = time.perf_counter()
@@ -45,6 +46,7 @@ class TraversalMixin:
             query_embedding=query_embedding,
             channel_queries=channel_queries,
             select_final=False,
+            selection_variant=selection_variant,
         )
         retrieve_ms = (time.perf_counter() - t_retrieve0) * 1000
 
@@ -64,14 +66,15 @@ class TraversalMixin:
             if self._node_identity(node) and self._node_identity(node) not in excluded_ids
         }
         base_candidate_ids = set(collected)
-        frontier_ids = list(collected)
+        traversal_seeds = [node for node in base_candidates if not bool(node.get("role_body_owner_only"))]
+        frontier_ids = [self._node_identity(node) for node in traversal_seeds]
         hop_source_question_ids = {
             self._node_identity(node): {
                 str(question_id).strip()
                 for question_id in (node.get("matched_qplus_ids") or [])
                 if str(question_id).strip()
             }
-            for node in base_candidates
+            for node in traversal_seeds
             if bool(node.get("dependency_seed"))
         }
         hop_source_question_ids = {
@@ -79,18 +82,52 @@ class TraversalMixin:
             for source_id, question_ids in hop_source_question_ids.items()
             if source_id and question_ids
         }
-        rows = await self._expand_frontier(frontier_ids, excluded_ids, hop_source_question_ids)
+        continuation_source_question_ids = {
+            self._node_identity(node): {
+                str(question_id).strip()
+                for question_id in (node.get("matched_qminus_ids") or [])
+                if str(question_id).strip()
+            }
+            for node in traversal_seeds
+            if bool(node.get("continuation_seed"))
+        }
+        continuation_source_question_ids = {
+            source_id: question_ids
+            for source_id, question_ids in continuation_source_question_ids.items()
+            if source_id and question_ids
+        }
+        rows = await self._expand_frontier(
+            frontier_ids,
+            excluded_ids,
+            hop_source_question_ids,
+            continuation_source_question_ids,
+            query_embedding,
+            top_k,
+        )
         for row, edge_rank in self._rank_frontier_rows(rows):
             target_id = str(row.get("id") or "").strip()
             path_type = str(row.get("path_type") or "").strip().lower()
-            if not target_id or target_id in excluded_ids or path_type not in {"next", "hop"}:
+            if not target_id or target_id in excluded_ids or path_type not in {"next", "hop", "continuation"}:
                 continue
             already_direct = target_id in base_candidate_ids
             candidate = collected.setdefault(
                 target_id,
                 {
                     key: row.get(key)
-                    for key in ("id", "title", "sent_id", "page", "text", "source", "embedding")
+                    for key in (
+                        "id",
+                        "title",
+                        "sent_id",
+                        "page",
+                        "text",
+                        "source",
+                        "author",
+                        "publisher",
+                        "published_at",
+                        "category",
+                        "url",
+                        "embedding",
+                    )
                 },
             )
             source_candidate = collected.get(str(row.get("source_id") or ""), {})
@@ -98,6 +135,8 @@ class TraversalMixin:
             if not already_direct:
                 if path_type == "hop":
                     inherited_score = float(source_channel_scores.get("q_plus", 0.0))
+                elif path_type == "continuation":
+                    inherited_score = float(source_channel_scores.get("q_minus", 0.0))
                 else:
                     inherited_score = float(source_candidate.get("representation_score", 0.0))
                 # A graph-only target is supported indirectly through one
@@ -110,7 +149,7 @@ class TraversalMixin:
                 if inherited_score > float(candidate.get("representation_score", 0.0)):
                     candidate["representation_score"] = inherited_score
             bridge_embeddings = [embedding for embedding in (row.get("bridge_embeddings") or []) if embedding]
-            if not already_direct and path_type == "hop" and bridge_embeddings:
+            if not already_direct and path_type in {"hop", "continuation"} and bridge_embeddings:
                 existing = candidate.setdefault("bridge_embeddings", [])
                 for embedding in bridge_embeddings:
                     if embedding not in existing:
@@ -126,7 +165,16 @@ class TraversalMixin:
             )
 
         ranked_candidates = list(collected.values())
-        nodes, _ = await self._score_and_select(query_embedding, ranked_candidates, top_k)
+        active_selection_variant = selection_variant or RAGConfig.SOURCE_SELECTION_VARIANT
+        score_kwargs = {"query_text": seed_query} if active_selection_variant == "role_body_list_ranking" else {}
+        if selection_variant is not None:
+            score_kwargs["selection_variant"] = selection_variant
+        nodes, _ = await self._score_and_select(
+            query_embedding,
+            ranked_candidates,
+            top_k,
+            **score_kwargs,
+        )
         output_nodes = [self._without_transient_retrieval_scores(node) for node in nodes]
         if not output_nodes:
             return "", [], timing()
@@ -137,7 +185,13 @@ class TraversalMixin:
         frontier_ids: list[str],
         excluded_ids: set[str],
         hop_source_question_ids: dict[str, set[str]],
+        continuation_source_question_ids: dict[str, set[str]] | None = None,
+        query_embedding: list[float] | None = None,
+        top_k: int | None = None,
     ) -> list[dict[str, Any]]:
+        continuation_source_question_ids = continuation_source_question_ids or {}
+        query_embedding = query_embedding or []
+        top_k = RAGConfig.DEFAULT_TOP_K if top_k is None else max(1, int(top_k))
         branches: list[str] = []
         if RAGConfig.GRAPH_EDGE_VARIANT in {"full", "next_only"}:
             branches.append(
@@ -149,6 +203,26 @@ class TraversalMixin:
                 """
             )
         if RAGConfig.GRAPH_EDGE_VARIANT in {"full", "hop_only"}:
+            if RAGConfig.QUESTION_SCHEMA == "linked_v2" and RAGConfig.CONTINUATION_EDGES_ENABLED:
+                continuation_branch = f"""
+                    MATCH (src)-[:HAS_Q_MINUS]->(matched_q:{self.q_minus_label})
+                          -[:ANSWER_ANCHOR]->(:{self.answer_anchor_label})
+                          -[:MENTIONED_IN]->(related:{self.chunk_label})
+                    WHERE src.id IN $continuation_source_ids
+                      AND matched_q.id IN coalesce($continuation_source_question_ids[src.id], [])
+                      AND related.source <> src.source
+                    WITH src, related,
+                         collect(DISTINCT matched_q.id) AS activated_question_ids,
+                         collect(DISTINCT matched_q.embedding) AS bridge_embeddings,
+                         vector.similarity.cosine(related.embedding, $query_embedding)
+                         AS expansion_score
+                    ORDER BY expansion_score DESC, related.id
+                    LIMIT $top_k
+                    RETURN related, 'continuation' AS path_type,
+                           bridge_embeddings,
+                           activated_question_ids
+                """
+                branches.append(continuation_branch)
             if RAGConfig.HOP_EDGE_FILTER == "none":
                 branches.append(
                     f"""
@@ -235,7 +309,11 @@ class TraversalMixin:
                 RETURN src.id AS source_id, related.id AS id,
                        related.title AS title, related.sent_id AS sent_id,
                        related.page AS page, related.text AS text,
-                       related.source AS source, related.embedding AS embedding,
+                       related.source AS source,
+                       related.author AS author, related.publisher AS publisher,
+                       related.published_at AS published_at,
+                       related.category AS category, related.url AS url,
+                       related.embedding AS embedding,
                        path_type, bridge_embeddings, activated_question_ids
                 ORDER BY source_id, path_type, id
             """
@@ -246,9 +324,15 @@ class TraversalMixin:
                     "excluded_ids": list(excluded_ids),
                     "hop_source_ids": sorted(hop_source_question_ids),
                     "hop_source_question_ids": {
-                        source_id: sorted(question_ids)
-                        for source_id, question_ids in hop_source_question_ids.items()
+                        source_id: sorted(question_ids) for source_id, question_ids in hop_source_question_ids.items()
                     },
+                    "continuation_source_ids": sorted(continuation_source_question_ids),
+                    "continuation_source_question_ids": {
+                        source_id: sorted(question_ids)
+                        for source_id, question_ids in continuation_source_question_ids.items()
+                    },
+                    "query_embedding": query_embedding,
+                    "top_k": top_k,
                     "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
                     "qplus_vector_index": self.q_plus_vector_index,
                 },

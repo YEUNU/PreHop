@@ -245,9 +245,7 @@ async def _verify_active_neo4j_snapshot(
     # identifiers containing periods such as ``U.S._...``.
     actual_source_ids = sorted(
         {
-            str(row.get("source") or "")
-            if strategy == "hoprag"
-            else Path(str(row.get("source") or "")).stem
+            str(row.get("source") or "") if strategy == "hoprag" else Path(str(row.get("source") or "")).stem
             for row in rows
         }
     )
@@ -275,8 +273,7 @@ async def _verify_active_neo4j_snapshot(
         recorded_omitted_digest = metadata.get("omitted_source_set_sha256")
         if omitted_source_ids:
             omitted_metadata_matches = (
-                recorded_omitted_count == len(omitted_source_ids)
-                and recorded_omitted_digest == omitted_digest
+                recorded_omitted_count == len(omitted_source_ids) and recorded_omitted_digest == omitted_digest
             )
         else:
             # Snapshot v2 predates explicit omission fields. It remains valid
@@ -734,9 +731,7 @@ def _resume_benchmark_rows(
         raise FileNotFoundError(f"Resume requires the matching trace artifact: {trace_file}")
     trace_rows = _read_jsonl_file(trace_file)
     if len(trace_rows) != len(prior_rows):
-        raise RuntimeError(
-            f"Resume trace count mismatch: details={len(prior_rows)}, traces={len(trace_rows)}"
-        )
+        raise RuntimeError(f"Resume trace count mismatch: details={len(prior_rows)}, traces={len(trace_rows)}")
 
     retained: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -1161,12 +1156,15 @@ async def run_benchmark(
                 "ablation": {
                     "q_minus": RAGConfig.ABLATION_Q_MINUS,
                     "q_plus": RAGConfig.ABLATION_Q_PLUS,
+                    "sentence_channel_enabled": RAGConfig.SENTENCE_CHANNEL_ENABLED,
                     **({"chunk_sentences": RAGConfig.CHUNK_SENTENCES} if strategy in {"prehop", "naive"} else {}),
                     "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
                     "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
                     "graph_edge_variant": RAGConfig.GRAPH_EDGE_VARIANT,
                     "hop_edge_filter": RAGConfig.HOP_EDGE_FILTER,
                     "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
+                    "continuation_edges_enabled": RAGConfig.CONTINUATION_EDGES_ENABLED,
+                    "continuation_anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY,
                     "hop_semantic_variant": RAGConfig.HOP_SEMANTIC_VARIANT,
                     "question_schema": RAGConfig.QUESTION_SCHEMA,
                     "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
@@ -1245,12 +1243,15 @@ async def run_benchmark(
             "ablation": {
                 "q_minus": RAGConfig.ABLATION_Q_MINUS,
                 "q_plus": RAGConfig.ABLATION_Q_PLUS,
+                "sentence_channel_enabled": RAGConfig.SENTENCE_CHANNEL_ENABLED,
                 **({"chunk_sentences": RAGConfig.CHUNK_SENTENCES} if strategy in {"prehop", "naive"} else {}),
                 "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
                 "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
                 "graph_edge_variant": RAGConfig.GRAPH_EDGE_VARIANT,
                 "hop_edge_filter": RAGConfig.HOP_EDGE_FILTER,
                 "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
+                "continuation_edges_enabled": RAGConfig.CONTINUATION_EDGES_ENABLED,
+                "continuation_anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY,
                 "hop_semantic_variant": RAGConfig.HOP_SEMANTIC_VARIANT,
                 "question_schema": RAGConfig.QUESTION_SCHEMA,
                 "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
@@ -1433,11 +1434,7 @@ async def run_benchmark(
                 if _benchmark_checkpoint_due(len(results), total_queries, benchmark_checkpoint_every):
                     summary = _recompute_and_persist()
 
-    pending_items = [
-        (i, item)
-        for i, item in enumerate(benchmark_data)
-        if str(item["_id"]) not in retained_query_ids
-    ]
+    pending_items = [(i, item) for i, item in enumerate(benchmark_data) if str(item["_id"]) not in retained_query_ids]
     await asyncio.gather(
         *[_process_query(i, item) for i, item in pending_items],
         return_exceptions=False,

@@ -260,9 +260,7 @@ def test_hoprag_musique_edge_groups_resolve_same_title_by_paragraph_identity(tmp
     second_id = paragraph_identity("Repeated", "second body")
     first_file = f"musique_{first_id.removeprefix('musique:')}.txt"
     second_file = f"musique_{second_id.removeprefix('musique:')}.txt"
-    (staged_dir / first_file).write_text(
-        f"Title: Repeated\nParagraph-ID: {first_id}\n\nfirst body", encoding="utf-8"
-    )
+    (staged_dir / first_file).write_text(f"Title: Repeated\nParagraph-ID: {first_id}\n\nfirst body", encoding="utf-8")
     (staged_dir / second_file).write_text(
         f"Title: Repeated\nParagraph-ID: {second_id}\n\nsecond body", encoding="utf-8"
     )

@@ -2,15 +2,14 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> Benchmark numbers are intentionally omitted from this overview. Paper
-> results require complete, integrity-checked runs on the prepared split.
+> Final numbers below come from complete, integrity-checked prepared splits.
 
 Reference implementation of a GraphRAG candidate whose core design is
 indexing-time HOP construction: inspectable question-level evidence links are
 constructed once, offline, into chunk-to-chunk edges, so the query path expands
-the graph deterministically with no per-hop LLM reasoning. Retrieval searches
-the stored representations and graph without an agent loop, reflection, or
-refinement.
+the graph deterministically with no per-hop LLM edge decision. Query-time
+generation is limited to role-based query refinement, one complete candidate
+ranking, and final answer synthesis.
 
 Documentation is separated by role: this README is the user-facing overview
 and command guide; [ARCHITECTURE](docs/ARCHITECTURE.md) is the normative
@@ -37,17 +36,20 @@ Chunking is fixed-size (page-scoped sentence windows) — see
 
 For questions of at most 32 words, the query path first produces bounded Q⁻
 and Q⁺ retrieval views; longer questions retain their original explicit
-constraints. The body channel always uses the original question. Retrieval
-then searches Q⁻/body direct evidence and Q⁺ dependency seeds in parallel,
-applies reciprocal-rank
-fusion of representation and semantic orders, deterministic batched 1-hop
-traversal over bidirectional `NEXT` and outgoing `HOP_ANSWER` edges, and a
-single LLM synthesis call. Rank evidence propagated over a graph edge is
+constraints. Retrieved evidence can produce additional non-duplicate role
+views. Refinement stops when no new role view or selected chunk appears. The
+body channel always uses the original question. Retrieval searches Q⁻/body
+direct evidence and Q⁺ dependency seeds in parallel, applies reciprocal-rank
+fusion of representation and semantic orders, and performs deterministic
+batched 1-hop traversal over bidirectional `NEXT` and outgoing `HOP_ANSWER`
+edges. One complete-list call ranks the resulting candidate union and the
+first 12 paragraphs feed one synthesis call. Rank evidence propagated over a graph edge is
 attenuated by reciprocal path length, so indirect evidence does not enter the
 representation order as strongly as a directly retrieved owner.
 Q+ retrieval retains the exact matched question-node IDs when results collapse
-to owner chunks. The default activates materialized reciprocal provenance on a
-matched Q+ owner; exact-ID activation remains an ablation.
+to owner chunks. The default activates every stored HOP provenance item on a
+matched Q+ owner; reciprocal filtering and exact-ID activation remain
+ablations.
 Within each vector or full-text modality, backend scores establish only that
 modality's deterministic rank with a stable node-ID tie break; raw scores are
 never mixed across modalities.
@@ -68,6 +70,33 @@ The optional LLM judge is disabled by default and is not a primary metric.
 Samples are development artifacts. Complete-split tables are reported for
 benchmark comparability, while selection-free paired claims exclude the fixed
 development query IDs as specified in the local paper protocol.
+
+### Final full-split results
+
+All entries use the prepared full split. The gate chooses the strongest
+non-Prehop row independently for each official metric and requires a 10%
+relative gain.
+
+| MultiHop-RAG system | Hits@4 | Hits@10 | MRR@10 | MAP@10 |
+|---|---:|---:|---:|---:|
+| Prehop | **0.9268** | **0.9494** | **0.8232** | **0.4550** |
+| Naive RAG | 0.6820 | 0.8404 | 0.5442 | 0.2586 |
+| HopRAG | 0.6843 | 0.8457 | 0.5660 | 0.2800 |
+| MS GraphRAG | 0.4705 | 0.5348 | 0.3033 | 0.1482 |
+
+Prehop's relative gains over the strongest comparison result are 35.45%,
+12.27%, 45.44%, and 62.47%, respectively.
+
+| MuSiQue system | Answer EM | Answer F1 | Support P | Support R | Support F1 |
+|---|---:|---:|---:|---:|---:|
+| Prehop | **0.4150** | **0.5115** | **0.2034** | **0.8840** | **0.3267** |
+| Naive RAG | 0.2106 | 0.2726 | 0.1364 | 0.6241 | 0.2215 |
+| HopRAG | 0.2619 | 0.3394 | 0.0889 | 0.6982 | 0.1566 |
+| MS GraphRAG | 0.0000 | 0.0584 | 0.0710 | 0.5749 | 0.1236 |
+
+Prehop's relative gains over the strongest comparison result are 58.45%,
+50.71%, 49.12%, 26.60%, and 47.50%, respectively. Both generated gate
+artifacts are paper-eligible and pass every metric.
 
 ---
 
@@ -293,7 +322,28 @@ Batch payloads must contain valid explicit `score` and `groundedness` fields;
 Partial or malformed output keeps its reconciliation manifest and is never
 converted into a paper metric. Query-level `paired_bootstrap.py` produces
 uncertainty intervals for paired strategy differences over the same evaluated
-questions.
+questions. A query-only ablation should also pass
+`--expected-ablation-difference <metadata-key>`; the comparison then fails if
+any unlisted ablation setting changed. It also requires identical active-index
+snapshot, model identities and seed, code provenance, benchmark concurrency,
+and judge state. Comparisons between intentionally different index tags require
+the explicit `--allow-index-variant` flag and still require identical dataset,
+corpus fingerprint, evaluation scope, and query IDs.
+
+The predeclared relative-improvement requirement is checked from completed
+artifacts rather than copied into a hand-edited table:
+
+```bash
+.venv/bin/python scripts/performance_gate.py \
+  --prehop <prehop-summary.json> \
+  --baselines <naive-summary.json> <hoprag-summary.json> <ms-summary.json> \
+  --margin 0.10 --output data/results/<run-id>/official_metric_gate.json
+```
+
+For each dataset-specific official metric, the gate independently selects the
+strongest supplied non-Prehop baseline and requires a 10% relative gain. Only
+complete full-split artifacts are paper-eligible; sample use requires
+`--allow-exploratory` and remains diagnostic.
 
 ---
 
@@ -313,16 +363,17 @@ Query-only ablations do not require rebuilding the index:
 | `RAG_HYPO_CHANNEL_VARIANT` | `full` | `body_only`, `qminus_only`, `qplus_only`, `single_combined` |
 | `RAG_GRAPH_HOP_DEPTH` | `1` | `0` disables graph expansion |
 | `RAG_GRAPH_EDGE_VARIANT` | `full` | `hop_only` or `next_only` isolates traversal-edge contributions |
-| `RAG_HOP_EDGE_FILTER` | `reciprocal_offline` | `none` disables the filter; `reciprocal` recomputes the same reverse-Q+ rule online |
+| `RAG_HOP_EDGE_FILTER` | `none` | `reciprocal_offline` uses materialized reverse-Q+ agreement; `reciprocal` recomputes it online |
 | `RAG_QPLUS_HOP_ACTIVATION` | `owner` | `exact` restricts activation to the matched Q+ IDs as an ablation |
-| `RAG_QUERY_REWRITE_VARIANT` | `role_aligned` | `none` disables rewriting; `role_aligned_additive` also retains the original question in Q−/Q+ views |
+| `RAG_CONTINUATION_EDGES_ENABLED` | `false` | `true` activates exact matched-Q− continuation edges on a `linked_v2` index |
+| `RAG_QUERY_REWRITE_VARIANT` | `role_aligned_evidence_iterative` | `none` disables rewriting; `role_aligned` performs only the initial bounded rewrite |
 | `RAG_QUERY_REWRITE_MAX_WORDS` | `32` | Questions above the limit skip rewriting; `0` rewrites every question |
-| `RAG_SOURCE_SELECTION_VARIANT` | `global` | `round_robin` enables source diversification as an ablation |
+| `RAG_SOURCE_SELECTION_VARIANT` | `role_body_list_ranking` | `global` uses the fixed fused order directly; `round_robin` diversifies sources |
 
 The primary causal ablation is cumulative through body-only retrieval, question
 representations, and NEXT-only traversal. Raw and reciprocal HOP then form two
 branches from the same NEXT-only control. Exact matched-Q+ activation is a
-stricter sensitivity analysis of the reciprocal-HOP configuration.
+stricter sensitivity analysis of the selected raw-HOP branch.
 Direction-only variants are supporting diagnostics. The complete protocol is
 fixed in the local paper specification.
 
@@ -332,11 +383,16 @@ the same immutable index and are recorded in result metadata.
 `RAG_PRECOMPUTE_RECIPROCAL_HOPS=true` are index-time options; the former stores
 source-verifiable structured Q−/Q+, and the latter enables the
 `reciprocal_offline` query filter.
+`RAG_QUESTION_SCHEMA=linked_v2` is an experimental, separately indexed schema.
+It adds complete grounded Q− answer anchors and exact cross-document
+continuation links. Repeated answers share one anchor node, so common entities
+do not create a source-question × target-mention edge product. The links can be
+enabled or disabled at query time on the same snapshot. Both tested
+continuation policies regressed on MuSiQue and are not operational defaults.
 
-The query-time defaults selected from the development samples use the legacy
-schema, owner activation, materialized reciprocal filtering, and role-aligned
-rewriting for questions of at most 32 words. This selection is not a held-out
-paper result.
+The final query-time defaults use the legacy schema, owner activation,
+unfiltered stored HOP edges, evidence-conditioned role rewriting for questions
+of at most 32 words, and complete candidate-list ranking. Top-k remains 12.
 
 ---
 
@@ -351,11 +407,11 @@ Full list in the paper appendix; the most important:
 | Input capacity | generation 262,144; embedding 32,768 tokens | configured endpoint limits |
 | Questions per direction | 3 | fixed output-schema bound for Q− and Q+ |
 | HOP targets | at most one candidate per Q+ | nearest cross-document Q− owner |
-| Query representations | role-normalized set union | original body query; bounded Q−/Q+ views only for questions of at most 32 words |
-| Query rewrite | role-aligned, at most 32 input words | up to three Q− and three Q+ views; longer questions skip the call |
+| Query representations | role-normalized set union | original body query plus bounded Q−/Q+ views for questions of at most 32 words |
+| Query rewrite | evidence-conditioned role refinement, at most 32 input words | stops on no new role question or no new selected chunk |
 | Query-time rank fusion | equal reciprocal ranks | representation order + body/bridge semantic order; no fitted weight |
 | Graph rank propagation | reciprocal path length | a one-edge target inherits half of its source rank evidence |
-| Offline HOP selection | reciprocal Q+→Q− owner resolution | reverse Q−→Q+ agreement is materialized on the HOP edge |
+| Offline HOP selection | nearest cross-document Q+→Q− owner resolution | reciprocal provenance is retained only for ablation |
 | Q+ activation | owner | exact matched-Q+ activation is an ablation |
 | Embedding dim | `NEO4J_VECTOR_DIMENSIONS` | must match the configured embedding model's output dimension |
 
@@ -363,8 +419,9 @@ Offline candidate construction is rank-based and has no learned reranker,
 fixed cosine threshold, domain gate, semantic judge, or tuned acceptance
 score. Query-time candidate ordering is also threshold-free: it retains each
 representation's reciprocal ranks, combines the resulting representation
-order with the semantic order using equal reciprocal ranks, and makes no LLM
-call before final answer synthesis.
+order with the semantic order using equal reciprocal ranks, then asks the
+configured generation model for one opaque-ID ranking of the complete
+candidate pool before final answer synthesis.
 
 ---
 

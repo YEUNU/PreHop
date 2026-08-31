@@ -4,6 +4,8 @@ from collections import defaultdict, deque
 from typing import Any
 
 from core.config import RAGConfig
+from models.prehop.llm_json import generate_json_or_raise
+from utils.prompts.query_rewrite import build_evidence_ranking_prompt
 from utils.similarity import cosine_similarity
 
 
@@ -32,16 +34,19 @@ class SimilarityScoringMixin:
         query_embedding: list[float],
         candidates: list[dict[str, Any]],
         top_k: int,
+        query_text: str = "",
+        selection_variant: str | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Fuse representation ranks with body and stored-Q+ semantics.
+        """Fuse representation ranks with body and stored bridge semantics.
 
-        The best matching individual source Q+ represents a traversed HOP
-        bridge. The conservative default takes its minimum with direct body
+        The best matching individual source Q+ represents a traversed
+        dependency bridge; linked continuation paths use the matched Q− in the
+        same role. The conservative default takes its minimum with direct body
         relevance. A query-time ablation uses the bridge alone because the
-        offline Q+->Q- edge already selected the target body. Equal reciprocal
-        ranks then combine the resulting semantic order with the Q-/body/Q+
-        retrieval order. Neither path compares backend-specific raw scores or
-        introduces a fitted interpolation weight or threshold.
+        offline graph already selected the target body. Equal reciprocal ranks
+        then combine the resulting semantic order with the Q-/body/Q+ retrieval
+        order. Neither path compares backend-specific raw scores or introduces
+        a fitted interpolation weight or threshold.
         """
         if not candidates:
             return [], []
@@ -52,9 +57,7 @@ class SimilarityScoringMixin:
             body_score = self._validated_similarity(query_embedding, candidate.get("embedding"))
             bridge_embeddings = candidate.get("bridge_embeddings") or []
             bridge_scores = [
-                self._validated_similarity(query_embedding, embedding)
-                for embedding in bridge_embeddings
-                if embedding
+                self._validated_similarity(query_embedding, embedding) for embedding in bridge_embeddings if embedding
             ]
             bridge_score = max(bridge_scores) if bridge_scores else None
             if bridge_score is None:
@@ -78,9 +81,7 @@ class SimilarityScoringMixin:
             key=lambda item: (float(item.get("representation_score", 0.0)), self._node_identity(item)),
             reverse=True,
         )
-        semantic_ranks = {
-            self._node_identity(candidate): rank for rank, candidate in enumerate(semantic_order)
-        }
+        semantic_ranks = {self._node_identity(candidate): rank for rank, candidate in enumerate(semantic_order)}
         representation_ranks = {
             self._node_identity(candidate): rank
             for rank, candidate in enumerate(representation_order)
@@ -102,21 +103,164 @@ class SimilarityScoringMixin:
             ),
             reverse=True,
         )
-        if RAGConfig.SOURCE_SELECTION_VARIANT == "global":
+        active_selection_variant = selection_variant or RAGConfig.SOURCE_SELECTION_VARIANT
+        if active_selection_variant == "global":
             selected = ordered[:top_k]
-        elif RAGConfig.SOURCE_SELECTION_VARIANT == "round_robin":
+        elif active_selection_variant == "round_robin":
             selected = self._source_round_robin(ordered, top_k)
-        elif RAGConfig.SOURCE_SELECTION_VARIANT == "source_balanced":
+        elif active_selection_variant == "source_balanced":
             selected = self._source_balanced(ordered, top_k)
-        elif RAGConfig.SOURCE_SELECTION_VARIANT == "graph_pairs":
+        elif active_selection_variant == "graph_pairs":
             selected = self._graph_pairs(ordered, top_k)
-        elif RAGConfig.SOURCE_SELECTION_VARIANT == "source_balanced_graph_pairs":
+        elif active_selection_variant == "source_balanced_graph_pairs":
             selected = self._graph_pairs(self._source_balanced_order(ordered), top_k)
+        elif active_selection_variant == "role_body_owners":
+            selected = self._role_body_owners(ordered, top_k)
+        elif active_selection_variant == "role_body_rounds":
+            selected = self._role_body_rounds(ordered, top_k)
+        elif active_selection_variant == "role_body_list_ranking":
+            selected = await self._role_body_list_ranking(query_text, ordered, top_k)
         else:
-            raise ValueError(
-                f"Unsupported source selection variant: {RAGConfig.SOURCE_SELECTION_VARIANT!r}"
-            )
+            raise ValueError(f"Unsupported source selection variant: {active_selection_variant!r}")
         return selected, ordered
+
+    async def _role_body_list_ranking(
+        self,
+        query_text: str,
+        ordered: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Rank the complete established candidate pool by opaque paragraph ID."""
+        if not query_text.strip():
+            raise ValueError("Body evidence list ranking requires the original query text")
+
+        pool: list[dict[str, Any]] = []
+        seen_node_ids: set[str] = set()
+        for node in ordered:
+            node_id = self._node_identity(node)
+            if node_id and node_id not in seen_node_ids:
+                seen_node_ids.add(node_id)
+                pool.append(node)
+        if not pool:
+            return ordered[:top_k]
+
+        candidate_ids = [f"C{index:03d}" for index in range(len(pool))]
+        node_by_candidate_id = dict(zip(candidate_ids, pool, strict=True))
+        prompt = build_evidence_ranking_prompt(
+            query_text,
+            [
+                (
+                    candidate_id,
+                    str(node.get("title") or node.get("doc") or ""),
+                    "; ".join(
+                        f"{label}: {node[key]}"
+                        for key, label in (
+                            ("publisher", "Publisher"),
+                            ("published_at", "Published"),
+                            ("author", "Author"),
+                            ("category", "Category"),
+                        )
+                        if node.get(key)
+                    ),
+                    str(node.get("text") or ""),
+                )
+                for candidate_id, node in node_by_candidate_id.items()
+            ],
+            top_k,
+        )
+        payload = await generate_json_or_raise(
+            self.llm,
+            [{"role": "user", "content": prompt}],
+            "evidence ranking",
+            f"query={query_text!r}",
+            required_fields={"ranking": list},
+            temperature=0.0,
+            max_tokens=1024,
+        )
+
+        ranking: list[str] = []
+        for value in payload["ranking"]:
+            candidate_id = str(value)
+            if candidate_id not in node_by_candidate_id:
+                continue
+            if candidate_id not in ranking:
+                ranking.append(candidate_id)
+        ranking.extend(candidate_id for candidate_id in candidate_ids if candidate_id not in ranking)
+
+        selected = [node_by_candidate_id[candidate_id] for candidate_id in ranking[:top_k]]
+        selected_ids = {self._node_identity(node) for node in selected}
+        for node in ordered:
+            node_id = self._node_identity(node)
+            if len(selected) >= top_k:
+                break
+            if node_id and node_id not in selected_ids:
+                selected.append(node)
+                selected_ids.add(node_id)
+        return selected
+
+    @classmethod
+    def _role_body_rounds(
+        cls,
+        ordered: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Give every generated role view one body rank before the next rank."""
+        by_rank: dict[int, dict[str, tuple[dict[str, Any], float]]] = defaultdict(dict)
+        for node in ordered:
+            node_id = cls._node_identity(node)
+            for entry in node.get("role_body_round_entries") or []:
+                rank = int(entry["rank"])
+                score = float(entry.get("score", 0.0))
+                current = by_rank[rank].get(node_id)
+                if current is None or score > current[1]:
+                    by_rank[rank][node_id] = (node, score)
+
+        selected: list[dict[str, Any]] = []
+        selected_ids: set[str] = set()
+
+        def append(node: dict[str, Any]) -> None:
+            node_id = cls._node_identity(node)
+            if node_id and node_id not in selected_ids and len(selected) < top_k:
+                selected.append(node)
+                selected_ids.add(node_id)
+
+        for rank in sorted(by_rank):
+            wave = sorted(
+                by_rank[rank].values(),
+                key=lambda item: (-item[1], cls._node_identity(item[0])),
+            )
+            for node, _score in wave:
+                append(node)
+        for node in ordered:
+            append(node)
+        return selected
+
+    @classmethod
+    def _role_body_owners(
+        cls,
+        ordered: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Retain each generated role view's first body result, then global order."""
+        owner_by_order: dict[int, dict[str, Any]] = {}
+        for node in ordered:
+            for owner_order in node.get("role_body_owner_orders") or []:
+                owner_by_order.setdefault(int(owner_order), node)
+
+        selected: list[dict[str, Any]] = []
+        selected_ids: set[str] = set()
+
+        def append(node: dict[str, Any]) -> None:
+            node_id = cls._node_identity(node)
+            if node_id and node_id not in selected_ids and len(selected) < top_k:
+                selected.append(node)
+                selected_ids.add(node_id)
+
+        for owner_order in sorted(owner_by_order):
+            append(owner_by_order[owner_order])
+        for node in ordered:
+            append(node)
+        return selected
 
     @staticmethod
     def _source_round_robin(ordered: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:

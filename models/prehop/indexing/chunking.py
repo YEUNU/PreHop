@@ -21,6 +21,8 @@ from utils.prompts import (
     GROUNDED_HOPRAG_PROMPT,
     HOPRAG_FORMAT_INSTRUCTION,
     HOPRAG_PROMPT,
+    LINKED_HOPRAG_FORMAT_INSTRUCTION,
+    LINKED_HOPRAG_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,13 +36,13 @@ def _make_semantic_chunk_id(source, title, sent_id):
 # Chunk cache for skipping repeated question generation.
 # After a successful `extract_knowledge` we persist the resulting chunks
 # (Q-/Q+ and text/page/sent_id metadata) to
-# `data/index_cache/<version>/<corpus_tag>/<source>__<sha8>__<ablation_sig>.json`.
+# `data/index_cache/<version>/<corpus_tag>/<bounded-source>__<sha8>__<ablation_sig>.json`.
 # Rerunning indexing on the same file under the same generation settings
 # flags and prompt text loads the cache and returns the prior knowledge dict
 # Embeddings use a separate cache keyed by model, revision, encoding role,
 # dimensions, instruction, endpoint, and normalized text.
 
-_CHUNK_CACHE_VERSION = "v1"  # v1 preserves raw table/pipe text; no table-to-text generation
+_CHUNK_CACHE_VERSION = "v3"  # v3 preserves grounded questions when optional linked anchors are invalid
 
 
 def _chunk_cache_root() -> str:
@@ -57,15 +59,27 @@ def _prompt_sig() -> str:
     entries are never reused under a changed prompt — they just sit
     untouched on disk under their old key (nothing is deleted) while a fresh
     run writes new entries under the new key."""
-    combined = (
-        GROUNDED_HOPRAG_PROMPT + GROUNDED_HOPRAG_FORMAT_INSTRUCTION
-        if RAGConfig.QUESTION_SCHEMA == "grounded_v1"
-        else HOPRAG_PROMPT + HOPRAG_FORMAT_INSTRUCTION
-    )
+    if RAGConfig.QUESTION_SCHEMA == "linked_v2":
+        combined = LINKED_HOPRAG_PROMPT + LINKED_HOPRAG_FORMAT_INSTRUCTION
+    elif RAGConfig.QUESTION_SCHEMA == "grounded_v1":
+        combined = GROUNDED_HOPRAG_PROMPT + GROUNDED_HOPRAG_FORMAT_INSTRUCTION
+    else:
+        combined = HOPRAG_PROMPT + HOPRAG_FORMAT_INSTRUCTION
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:8]
 
 
-def _ablation_signature() -> str:
+def _generation_signature(generation_model_id: str) -> str:
+    payload = "|".join(
+        (
+            str(generation_model_id or ""),
+            os.environ.get("RAG_GENERATION_REVISION", "").strip(),
+            os.environ.get("RAG_LLM_SEED", "").strip(),
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _ablation_signature(generation_model_id: str = "") -> str:
     """Cache key fragment that invalidates when the chunking-relevant
     ablation flags, chunk-size setting, or prompt text change (different
     ablation/prompt = different chunk shape or content)."""
@@ -75,6 +89,7 @@ def _ablation_signature() -> str:
         f"-cs={RAGConfig.CHUNK_SENTENCES}"
         f"-schema={RAGConfig.QUESTION_SCHEMA}"
         f"-prompt={_prompt_sig()}"
+        f"-generation={_generation_signature(generation_model_id)}"
     )
 
 
@@ -82,18 +97,40 @@ def _content_sha8(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
-def _chunk_cache_path(corpus_tag: str, source: str, content_sha: str) -> str:
+def _chunk_cache_path(
+    corpus_tag: str,
+    source: str,
+    content_sha: str,
+    generation_model_id: str = "",
+) -> str:
     safe_tag = re.sub(r"[^A-Za-z0-9_-]+", "_", corpus_tag or "default")
     safe_src = re.sub(r"[^A-Za-z0-9_.-]+", "_", source or "doc")
-    abl = re.sub(r"[^A-Za-z0-9=_-]+", "_", _ablation_signature())
+    if len(safe_src) > 96:
+        source_digest = hashlib.sha256(safe_src.encode("utf-8")).hexdigest()[:16]
+        safe_src = f"{safe_src[:64]}-{source_digest}"
+    abl = re.sub(
+        r"[^A-Za-z0-9=_-]+",
+        "_",
+        _ablation_signature(generation_model_id),
+    )
     fname = f"{safe_src}__{content_sha}__{abl}.json"
     return os.path.join(_chunk_cache_root(), _CHUNK_CACHE_VERSION, safe_tag, fname)
 
 
-def _chunk_cache_load(corpus_tag: str, source: str, content: str) -> "dict[str, Any] | None":
+def _chunk_cache_load(
+    corpus_tag: str,
+    source: str,
+    content: str,
+    generation_model_id: str = "",
+) -> "dict[str, Any] | None":
     if not _chunk_cache_enabled():
         return None
-    path = _chunk_cache_path(corpus_tag, source, _content_sha8(content))
+    path = _chunk_cache_path(
+        corpus_tag,
+        source,
+        _content_sha8(content),
+        generation_model_id,
+    )
     if not os.path.exists(path):
         return None
     with open(path, "r", encoding="utf-8") as fh:
@@ -122,10 +159,21 @@ def _chunk_cache_load(corpus_tag: str, source: str, content: str) -> "dict[str, 
     return data
 
 
-def _chunk_cache_save(corpus_tag: str, source: str, content: str, knowledge: dict) -> None:
+def _chunk_cache_save(
+    corpus_tag: str,
+    source: str,
+    content: str,
+    knowledge: dict,
+    generation_model_id: str = "",
+) -> None:
     if not _chunk_cache_enabled():
         return
-    path = _chunk_cache_path(corpus_tag, source, _content_sha8(content))
+    path = _chunk_cache_path(
+        corpus_tag,
+        source,
+        _content_sha8(content),
+        generation_model_id,
+    )
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_path = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as fh:
@@ -223,7 +271,12 @@ class ChunkingMixin:
         # The on-disk cache skips Q-/Q+ generation for unchanged source text.
         # when the same source content was already chunked under the same
         # ablation flags. Cache key = sha256(content) + ablation signature.
-        cached = _chunk_cache_load(self.corpus_tag, source, content)
+        cached = _chunk_cache_load(
+            self.corpus_tag,
+            source,
+            content,
+            self.indexing_model_id,
+        )
         if cached is not None:
             cached_title = cached.get("title", "Unknown")
             chunk_count = len(cached.get("chunks") or [])
@@ -313,5 +366,11 @@ class ChunkingMixin:
             )
 
         knowledge = {"title": title, "chunks": final_chunks}
-        _chunk_cache_save(self.corpus_tag, source, content, knowledge)
+        _chunk_cache_save(
+            self.corpus_tag,
+            source,
+            content,
+            knowledge,
+            self.indexing_model_id,
+        )
         return knowledge

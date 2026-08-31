@@ -189,9 +189,7 @@ def test_ms_extract_sources_rejects_unknown_or_incomplete_provenance():
 
 def test_ms_source_uses_integrity_sidecar_title_after_header_removal():
     adapter = _adapter_with_document_maps()
-    adapter._source_id_to_display_title = {
-        "musique_aabbccddeeff00112233445566778899": "Mapped Display Title"
-    }
+    adapter._source_id_to_display_title = {"musique_aabbccddeeff00112233445566778899": "Mapped Display Title"}
 
     source = adapter._extract_sources({"sources": pd.DataFrame([{"id": 7, "text": "Clean evidence."}])})[0]
 

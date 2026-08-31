@@ -128,7 +128,11 @@ def _validate_cached_node(
         raise RuntimeError(f"HopRAG cache entry contains corpus metadata for {doc_id}")
 
     keywords = node.get("keywords")
-    if not isinstance(keywords, list) or not keywords or any(not isinstance(item, str) or not item for item in keywords):
+    if (
+        not isinstance(keywords, list)
+        or not keywords
+        or any(not isinstance(item, str) or not item for item in keywords)
+    ):
         raise RuntimeError(f"HopRAG cache entry has invalid keywords for {doc_id}")
     embedding = np.asarray(node.get("embed"))
     if embedding.shape != (_EMBED_DIM,) or not np.isfinite(embedding).all():
@@ -392,9 +396,7 @@ class _VLLMEmbedClient:
             r.raise_for_status()
             data = sorted(r.json()["data"], key=lambda item: int(item.get("index", 0)))
             if len(data) != len(batch):
-                raise ValueError(
-                    f"HopRAG embedding count mismatch: expected {len(batch)}, got {len(data)}"
-                )
+                raise ValueError(f"HopRAG embedding count mismatch: expected {len(batch)}, got {len(data)}")
             for d in data:
                 vector = d.get("embedding")
                 if not isinstance(vector, list) or len(vector) != self.dim:
@@ -932,9 +934,7 @@ def _patch_create_nodes_offline_parallel() -> None:
         # The upstream aggregate ``docid2nodes.json`` has no parser/version
         # binding. Only a per-document cache that passed the versioned digest
         # check is safe to resume.
-        docs_to_process = [
-            d for d in docs_pool[start_index : start_index + span] if d not in cached_doc_ids
-        ]
+        docs_to_process = [d for d in docs_pool[start_index : start_index + span] if d not in cached_doc_ids]
 
         import config as _cfg
 
@@ -943,7 +943,7 @@ def _patch_create_nodes_offline_parallel() -> None:
             "%d in main cache | doc_workers=%d chunk_threads=%d",
             len(docs_to_process),
             len(cached_doc_ids),
-                    len(self.done),
+            len(self.done),
             _doc_workers,
             _cfg.max_thread_num,
         )
@@ -1475,7 +1475,9 @@ def _build_official_edge_groups(
         title = first_line.removeprefix("Title: ").strip()
         if title:
             title_to_files.setdefault(title, []).append(path.name)
-        paragraph_id = second_line.removeprefix("Paragraph-ID: ").strip() if second_line.startswith("Paragraph-ID: ") else ""
+        paragraph_id = (
+            second_line.removeprefix("Paragraph-ID: ").strip() if second_line.startswith("Paragraph-ID: ") else ""
+        )
         if paragraph_id:
             previous = paragraph_id_to_file.setdefault(paragraph_id, path.name)
             if previous != path.name:
@@ -1591,9 +1593,7 @@ def _prune_stale_hoprag_sources(builder, staged_files: list[str], edge_type: str
             f"MATCH (n:{builder.label}) WHERE {stale_where} DETACH DELETE n",
             {"active_sources": active_sources},
         ).consume()
-        session.run(
-            f"MATCH (a:{builder.label})-[r:{edge_type}]-(b:{builder.label}) WITH DISTINCT r DELETE r"
-        ).consume()
+        session.run(f"MATCH (a:{builder.label})-[r:{edge_type}]-(b:{builder.label}) WITH DISTINCT r DELETE r").consume()
     logger.info(
         "HopRAG snapshot reconciliation: pruned %d stale nodes and cleared corpus edges for rebuild",
         stale_count,
@@ -1632,8 +1632,7 @@ def _run_stage2_group_streaming(
         f"RETURN id(n)"
     )
     backfill_cypher = (
-        "UNWIND $rows AS row MATCH (n) WHERE id(n) = row.id "
-        "SET n.source = row.source, n.title = row.title"
+        "UNWIND $rows AS row MATCH (n) WHERE id(n) = row.id SET n.source = row.source, n.title = row.title"
     )
 
     # Derive the staged directory from the per-doc cache layout.
@@ -1754,9 +1753,7 @@ def _run_stage2_group_streaming(
                 if len(batch_ids) != len(batch):
                     raise RuntimeError(f"HopRAG UNWIND returned {len(batch_ids)} IDs for {len(batch)} nodes")
                 real_ids.extend(batch_ids)
-            backfill = [
-                {"id": int(real_id), "source": stem, "title": staged_titles[stem]} for real_id in real_ids
-            ]
+            backfill = [{"id": int(real_id), "source": stem, "title": staged_titles[stem]} for real_id in real_ids]
             session.run(backfill_cypher, {"rows": backfill})
         existing_by_source[stem] = real_ids
         nodes_done.add(doc_id)

@@ -7,6 +7,1329 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-08-31 — Full-split gate passed and final defaults frozen
+
+The final Prehop indexes and benchmarks completed on new, strategy-specific
+tags without clearing or modifying the existing `musique` and `multihoprag`
+indexes. Both indexes were built with project caches disabled, seed 42, the
+legacy Q−/Q+ schema, six-sentence chunks, and top-k 12. MuSiQue indexed all
+21,099 sources into 23,280 chunks with zero failures and passed every graph
+integrity check. Its cold wall time was 5,676.81 seconds and its estimated
+logical property payload was 4.290 GiB. MultiHop-RAG indexed all 609 sources
+into 8,529 chunks with zero failures and passed every integrity check. Its
+cold wall time was 2,145.63 seconds and its estimated logical payload was
+1.545 GiB. The immutable statistics are
+`data/index_stats/prehop_musique_final_20260830_final-musique-prehop-index-20260830.json`
+and
+`data/index_stats/prehop_multihoprag_final_20260830_final-multihoprag-prehop-index-20260830.json`.
+
+The complete 2,417-query MuSiQue result reached 0.4150 official answer EM,
+0.5115 answer F1, 0.2034 support precision, 0.8840 support recall, and 0.3267
+support F1, with 23.86 seconds mean end-to-end latency. The complete
+2,556-query MultiHop-RAG result reached 0.9268 Hits@4, 0.9494 Hits@10, 0.8232
+MRR@10, and 0.4550 MAP@10, with 27.63 seconds mean latency. Both artifacts
+have completed status, the exact full-query digest, a matched corpus
+fingerprint, a matched active-source snapshot, and no error row.
+
+Before launching comparison work, an unnecessary new HopRAG MultiHop-RAG
+index was started under a fresh tag. It was stopped after about 12 minutes
+because neither code, source data, model policy, nor official metric code had
+changed. No HopRAG nodes had been written and no existing index was touched.
+Its failed run record remains at
+`data/index_stats/hoprag_multihoprag_hoprag_final_20260831_final-multihoprag-hoprag-index-20260831.json`;
+it is not a benchmark artifact. This corrected the execution policy: an
+unchanged full comparison is verified from its immutable per-query result,
+not rebuilt merely because the older summary predates the current manifest
+field.
+
+`scripts/verify_existing_baseline.py` implements that read-only verification.
+It requires an exact current query-record match, current corpus-manifest and
+content match, the historical full-size active snapshot, membership of every
+retrieved passage in the current corpus, and exact recomputation of every
+per-row and aggregate official metric. It writes a new derived summary and
+does not alter the original result. This is stricter than copying historical
+aggregates and resolves the earlier manifest-absent rejection without relaxing
+the gate. MultiHop-RAG HopRAG and MS GraphRAG passed all checks; their verified
+summaries are under `data/results/verified-multihoprag-baselines-20260831/`.
+
+MuSiQue required one additional compatibility step because the shared final
+answer prompt changed after the matched HopRAG retrieval run. The complete
+answer-only rerun already made under the selected prompt was paired by exact
+query ID with the frozen full retrieval rows. `scripts/combine_frozen_synthesis.py`
+recomputed answer EM/F1 from the former and support metrics from the latter,
+recording both file hashes and leaving both inputs untouched. A ten-row direct
+prompt replay produced nine byte-identical answers and one longer answer with
+the same content. The combined full summary is
+`data/results/verified-musique-baselines-20260831/hoprag_musique.summary.json`.
+MS GraphRAG's official LocalSearch answer path did not use the changed shared
+prompt, so its existing matched full artifact was reused directly.
+
+No compatible full MuSiQue result existed for the restored controlled Naive
+configuration, so this was the only comparison that required new work. Its
+new tag indexed all 21,099 sources into 23,280 chunks in 227.82 seconds with
+zero failures and a 0.456 GiB estimated logical payload. The complete run
+reached 0.2106 answer EM, 0.2726 answer F1, 0.1364 support precision, 0.6241
+support recall, and 0.2215 support F1, with 1.88 seconds mean latency.
+
+The predeclared 10% gate then passed every official metric. On MultiHop-RAG,
+the strongest comparison row was HopRAG for all four metrics; Prehop's relative
+gains were 35.45% Hits@4, 12.27% Hits@10, 45.44% MRR@10, and 62.47% MAP@10.
+On MuSiQue, HopRAG was strongest for answer EM/F1 and support recall, while
+Naive was strongest for support precision/F1. Prehop's relative gains were
+58.45%, 50.71%, 49.12%, 26.60%, and 47.50%, respectively. The paper-eligible
+gate artifacts are
+`data/results/final-multihoprag-performance-gate-20260831.json` and
+`data/results/final-musique-performance-gate-20260831.json`.
+
+Only after both gates passed were the operational defaults changed to the
+frozen result policy: unfiltered stored HOP edges
+(`RAG_HOP_EDGE_FILTER=none`), owner activation, evidence-conditioned iterative
+role rewriting, complete candidate-list ranking, and top-k 12. Reciprocal
+filtering, linked answer-continuation edges, sentence nodes, increased output
+width, and document-round selection remain rejected experiments rather than
+defaults. The two new verification utilities, the performance gate, and their
+tests preserve the final comparison procedure as executable code.
+The final repository check passed 299 tests with four external-integration
+skips; repository-wide Ruff, formatting, and whitespace checks also passed.
+
+## 2026-08-30 — Fixed policy grid and structural retrieval candidates
+
+A fresh 2³ comparison was run on the fixed MuSiQue development IDs with one
+active index, seed 42, top-k 12, the shared synthesis prompt, and no judge.
+The three discrete policies were bounded role rewriting, offline reciprocal
+HOP filtering, and exact matched-Q+ activation. This was a structural policy
+comparison; no score weight, threshold, retrieval budget, or dataset-specific
+rule was fitted.
+
+| Rewrite | HOP filter | Activation | Answer EM | Answer F1 | Support P | Support R | Support F1 |
+|---|---|---|---:|---:|---:|---:|---:|
+| none | raw | owner | 0.1542 | 0.2006 | 0.1498 | 0.6032 | 0.2371 |
+| none | raw | exact | 0.1542 | 0.1978 | 0.1498 | 0.6024 | 0.2370 |
+| none | reciprocal | owner | 0.1393 | 0.1830 | 0.1514 | 0.5991 | 0.2387 |
+| none | reciprocal | exact | 0.1443 | 0.1913 | 0.1509 | 0.5978 | 0.2381 |
+| role-aligned | raw | owner | **0.1841** | **0.2385** | **0.1602** | **0.6443** | **0.2534** |
+| role-aligned | raw | exact | 0.1841 | 0.2338 | 0.1596 | 0.6405 | 0.2524 |
+| role-aligned | reciprocal | owner | 0.1542 | 0.2000 | 0.1578 | 0.6256 | 0.2489 |
+| role-aligned | reciprocal | exact | 0.1592 | 0.2050 | 0.1580 | 0.6256 | 0.2491 |
+
+The role-aligned, raw-HOP, owner-activation row strictly dominated both
+reciprocal rows and the exact-activation row on every listed MuSiQue metric.
+Reciprocal filtering and exact activation are therefore rejected as primary
+defaults at this gate. The full-split A3/A4 comparison was retained only as a
+paper ablation and was not used for this selection. On the development-excluded
+remainder, raw HOP nevertheless independently showed higher answer EM and F1
+than reciprocal owner activation, while its paragraph-support F1 interval
+included zero and evidence-document F1 decreased. The paired artifact is
+`data/results/musique-a3-vs-a4-heldout-20260830`.
+
+Trace review then identified a role-routing omission. A generated Q+ states
+the information another passage must answer, but the established query path
+searched that view only against Q+ dependency seeds. The
+`dependency_to_answer` ablation also sends the same Q+ view to the Q- answer
+index, while retaining Q+ seed search and fusing every destination role into
+one unweighted ranked list. This rule follows the dataset-independent Q-/Q+
+definitions and introduces no learned value, fitted parameter, or
+dataset-specific branch. The isolated run was recorded as
+`musique-dev-crossrole-raw-owner-20260830`.
+
+That isolated run completed at 0.1791 answer EM, 0.2350 answer F1, 0.1599
+support precision, 0.6410 support recall, and 0.2527 support F1. The aligned
+control was 0.1841, 0.2385, 0.1602, 0.6443, and 0.2534 respectively. Every
+paired interval included zero, and all five target aggregates moved downward.
+The route was rejected at the first dataset gate rather than adjusted for
+MultiHop-RAG. Its experimental code was removed; this record and the artifacts
+under `data/results/musique-dev-crossrole-*` preserve the decision evidence.
+
+The next dataset-independent candidate addresses the established one-edge
+query path. `fixed_point` traversal expands NEXT and raw HOP from newly
+selected graph evidence, rescoring the accumulated candidates after each
+round. It stops when the top-k identity set no longer changes or the selected
+frontier has no unseen nodes; there is no fitted maximum depth, beam width, or
+dataset-derived stopping threshold. Every additional edge applies the same
+reciprocal one-edge rank inheritance already used by the single-step path.
+This differs from the rejected fixed depth-two diagnostic, which imposed a
+depth parameter and used the reciprocal-filtered graph before the current
+rewrite and raw-HOP selection.
+
+A five-query termination smoke run completed without errors. Relative to the
+same five rows from the single-step control, answer F1 and support recall were
+unchanged at 0.1143 and 0.8000; support F1 changed from 0.2352 to 0.2330 and
+latency from 3.17 s to 3.56 s. The fixed development run
+`musique-dev-fixedpoint-raw-owner-20260830` was then started; the candidate is
+not selected from the smoke subset.
+
+The full development run completed at 0.1791 answer EM, 0.2288 answer F1,
+0.1594 support precision, 0.6405 support recall, and 0.2522 support F1. The
+single-step control was 0.1841, 0.2385, 0.1602, 0.6443, and 0.2534. All target
+aggregates decreased and every paired interval included zero. Fixed-point
+expansion was rejected without a second-dataset adjustment, and its
+experimental implementation was removed. The run and paired artifacts remain
+under `data/results/musique-dev-fixedpoint-*`.
+
+The next candidate keeps the selected single expansion and the same candidate
+and evidence budgets. The established implementation retained a graph path on
+a directly retrieved chunk only as provenance; it did not let an independent
+HOP or NEXT path affect that chunk's representation order. The `graph_rrf`
+ablation forms one ranked target list per graph edge type and contributes each
+list once to the existing unweighted representation fusion. Multiple paths of
+the same type cannot accumulate extra mass, and no raw similarity, fitted
+weight, or cutoff is introduced. The isolated development run is
+`musique-dev-graphrrf-raw-owner-20260830`.
+
+Graph-path RRF increased support precision from 0.1602 to 0.1664 and support
+F1 from 0.2534 to 0.2601, both with positive paired intervals. It reduced
+support recall from 0.6443 to 0.6339 and answer F1 from 0.2385 to 0.2120; both
+negative differences were significant. Because the target requires joint
+improvement rather than a precision tradeoff, the candidate was rejected and
+its experimental implementation removed. The result shifts subsequent work
+from reordering known graph candidates to generating missing answer evidence.
+Artifacts remain under `data/results/musique-dev-graphrrf-*`.
+
+The next candidate changes candidate generation rather than graph ranking. A
+generated Q- is defined as an atomic question answerable by one passage, but
+the established routing searched it only against generated Q- nodes; the body
+index still received only the original compound question. The `answer_views`
+ablation also searches Q- views against chunk bodies. Original and generated
+body queries are fused inside one body list before representation fusion, so
+the body role gains no extra weight. The rule is shared across datasets and
+adds no cutoff or fitted value. Its isolated run is
+`musique-dev-bodyviews-raw-owner-20260830`.
+
+Answer-view body routing reduced answer EM/F1 from 0.1841/0.2385 to
+0.1542/0.2084 and support precision/recall/F1 from
+0.1602/0.6443/0.2534 to 0.1543/0.6190/0.2439. Every paired difference was
+significantly negative. The candidate was rejected without testing a
+dataset-specific adjustment, and its experimental implementation was removed.
+The artifacts remain under `data/results/musique-dev-bodyviews-*`.
+
+A candidate-coverage audit then separated retrieval failure from final
+ranking failure on the same 201 development IDs. The audit used the selected
+role rewrite, raw HOP, owner activation, and top-k 12. Gold paragraph recall
+was 0.6613 in the direct representation pool and 0.6973 after graph expansion,
+but fell to 0.6339 in the final top 12. The expanded-pool ceiling is below the
+0.7681 support-recall target implied by a 10% improvement over the comparison
+result. No reranker over the existing candidates can therefore satisfy that
+target. The problem is most severe on four-hop questions: direct-pool,
+expanded-pool, and final recall were 0.5037, 0.5224, and 0.4590. The diagnostic
+artifact is `data/results/musique-dev-candidate-coverage-20260830/results.json`.
+
+The next isolated candidate adds one deterministic retrieval child per
+sentence while retaining the six-sentence chunk as the only ranked and
+synthesized evidence unit. Sentence vector and full-text results collapse to
+their owner chunks before the existing unweighted representation fusion. Only
+the original benchmark query searches this representation; generated Q-/Q+
+views retain their established roles. The sentence count follows the fixed
+chunking boundary, so the candidate introduces no learned score, fitted
+threshold, dataset branch, or new final evidence budget. It requires a full
+corpus reindex, and its additional indexing time and capacity will be measured
+if it passes both fixed development gates. The implementation is guarded by
+`RAG_SENTENCE_CHANNEL_ENABLED`; it is not a primary default before those
+comparisons complete.
+
+The independent sentence-role run completed at 0.1891 answer EM, 0.2229
+answer F1, 0.1555 support precision, 0.6240 support recall, and 0.2459
+support F1. The aligned control was 0.1841, 0.2385, 0.1602, 0.6443, and
+0.2534. Paired intervals showed significant decreases in all three support
+metrics; the EM increase and answer-F1 decrease both included zero. Trace
+comparison found that 1,603 of 2,412 selected chunks carried a sentence path,
+but only 60 were introduced by the sentence path alone and only four of those
+were gold. Relative to the control, 20 gold chunks were displaced and eight
+were gained. The independent fourth role was rejected because it mainly
+double-counted candidates already found at chunk resolution. Results and
+paired analysis remain under `data/results/musique-dev-sentence-*`.
+
+The follow-up keeps the same sentence index but removes the extra role vote.
+Chunk and sentence rankings are first fused into one body list; that list then
+contributes once to the established Q-/body/Q+ union. This is an isolated
+test of multi-resolution candidate generation without representation-weight
+inflation. It retains the same original query, top-k, graph, prompt, and fixed
+development IDs and introduces no fitted value. It remains unselected pending
+the MuSiQue development result.
+
+The body-fused run completed at 0.1592 answer EM, 0.1999 answer F1,
+0.1550 support precision, 0.6190 support recall, and 0.2448 support F1.
+Against the original control, answer F1 and every support metric decreased;
+the paired intervals for answer F1 and all three support metrics were
+significantly negative. Multi-resolution sentence retrieval was therefore
+rejected in both fusion placements.
+
+A control rerun with sentence retrieval disabled exposed a separate index
+reproducibility issue before the next query experiment was started. The old
+development control used 67,859 Q- nodes, 65,646 Q+ nodes, and 61,185 HOP
+edges. Reindexing from the current cache produced 67,867 Q- nodes, 65,632 Q+
+nodes, and 61,317 HOP edges; the same query policy consequently changed from
+0.1841/0.2385 answer EM/F1 and 0.6443 support recall to
+0.1592/0.1997 and 0.6235. The old and current controls must not be mixed in a
+paired selection. Subsequent query-only candidates use
+`musique-dev-reindexed-control-raw-owner-20260830` on the current active index.
+The count drift also means a final paper index must be frozen and its generated
+Q-/Q+ artifacts retained; a cache-assisted development index is not a cold
+indexing-cost result.
+
+Trace logs showed that the role rewrite sometimes generated four atomic
+questions and then discarded the fourth because the indexing schema's
+three-question bound had also been applied at query time. That bound is valid
+for controlling stored Q-/Q+ nodes per chunk, but it is not a property of a
+user question and can delete an explicit dependency. The next isolated
+candidate removes only the query-time count cutoff. The prompt requests the
+smallest set covering every explicit dependency, while validation still
+deduplicates and rejects malformed values. Per-role view fusion remains a
+single ranked list, so additional dependencies do not add another evidence
+role or alter top-k. This candidate uses the current reindexed control and has
+no dataset-specific hop-count branch or fitted maximum.
+
+The complete-role-query run produced 0.1642 answer EM, 0.2008 answer F1,
+0.1552 support precision, 0.6219 support recall, and 0.2454 support F1.
+The current-index control was 0.1592, 0.1997, 0.1552, 0.6235, and 0.2454.
+All paired intervals included zero; support recall and support F1 moved
+slightly downward. Four-hop support recall improved, but four-hop answer F1
+decreased. The query-time cutoff removal was rejected as a global policy and
+the established bound was restored.
+
+The next candidate keeps that bound and changes when the second rewrite is
+formed. It first runs the established retrieval path, then asks for new
+role-aligned questions that bind intermediate entities explicitly present in
+the retrieved evidence to still-unresolved relations in the original query.
+The initial and evidence-conditioned questions are fused inside their existing
+Q- or Q+ role, after which one final retrieval and graph traversal produces
+the unchanged top 12. This is a fixed two-stage retrieval architecture, not an
+iterative stopping rule, fitted depth, or dataset-specific hop branch. The
+preview retrieval cost and second rewrite latency are included in the query
+latency record.
+
+On the current MuSiQue index, the fixed development run
+`musique-dev-evidence-role-raw-owner-20260830` improved answer EM/F1 from
+0.1592/0.1997 to 0.2338/0.3019 and support precision/recall/F1 from
+0.1552/0.6235/0.2454 to 0.1695/0.6766/0.2677. Every listed paired difference
+was positive with a 95% bootstrap interval excluding zero. Mean query latency
+increased from 4.14 s to 7.35 s because the preview retrieval and second
+rewrite are part of the measured request. This is the first current-index
+candidate to improve answer quality and all support aggregates together, so it
+advances to cross-dataset validation; it is not yet a frozen primary method.
+
+The first MultiHop-RAG guard attempt failed before retrieval because a prior
+MuSiQue clear-graph rebuild had removed the corpus-prefixed MultiHop-RAG nodes
+and indices. Its all-error zero-valued artifact
+`mhr-dev-current-control-raw-owner-20260830` is invalid and must not be used in
+any comparison. MultiHop-RAG was then rebuilt from all 609 documents without
+clearing MuSiQue. The cache-assisted development rebuild completed 609/609
+with zero errors and all integrity checks passing, producing 8,529 chunks and
+21,874 HOP edges in 582.49 s. That time is not a cold indexing-cost result.
+Both corpora and all 14 Prehop search indices were verified present and ONLINE
+before the guard was rerun.
+
+On that shared active database, the fixed MultiHop-RAG control and the
+evidence-conditioned candidate had identical official retrieval results:
+Hits@4 0.7133, Hits@10 0.8600, MRR@10 0.5632, and MAP@10 0.2743. Every
+per-query retrieval difference was exactly zero. Candidate answer EM/F1 moved
+from 0.2067/0.2120 to 0.2000/0.2053, but both paired intervals included zero;
+mean latency moved from 3.42 s to 3.55 s. The candidate therefore passes the
+cross-dataset retrieval no-regression gate and remains the development
+checkpoint. It still falls short of the predeclared MuSiQue target, so no
+default or paper-primary claim is changed at this stage.
+
+Per-query trace comparison explained the remaining gap. The two-stage policy
+raised support recall on 36 queries and lowered it on six. It introduced 38
+additional gold paragraphs, 36 of which were directly attributable to a new
+evidence-conditioned query path. Four-hop questions still had 0.5000 support
+recall because one intermediate binding often left another unresolved
+relation. A follow-up therefore repeats evidence-conditioned rewriting only
+while a new, non-duplicate question selects at least one previously unseen
+chunk. It stops on an empty question set or an unchanged selected-chunk set;
+there is no fitted iteration count, score threshold, hop label, or dataset
+branch. The five-query termination smoke run was functional only and was not
+used for model selection.
+
+The fixed development run
+`musique-dev-evidence-iterative-raw-owner-20260830` completed without errors.
+Relative to the two-stage checkpoint, answer EM/F1 changed from
+0.2338/0.3019 to 0.2388/0.3074 and support precision/recall/F1 from
+0.1695/0.6766/0.2677 to 0.1728/0.6866/0.2726. The three support improvements
+had positive paired 95% intervals; the answer and evidence-document intervals
+included zero. Mean latency rose from 7.35 s to 9.92 s. Refinement stopped
+after zero, one, two, three, or four rewrite calls for 11, 35, 124, 27, and
+four queries respectively. Four-hop answer F1 and support recall improved from
+0.1289/0.5000 to 0.1587/0.5299, while two-hop answer F1 decreased from 0.4456
+to 0.4158 with unchanged support recall. This candidate advances because all
+aggregate target metrics increased, but its latency and mixed hop-level answer
+effect remain explicit costs.
+
+The MultiHop-RAG guard again produced exactly the control retrieval values:
+Hits@4 0.7133, Hits@10 0.8600, MRR@10 0.5632, and MAP@10 0.2743, with zero
+per-query differences on every official retrieval metric. Answer F1 changed
+from 0.2120 to 0.2051 with a paired interval including zero, and mean latency
+was 3.50 s. The iterative policy is therefore the current development
+checkpoint, not a frozen default. It remains below the predeclared MuSiQue
+answer and support-recall targets, so further work must improve dependency
+coverage rather than add unconditional refinement rounds.
+
+Trace termination was then separated by cause. The 11 four-hop questions
+above the rewrite word gate had 0.6818 support recall, while the 42 rewritten
+four-hop questions that ended because no further grounded question could be
+formed had 0.4821 recall. Removing the long-query gate would therefore target
+the stronger subgroup rather than the observed failure. The next diagnostic
+instead changed within-role view fusion from reciprocal-rank accumulation to
+deterministic round-robin, so each dependency view could contribute a unique
+owner before any view contributed its next owner. Cross-role votes and top-k
+were unchanged.
+
+The view-round-robin run improved answer EM/F1 from 0.2388/0.3074 to
+0.2587/0.3264 and changed support precision/recall/F1 from
+0.1728/0.6866/0.2726 to 0.1733/0.6862/0.2732. Every paired interval against
+the iterative checkpoint included zero, support recall moved slightly down,
+and latency remained 9.73 s. The candidate neither dominated nor produced a
+reliable improvement, so it was rejected and its experimental policy code was
+removed. The artifact remains under
+`data/results/musique-dev-evidence-iterative-viewrr-*`.
+
+The next diagnosis tested whether the remaining failure originated in
+query-time rewriting or in the index. On the fixed 201 MuSiQue development
+queries, the stored Q+→Q− HOP graph contained only 33 of 402 ordered adjacent
+gold paragraph pairs and a complete gold chain for 11 of 201 queries. A
+read-only ANN ceiling that retained ten foreign Q− owners per existing Q+
+still covered only 109 pairs and 28 complete chains; it covered no complete
+four-hop chain. On this development set, the result did not support
+candidate-width expansion or pair filtering as a sufficient correction to the
+existing Q+ representation.
+
+The same diagnostic examined the grounded answer that connects each official
+decomposition step, without exposing those annotations to indexing. The
+previous step's answer occurred verbatim in the next gold paragraph for 318
+of 402 pairs. Exact answer mentions formed a complete chain for 127 of 201
+queries, including 23 of 67 four-hop queries. This is an analysis ceiling, not
+an index result, but it supports changing how corpus-only edges are built.
+
+An opt-in `linked_v2` question schema and `HOP_CONTINUE` branch were therefore
+implemented. Q− stores a source-verifiable complete answer and marks it as a
+continuation anchor only when it is a specific named entity. After the full
+corpus is indexed, one deterministic scan links each anchor owner to exact
+mentions in foreign documents. Query retrieval preserves matched Q− IDs and
+activates only their continuation edges. Candidate bodies are ordered with
+the query embedding and bounded by the unchanged final top-k; no benchmark
+question, gold paragraph, hop label, score threshold, dataset branch, or new
+candidate-width parameter participates. The legacy and grounded-v1 paths are
+unchanged. The generation cache identity was also corrected to include model,
+declared revision, and seed so a final index cannot silently reuse questions
+generated under a different model state. Unit and targeted regression tests
+passed before the full-corpus development build was started under the separate
+`musique_linked_v2` tag. No primary/default claim changes before its results
+and the MultiHop-RAG guard are available.
+
+The first build attempt was stopped after 453 documents when logs showed that
+a partial `continuation_anchor` caused the otherwise valid Q− record to be
+discarded. Validation now retains the grounded Q− and clears only the invalid
+optional anchor. The question-cache version was advanced so those filtered
+development records cannot be reused, relevant tests passed, and the complete
+corpus build was restarted from generation under a new run ID.
+
+That restart was also stopped during its initial documents because an invalid
+auxiliary `anchor_entities` value still discarded a Q− or Q+ whose quote,
+answer, and question were valid. The auxiliary list is not used in retrieval
+or edge creation. `linked_v2` now keeps only source-verifiable entries in that
+list while preserving the grounded question; `grounded_v1` remains strict.
+The cache version was advanced again, the focused suite passed, and a clean
+full-corpus development build was started under a third run ID.
+
+Before evaluation, a query-time `RAG_CONTINUATION_EDGES_ENABLED` switch was
+added so the same completed `linked_v2` graph can be benchmarked with its
+continuation edges hidden or exposed. The switch does not change ranking
+scores, evidence width, or stored edges, and its value is recorded in each
+benchmark artifact. This separates the effect of exact Q− continuation from
+the question-schema and index-construction changes.
+
+A read-only check during the third build found a storage problem before the
+continuation pass ran. At 505 completed source documents, the partial graph
+contained 1,935 distinct answer anchors; `United States` alone occurred in 116
+foreign documents. Direct source-owner-to-target materialization would create
+the source-question × target-mention product for such answers even though the
+query-time candidate paths are identical. No score or benchmark annotation was
+involved in this check.
+
+Continuation storage was changed to one shared `AnswerAnchor` per normalized
+answer, with `ANSWER_ANCHOR` from Q− and `MENTIONED_IN` to exact corpus
+mentions. Query-time traversal still begins at the exact matched Q− ID,
+excludes the source document, orders the same target chunks by the query
+embedding, and keeps the unchanged final evidence budget. This is a lossless
+graph factorization, not a frequency cutoff or retrieval heuristic. A unit
+case verifies that two questions and three mentions require five stored links
+instead of six materialized source-target links. The full suite passed with
+276 tests and 4 skips. A temporary-label Neo4j smoke test also built the shared
+anchor and returned only its foreign target through the exact matched Q− ID;
+the temporary nodes were removed afterward. The third build was stopped
+before edge construction, and a fourth build was started with its valid v3
+generation and embedding caches retained; the cache identity and generated
+question content are unchanged.
+
+The paired-analysis contract was tightened before the linked-index result was
+available. `--expected-ablation-difference` now rejects a query-only pair when
+any unlisted ablation metadata changes, so the continuation off/on comparison
+must differ only in `continuation_edges_enabled`. Index-changing comparisons
+under different corpus tags require the explicit `--allow-index-variant`
+override while retaining identical dataset, corpus fingerprint, evaluation
+scope, and stable query IDs. This prevents a retrieval setting or evidence
+budget change from being hidden inside the continuation comparison. The
+query-only contract also requires the active-index snapshot, model identities
+and seed, code provenance, benchmark concurrency, and judge state to match.
+
+A second read-only construction audit considered removing the generation
+model's optional named-entity marker and treating every grounded Q− answer as
+an anchor. On the then-visible 3,026 chunks and 8,145 Q− records, the current
+marker produced 857 shared anchors, 1,176 useful question links, and 5,803
+mention links. The all-answer construction would produce 1,241 anchors, 1,714
+question links, and 12,959 mention links. Shared storage makes that broader
+policy feasible, but it changes the retrieval candidate set rather than merely
+compressing it. It was therefore not folded into the running candidate before
+its result; if needed, it will be evaluated as a separately recorded structural
+index policy instead of an unreported adjustment.
+
+The final 10% objective is now executable through
+`scripts/performance_gate.py`. MultiHop-RAG is fixed to official Hits@4,
+Hits@10, MRR@10, and MAP@10; MuSiQue is fixed to official answer EM/F1 and
+support precision/recall/F1. The strongest supplied non-Prehop model is chosen
+independently for each metric, and every metric must meet the relative margin.
+The command rejects incomplete, corpus-mismatched, query-mismatched, and
+sample artifacts for paper use. This gate was added before the linked-index
+result, so its success criteria cannot be changed to fit that result.
+
+A dry run against the currently stored MultiHop-RAG full artifacts rejected
+the older HopRAG and MS GraphRAG rows because both report
+`corpus_index_fingerprint_status=manifest_absent`; the controlled Naive row is
+matched. MuSiQue has no completed full-split artifact for the restored
+six-sentence controlled Naive configuration. These historical scores remain
+development references, but the final gate requires fresh fingerprint-bound
+baseline artifacts after the Prehop method is frozen. They cannot be promoted
+by copying their aggregate values into the final table. After the comparison
+contracts and their tests were added, the full suite passed with 281 tests and
+4 skips, and repository-wide Ruff and diff checks passed.
+
+The completed `musique_linked_v2` development index covered all 21,099 corpus
+sources with zero failures and passed every integrity check. It contained
+10,228 shared answer anchors, 18,974 question-to-anchor links, and 156,499
+anchor-to-mention links. The cache-assisted development build took
+11,729.95 seconds and its estimated logical property payload was 3.720 GiB;
+these are development diagnostics, not the final cold-index cost claim.
+
+On the fixed 201 queries, the linked schema with continuation hidden produced
+0.2338 answer EM, 0.2943 answer F1, 0.1731 support precision, 0.6915 support
+recall, and 0.2734 support F1. Exposing exact matched-Q− continuation changed
+those values to 0.2239, 0.2903, 0.1677, 0.6737, and 0.2652 respectively. The
+three support decreases were statistically separated from zero: precision
+Δ -0.0054, 95% CI [-0.0103, -0.0009]; recall Δ -0.0178,
+[-0.0352, -0.0004]; F1 Δ -0.0082, [-0.0157, -0.0010]. Answer EM and F1
+also moved downward, with intervals including zero. Against the prior
+iterative checkpoint, continuation-on likewise improved none of the five
+official MuSiQue aggregates. The named-entity continuation policy is therefore
+rejected rather than adjusted after observing the result. The OFF artifact is
+also not selected: it traded lower answer EM/F1 for small support gains and did
+not dominate the prior checkpoint.
+
+Only after that rejection, the predeclared broader construction policy was
+opened as the next structural candidate. It uses the complete source-grounded
+answer of every valid Q− as the exact cross-document anchor instead of relying
+on the generation model's optional named-entity marker. The same shared-anchor
+factorization, foreign-document exclusion, exact matched-Q− activation,
+query-to-body ordering, evidence budget, fixed development IDs, and global
+retrieval policy remain unchanged. The policy is index-time metadata and will
+use a new corpus tag; it is not a score, frequency cutoff, candidate-width
+setting, dataset branch, or change to the operational default.
+
+The implementation records `RAG_CONTINUATION_ANCHOR_POLICY` in index and
+benchmark provenance. Its unchanged default is `named_only`; the isolated
+candidate is `all_grounded`, which selects `q.answer` only after the linked
+schema's existing source-grounding validation. The named marker and grounded
+answer continue to coexist on Q− nodes, while only the policy-selected value
+builds shared anchors. Focused retrieval, consistency, and benchmark-integrity
+tests passed (139 tests), Ruff passed, and `git diff --check` passed before the
+new `musique_linked_all_grounded_v1` corpus build was started under run ID
+`prehop-musique-linked-all-grounded-dev-20260830`.
+
+The new tag initially caused identical linked-v2 questions to be regenerated
+because the cache namespace includes the corpus tag. After 9,657 documents,
+the completed r4 cache and the new cache were audited before reuse: all 9,657
+filenames intersected, the old cache contained all 21,099 sources, and both
+had the exact signature
+`schema=linked_v2-prompt=ef46703c-generation=5bf2fddd2895`, which binds the
+question prompt, model, declared revision, and seed. The 11,442 missing files
+were hard-linked without overwriting the new run's files. This preserved the
+same generated questions for the structural comparison and raised throughput
+from roughly 110 to 1,200 documents/minute. No source, graph, code, result, or
+existing index was changed.
+
+The all-grounded index completed all 21,099 sources with zero failures and all
+integrity checks passing. It stored 13,827 shared anchors, 25,609 question
+links, and 303,537 mention links. The cache-assisted development run took
+6,062.02 seconds and occupied an estimated 3.722 GiB. With continuation hidden,
+the fixed development result was 0.2239 answer EM, 0.2901 answer F1, 0.1709
+support precision, 0.6812 support recall, and 0.2698 support F1. Enabling the
+all-grounded edges produced 0.2239, 0.2779, 0.1672, 0.6758, and 0.2648. EM was
+unchanged and the other four official aggregates decreased; every paired
+interval included zero. The candidate also remained below the iterative
+checkpoint on all five metrics and is rejected without an anchor-frequency,
+answer-type, or dataset-specific filter.
+
+A final-selection trace audit found that continuation changed 177 of 201
+queries, added 422 paragraphs and removed 407. Eleven added paragraphs were
+gold while 17 removed paragraphs were gold, across 11 gain and 12 loss queries.
+The edges therefore expose real missing evidence but rank too many irrelevant
+mentions into the unchanged final budget. Gold identities were used only for
+this post-hoc diagnosis, never as retrieval input.
+
+The next query-only structural candidate follows the existing role contract:
+continuation targets are ordered and semantically checked against the Q+
+dependency views, which state the unresolved relation the foreign mention must
+satisfy, instead of the original compound question. Exact matched-Q− activation,
+anchors, graph snapshot, rank fusion, final evidence budget, and every global
+policy remain fixed. If no Q+ view exists, the original query remains the
+deterministic fallback. The policy is evaluated first as a one-way fixed-sample
+gate; a same-code paired control is run only if all five aggregates improve.
+
+The one-way run `musique-dev-continuation-dependency-views-20260830`
+completed at 0.2388 answer EM, 0.2879 answer F1, 0.1652 support precision,
+0.6687 support recall, and 0.2617 support F1, with 10.97 s mean latency. The
+iterative checkpoint was 0.2388, 0.3074, 0.1728, 0.6866, and 0.2726. EM was
+unchanged and all four remaining official aggregates decreased, so the
+candidate failed its one-way gate. No same-code control or second-dataset run
+was started, and the rejected dependency-to-body implementation was removed.
+
+The next bounded diagnostic keeps the exact same index and activation path but
+tests a narrower relation contract before any benchmark is allowed. A foreign
+anchor mention is eligible only when one of that target chunk's stored Q-
+questions matches an unresolved Q+ dependency view. Expansion is ordered by
+the maximum Q+-to-target-Q- similarity, while final semantic selection retains
+the established conjunction of the original query and the traversed target
+Q- representations. This uses only precomputed linked-schema representations,
+adds no score weight, threshold, candidate budget, dataset branch, or reindex,
+and deterministically falls back to the original policy when no Q+ view exists.
+
+Focused tests passed 141/141 and Ruff passed. A one-query live smoke run then
+completed in 6.67 s and exercised one continuation path, confirming that the
+target-Q- Cypher branch is valid before the fixed development evaluation.
+
+The fixed run `musique-dev-continuation-target-qminus-20260830` completed at
+0.2289 answer EM, 0.2832 answer F1, 0.1667 support precision, 0.6733 support
+recall, and 0.2639 support F1, with 11.85 s mean latency. All five official
+aggregates were below the iterative checkpoint. The target-Q- candidate was
+therefore rejected without a paired control, second-dataset run, or any
+similarity cutoff. Its query-time experimental implementation was removed;
+the run artifact preserves the negative result.
+
+A read-only reachability ceiling then started from the 12 paragraphs selected
+by the all-grounded OFF run. Those paragraphs contained 394 of 603 gold support
+units (0.6534 unit-weighted coverage and 0.6812 official query-macro recall).
+Following every stored Q- answer anchor from those same paragraphs by one exact
+foreign mention would contain 502 gold units (0.8325 unit-weighted coverage and
+0.8516 query-macro recall), adding 108 units across 91 queries. Gold source
+identities were used only to measure this post-hoc ceiling; they did not choose
+an anchor or target. The ceiling exceeds the 0.7681 support-recall target and
+localizes the remaining failure to query-conditioned source-fact activation
+rather than anchor storage or deeper graph reachability.
+
+The next diagnostic therefore presents only the indexed, source-grounded
+Q-/answer facts attached to retrieved paragraphs and asks the generation model
+to select the smallest set whose answers bind an unresolved dependency in the
+original question. Selection is by opaque fact ID, and any returned ID outside
+the supplied set is rejected. Gold answers, paragraphs, hop labels, and target
+mentions are absent from the planner input. This is evaluated first as a
+candidate-coverage diagnostic; no synthesis benchmark is started unless the
+selected facts recover enough missing evidence to justify an implementation.
+
+Across all 201 queries, the planner received 3,214 indexed candidate facts and
+selected 200 facts on 147 queries, with zero unknown-ID outputs. Unioning every
+foreign mention of those selected anchors raised unit-weighted support coverage
+from 0.6534 to 0.7645, adding 67 gold units on 59 queries. It nevertheless
+exposed 5,963 target documents. A correction audit found that this early
+diagnostic had been compared to the query-macro target using the wrong micro
+aggregation; its official-form macro ceiling is 0.7877, not 0.7645. The broad
+expansion is still rejected because thousands of unranked targets cannot enter
+the unchanged evidence budget, not because its corrected ceiling is too low.
+
+One narrower diagnostic reuses the same grounded-fact selection contract but
+requires each selected fact to produce a self-contained follow-up Q- question
+that binds its answer to the still-unresolved relation. Those questions search
+the existing Q- index with the established hybrid retrieval and top-12 owner
+budget. This tests explicit fact-to-question planning rather than exposing all
+documents that happen to mention the intermediate answer.
+
+The planner produced 178 valid grounded steps on 146 queries and 162 unique
+follow-up questions; 21 malformed or non-answer-binding steps were rejected.
+Searching the global Q- index returned 2,010 document candidates, but the
+direct-plus-candidate unit-weighted coverage reached only 0.7280, adding 45
+gold units on 44 queries. The corrected macro audit produced 176 valid steps
+and 20 rejected steps, reflecting the already documented non-bitwise-stable
+generation path; its macro ceiling was 0.7537. Both aggregations are below the
+target, so global follow-up Q- search is rejected.
+
+The final planner diagnostic preserves both constraints at once: the selected
+source fact fixes one exact shared anchor, and its grounded follow-up question
+ranks only that anchor's foreign mention bodies. Each step retains the existing
+top-12 owner budget. If this constrained candidate ceiling does not exceed the
+support-recall target, no planner synthesis benchmark will be run.
+
+The constrained body diagnostic produced the same 178 valid steps and exposed
+1,331 mention targets. Direct-plus-target unit-weighted coverage reached
+0.7479, adding 57 gold units on 54 queries. Under the corrected query-macro
+aggregation, the 176-step audit reached 0.7716 and therefore narrowly passed
+the 0.7681 coverage gate. The earlier closure of the planner family is
+withdrawn; no synthesis benchmark had been run from that erroneous decision.
+
+The next non-generative diagnostic mirrors the already selected owner-wide HOP
+activation rule. Every source-grounded Q- anchor attached to a retrieved owner
+is structurally eligible, but an outgoing path is ordered by the conservative
+minimum of original-query-to-source-Q- similarity and original-query-to-target-
+body similarity. This removes the failed exact matched-Q- bottleneck while
+retaining a two-sided semantic conjunction, existing top-12 budget, and exact
+foreign mention relation. Gold is used only after ranking to measure coverage.
+
+Original-query owner activation returned 2,363 target documents but added only
+36 gold units on 35 queries. Its 0.7131 unit-weighted coverage corresponded to
+0.7392 query-macro recall and is rejected without implementation. The final
+non-generative diagnostic keeps roles separate: accumulated Q- views score
+source Q- facts, accumulated Q+ views score foreign target bodies, and the path
+score is their conservative minimum. This is the role-aligned form of owner
+activation; it is tested once because the original compound query is not itself
+a source-fact or unresolved-relation representation.
+
+Role-aligned owner activation reached 0.7463 unit-weighted coverage and 0.7711
+query-macro recall, just above the same predeclared gate. It is preferred for
+the next implementation over the 0.7716 planner ceiling because it uses only
+the role views already produced by the selected query policy, adds no planner
+generation call, and has no generated fact-selection output to validate. This
+is a candidate-coverage result, not a benchmark result or default change.
+
+The isolated implementation is guarded by
+`RAG_CONTINUATION_SOURCE_ACTIVATION=role_owner`; the unchanged default is
+`exact`. Evidence-conditioned preview and refinement passes keep continuation
+hidden. After refinement stops, one final retrieval pass first selects the
+established direct/NEXT/HOP owners, then ranks at most 12 exact foreign
+continuation targets globally with the Q-/Q+ path conjunction. The stronger of
+a candidate's established semantic route and this fully specified path enters
+the existing unweighted semantic/representation rank fusion. The inherited
+representation score uses the same reciprocal one-edge discount as every
+other graph-only target. The activation policy is recorded in benchmark
+provenance and does not change the index, final evidence count, or defaults.
+
+Focused retrieval, workflow, consistency, and benchmark-integrity tests passed
+170/170; Ruff and `git diff --check` passed. A one-query live smoke completed
+in 6.29 s, recorded the `role_owner` policy, and selected eight
+`continuation_owner` paths without a query or provenance error. The fixed 201
+query run is therefore allowed as a one-way gate. A paired control and
+MultiHop-RAG run remain prohibited unless all five MuSiQue aggregates improve
+over the iterative checkpoint.
+
+The fixed run `musique-dev-continuation-role-owner-20260830` completed at
+0.2388 answer EM, 0.3031 answer F1, 0.1694 support precision, 0.6915 support
+recall, and 0.2688 support F1, with 11.50 s mean latency. Against the iterative
+checkpoint, EM was unchanged and support recall increased by 0.0050, but
+answer F1, support precision, and support F1 all decreased. The candidate
+failed the one-way gate; no paired control or MultiHop-RAG run was started.
+The gap between its 0.7711 candidate ceiling and 0.6915 final recall shows that
+the existing rank fusion did not preserve the newly reachable gold evidence.
+
+Before removing the experimental path, one final ranking diagnostic takes the
+union of the established 12 selected paragraphs and the 12 globally ranked
+role-owner continuation targets. A listwise generation call sees only the
+original question and opaque candidate IDs with paragraph text, and selects
+the complete set of paragraphs needed to answer. Unknown IDs are rejected;
+gold, hop labels, path scores, and retrieval ranks are absent from the prompt.
+This is a read-only selector diagnostic, not a benchmark or implementation.
+
+The selector saw 20.17 candidate documents per query on average (maximum 24)
+and returned 460 documents total with zero unknown-ID outputs. It achieved
+0.7000 support precision and 0.6319 support F1, but only 0.5991 support recall;
+20 queries received an empty selection. The high precision confirms that the
+model could identify strong evidence, but its conservative omissions make it
+unsuitable for the recall objective. Prompt or selection-count tuning was not
+attempted. The selector was not implemented, and the rejected role-owner
+activation code was removed. After cleanup, focused tests passed 166/166,
+Ruff passed, and `git diff --check` passed.
+
+The global role-path pool had only a 0.0030 macro-recall margin above the target,
+so any final reranker would have to preserve nearly its entire ceiling. The next
+read-only construction instead allocates one foreign mention target to every
+grounded Q- fact on the 12 established owners. Within each exact shared anchor,
+accumulated Q+ views rank the target bodies and the single best target is kept.
+The allocation is defined by the atomic indexed fact rather than a fitted pool
+width or score cutoff. Gold is used only to measure the resulting union ceiling.
+
+The per-fact body construction produced 12.81 unique targets per query on
+average (maximum 21) but reached only 0.7396 query-macro recall when unioned
+with the established evidence. It is rejected without implementation. One
+role-aligned representation check keeps the same one-target-per-fact contract
+but ranks each anchored target by the maximum Q+-view similarity of its stored
+Q- questions rather than its body. No candidate width or policy changes.
+
+Target-Q- ranking produced 12.89 unique targets per query on average and a
+0.7400 macro-recall ceiling, effectively identical to body ranking. Per-fact
+semantic allocation is closed. The next structural diagnostic distinguishes
+an arbitrary mention from an entity's canonical document: a foreign target is
+eligible only when its title has the exact normalized token identity of the
+shared answer anchor. This uses corpus metadata already present on every chunk
+and introduces no score, candidate width, or dataset-specific condition.
+
+Canonical-title targets occurred on 159 queries (7.62 per query on average,
+maximum 50) but raised macro recall only from 0.6812 to 0.6932. Exact title
+identity is rejected without implementation. A separate coverage diagnostic
+now preserves one exact-mention target for each `(source Q- fact, accumulated
+Q+ question)` pair. Each Q+ question represents a distinct unresolved relation,
+so this allocation follows generated structure rather than a fitted width or
+dataset hop label.
+
+The fact-and-question allocation added 16.32 unique targets per query on
+average (maximum 52), producing 24.51 sources in the union on average (maximum
+59). It raised query-macro recall from 0.6812 to only 0.7483: 42 of 603
+additional gold support units were reached across 40 queries. The corresponding
+unit-weighted coverage rose from 0.6534 to 0.7231. This remains below the
+0.7681 next-stage threshold while adding more candidates than the per-fact
+constructions, so it is rejected without implementation or a 201-query
+benchmark. Gold was used only for this post-hoc coverage measurement. The
+read-only graph query was regrouped by individual relation after its first
+equivalent bulk form exceeded Neo4j's transaction-memory limit; neither form
+wrote data and the selection rule was unchanged.
+
+The next read-only diagnostic tests whether independently ranking paragraphs
+is what discards reachable support under the fixed 12-paragraph evidence
+budget. Every exact source-to-target relation receives the lower of two
+role-aligned similarities: accumulated Q- views to the stored source fact and
+accumulated Q+ views to the target body. Relations are sorted once; both ends
+of each relation are admitted together while space remains, then unused slots
+retain the established direct order. The only width is the benchmark's fixed
+12-output contract. There is no fitted weight, cutoff, hop-count branch, or
+gold input.
+
+The paired selection filled all 12 chunk slots but reduced query-macro support
+from 0.1709 precision / 0.6812 recall / 0.2698 F1 to 0.1564 / 0.6310 /
+0.2478. It changed 190 queries: recall improved on 35 and regressed on 50.
+An average of 10.85 relations (maximum 12) were admitted because endpoints
+were frequently shared, but preserving those complete relations displaced
+more established gold evidence than it recovered. The construction is
+rejected without implementation or a benchmark run.
+
+The next diagnostic changes the unit of coverage instead of another score
+formula: every distinct generated Q- and Q+ view should retain its best direct
+paragraph before remaining slots follow the established global order. This
+tests whether fusion is suppressing an unresolved relation. One paragraph per
+generated view is a structural ownership rule, not a fitted quota; duplicate
+paragraphs share a slot, and the final evidence budget remains 12.
+
+On the all-grounded linked index, 842 generated views collapsed to 2.92 unique
+owners per query on average (maximum 8); no query exceeded the 12-paragraph
+budget. The rule changed 40 queries and moved query-macro support from 0.1709
+precision / 0.6812 recall / 0.2698 F1 to 0.1716 / 0.6841 / 0.2710. Recall
+improved on four queries and regressed on two. This is a small gain, but that
+index remains below the iterative checkpoint, so it does not permit a
+benchmark by itself.
+
+The same read-only diagnostic was therefore repeated against the actual
+iterative checkpoint and its untouched `musique` index. Its 829 generated
+views collapsed to 2.87 unique owners per query on average (maximum 8), again
+with no budget overflow. It changed 44 queries and improved all three support
+aggregates from 0.1728 precision / 0.6866 recall / 0.2726 F1 to 0.1737 /
+0.6895 / 0.2740. Recall improved on four queries and regressed on two. This
+passes the retrieval-only screen, but answer metrics still require a real
+run.
+
+The isolated implementation is selected with
+`RAG_SOURCE_SELECTION_VARIANT=view_owners`; `global` remains the default.
+Each per-view first result is carried through within-role fusion and removed
+from public result rows after final selection. Focused retrieval, workflow,
+consistency, and benchmark-integrity tests passed 168/168; Ruff and
+`git diff --check` passed. The fixed first development query then completed a
+live smoke in 4.20 s with 12 evidence paragraphs, 1.0 support recall, no
+runtime error, and the selected policy present in benchmark provenance. The
+201-query run is now allowed as a one-way gate; no MultiHop-RAG run is allowed
+unless all five MuSiQue aggregates improve over the iterative checkpoint.
+
+The fixed run `musique-dev-view-owners-20260830` completed all 201 queries at
+0.2438 answer EM, 0.3070 answer F1, 0.1733 support precision, 0.6857 support
+recall, and 0.2732 support F1, with 9.90 s mean latency. Relative to the
+iterative checkpoint, EM increased by 0.0050, support precision by 0.0005, and
+support F1 by 0.0006, while answer F1 decreased by 0.0004 and support recall by
+0.0008. It therefore failed the required all-five one-way gate. No paired
+control or MultiHop-RAG run was started, and the experimental selection path
+was removed.
+
+The next read-only diagnostic addresses a different role boundary. A generated
+Q+ view states the information still needed from another passage, but the
+selected path searches it only through stored question representations and
+graph edges. The diagnostic also searches each accumulated Q+ view directly
+against chunk bodies. Its first body result owns one final slot, duplicate
+owners share a slot, and remaining slots retain the checkpoint order. It also
+reports the union ceiling of the standard 12 body results per view. The final
+budget remains 12, and no score weight, cutoff, dataset branch, or gold input
+participates in selection.
+
+The 363 accumulated Q+ views produced 1.48 unique first-body owners per query
+on average (maximum 5), with no output-budget overflow. Preserving those owners
+changed 38 queries and improved query-macro support from 0.1728 precision /
+0.6866 recall / 0.2726 F1 to 0.1757 / 0.6973 / 0.2772; recall improved on
+seven queries and regressed on one. However, the union of every standard
+top-12 body result exposed 16.80 unique candidates per query on average and
+still reached only 0.7521 macro recall, below the 0.7681 target. Direct Q+-body
+routing therefore cannot close the required coverage gap and is rejected
+without implementation.
+
+One final direct-body diagnostic applies the same first-result ownership rule
+to both generated roles: Q- views search bodies for their answer-bearing
+passage and Q+ views search bodies for the still-needed passage. All owned
+paragraphs precede the checkpoint order, duplicates share a slot, and the
+unchanged output budget is 12. The broader union ceiling is measured before
+any implementation is considered.
+
+Across 829 accumulated role views, the combined rule preserved 2.67 unique
+body owners per query on average (maximum 7), so no query exceeded the output
+budget. It changed 77 queries and improved query-macro support from 0.1728
+precision / 0.6866 recall / 0.2726 F1 to 0.1786 / 0.7094 / 0.2817. Recall
+improved on 15 queries and regressed on two. The union of all standard body
+results reached 0.8076 macro recall, above the 0.7681 target, although it was
+broad at 31.76 unique candidates per query. The first-result construction is
+therefore allowed for an isolated implementation and one-way benchmark; the
+broad union is diagnostic only.
+
+The implementation will expose the rule only through
+`RAG_SOURCE_SELECTION_VARIANT=role_body_owners`; `global` remains unchanged.
+Auxiliary body owners do not receive a representation vote or seed graph
+expansion unless the established Q-/body/Q+ path independently retrieved the
+same paragraph. Their internal ownership order is removed from public rows,
+and only the final selector admits them before filling from the unchanged
+global order.
+
+Focused retrieval, traversal, workflow, consistency, and benchmark-integrity
+tests passed 169/169; Ruff and `git diff --check` passed. The fixed first
+development query completed a live smoke in 4.17 s with 12 evidence
+paragraphs, 1.0 support recall, and four distinct generated role views present
+on body retrieval paths. The selected policy was recorded in benchmark
+provenance and no runtime error occurred. A 201-query MuSiQue run is therefore
+allowed as a one-way gate; no paired control or MultiHop-RAG run is allowed
+unless all five target aggregates improve over the iterative checkpoint.
+
+The fixed run `musique-dev-role-body-owners-20260830` completed all 201
+queries with zero errors at 0.2587 answer EM, 0.3273 answer F1, 0.1774 support
+precision, 0.7052 support recall, and 0.2800 support F1. Relative to the
+iterative checkpoint, the changes were +0.0199, +0.0199, +0.0046, +0.0187,
+and +0.0074 respectively; mean latency increased from 9.92 s to 10.88 s. The
+candidate passes the all-five one-way gate. A same-code `global` control is
+now required to separate the structural change from the documented
+non-bitwise-stable generation path before the MultiHop-RAG guard.
+
+The first candidate and its planned control had identical functional code,
+but the changelog update above occurred between them and therefore changed the
+recorded source-tree hash. The strict paired-analysis contract correctly
+rejected that provenance mismatch. No artifact was relabelled or relaxed; the
+candidate was rerun once without any intervening source edit. The resulting
+candidate and control both record source-tree hash
+`dfca9a6a2ea357e06bae12887913ab428b4b031acad0714616c6ec0cc8b2f0c8`.
+
+In that exact-source pair, the `global` control scored 0.2488 answer EM,
+0.3149 answer F1, 0.1716 support precision, 0.6820 support recall, and 0.2708
+support F1. The body-owner candidate scored 0.2687, 0.3372, 0.1772, 0.7048,
+and 0.2796 respectively, with deltas +0.0199, +0.0224, +0.0056, +0.0228,
+and +0.0089. Query-level paired bootstrap intervals were [-0.0100, 0.0498]
+for EM, [-0.0074, 0.0549] for answer F1, [0.0010, 0.0104] for support
+precision, [0.0058, 0.0406] for support recall, and [0.0018, 0.0162] for
+support F1. Thus all five aggregates improved, and all three support gains
+were statistically separated from zero.
+
+The same exact-source candidate/control pair was then run on the fixed 200
+MultiHop-RAG development queries with the same iterative rewrite and raw HOP
+policy. Candidate versus control official retrieval was Hits@4
+0.7333 versus 0.7133, Hits@10 0.8533 versus 0.8533, MRR@10 0.5714 versus
+0.5626, and MAP@10 0.2802 versus 0.2739. MAP@10 had a positive paired
+interval [0.0007, 0.0139]; Hits@4, MRR@10, and every other retrieval interval
+included zero, while Hits@10 was identical per query. Fact recall@4 also
+increased by 0.0189 with interval [0.0067, 0.0344]. Answer EM/F1 decreased by
+0.0067 and official QA accuracy by 0.0050, but each interval ended at zero and
+did not show a statistically separated regression. The candidate therefore
+passes the established cross-dataset retrieval no-regression gate and becomes
+the new development checkpoint. It is not a final method or default: its
+MuSiQue support recall of 0.7048 remains below the predeclared 0.7681 target.
+
+The next read-only selector continues the body-ownership rule in complete
+rank rounds rather than stopping after each view's first result. Every
+generated role view contributes its result at rank one before any view can
+contribute rank two, and so on until the fixed 12-paragraph budget is full.
+Duplicates share a slot; candidates within the same round retain their
+existing vector/full-text fused score, and the checkpoint order fills only an
+unfilled remainder. There is no per-view depth, fitted quota, score cutoff,
+dataset branch, or gold input.
+
+The round selector changed 190 of 201 queries. It used 4.65 result-rank rounds
+per query on average (maximum 12) and improved query-macro support from 0.1772
+precision / 0.7048 recall / 0.2796 F1 to 0.1809 / 0.7289 / 0.2864. Recall
+improved on 34 queries and regressed on 20. The gain is materially larger than
+the earlier first-result screen and improves all support aggregates, so an
+isolated implementation and one-way answer benchmark are allowed even though
+the result remains below the final 0.7681 recall target.
+
+The isolated implementation keeps every standard auxiliary body result and
+completes one result rank across all generated views before considering the
+next rank. Auxiliary-only paragraphs still receive no representation vote and
+cannot start graph traversal. Focused retrieval, traversal, workflow,
+consistency, and benchmark-integrity tests passed 171/171; Ruff and
+`git diff --check` passed. The fixed first development query then completed a
+live smoke in 4.94 s with 12 evidence paragraphs, 1.0 support recall, the
+intended `role_body_rounds` policy in provenance, no transient selection
+metadata in the public result, and no runtime error. A fixed 201-query run and
+an unchanged-source first-result control are therefore allowed.
+
+The fixed 201-query candidate and its immediately following first-result
+control both completed with zero errors and the same query/evaluation source
+hash, `2da805d66bb12ea4637b6476b25bbaa4e2c8816d55ef0c60fa49e16c163c47eb`.
+The candidate scored 0.2985 answer EM, 0.3715 answer F1, 0.1807 support
+precision, 0.7326 support recall, and 0.2865 support F1. The control scored
+0.2637, 0.3323, 0.1791, 0.7102, and 0.2825 respectively, giving candidate
+deltas of +0.0348, +0.0392, +0.0016, +0.0224, and +0.0040. Thus all five
+predeclared aggregates improved.
+
+Their paired 95% intervals were [-0.0050, 0.0796] for answer EM, [-0.0029,
+0.0821] for answer F1, [-0.0056, 0.0084] for support precision, [-0.0041,
+0.0493] for support recall, and [-0.0072, 0.0149] for support F1. None was
+separated from zero, so this is a development checkpoint rather than an
+isolated effectiveness claim. Evidence-document precision/F1 changed by
+-0.0058/-0.0036 with intervals spanning zero; these are additional diagnostic
+metrics rather than MuSiQue's paragraph-support target metrics. The
+predeclared all-five aggregate gate permits the fixed MultiHop-RAG
+no-regression check. The candidate is still not final because 0.7326 support
+recall remains below the 0.7681 target.
+
+The fixed 200-query MultiHop-RAG candidate/control runs also completed with
+zero errors and the same query/evaluation source hash,
+`6ae35b047cc6f5b0e6ea3b8f39ee274c775a1ce3d87540bdc7cfe596a0e7f758`.
+Candidate versus first-result control official retrieval was Hits@4 0.7133
+versus 0.7133, Hits@10 0.8533 versus 0.8533, MRR@10 0.5647 versus 0.5659,
+and MAP@10 0.2777 versus 0.2777. Their paired deltas and intervals were 0.0000
+[0.0000, 0.0000], 0.0000 [-0.0200, 0.0200], -0.0012 [-0.0134, 0.0096],
+and effectively 0.0000 [-0.0041, 0.0036].
+
+Fact recall@4 changed by -0.0022 with interval [-0.0067, 0.0000], while fact
+recall@10 changed by +0.0033 with interval [0.0000, 0.0100]. Evidence-document
+precision/recall/F1 changed by +0.0020/+0.0033/+0.0016, all with intervals
+spanning zero. Answer EM/F1 and official QA accuracy were exactly unchanged.
+No official retrieval or answer metric showed a statistically separated
+regression, so the cross-dataset no-regression condition passes. The complete
+rank-round implementation becomes the next development checkpoint, not a
+final method or default.
+
+Several read-only selections then tested how much of the reachable body pool
+could be retained without fitting a score weight, cutoff, or dataset branch.
+Adding the established global order as one more rank-synchronised list raised
+support precision/recall/F1 from 0.1766/0.7334/0.2814 to
+0.1795/0.7475/0.2862, but remained below the 0.7681 recall target. Collapsing
+body results into separate Q-/Q+ role lists reached 0.1762/0.7355/0.2810;
+collapsing all generated-body results into one list reached
+0.1754/0.7338/0.2798. Both are rejected because at least one aggregate
+regressed.
+
+Using the established global order only to break ties inside a body-rank wave
+reached 0.1783/0.7417/0.2842, improving four queries without a recall loss but
+still missing the target. Admitting only complete waves below the fixed budget
+and filling the remainder globally reached 0.1774/0.7396/0.2830. After the
+user explicitly allowed more than 12 outputs, completing the first wave that
+crossed 12 produced 13.03 paragraphs per query on average (maximum 19). Recall
+rose to 0.7446, but precision/F1 fell to 0.1656/0.2678, so merely expanding
+the output is rejected. Treating all generated-body searches as a fourth
+representation channel also regressed to 0.1721/0.7177/0.2744. No output-width
+or score sweep was performed.
+
+The remaining diagnostic changes the operation rather than another ranking
+formula. It forms a candidate pool from every standard generated-view body
+result plus the established global top 12. A single list-ranking call sees the
+original question and opaque candidate IDs with title and paragraph text, and
+must return every ID from most to least useful. Unknown IDs are ignored;
+duplicates are collapsed and any omitted known IDs retain their input order at
+the end. The first 12 form the evidence set. Gold labels, retrieval paths,
+scores, ranks, and dataset identity are absent from the prompt. This differs
+from the earlier rejected variable-size selector: it produces a complete
+ranking and preserves the unchanged 12-paragraph evidence count.
+
+A ten-query format smoke returned nine complete rankings; the remaining case
+omitted one of 36 known IDs and was completed by the fixed input-order rule.
+The full read-only 201-query diagnostic then used 35.71 candidates per query
+on average (maximum 80), with zero unknown IDs and zero JSON failures; 181
+rankings were complete before deterministic completion. Support
+precision/recall/F1 improved from 0.1770/0.7351/0.2821 to
+0.1924/0.7968/0.3064. It changed 45 queries, improving recall on 40 and
+regressing on five. The result clears the predeclared 0.7681 recall threshold
+while improving all three support aggregates, so one isolated implementation,
+focused tests, a live smoke, and the all-five 201-query benchmark gate are
+allowed. No prompt variant or selection-count tuning was attempted.
+
+The isolated implementation is available only through
+`RAG_SOURCE_SELECTION_VARIANT=role_body_list_ranking`; `global` remains the
+default. Evidence-refinement previews continue to use complete body-rank
+rounds, and the complete list ranking runs exactly once after refinement has
+stopped. This preserves the query path used by the read-only diagnostic and
+avoids multiplying generation calls. Focused retrieval, workflow,
+consistency, and benchmark-integrity tests passed 174/174; Ruff and
+`git diff --check` passed. The fixed first development query completed a live
+smoke in 12.42 s with exactly 12 public evidence paragraphs, 1.0 support
+recall, the intended policy in provenance, no transient selection fields, and
+no runtime error. The fixed 201-query all-five gate is therefore allowed.
+
+The first gate attempt was stopped after row 112 because one ranking returned
+`C0019`, which was not in that query's candidate pool. The parser incorrectly
+made that invalid ID fatal instead of ignoring it; no aggregate from the
+incomplete run is used. The parser now discards unknown IDs, then applies the
+same duplicate collapse and deterministic completion over known IDs. The
+unknown-ID case is covered by the focused test, the two affected test modules
+passed 83/83, the full suite passed 292 tests with four skips, and Ruff plus
+`git diff --check` passed. The fixed gate is restarted from the first query
+under a new run ID so the incomplete artifact cannot be mistaken for a result.
+
+The restarted candidate (`musique-dev-role-body-list-ranking-retry-20260830`)
+completed all 201 queries without an error at 0.3284 answer EM, 0.3968 answer
+F1, 0.2018 support precision, 0.7944 support recall, and 0.3178 support F1.
+The exact-source complete-round control
+(`musique-dev-role-body-rounds-list-control-20260830`) reached
+0.2985/0.3694/0.1805/0.7301/0.2860. Thus every predeclared aggregate improved
+and support recall cleared the 0.7681 target. The paired differences were
++0.0299 answer EM (95% CI -0.0050 to +0.0647), +0.0274 answer F1
+(-0.0068 to +0.0625), +0.0213 support precision (+0.0156 to +0.0273),
++0.0643 support recall (+0.0423 to +0.0879), and +0.0318 support F1
+(+0.0229 to +0.0413). The three support improvements exclude zero; the two
+answer improvements do not. Both runs used source-tree fingerprint
+`57f7c5384ecff8b36d3698380f48174613d841206bc0a26d2f35678774efb5a1`,
+the same full-index fingerprint, fixed query manifest, and seed; the declared
+selection policy is their only expected difference. This passes the first
+dataset gate and permits the exact-source MultiHop-RAG no-regression pair.
+
+The exact-source MultiHop-RAG pair then compared the same two policies on the
+fixed 200-query manifest. Complete list ranking reached 0.8333 Hits@4, 0.8600
+Hits@10, 0.7078 MRR@10, and 0.3716 MAP@10; complete body-rank rounds reached
+0.7133/0.8533/0.5647/0.2777. The paired differences were +0.1200 Hits@4
+(95% CI +0.0667 to +0.1733), +0.0067 Hits@10 (-0.0133 to +0.0267), +0.1431
+MRR@10 (+0.0862 to +0.1991), and +0.0939 MAP@10 (+0.0668 to +0.1221).
+No official metric regressed; Hits@4, MRR, and MAP improved with intervals
+excluding zero, while the smaller Hits@10 improvement did not. Both runs used
+source-tree fingerprint
+`7f5d512724790219d5c0c48bdd39418e27346d269c9349a81bbc880cf9108171`
+and full-index fingerprint
+`87781bfec56d944e9e57c3f0e96dc28ba473d837bf4a48d17fdc5b8690a4a0b8`.
+The candidate therefore passes both development gates without a
+dataset-specific branch. Its higher generation cost is retained for the final
+latency report rather than used to alter the policy after seeing results.
+
+It is not yet a final candidate because the strongest historical non-Prehop
+Hits@10 result, 0.8457, implies a 0.9302 ten-percent target, while the
+development candidate reached only 0.8600. Starting the long cold runs at this
+point would therefore have been unlikely to satisfy the declared gate. A
+read-only candidate-coverage audit retrieved the already established complete
+representation-and-graph union, without generation and without exposing gold
+data to retrieval or ranking. On the 150 judged MultiHop-RAG development
+queries, any-hit coverage in that union was 0.9733 (146/150), compared with
+0.8533 in its existing first ten; the union averaged 64.88 candidates and had
+a maximum of 111. On MuSiQue, reconstructing the final generated query views
+from the saved traces increased the gold-support recall ceiling from 0.8130 in
+the current ranking pool to 0.8346 in the complete union; the complete union
+averaged 67.85 candidates and had a maximum of 116.
+
+The next isolated candidate therefore ranks the complete candidate union that
+the retrieval and one-edge traversal stages already produced, rather than
+only generated-body results plus the established first 12. It still emits the
+first 12 paragraphs, uses the same single complete-list call and opaque-ID
+contract, and introduces no new search width, threshold, weight, fitted value,
+or dataset branch. This is the user-approved wider-candidate interpretation:
+the public evidence count does not increase. No output-width or pool-width
+sweep is performed.
+
+The implementation now passes the complete existing `ordered` union to the
+same ranking contract. The affected retrieval and workflow modules passed
+83/83 tests, the full suite passed 292 tests with four skips, and Ruff plus
+`git diff --check` passed. A one-query live smoke completed without an error,
+returned exactly 12 public paragraphs with no transient ranking fields, and
+recovered both supporting paragraphs. The fixed 201-query all-five gate is
+therefore allowed; the smoke row is not used for selection.
+
+The fixed complete-pool run (`musique-dev-complete-pool-list-20260830`)
+completed all 201 rows without an error at 0.3333 answer EM, 0.4048 answer
+F1, 0.2057 support precision, 0.7968 support recall, and 0.3229 support F1.
+This strictly improved the preceding restricted-pool candidate's
+0.3284/0.3968/0.2018/0.7944/0.3178. Its exact-source complete-round control
+(`musique-dev-rounds-complete-pool-control-20260830`) reached
+0.2985/0.3724/0.1805/0.7297/0.2859. Paired differences against that control
+were +0.0348 official answer EM (95% CI -0.0050 to +0.0746), +0.0324 official
+answer F1 (-0.0028 to +0.0685), +0.0253 support precision (+0.0187 to
++0.0320), +0.0672 support recall (+0.0410 to +0.0954), and +0.0369 support F1
+(+0.0264 to +0.0476). All five aggregates improved; all three support
+intervals exclude zero. Both runs used source-tree fingerprint
+`461b59b12d2dda3558fb777be87b72d41de8a6742efd79525293cbdad69c57da`
+and the same full-index fingerprint. Average candidate latency was 35.37 s
+versus 11.10 s for the control; that cost is recorded, not tuned away. The
+candidate passes the MuSiQue gate and permits its exact-source MultiHop-RAG
+pair.
+
+The corresponding fixed MultiHop-RAG run
+(`mhr-dev-complete-pool-list-20260830`) completed all 200 rows without a fatal
+error at 0.8600 Hits@4, 0.9200 Hits@10, 0.7658 MRR@10, and 0.4184 MAP@10.
+All four aggregates improved over the restricted-pool candidate's
+0.8333/0.8600/0.7078/0.3716, but Hits@10 remained below the declared 0.9302
+projection target. An exact-source control was not repeated because this
+candidate had not yet cleared that target.
+
+Failure review found repeated paragraphs from one logical document occupying
+multiple top-ten positions after complete-list ranking. A conservative
+read-only replay over only the already saved 12 outputs, taking one paragraph
+per logical document before a second paragraph from any document, changed
+Hits@10 from 0.9200 to 0.9267 and MAP@10 from 0.4184 to 0.4216; it did not have
+access to the remaining ranked pool, where the earlier audit measured a
+0.9733 any-hit ceiling. Final list selection now preserves the generated
+paragraph order within each logical document but consumes one paragraph per
+document per round. This is the same dataset-neutral document identity already
+used by source balancing, introduces no new count, weight, threshold, or
+dataset branch, and still returns exactly the requested top-k paragraphs.
+The first smoke command referenced a nonexistent development filename and
+failed before loading a query or running retrieval; it produced no benchmark
+result. The smoke was restarted with the fixed manifest filename.
+The corrected one-query smoke returned 12 paragraphs from 12 logical
+documents, exposed no transient ranking fields, and exactly matched the saved
+pre-change row on official answer EM/F1 and paragraph-support P/R/F1. The two
+affected test modules passed 84/84, the full suite passed 293 tests with four
+skips, and Ruff plus `git diff --check` passed. The fixed 201-query all-five
+gate is therefore restarted under a new run ID; the smoke row is not used for
+selection.
+
+The fixed run (`musique-dev-document-rounds-list-20260830`) rejected this
+document-round policy. It reached 0.2687 answer EM, 0.3418 answer F1, 0.1816
+support precision, 0.7504 support recall, and 0.2891 support F1, below the
+complete-pool candidate's 0.3333/0.4048/0.2057/0.7968/0.3229 on every target
+aggregate. MuSiQue can require separate paragraph evidence under one shared
+title, so title-level rounds discarded useful evidence despite the positive
+MultiHop-RAG replay. The policy failed the first-dataset gate; its code and
+test were removed and no MultiHop-RAG run was started. The failed-policy
+benchmark artifact is retained for provenance.
+
+The next failure audit identified missing non-evidence provenance rather than
+another ranking parameter. MultiHop-RAG questions frequently distinguish
+outlet and publication date, and the immutable raw corpus already supplies
+`source`, `published_at`, `author`, `category`, and URL for every article.
+Preparation previously wrote only the title and body, so all chunks from
+similar FTX, Meta, sports, or entertainment articles reached final list
+ranking without the outlet/date fields explicitly named by the question.
+
+Preparation now writes an optional, filename-keyed `source_metadata.json`
+sidecar. The generic indexer validates and fingerprints that sidecar, attaches
+available fields to every chunk after cached evidence generation, and stores
+them as non-evidence node properties. Hybrid retrieval and graph traversal
+carry the fields without indexing or scoring them. Complete-list ranking adds
+the available publisher, publication time, author, and category beside each
+candidate title; corpora without the sidecar render the exact prior prompt.
+There is no dataset branch, learned value, width, threshold, gold field, or
+change to retrieval scores. Existing index tags are not modified; the first
+live check uses a new tag. The affected modules passed 124 tests, the full
+suite passed 294 tests with four skips, and Ruff plus `git diff --check`
+passed.
+
+The first new-tag index attempt was stopped after 96/609 completed files when
+three long source names exceeded the filesystem's per-component limit in the
+chunk-cache temporary filename. The failures occurred before those documents
+were written, so the incomplete snapshot is not a benchmarkable index. Cache
+source components now retain short established names but replace names longer
+than 96 characters with a bounded prefix plus a full-source digest. This
+preserves collision resistance and the existing cache identity inputs without
+changing indexed content. The same new tag is restarted; completed short-name
+caches remain reusable.
+
+The restarted index (`mhr-metadata-dev-index-retry-20260830`) completed all
+609 source files with zero failures and passed every index-quality check. It
+contains 609 documents, 8,529 chunks, 21,805 HOP edges, and 2,821 materialized
+reciprocal provenance pairs. Its optional source-metadata digest is
+`e9ba632f60dac0614360b29afde6f6d6d2d80c42062b6cb2d36cb01eaf991eb8`;
+the original corpus fingerprint remains unchanged. A live readback found a
+publisher and publication time on all 8,529 chunks and an author on the 7,794
+chunks whose raw article supplied one. Total elapsed indexing time was
+1,843.62 seconds. The expected warnings for disabled sentence and continuation
+representations did not fail the build or its quality checks. The user also
+explicitly permitted increasing top-k if the fixed result remains short of the
+gate. No width sweep is started before evaluating this metadata-only candidate;
+any later increase must use one shared, dataset-independent rule and a new run
+ID. A one-query live smoke on the completed index then returned exactly 12
+public paragraphs without an error and found the judged document at both
+Hits@4 and Hits@10. Its 21.70-second latency was dominated by complete-list
+ranking; the smoke row is a plumbing check and is not used for candidate
+selection. The fixed 200-query run is therefore allowed.
+
+The first fixed-run attempt was stopped after row 106 because one query with a
+large candidate union exhausted all three JSON parse attempts. The ranking
+prompt had unnecessarily required the model to repeat every candidate ID even
+though only the first 12 can be returned as evidence; the response was cut off
+at the generation limit. Continuing would have produced an invalid 200-row
+aggregate, so the partial run is rejected. The ranking contract now asks for
+exactly the useful `min(top_k, candidate_count)` prefix and retains the same
+deterministic known-order completion for missing or invalid IDs. Candidate
+generation, ranking input, top-k, retrieval scores, and public evidence are
+unchanged. The two affected test modules pass 84/84, Ruff passes, and the diff
+has no whitespace errors. The previously failing query is checked directly
+before restarting the fixed run under a new run ID.
+
+That direct check completed in 12.61 seconds without a parse retry or runtime
+error, returned 12 public sources, and produced a non-empty answer. The full
+suite then passed 295 tests with four skips; repository-wide Ruff and
+`git diff --check` also passed. The corrected fixed run is started from query
+one as `mhr-dev-metadata-prefix-list-20260830`; no partial result from the
+stopped attempt is reused.
+
+The corrected fixed run completed all 200 rows without an error or JSON retry.
+On the 150 judged retrieval queries it reached 0.9200 Hits@4, 0.9600 Hits@10,
+0.8509 MRR@10, and 0.4719 MAP@10, with 28.70 seconds average end-to-end
+latency. These exceed the declared ten-percent targets of 0.7527, 0.9302,
+0.6226, and 0.3081 respectively. They also improve the prior metadata-blind
+complete-pool result of 0.8600/0.9200/0.7658/0.4184 on all four aggregates.
+The artifact records all 200 fixed query IDs, a matched 609-source live index
+snapshot, completed status, seed 42, source-selection policy
+`role_body_list_ranking`, query/evaluation source-tree fingerprint
+`c81a2eea8770e94b724600065008238a7bd0712a8f9764775f3702593c109fe6`,
+and unchanged corpus fingerprint
+`87781bfec56d944e9e57c3f0e96dc28ba473d837bf4a48d17fdc5b8690a4a0b8`.
+
+The first round-control run reproduced 0.7133 Hits@4, 0.8533 Hits@10, 0.5639
+MRR@10, and 0.2806 MAP@10, but the paired checker correctly rejected it
+because this changelog had been edited between the candidate and control,
+changing query/evaluation provenance. No relaxed comparison was accepted. The
+new result paragraph was temporarily removed, restoring the candidate's exact
+source-tree fingerprint, and only the control was rerun as
+`mhr-dev-rounds-metadata-control-exact-20260830`. That exact control again
+reached 0.7133/0.8533/0.5639/0.2806 with no errors. The accepted 10,000-sample
+paired analysis reports candidate-minus-control differences of +0.2067 Hits@4
+(95% CI +0.1400 to +0.2733), +0.1067 Hits@10 (+0.0600 to +0.1600), +0.2870
+MRR@10 (+0.2256 to +0.3496), and +0.1913 MAP@10 (+0.1611 to +0.2219).
+Every official retrieval interval excludes zero. The metadata-aware candidate
+therefore passes the MultiHop-RAG development gate. Because the shared ranking
+contract now requests only the useful output prefix, MuSiQue is rerun on its
+same fixed 201 IDs before any final cold execution; the prior full-order result
+is not treated as proof for the changed contract.
+
+The shared-prefix MuSiQue candidate (`musique-dev-prefix-list-20260830`)
+completed all 201 fixed rows without an error at 0.3284 official answer EM,
+0.4098 official answer F1, 0.2042 paragraph-support precision, 0.7952 recall,
+and 0.3208 F1. Average end-to-end latency fell from the full-order candidate's
+35.37 seconds to 24.58 seconds because the model no longer repeats unused
+candidate IDs. The exact-source round control
+(`musique-dev-rounds-prefix-control-20260830`) reached
+0.2935/0.3669/0.1817/0.7355/0.2880. Both artifacts use source-tree fingerprint
+`ed6457bf5e7580faa6957b0f673400ccc148a5844d052975089993d183f271bd`.
+Candidate-minus-control paired differences were +0.0348 answer EM (95% CI
+-0.0050 to +0.0746), +0.0429 answer F1 (+0.0066 to +0.0815), +0.0225 support
+precision (+0.0157 to +0.0296), +0.0597 support recall (+0.0336 to +0.0871),
+and +0.0329 support F1 (+0.0223 to +0.0437). All five aggregates improved;
+answer F1 and all three support intervals exclude zero. Five bounded rewrite
+warnings retained the first three unique role questions as specified; there
+were no runtime or result-row errors. The candidate therefore retains the
+MuSiQue development gate and permits final cold full-split preparation.
+
+The final full-split matrix is now frozen before execution. The public top-k
+remains 12: both development gates passed, so the user's permission to increase
+it is not used and no width comparison is introduced. Prehop is run first on
+new tags `musique_final_20260830` and `multihoprag_final_20260830`; the existing
+`musique` and `multihoprag` indexes are not cleared or modified. The repository
+cold-run wrapper cannot be used directly because it both requires a clean
+tracked tree before the required final-result documentation exists and passes
+`--clear-graph`. Manual equivalent commands therefore disable both project
+caches, pin the selected global policy and seed, use the full prepared query
+files, and omit graph clearing. If both full Prehop artifacts remain above the
+historical ten-percent projections, Naive, HopRAG, and MS GraphRAG are rebuilt
+and measured on the same new tags, model endpoints, full queries, manifests,
+and frozen source tree. No code or documentation edit is allowed between these
+final runs. `.env` remains unchanged until the complete performance gate passes.
+
 ## 2026-08-29 — Compact-query rewrite selected and indexing path tightened
 
 Query rewriting was corrected so multiple generated views are fused within

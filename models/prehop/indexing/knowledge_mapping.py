@@ -20,6 +20,8 @@ from utils.prompts import (
     GROUNDED_HOPRAG_PROMPT,
     HOPRAG_FORMAT_INSTRUCTION,
     HOPRAG_PROMPT,
+    LINKED_HOPRAG_FORMAT_INSTRUCTION,
+    LINKED_HOPRAG_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,8 +50,7 @@ class KnowledgeMappingMixin:
         for index, item in enumerate(value):
             if not isinstance(item, str) or not item.strip():
                 raise ValueError(
-                    f"{channel} generation returned a non-string/blank item "
-                    f"at index={index} for title={title!r}"
+                    f"{channel} generation returned a non-string/blank item at index={index} for title={title!r}"
                 )
             question = item.strip()
             identity = _question_identity(question)
@@ -65,6 +66,7 @@ class KnowledgeMappingMixin:
         channel: str,
         chunk: str,
         title: str,
+        question_schema: str = "grounded_v1",
     ) -> list[dict[str, Any]]:
         if len(value) > RAGConfig.QUESTIONS_PER_DIRECTION:
             raise ValueError(
@@ -93,24 +95,28 @@ class KnowledgeMappingMixin:
             grounding_quote = " ".join(grounding_quote.split())
             quote_identity = _grounding_identity(grounding_quote)
             if quote_identity not in chunk_identity:
-                raise ValueError(
-                    f"{channel} grounding_quote is not present in source chunk for title={title!r}"
-                )
-            if (
-                not isinstance(anchor_entities, list)
-                or not anchor_entities
-                or any(not isinstance(entity, str) or not entity.strip() for entity in anchor_entities)
-            ):
+                raise ValueError(f"{channel} grounding_quote is not present in source chunk for title={title!r}")
+            relaxed_anchors = question_schema == "linked_v2"
+            if not isinstance(anchor_entities, list):
+                if relaxed_anchors:
+                    anchor_entities = []
+                else:
+                    raise ValueError(f"{channel} grounded item at index={index} has invalid anchor_entities")
+            if not anchor_entities and not relaxed_anchors:
                 raise ValueError(f"{channel} grounded item at index={index} has invalid anchor_entities")
             anchors: list[str] = []
             anchor_seen: set[str] = set()
             for raw_anchor in anchor_entities:
+                if not isinstance(raw_anchor, str) or not raw_anchor.strip():
+                    if relaxed_anchors:
+                        continue
+                    raise ValueError(f"{channel} grounded item at index={index} has invalid anchor_entities")
                 anchor = " ".join(raw_anchor.split())
                 anchor_identity = _grounding_identity(anchor)
                 if anchor_identity not in chunk_identity:
-                    raise ValueError(
-                        f"{channel} anchor_entity is not present in source chunk for title={title!r}"
-                    )
+                    if relaxed_anchors:
+                        continue
+                    raise ValueError(f"{channel} anchor_entity is not present in source chunk for title={title!r}")
                 if anchor_identity not in anchor_seen:
                     anchor_seen.add(anchor_identity)
                     anchors.append(anchor)
@@ -119,7 +125,7 @@ class KnowledgeMappingMixin:
                 "text": question,
                 "grounding_quote": grounding_quote,
                 "anchor_entities": anchors,
-                "question_schema": "grounded_v1",
+                "question_schema": question_schema,
             }
             if channel == "Q-":
                 answer = item.get("answer")
@@ -129,6 +135,18 @@ class KnowledgeMappingMixin:
                 if _grounding_identity(answer) not in quote_identity:
                     raise ValueError(f"Q- answer is not present in grounding_quote for title={title!r}")
                 record["answer"] = answer
+                if question_schema == "linked_v2":
+                    continuation_anchor = item.get("continuation_anchor")
+                    if not isinstance(continuation_anchor, str):
+                        raise ValueError(f"Q- linked item at index={index} has no continuation_anchor")
+                    continuation_anchor = " ".join(continuation_anchor.split())
+                    if continuation_anchor and _grounding_identity(continuation_anchor) != _grounding_identity(answer):
+                        # The direct Q- record remains valid even when the
+                        # optional continuation marker is over-specific or a
+                        # partial name. Preserve retrieval evidence and simply
+                        # decline to construct an edge from that marker.
+                        continuation_anchor = ""
+                    record["continuation_anchor"] = continuation_anchor
             else:
                 missing_information = item.get("missing_information")
                 if not isinstance(missing_information, str) or not missing_information.strip():
@@ -145,6 +163,7 @@ class KnowledgeMappingMixin:
         channel: str,
         chunk: str,
         title: str,
+        question_schema: str = "grounded_v1",
     ) -> list[dict[str, Any]]:
         """Keep valid grounded records without discarding their whole document."""
         if len(value) > RAGConfig.QUESTIONS_PER_DIRECTION:
@@ -156,7 +175,7 @@ class KnowledgeMappingMixin:
         seen: set[str] = set()
         for index, item in enumerate(value):
             try:
-                validated = cls._validate_grounded_items([item], channel, chunk, title)
+                validated = cls._validate_grounded_items([item], channel, chunk, title, question_schema=question_schema)
             except (TypeError, ValueError) as exc:
                 logger.warning(
                     "Dropping unverifiable %s record index=%d for title=%r: %s",
@@ -185,9 +204,17 @@ class KnowledgeMappingMixin:
         the identical call until it validates, not a content-quality filter
         -- it does not change what a valid response looks like.
         """
-        grounded = RAGConfig.QUESTION_SCHEMA == "grounded_v1"
-        prompt = GROUNDED_HOPRAG_PROMPT if grounded else HOPRAG_PROMPT
-        format_instruction = GROUNDED_HOPRAG_FORMAT_INSTRUCTION if grounded else HOPRAG_FORMAT_INSTRUCTION
+        question_schema = RAGConfig.QUESTION_SCHEMA
+        grounded = question_schema in {"grounded_v1", "linked_v2"}
+        if question_schema == "linked_v2":
+            prompt = LINKED_HOPRAG_PROMPT
+            format_instruction = LINKED_HOPRAG_FORMAT_INSTRUCTION
+        elif grounded:
+            prompt = GROUNDED_HOPRAG_PROMPT
+            format_instruction = GROUNDED_HOPRAG_FORMAT_INSTRUCTION
+        else:
+            prompt = HOPRAG_PROMPT
+            format_instruction = HOPRAG_FORMAT_INSTRUCTION
         text_prompt = prompt.format(chunk=chunk, global_context=f"Document Title: {title}")
         messages = [
             {"role": "user", "content": text_prompt},
@@ -205,11 +232,15 @@ class KnowledgeMappingMixin:
                     temperature=0.0,
                 )
                 if grounded:
-                    q_minus = self._filter_grounded_items(data["q_minus"], "Q-", chunk, title)
+                    q_minus = self._filter_grounded_items(
+                        data["q_minus"], "Q-", chunk, title, question_schema=question_schema
+                    )
                     q_minus_identities = {_question_identity(item["text"]) for item in q_minus}
                     q_plus = [
                         item
-                        for item in self._filter_grounded_items(data["q_plus"], "Q+", chunk, title)
+                        for item in self._filter_grounded_items(
+                            data["q_plus"], "Q+", chunk, title, question_schema=question_schema
+                        )
                         if _question_identity(item["text"]) not in q_minus_identities
                     ]
                 else:

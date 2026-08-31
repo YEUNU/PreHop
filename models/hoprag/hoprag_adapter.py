@@ -280,9 +280,7 @@ class HopRAGAdapter:
             raise TypeError(f"Official HopRetriever returned {type(context_texts).__name__}, expected list")
         for idx, text in enumerate(context_texts):
             if not isinstance(text, str):
-                raise TypeError(
-                    f"Official HopRetriever result at index {idx} is {type(text).__name__}, expected str"
-                )
+                raise TypeError(f"Official HopRetriever result at index {idx} is {type(text).__name__}, expected str")
             if not text.strip():
                 raise ValueError(f"Official HopRetriever result at index {idx} is blank")
         return context_texts
@@ -324,9 +322,7 @@ class HopRAGAdapter:
             matches = by_idx.get(idx, [])
             if not matches:
                 raise RuntimeError(f"HopRAG provenance lookup found no node for official result at index {idx}")
-            source_groups = {
-                (str(row.get("source") or ""), str(row.get("title") or "")) for row in matches
-            }
+            source_groups = {(str(row.get("source") or ""), str(row.get("title") or "")) for row in matches}
             if len(source_groups) == 1:
                 node = matches[0]
             else:

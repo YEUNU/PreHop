@@ -44,13 +44,8 @@ def main() -> int:
     temporary = sample_path.with_name(f"{sample_path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(refreshed, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, sample_path)
-    query_ids_sha256 = hashlib.sha256(
-        "\n".join(str(row["_id"]) for row in refreshed).encode()
-    ).hexdigest()
-    print(
-        f"refreshed={len(refreshed)} query_ids_sha256={query_ids_sha256} "
-        f"sample={sample_path.relative_to(ROOT)}"
-    )
+    query_ids_sha256 = hashlib.sha256("\n".join(str(row["_id"]) for row in refreshed).encode()).hexdigest()
+    print(f"refreshed={len(refreshed)} query_ids_sha256={query_ids_sha256} sample={sample_path.relative_to(ROOT)}")
     return 0
 
 

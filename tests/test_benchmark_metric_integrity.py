@@ -22,7 +22,11 @@ from cli.benchmark import (
     _validate_corpus_index_fingerprint,
     _verify_active_index_snapshot,
 )
-from cli.index import _load_corpus_manifest, _verify_and_publish_neo4j_snapshot
+from cli.index import (
+    _load_corpus_manifest,
+    _load_source_metadata,
+    _verify_and_publish_neo4j_snapshot,
+)
 from models.hoprag import official_indexer as hop_official_indexer
 from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
@@ -72,6 +76,33 @@ def test_multihoprag_manifest_binds_corpus_and_query_content(tmp_path):
     assert prepare_multihoprag.build_corpus_manifest(corpus_dir, queries)["fingerprint"] != first["fingerprint"]
     changed_queries = [{**queries[0], "query": "Changed question"}]
     assert prepare_multihoprag.build_corpus_manifest(corpus_dir, changed_queries)["fingerprint"] != first["fingerprint"]
+
+
+def test_multihoprag_source_metadata_round_trip(tmp_path, monkeypatch):
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    monkeypatch.setattr(prepare_multihoprag, "CORPUS_DIR", corpus_dir)
+    payload = prepare_multihoprag.write_source_metadata(
+        [
+            {
+                "title": "Article",
+                "body": "Evidence.",
+                "author": "Author",
+                "source": "Publisher",
+                "published_at": "2026-08-30T00:00:00Z",
+                "category": "news",
+                "url": "https://example.com/article",
+            }
+        ]
+    )
+
+    records, digest = _load_source_metadata(corpus_dir)
+
+    assert payload["records"]["Article.txt"]["publisher"] == "Publisher"
+    assert records["Article.txt"] == payload["records"]["Article.txt"]
+    assert (
+        digest == hashlib.sha256((corpus_dir / prepare_multihoprag.SOURCE_METADATA_FILENAME).read_bytes()).hexdigest()
+    )
 
 
 def test_benchmark_checkpoint_interval_is_bounded_and_always_writes_final_state():
@@ -273,9 +304,7 @@ def test_index_manifest_selection_does_not_cross_prefixing_corpus_tags(tmp_path)
         encoding="utf-8",
     )
     grounded.write_text(
-        json.dumps(
-            {"strategy": "prehop", "corpus_tag": "multihoprag_grounded_v1", "status": "complete"}
-        ),
+        json.dumps({"strategy": "prehop", "corpus_tag": "multihoprag_grounded_v1", "status": "complete"}),
         encoding="utf-8",
     )
     os.utime(legacy, (1, 1))
@@ -834,3 +863,56 @@ def test_paired_bootstrap_rejects_incompatible_or_legacy_artifacts(tmp_path):
     baseline = _artifact("naive", query_id="different-query")
     with pytest.raises(ValueError, match="query ID sets differ"):
         _validate_artifact_pair(treatment, baseline)
+
+
+def test_paired_bootstrap_enforces_query_only_ablation_contract():
+    treatment = _artifact("prehop")
+    baseline = _artifact("prehop")
+    treatment["ablation"] = {
+        "question_schema": "linked_v2",
+        "continuation_edges_enabled": True,
+        "default_top_k": 12,
+    }
+    baseline["ablation"] = {
+        "question_schema": "linked_v2",
+        "continuation_edges_enabled": False,
+        "default_top_k": 12,
+    }
+
+    _validate_artifact_pair(
+        treatment,
+        baseline,
+        expected_ablation_differences={"continuation_edges_enabled"},
+    )
+
+    baseline["ablation"]["default_top_k"] = 10
+    with pytest.raises(ValueError, match="expected only"):
+        _validate_artifact_pair(
+            treatment,
+            baseline,
+            expected_ablation_differences={"continuation_edges_enabled"},
+        )
+
+    baseline["ablation"]["default_top_k"] = 12
+    treatment["models"] = {"default": "same", "llm_seed": 42}
+    baseline["models"] = {"default": "different", "llm_seed": 42}
+    with pytest.raises(ValueError, match="controlled metadata"):
+        _validate_artifact_pair(
+            treatment,
+            baseline,
+            expected_ablation_differences={"continuation_edges_enabled"},
+        )
+
+
+def test_paired_bootstrap_requires_explicit_index_variant_override():
+    treatment = _artifact("prehop")
+    baseline = _artifact("prehop")
+    baseline["corpus_tag"] = "musique_linked_v2"
+
+    with pytest.raises(ValueError, match="corpus_tag"):
+        _validate_artifact_pair(treatment, baseline)
+    _validate_artifact_pair(treatment, baseline, allow_index_variant=True)
+
+    baseline["corpus_manifest_fingerprint"] = "different"
+    with pytest.raises(ValueError, match="fingerprint"):
+        _validate_artifact_pair(treatment, baseline, allow_index_variant=True)

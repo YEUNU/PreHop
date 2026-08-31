@@ -160,9 +160,7 @@ class MSGraphRAGAdapter:
         missing_text_columns = {"document_id"} - set(text_units.columns)
         missing_document_columns = {"id", "title"} - set(documents.columns)
         if missing_text_columns:
-            raise RuntimeError(
-                f"MS GraphRAG text_units.parquet lacks required columns: {sorted(missing_text_columns)}"
-            )
+            raise RuntimeError(f"MS GraphRAG text_units.parquet lacks required columns: {sorted(missing_text_columns)}")
         if missing_document_columns:
             raise RuntimeError(
                 f"MS GraphRAG documents.parquet lacks required columns: {sorted(missing_document_columns)}"
@@ -180,9 +178,7 @@ class MSGraphRAGAdapter:
             if doc_id in doc_id_to_title:
                 raise RuntimeError(f"MS GraphRAG documents.parquet has duplicate document id: {doc_id!r}")
             if source_filename in source_filenames:
-                raise RuntimeError(
-                    f"MS GraphRAG documents.parquet has duplicate source filename: {source_filename!r}"
-                )
+                raise RuntimeError(f"MS GraphRAG documents.parquet has duplicate source filename: {source_filename!r}")
             doc_id_to_title[doc_id] = source_filename
             source_filenames.add(source_filename)
 
@@ -193,9 +189,7 @@ class MSGraphRAGAdapter:
             if not doc_id:
                 raise RuntimeError(f"MS GraphRAG text unit {short_id!r} has no document id")
             if doc_id not in doc_id_to_title:
-                raise RuntimeError(
-                    f"MS GraphRAG text unit {short_id!r} references unknown document id {doc_id!r}"
-                )
+                raise RuntimeError(f"MS GraphRAG text unit {short_id!r} references unknown document id {doc_id!r}")
             short_id_to_doc_id[short_id] = doc_id
         return short_id_to_doc_id, doc_id_to_title
 
@@ -248,9 +242,7 @@ class MSGraphRAGAdapter:
             # id as the source identity, or MuSiQue paragraph provenance
             # becomes dependent on the diagnostic ``doc`` fallback.
             if doc_id not in doc_map:
-                raise RuntimeError(
-                    f"MS GraphRAG source {unit_id!r} references unknown document id {doc_id!r}"
-                )
+                raise RuntimeError(f"MS GraphRAG source {unit_id!r} references unknown document id {doc_id!r}")
             source_filename = str(doc_map[doc_id] or "").strip()
             source_text = str(row.get("text", "") or "")
             if not source_filename or not source_text.strip():

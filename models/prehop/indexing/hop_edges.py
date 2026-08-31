@@ -99,14 +99,8 @@ class HopEdgeMixin:
         """Resolve each Q+ through one answer-bearing representation."""
         channel = "q_minus" if RAGConfig.ABLATION_Q_MINUS else "body"
         candidates = await self._find_hop_candidates_batch(wave, channel)
-        source_states: dict[str, dict[str, dict[str, dict[str, Any]]]] = {
-            item["id"]: {} for item in wave
-        }
-        source_questions = {
-            question["id"]: question
-            for item in wave
-            for question in item["questions"]
-        }
+        source_states: dict[str, dict[str, dict[str, dict[str, Any]]]] = {item["id"]: {} for item in wave}
+        source_questions = {question["id"]: question for item in wave for question in item["questions"]}
         for candidate in candidates:
             source_chunk_id = str(candidate.get("source_chunk_id") or "").strip()
             source_question_id = str(candidate.get("source_question_id") or "").strip()
@@ -207,13 +201,8 @@ class HopEdgeMixin:
                 ):
                     matches = edge[plural]
                     edge[singular] = max(matches, key=lambda item: item["raw_score"], default=None)
-                all_matches = (
-                    edge["q_minus_matches"]
-                    + edge["body_matches"]
-                )
-                edge["source_question_ids"] = list(
-                    dict.fromkeys(match["source_question_id"] for match in all_matches)
-                )
+                all_matches = edge["q_minus_matches"] + edge["body_matches"]
+                edge["source_question_ids"] = list(dict.fromkeys(match["source_question_id"] for match in all_matches))
                 edge["source_question_texts"] = list(
                     dict.fromkeys(
                         match["source_question_text"]
@@ -302,12 +291,9 @@ class HopEdgeMixin:
 
     async def clear_hop_edges(self) -> None:
         """Delete HOP and question-level provenance edges before rebuilding."""
-        await self.retry_query(
-            f"MATCH (:{self.chunk_label})-[r:HOP_ANSWER]->(:{self.chunk_label}) DELETE r"
-        )
-        await self.retry_query(
-            f"MATCH (:{self.q_plus_label})-[r]->() DELETE r"
-        )
+        await self.retry_query(f"MATCH (:{self.chunk_label})-[r:HOP_ANSWER]->(:{self.chunk_label}) DELETE r")
+        await self.retry_query(f"MATCH (anchor:{self.answer_anchor_label}) DETACH DELETE anchor")
+        await self.retry_query(f"MATCH (:{self.q_plus_label})-[r]->() DELETE r")
 
     async def _precompute_reciprocal_hop_provenance(self) -> int:
         """Materialize the reciprocal Q+ rule once for query-time reuse.
@@ -444,21 +430,15 @@ class HopEdgeMixin:
                 """
             )
             pool_channel = "body"
+
         def cross_document_pools(rows: list[dict[str, Any]]) -> dict[str, int]:
             # Neo4j filters documents after ANN, so each source pool includes
             # its own representations plus one foreign candidate.
-            return {
-                str(row.get("source") or ""): int(row.get("count_per_source", 0) or 0)
-                + 1
-                for row in rows
-            }
+            return {str(row.get("source") or ""): int(row.get("count_per_source", 0) or 0) + 1 for row in rows}
 
         source_ann_pools = {pool_channel: cross_document_pools(pool_rows)}
 
-        pool_maxima = {
-            channel: max(pools.values(), default=1)
-            for channel, pools in source_ann_pools.items()
-        }
+        pool_maxima = {channel: max(pools.values(), default=1) for channel, pools in source_ann_pools.items()}
 
         page_size = max(100, int(os.environ.get("RAG_HOP_PAGE_SIZE", "5000")))
         wave_size = RAGConfig.HOP_GATHER_WAVE
@@ -501,8 +481,7 @@ class HopEdgeMixin:
                     "source": row["source"],
                     "questions": row["questions"],
                     "ann_pools": {
-                        channel: pools.get(str(row["source"]), 1)
-                        for channel, pools in source_ann_pools.items()
+                        channel: pools.get(str(row["source"]), 1) for channel, pools in source_ann_pools.items()
                     },
                 }
                 for row in rows
@@ -542,5 +521,7 @@ class HopEdgeMixin:
             total_edges,
             total_sources,
         )
+        if RAGConfig.QUESTION_SCHEMA == "linked_v2":
+            await self.build_answer_links()
         if RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS and RAGConfig.ABLATION_Q_MINUS:
             await self._precompute_reciprocal_hop_provenance()

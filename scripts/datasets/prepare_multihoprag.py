@@ -57,6 +57,7 @@ QUERIES_PATH = DATA_DIR / "multihoprag_queries.json"
 RAW_CORPUS_PATH = DATA_DIR / "multihoprag_corpus.json"
 RAW_QUERIES_PATH = DATA_DIR / "MultiHopRAG.json"
 CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
+SOURCE_METADATA_FILENAME = "source_metadata.json"
 
 
 def sanitize_filename(name: str) -> str:
@@ -121,6 +122,42 @@ def build_corpus(corpus: list[dict]) -> dict[str, str]:
 
     print(f"Created {len(used_names)} corpus files in {CORPUS_DIR}")
     return title_to_file
+
+
+def write_source_metadata(corpus: list[dict]) -> dict:
+    """Persist non-evidence article provenance keyed by prepared filename."""
+    used_names: set[str] = set()
+    records: dict[str, dict[str, str]] = {}
+    for article in corpus:
+        title = _clean(article.get("title"))
+        body = _strip_scraper_boilerplate(_clean(article.get("body")))
+        if not body:
+            continue
+
+        base = sanitize_filename(title or article.get("url", "untitled"))
+        name = base
+        counter = 1
+        while name in used_names:
+            name = f"{base}_{counter}"
+            counter += 1
+        used_names.add(name)
+
+        values = {
+            "author": _clean(article.get("author")),
+            "publisher": _clean(article.get("source")),
+            "published_at": _clean(article.get("published_at")),
+            "category": _clean(article.get("category")),
+            "url": _clean(article.get("url")),
+        }
+        records[f"{name}.txt"] = {key: value for key, value in values.items() if value}
+
+    payload = {"schema_version": 1, "records": records}
+    (CORPUS_DIR / SOURCE_METADATA_FILENAME).write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"Created source metadata for {len(records)} files in {CORPUS_DIR}")
+    return payload
 
 
 def build_queries(queries: list[dict]) -> list[dict]:
@@ -243,6 +280,7 @@ def main():
         build_corpus(corpus)
     else:
         print("Corpus generation skipped (--skip-corpus).")
+    write_source_metadata(corpus)
 
     queries = build_queries(queries_raw)
     manifest = write_corpus_manifest(CORPUS_DIR, queries)

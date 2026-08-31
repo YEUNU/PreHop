@@ -204,4 +204,6 @@ def test_evidence_doc_metrics_deduplicate_retrieved_chunks():
     assert metrics["evidence_doc_precision"] == 0.5
     assert metrics["evidence_doc_recall"] == 0.5
     assert metrics["evidence_doc_f1"] == 0.5
+
+
 import asyncio

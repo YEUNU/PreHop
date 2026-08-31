@@ -161,7 +161,11 @@ def _build_failure_records(details: list[dict[str, Any]], top_k: int = 30) -> li
             }
         )
     failures.sort(
-        key=lambda item: (item.get("primary_answer_score", -1.0), -item.get("doc_match", 0.0), -item.get("latency", 0.0))
+        key=lambda item: (
+            item.get("primary_answer_score", -1.0),
+            -item.get("doc_match", 0.0),
+            -item.get("latency", 0.0),
+        )
     )
     return failures[: max(1, top_k)]
 

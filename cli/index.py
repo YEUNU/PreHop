@@ -29,6 +29,7 @@ _PARSE_MP_CTX = _mp.get_context("spawn")
 
 logger = logging.getLogger("Prehop")
 _CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
+_SOURCE_METADATA_FILENAME = "source_metadata.json"
 _SNAPSHOT_LABEL = "RAGIndexSnapshot"
 _SNAPSHOT_VERSION = 1
 
@@ -77,9 +78,7 @@ def _artifact_run_id() -> str:
 def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
     """Record semantic index settings separately from throughput controls."""
     if strategy == "prehop":
-        resolved_generation_model = (
-            RAGConfig.DEFAULT_MODEL if indexing_model_id == "default" else indexing_model_id
-        )
+        resolved_generation_model = RAGConfig.DEFAULT_MODEL if indexing_model_id == "default" else indexing_model_id
     elif strategy in {"hoprag", "ms_graphrag"}:
         resolved_generation_model = RAGConfig.DEFAULT_MODEL
     else:
@@ -93,6 +92,7 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
         "strategy": strategy,
         "indexing_model": resolved_generation_model,
         "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
+        "generation_seed": RAGConfig.LLM_SEED,
         "embedding_model": embedding_model,
         "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
         "embedding_query_instruction": RAGConfig.EMBEDDING_QUERY_INSTRUCTION,
@@ -109,9 +109,14 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
                 "question_schema": RAGConfig.QUESTION_SCHEMA,
                 "q_minus_enabled": RAGConfig.ABLATION_Q_MINUS,
                 "q_plus_enabled": RAGConfig.ABLATION_Q_PLUS,
+                "sentence_channel_enabled": RAGConfig.SENTENCE_CHANNEL_ENABLED,
                 "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
+                "continuation_edges_materialized": RAGConfig.QUESTION_SCHEMA == "linked_v2",
+                "continuation_anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY,
                 "hop_construction": (
-                    "qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation"
+                    "qplus_to_qminus_owner+shared_grounded_answer_mentions"
+                    if RAGConfig.QUESTION_SCHEMA == "linked_v2" and RAGConfig.ABLATION_Q_MINUS
+                    else ("qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation")
                 ),
             }
         )
@@ -134,6 +139,31 @@ def _load_corpus_manifest(dataset_path: str | Path) -> dict | None:
     if not isinstance(paragraph_count, int) or paragraph_count < 0:
         raise ValueError(f"Corpus manifest has invalid paragraph_count: {manifest_path}")
     return {"fingerprint": fingerprint, "paragraph_count": paragraph_count}
+
+
+def _load_source_metadata(dataset_path: str | Path) -> tuple[dict[str, dict[str, str]], str | None]:
+    """Load optional per-source provenance without treating it as evidence text."""
+    metadata_path = Path(dataset_path) / _SOURCE_METADATA_FILENAME
+    if not metadata_path.is_file():
+        return {}, None
+    try:
+        raw = metadata_path.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid source metadata: {metadata_path}: {exc}") from exc
+    if payload.get("schema_version") != 1 or not isinstance(payload.get("records"), dict):
+        raise ValueError(f"Unsupported source metadata schema: {metadata_path}")
+
+    allowed = {"author", "publisher", "published_at", "category", "url"}
+    records: dict[str, dict[str, str]] = {}
+    for filename, values in payload["records"].items():
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            raise ValueError(f"Invalid source metadata filename: {filename!r}")
+        if not isinstance(values, dict):
+            raise TypeError(f"Invalid source metadata record for {filename!r}")
+        record = {key: str(value).strip() for key, value in values.items() if key in allowed and str(value).strip()}
+        records[filename] = record
+    return records, hashlib.sha256(raw).hexdigest()
 
 
 def _source_ids_from_filenames(filenames: list[str]) -> list[str]:
@@ -313,6 +343,8 @@ async def _collect_index_capacity(
             f"PR_{safe_corpus}_Document",
             f"PR_{safe_corpus}_QMinus",
             f"PR_{safe_corpus}_QPlus",
+            f"PR_{safe_corpus}_Sentence",
+            f"PR_{safe_corpus}_AnswerAnchor",
         ]
         label_literal = json.dumps(labels)
         queries = [
@@ -322,7 +354,9 @@ async def _collect_index_capacity(
             RETURN sum(coalesce(size(n.embedding), 0) + coalesce(size(n.query_embedding), 0)) AS floats,
                    sum(coalesce(size(n.text), 0) + coalesce(size(n.id), 0) +
                        coalesce(size(n.source), 0) + coalesce(size(n.title), 0) +
-                       coalesce(size(n.filename), 0)) AS chars,
+                       coalesce(size(n.filename), 0) + coalesce(size(n.author), 0) +
+                       coalesce(size(n.publisher), 0) + coalesce(size(n.published_at), 0) +
+                       coalesce(size(n.category), 0) + coalesce(size(n.url), 0)) AS chars,
                    0 AS list_items, count(n) AS records
             """,
             f"""
@@ -333,7 +367,8 @@ async def _collect_index_capacity(
                    sum(coalesce(size(r.source_question_texts), 0) +
                        coalesce(size(r.direct_channels), 0) +
                        coalesce(size(r.source_question_ids), 0) +
-                       coalesce(size(r.reciprocal_source_question_ids), 0)) AS list_items,
+                       coalesce(size(r.reciprocal_source_question_ids), 0) +
+                       coalesce(size(r.bridge_answers), 0)) AS list_items,
                    count(r) AS records
             """,
         ]
@@ -400,6 +435,17 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
     doc = engine.doc_label
     q_minus = engine.q_minus_label
     q_plus = engine.q_plus_label
+    sentence = engine.sentence_label
+    answer_anchor = engine.answer_anchor_label
+
+    sentence_representation_union = ""
+    if RAGConfig.SENTENCE_CHANNEL_ENABLED:
+        sentence_representation_union = f"""
+            UNION ALL
+            MATCH (s:{sentence})
+            RETURN count(CASE WHEN s.embedding IS NULL THEN 1 END) AS missing_embeddings,
+                   count(CASE WHEN NOT (:{chunk})-[:HAS_SENTENCE]->(s) THEN 1 END) AS orphan_nodes
+        """
 
     representation_rows = await engine.neo4j.execute_query(f"""
         CALL () {{
@@ -414,11 +460,26 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
             MATCH (q:{q_plus})
             RETURN count(CASE WHEN q.embedding IS NULL OR q.query_embedding IS NULL THEN 1 END) AS missing_embeddings,
                    count(CASE WHEN NOT (:{chunk})-[:HAS_Q_PLUS]->(q) THEN 1 END) AS orphan_nodes
+            {sentence_representation_union}
         }}
         RETURN sum(missing_embeddings) AS missing_embeddings,
                sum(orphan_nodes) AS orphan_nodes
     """)
     representation = representation_rows[0] if representation_rows else {}
+
+    sentence_structure: dict[str, object] = {}
+    if RAGConfig.SENTENCE_CHANNEL_ENABLED:
+        sentence_rows = await engine.neo4j.execute_query(f"""
+            MATCH (c:{chunk})
+            OPTIONAL MATCH (c)-[:HAS_SENTENCE]->(s:{sentence})
+            WITH c, count(s) AS sentence_count,
+                 count(CASE WHEN s IS NOT NULL AND trim(coalesce(s.text, '')) = '' THEN 1 END) AS empty_sentences
+            RETURN count(CASE WHEN sentence_count < 1 OR
+                                   sentence_count > {RAGConfig.CHUNK_SENTENCES}
+                              THEN 1 END) AS invalid_chunks,
+                   sum(empty_sentences) AS empty_sentences
+        """)
+        sentence_structure = sentence_rows[0] if sentence_rows else {}
 
     question_rows = await engine.neo4j.execute_query(f"""
         CALL () {{
@@ -447,29 +508,35 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
     """)
     cross_channel = cross_channel_rows[0] if cross_channel_rows else {}
     grounding: dict[str, object] = {}
-    if RAGConfig.QUESTION_SCHEMA == "grounded_v1":
-        grounding_rows = await engine.neo4j.execute_query(f"""
+    if RAGConfig.QUESTION_SCHEMA in {"grounded_v1", "linked_v2"}:
+        expected_schema = RAGConfig.QUESTION_SCHEMA
+        grounding_rows = await engine.neo4j.execute_query(
+            f"""
             CALL () {{
                 MATCH (q:{q_minus})
-                RETURN count(CASE WHEN q.question_schema <> 'grounded_v1'
+                RETURN count(CASE WHEN q.question_schema <> $expected_schema
                                        OR trim(coalesce(q.grounding_quote, '')) = ''
-                                       OR size(coalesce(q.anchor_entities, [])) = 0
+                                       OR ($expected_schema = 'grounded_v1'
+                                           AND size(coalesce(q.anchor_entities, [])) = 0)
                                        OR trim(coalesce(q.answer, '')) = ''
+                                       OR ($expected_schema = 'linked_v2'
+                                           AND q.continuation_anchor IS NULL)
                                   THEN 1 END) AS invalid_grounding
                 UNION ALL
                 MATCH (q:{q_plus})
-                RETURN count(CASE WHEN q.question_schema <> 'grounded_v1'
+                RETURN count(CASE WHEN q.question_schema <> $expected_schema
                                        OR trim(coalesce(q.grounding_quote, '')) = ''
-                                       OR size(coalesce(q.anchor_entities, [])) = 0
+                                       OR ($expected_schema = 'grounded_v1'
+                                           AND size(coalesce(q.anchor_entities, [])) = 0)
                                        OR trim(coalesce(q.missing_information, '')) = ''
                                   THEN 1 END) AS invalid_grounding
             }}
             RETURN sum(invalid_grounding) AS invalid_grounding
-        """)
+        """,
+            {"expected_schema": expected_schema},
+        )
         grounding = grounding_rows[0] if grounding_rows else {}
-    q_plus_count_rows = await engine.neo4j.execute_query(
-        f"MATCH (q:{q_plus}) RETURN count(q) AS count"
-    )
+    q_plus_count_rows = await engine.neo4j.execute_query(f"MATCH (q:{q_plus}) RETURN count(q) AS count")
     q_plus_count = int((q_plus_count_rows[0] if q_plus_count_rows else {}).get("count", 0) or 0)
 
     next_rows = await engine.neo4j.execute_query(f"""
@@ -534,6 +601,43 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         if RAGConfig.ABLATION_Q_MINUS
         else int(provenance.get("missing_supported_by", 0) or 0)
     )
+    continuation_rows = await engine.neo4j.execute_query(
+        f"""
+        CALL () {{
+            MATCH (anchor:{answer_anchor})
+            RETURN count(anchor) AS anchors,
+                   count(CASE WHEN trim(coalesce(anchor.text, '')) = ''
+                                   OR trim(coalesce(anchor.normalized_text, '')) = ''
+                                   OR NOT EXISTS {{
+                                       MATCH (:{q_minus})-[:ANSWER_ANCHOR]->(anchor)
+                                   }}
+                                   OR NOT EXISTS {{
+                                       MATCH (anchor)-[:MENTIONED_IN]->(:{chunk})
+                                   }}
+                              THEN 1 END) AS invalid_records
+        }}
+        CALL () {{
+            MATCH (q:{q_minus})-[link:ANSWER_ANCHOR]->(anchor:{answer_anchor})
+            RETURN count(link) AS question_links,
+                   count(CASE WHEN
+                                   ($anchor_policy = 'named_only' AND
+                                    trim(coalesce(q.continuation_anchor, '')) = '')
+                                   OR
+                                   ($anchor_policy = 'all_grounded' AND
+                                    trim(coalesce(q.answer, '')) = '')
+                              THEN 1 END) AS invalid_question_links
+        }}
+        CALL () {{
+            MATCH (anchor:{answer_anchor})-[link:MENTIONED_IN]->(target:{chunk})
+            RETURN count(link) AS mention_links
+        }}
+        RETURN anchors, question_links, mention_links,
+               invalid_records + invalid_question_links AS invalid_edges,
+               0 AS missing_source_questions
+    """,
+        {"anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY},
+    )
+    continuation = continuation_rows[0] if continuation_rows else {}
     degree_rows = await engine.neo4j.execute_query(f"""
         MATCH (source:{chunk})-[h:HOP_ANSWER]->()
         WITH source, count(h) AS degree
@@ -547,21 +651,26 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
     checks = {
         "complete_embeddings": int(representation.get("missing_embeddings", 0) or 0) == 0,
         "complete_ownership": int(representation.get("orphan_nodes", 0) or 0) == 0,
+        "valid_sentence_structure": not RAGConfig.SENTENCE_CHANNEL_ENABLED
+        or (
+            int(sentence_structure.get("invalid_chunks", 0) or 0) == 0
+            and int(sentence_structure.get("empty_sentences", 0) or 0) == 0
+        ),
         "valid_questions": int(questions.get("empty_questions", 0) or 0) == 0
         and int(questions.get("source_relative_questions", 0) or 0) == 0,
         "unique_questions_per_channel": int(questions.get("duplicate_question_groups", 0) or 0) == 0,
         "distinct_question_roles": int(cross_channel.get("identical_cross_channel_questions", 0) or 0) == 0,
         "complete_question_grounding": int(grounding.get("invalid_grounding", 0) or 0) == 0,
-        "exact_next_topology": int(next_topology.get("expected", 0) or 0)
-        == int(next_topology.get("actual", 0) or 0)
+        "exact_next_topology": int(next_topology.get("expected", 0) or 0) == int(next_topology.get("actual", 0) or 0)
         and int(next_topology.get("invalid", 0) or 0) == 0
         and int(next_topology.get("missing", 0) or 0) == 0,
         "valid_hop_edges": invalid_hop_edges == 0,
         "hop_graph_available": not RAGConfig.ABLATION_Q_PLUS or q_plus_count == 0 or bool(hop_rows),
         "consistent_hop_provenance": int(provenance.get("missing_source_questions", 0) or 0) == 0
         and provenance_mismatches == 0,
-        "bounded_hop_out_degree": int(degree.get("max_out_degree", 0) or 0)
-        <= RAGConfig.QUESTIONS_PER_DIRECTION,
+        "valid_continuation_edges": int(continuation.get("invalid_edges", 0) or 0) == 0
+        and int(continuation.get("missing_source_questions", 0) or 0) == 0,
+        "bounded_hop_out_degree": int(degree.get("max_out_degree", 0) or 0) <= RAGConfig.QUESTIONS_PER_DIRECTION,
         "search_indexes_online": bool(index_rows) and all(row.get("state") == "ONLINE" for row in index_rows),
     }
     return {
@@ -569,6 +678,7 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         "checks": checks,
         "diagnostics": {
             "representation": representation,
+            "sentences": sentence_structure,
             "questions": questions,
             "grounding": grounding,
             "cross_channel": cross_channel,
@@ -576,6 +686,7 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
             "hop_edges": len(hop_rows),
             "invalid_hop_edges": invalid_hop_edges,
             "provenance": provenance,
+            "continuation": continuation,
             "max_hop_out_degree": int(degree.get("max_out_degree", 0) or 0),
         },
     }
@@ -596,6 +707,8 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     doc_label = engine.doc_label
     q_minus_label = engine.q_minus_label
     q_plus_label = engine.q_plus_label
+    sentence_label = engine.sentence_label
+    answer_anchor_label = engine.answer_anchor_label
 
     chunk_rows = await engine.neo4j.execute_query(f"""
         MATCH (c:{chunk_label})
@@ -620,6 +733,14 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     """)
     question_stats = question_rows[0] if question_rows else {}
 
+    sentence_rows = await engine.neo4j.execute_query(f"""
+        MATCH (c:{chunk_label})
+        OPTIONAL MATCH (c)-[:HAS_SENTENCE]->(s:{sentence_label})
+        RETURN count(DISTINCT s) AS sentences,
+               count(DISTINCT CASE WHEN s IS NOT NULL THEN c END) AS sentence_chunks
+    """)
+    sentence_stats = sentence_rows[0] if sentence_rows else {}
+
     edge_rows = await engine.neo4j.execute_query(f"""
         OPTIONAL MATCH (:{chunk_label})-[hop:HOP_ANSWER]->(:{chunk_label})
         WITH count(hop) AS total_hop_edges
@@ -629,6 +750,18 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
         RETURN total_hop_edges, answered_by_edges, count(body) AS supported_by_edges
     """)
     edge_stats = edge_rows[0] if edge_rows else {}
+    continuation_rows = await engine.neo4j.execute_query(f"""
+        OPTIONAL MATCH (anchor:{answer_anchor_label})
+        WITH count(anchor) AS answer_anchors
+        OPTIONAL MATCH (:{q_minus_label})-[question_link:ANSWER_ANCHOR]
+                       ->(:{answer_anchor_label})
+        WITH answer_anchors, count(question_link) AS continuation_question_links
+        OPTIONAL MATCH (:{answer_anchor_label})-[mention_link:MENTIONED_IN]
+                       ->(:{chunk_label})
+        RETURN answer_anchors, continuation_question_links,
+               count(mention_link) AS continuation_mention_links
+    """)
+    continuation_stats = continuation_rows[0] if continuation_rows else {}
     direction_rows = await engine.neo4j.execute_query(f"""
         MATCH (q:{q_plus_label})
         RETURN count(q) AS total_q_plus,
@@ -651,6 +784,8 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     q_plus_chunks = question_stats.get("q_plus_chunks", 0) or 0
     q_minus_questions = question_stats.get("q_minus_questions", 0) or 0
     q_plus_questions = question_stats.get("q_plus_questions", 0) or 0
+    sentences = sentence_stats.get("sentences", 0) or 0
+    sentence_chunks = sentence_stats.get("sentence_chunks", 0) or 0
     total_hop_edges = edge_stats.get("total_hop_edges", 0) or 0
     integrity = await _collect_prehop_integrity(engine)
 
@@ -663,9 +798,15 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
         "q_plus_coverage": (q_plus_chunks / total_chunks) if total_chunks else 0.0,
         "q_minus_questions": q_minus_questions,
         "q_plus_questions": q_plus_questions,
+        "sentence_coverage": (sentence_chunks / total_chunks) if total_chunks else 0.0,
+        "sentences": sentences,
+        "avg_sentences_per_covered_chunk": (sentences / sentence_chunks) if sentence_chunks else 0.0,
         "avg_q_minus_per_covered_chunk": (q_minus_questions / q_minus_chunks) if q_minus_chunks else 0.0,
         "avg_q_plus_per_covered_chunk": (q_plus_questions / q_plus_chunks) if q_plus_chunks else 0.0,
         "total_hop_edges": total_hop_edges,
+        "answer_anchors": continuation_stats.get("answer_anchors", 0) or 0,
+        "continuation_question_links": continuation_stats.get("continuation_question_links", 0) or 0,
+        "continuation_mention_links": continuation_stats.get("continuation_mention_links", 0) or 0,
         "answered_by_edges": edge_stats.get("answered_by_edges", 0) or 0,
         "supported_by_edges": edge_stats.get("supported_by_edges", 0) or 0,
         "linked_q_plus_questions": direction_stats.get("linked_q_plus", 0) or 0,
@@ -758,6 +899,7 @@ async def _run_indexing_unlocked(
     if not os.path.isdir(dataset_path):
         raise FileNotFoundError(f"Dataset directory not found: {dataset_path}")
     corpus_manifest = _load_corpus_manifest(dataset_path)
+    source_metadata, source_metadata_sha256 = _load_source_metadata(dataset_path)
 
     files = sorted(file for file in os.listdir(dataset_path) if file.endswith((".txt", ".md")))
     if not files:
@@ -920,6 +1062,10 @@ async def _run_indexing_unlocked(
             try:
                 if is_graph:
                     knowledge = await engine.extract_knowledge(content, source=filename, prepared_pages=prepared_pages)
+                    metadata = source_metadata.get(filename)
+                    if metadata:
+                        for chunk in knowledge.get("chunks") or []:
+                            chunk.update(metadata)
                     await engine.build_graph(knowledge, source=filename, document_filename=filename)
                 async with progress["lock"]:
                     stats["succeeded"] += 1
@@ -1010,6 +1156,7 @@ async def _run_indexing_unlocked(
                 continue
 
             if parse_pool is not None and file_contents:
+
                 async def prepare_file(filename: str, content: str) -> tuple[str, str, dict | None]:
                     try:
                         prepared_pages = await loop.run_in_executor(
@@ -1106,8 +1253,7 @@ async def _run_indexing_unlocked(
             )
 
     global_failure = any(
-        item["stage"] in {"graph_flush", "hop_edges", "graph_stats", "index_quality"}
-        for item in failed_files
+        item["stage"] in {"graph_flush", "hop_edges", "graph_stats", "index_quality"} for item in failed_files
     )
     finalized_successes = 0 if global_failure else stats["succeeded"]
 
@@ -1202,6 +1348,7 @@ async def _run_indexing_unlocked(
                     "status": "complete" if not failed_files else "failed",
                     "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
                     "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
+                    "source_metadata_sha256": source_metadata_sha256,
                     "active_snapshot": snapshot_metadata,
                     "index_capacity": index_capacity,
                     **graph_stats,

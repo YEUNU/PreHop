@@ -99,9 +99,7 @@ async def test_reconcile_requires_complete_batch_before_patch(tmp_path, monkeypa
     monkeypatch.setattr(
         batch_judge,
         "resolve_batches",
-        lambda *_args: {
-            "batch-1": {"0": {"score": 1, "groundedness": 1, "hallucination": 0, "reason": "ok"}}
-        },
+        lambda *_args: {"batch-1": {"0": {"score": 1, "groundedness": 1, "hallucination": 0, "reason": "ok"}}},
     )
 
     with pytest.raises(RuntimeError, match="missing 1/2"):

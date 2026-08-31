@@ -102,6 +102,8 @@ def _validate_artifact_pair(
     *,
     allow_exploratory: bool = False,
     allow_legacy: bool = False,
+    allow_index_variant: bool = False,
+    expected_ablation_differences: set[str] | None = None,
 ) -> None:
     """Fail fast unless two result artifacts are scientifically comparable."""
     for label, artifact in (("treatment", treatment), ("baseline", baseline)):
@@ -123,17 +125,48 @@ def _validate_artifact_pair(
                 "pass --allow-legacy-exploratory only for non-paper analysis"
             )
 
-    for key in (
+    identity_keys = [
         "dataset",
-        "corpus_tag",
         "evaluation_scope",
         "corpus_manifest_fingerprint",
         "index_manifest_fingerprint",
         "corpus_index_fingerprint_status",
-    ):
+    ]
+    if not allow_index_variant:
+        identity_keys.insert(1, "corpus_tag")
+    for key in identity_keys:
         if treatment.get(key) != baseline.get(key):
+            raise ValueError(f"Incompatible artifacts: {key} differs ({treatment.get(key)!r} != {baseline.get(key)!r})")
+
+    expected_ablation_differences = expected_ablation_differences or set()
+    if expected_ablation_differences:
+        controlled_metadata = (
+            "active_index_snapshot",
+            "models",
+            "query_provenance",
+            "evaluation_provenance",
+            "benchmark_concurrency",
+            "judge_enabled",
+        )
+        changed_metadata = [key for key in controlled_metadata if treatment.get(key) != baseline.get(key)]
+        if changed_metadata:
             raise ValueError(
-                f"Incompatible artifacts: {key} differs ({treatment.get(key)!r} != {baseline.get(key)!r})"
+                f"Incompatible query-only ablation pair: controlled metadata differs for {changed_metadata!r}"
+            )
+        treatment_ablation = treatment.get("ablation")
+        baseline_ablation = baseline.get("ablation")
+        if not isinstance(treatment_ablation, dict) or not isinstance(baseline_ablation, dict):
+            raise ValueError("Ablation-contract validation requires ablation metadata in both artifacts")
+        observed_differences = {
+            key
+            for key in treatment_ablation.keys() | baseline_ablation.keys()
+            if treatment_ablation.get(key) != baseline_ablation.get(key)
+        }
+        if observed_differences != expected_ablation_differences:
+            raise ValueError(
+                "Incompatible query-only ablation pair: expected only "
+                f"{sorted(expected_ablation_differences)!r} to differ, observed "
+                f"{sorted(observed_differences)!r}"
             )
 
     def _pair_ids(artifact: dict) -> set[str]:
@@ -206,9 +239,7 @@ def _load_excluded_query_ids(path: str | None) -> set[str]:
     if not isinstance(payload, list):
         raise TypeError("Excluded-query file must contain a JSON list")
     query_ids = {
-        str(row.get("_id") or row.get("query_id") or "").strip()
-        if isinstance(row, dict)
-        else str(row or "").strip()
+        str(row.get("_id") or row.get("query_id") or "").strip() if isinstance(row, dict) else str(row or "").strip()
         for row in payload
     }
     if not query_ids or "" in query_ids:
@@ -239,7 +270,26 @@ def main() -> None:
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--fig", default=None, help="default: fig/<corpus_tag>_bootstrap_forest.png")
     ap.add_argument("--include-judge", action="store_true", help="also run supplemental LLM-judge bootstrap metrics")
-    ap.add_argument("--allow-exploratory", action="store_true", help="allow non-full but otherwise compatible artifacts")
+    ap.add_argument(
+        "--allow-exploratory", action="store_true", help="allow non-full but otherwise compatible artifacts"
+    )
+    ap.add_argument(
+        "--allow-index-variant",
+        action="store_true",
+        help=(
+            "allow different corpus tags for an explicit index-changing comparison; "
+            "dataset, corpus fingerprint, evaluation scope, and query IDs must still match"
+        ),
+    )
+    ap.add_argument(
+        "--expected-ablation-difference",
+        action="append",
+        default=[],
+        help=(
+            "require this ablation metadata key, and no unlisted key, to differ; "
+            "repeat for multiple intentional query-only differences"
+        ),
+    )
     ap.add_argument(
         "--exclude-queries",
         default=None,
@@ -260,12 +310,8 @@ def main() -> None:
     excluded_query_ids = _load_excluded_query_ids(args.exclude_queries)
     unknown_exclusions = excluded_query_ids - set(prehop)
     if unknown_exclusions:
-        raise ValueError(
-            f"Excluded query IDs are absent from the treatment artifact: {sorted(unknown_exclusions)[:5]}"
-        )
-    prehop = {
-        query_id: row for query_id, row in prehop.items() if query_id not in excluded_query_ids
-    }
+        raise ValueError(f"Excluded query IDs are absent from the treatment artifact: {sorted(unknown_exclusions)[:5]}")
+    prehop = {query_id: row for query_id, row in prehop.items() if query_id not in excluded_query_ids}
     baselines = {}
     for p in args.baselines:
         strat, _, baseline_artifact, rows = _load(p, allow_legacy=args.allow_legacy_exploratory)
@@ -274,10 +320,10 @@ def main() -> None:
             baseline_artifact,
             allow_exploratory=args.allow_exploratory or args.allow_legacy_exploratory,
             allow_legacy=args.allow_legacy_exploratory,
+            allow_index_variant=args.allow_index_variant,
+            expected_ablation_differences=set(args.expected_ablation_difference),
         )
-        baselines[strat] = {
-            query_id: row for query_id, row in rows.items() if query_id not in excluded_query_ids
-        }
+        baselines[strat] = {query_id: row for query_id, row in rows.items() if query_id not in excluded_query_ids}
 
     fig_path = Path(args.fig) if args.fig else Path(f"fig/{corpus_tag}_bootstrap_forest.png")
 
@@ -308,9 +354,7 @@ def main() -> None:
                 "seed": SEED,
                 "pair_key": "legacy_query_text" if args.allow_legacy_exploratory else "query_id",
                 "analysis_scope": (
-                    "heldout_excluding_fixed_development_ids"
-                    if excluded_query_ids
-                    else "complete_artifact_query_set"
+                    "heldout_excluding_fixed_development_ids" if excluded_query_ids else "complete_artifact_query_set"
                 ),
                 "excluded_query_count": len(excluded_query_ids),
                 "excluded_query_ids_sha256": (
@@ -319,6 +363,8 @@ def main() -> None:
                     else None
                 ),
                 "exploratory_override": bool(args.allow_exploratory or args.allow_legacy_exploratory),
+                "index_variant_override": bool(args.allow_index_variant),
+                "expected_ablation_differences": sorted(set(args.expected_ablation_difference)),
                 "primary_metrics": metrics,
                 "supplemental_judge_metrics": judge_metrics,
                 "results": results,

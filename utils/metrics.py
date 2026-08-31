@@ -408,7 +408,11 @@ def calculate_retrieval_ranking_metrics(
     first_hit_rank: int | None = None
     ap_sum = 0.0
     for rank, chunk in enumerate(chunks[:10], start=1):
-        newly = {idx for idx, fact in enumerate(gold_raw) if idx not in covered and _official_multihoprag_fact_match(fact, chunk)}
+        newly = {
+            idx
+            for idx, fact in enumerate(gold_raw)
+            if idx not in covered and _official_multihoprag_fact_match(fact, chunk)
+        }
         if newly:
             if first_hit_rank is None:
                 first_hit_rank = rank

@@ -18,7 +18,10 @@ from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
 from models.prehop.llm_json import generate_json_or_raise
 from models.prehop.retrieval import RetrievalPipeline
-from utils.prompts.query_rewrite import build_role_aligned_query_prompt
+from utils.prompts.query_rewrite import (
+    build_evidence_conditioned_query_prompt,
+    build_role_aligned_query_prompt,
+)
 from utils.prompts.shared import build_answer_prompt as build_shared_answer_prompt
 
 _ANSWER_PREFIX = "@@ANSWER:"
@@ -44,6 +47,8 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         self.doc_label = f"{self.prefix}{self._safe_corpus}_Document"
         self.q_minus_label = f"{self.prefix}{self._safe_corpus}_QMinus"
         self.q_plus_label = f"{self.prefix}{self._safe_corpus}_QPlus"
+        self.sentence_label = f"{self.prefix}{self._safe_corpus}_Sentence"
+        self.answer_anchor_label = f"{self.prefix}{self._safe_corpus}_AnswerAnchor"
 
         self.body_vector_index = f"{self.strategy}_{self._safe_corpus}_vector_idx"
         self.body_text_index = f"{self.strategy}_{self._safe_corpus}_text_idx"
@@ -51,6 +56,8 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         self.q_plus_vector_index = f"{self.strategy}_{self._safe_corpus}_qplus_vector_idx"
         self.q_minus_text_index = f"{self.strategy}_{self._safe_corpus}_qminus_text_idx"
         self.q_plus_text_index = f"{self.strategy}_{self._safe_corpus}_qplus_text_idx"
+        self.sentence_vector_index = f"{self.strategy}_{self._safe_corpus}_sentence_vector_idx"
+        self.sentence_text_index = f"{self.strategy}_{self._safe_corpus}_sentence_text_idx"
         self.vector_index = self.body_vector_index
         self.text_index = self.body_text_index
 
@@ -59,6 +66,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         self._index_ready = False
 
         indexing_model_id = indexing_model_id or RAGConfig.DEFAULT_MODEL
+        self.indexing_model_id = indexing_model_id
         self.indexing_llm = get_llm_client(indexing_model_id)
 
         self.max_retries = RAGConfig.RETRY_COUNT
@@ -190,6 +198,29 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         )
         return self._validate_role_queries(payload)
 
+    async def _refine_query_roles(
+        self,
+        query: str,
+        evidence: str,
+        attempted_questions: list[str],
+    ) -> dict[str, list[str]]:
+        prompt = build_evidence_conditioned_query_prompt(
+            query,
+            evidence,
+            attempted_questions,
+            RAGConfig.QUESTIONS_PER_DIRECTION,
+        )
+        payload = await generate_json_or_raise(
+            self.llm,
+            [{"role": "user", "content": prompt}],
+            "evidence-conditioned role rewrite",
+            f"query={query!r}",
+            required_fields={"q_minus": list, "q_plus": list},
+            temperature=0.0,
+            max_tokens=512,
+        )
+        return self._validate_role_queries(payload)
+
     # ---------- main entry ----------
     async def run_workflow(
         self,
@@ -198,7 +229,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
     ) -> tuple:
         """Run retrieval, traversal, and one synthesis call.
 
-        No agent loop, no reflection, no refinement. The path is:
+        The default path is:
           1. Parallel role-based retrieve (Q-/body evidence, Q+ dependency seeds).
           2. External-embedding cosine top-k ordering.
           3. Deterministic 1-hop bidirectional-NEXT/outgoing-HOP_ANSWER traversal
@@ -215,33 +246,142 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         if role_queries is not None:
             additive = RAGConfig.QUERY_REWRITE_VARIANT == "role_aligned_additive"
             channel_queries = {
-                "q_minus": list(
-                    dict.fromkeys([*([retrieval_query] if additive else []), *role_queries["q_minus"]])
-                ),
-                "q_plus": list(
-                    dict.fromkeys([*([retrieval_query] if additive else []), *role_queries["q_plus"]])
-                ),
+                "q_minus": list(dict.fromkeys([*([retrieval_query] if additive else []), *role_queries["q_minus"]])),
+                "q_plus": list(dict.fromkeys([*([retrieval_query] if additive else []), *role_queries["q_plus"]])),
                 "body": [retrieval_query],
             }
 
-        if graph_depth > 0:
-            context, nodes, timing = await self.graph_search(
-                entities=[retrieval_query],
-                depth=graph_depth,
-                top_k=RAGConfig.DEFAULT_TOP_K,
-                channel_queries=channel_queries,
-            )
-        else:
+        async def execute_retrieval(
+            queries: dict[str, list[str]] | None,
+            selection_variant: str | None = None,
+        ) -> tuple[str, list[dict[str, Any]], dict[str, float]]:
+            if graph_depth > 0:
+                selection_kwargs = {"selection_variant": selection_variant} if selection_variant is not None else {}
+                return await self.graph_search(
+                    entities=[retrieval_query],
+                    depth=graph_depth,
+                    top_k=RAGConfig.DEFAULT_TOP_K,
+                    channel_queries=queries,
+                    **selection_kwargs,
+                )
             t_retrieve0 = time.perf_counter()
-            if channel_queries is None:
-                context, nodes = await self.retrieve(retrieval_query, top_k=RAGConfig.DEFAULT_TOP_K)
+            if queries is None:
+                result_context, result_nodes = await self.retrieve(retrieval_query, top_k=RAGConfig.DEFAULT_TOP_K)
             else:
-                context, nodes = await self.retrieve_with_views(
+                selection_kwargs = {"selection_variant": selection_variant} if selection_variant is not None else {}
+                result_context, result_nodes = await self.retrieve_with_views(
                     retrieval_query,
                     top_k=RAGConfig.DEFAULT_TOP_K,
-                    channel_queries=channel_queries,
+                    channel_queries=queries,
+                    **selection_kwargs,
                 )
-            timing = {"retrieve_ms": (time.perf_counter() - t_retrieve0) * 1000, "traversal_ms": 0.0}
+            return (
+                result_context,
+                result_nodes if isinstance(result_nodes, list) else [],
+                {"retrieve_ms": (time.perf_counter() - t_retrieve0) * 1000, "traversal_ms": 0.0},
+            )
+
+        refinement_trace: list[dict[str, Any]] = []
+        retrieval_result: tuple[str, list[dict[str, Any]], dict[str, float]] | None = None
+        evidence_variants = {
+            "role_aligned_evidence",
+            "role_aligned_evidence_iterative",
+        }
+        if RAGConfig.QUERY_REWRITE_VARIANT in evidence_variants and channel_queries is not None:
+            preview_selection_variant = (
+                "role_body_rounds" if RAGConfig.SOURCE_SELECTION_VARIANT == "role_body_list_ranking" else None
+            )
+            current_context, current_nodes, current_timing = await execute_retrieval(
+                channel_queries,
+                preview_selection_variant,
+            )
+            total_timing = {
+                "retrieve_ms": float(current_timing.get("retrieve_ms", 0.0)),
+                "traversal_ms": float(current_timing.get("traversal_ms", 0.0)),
+            }
+            attempted_questions = list(
+                dict.fromkeys(
+                    [
+                        retrieval_query,
+                        *role_queries["q_minus"],
+                        *role_queries["q_plus"],
+                    ]
+                )
+            )
+            attempted_identities = {" ".join(question.casefold().split()) for question in attempted_questions}
+            seen_evidence_ids = {self._node_identity(node) for node in current_nodes}
+
+            while current_context and current_nodes:
+                refinement_evidence = self._fit_ranked_context(current_nodes, retrieval_query)
+                if not refinement_evidence:
+                    break
+                attempted_snapshot = {role: list(channel_queries[role]) for role in ("q_minus", "q_plus")}
+                refine_started = time.perf_counter()
+                proposed = await self._refine_query_roles(
+                    retrieval_query,
+                    refinement_evidence,
+                    attempted_questions,
+                )
+                rewrite_ms += (time.perf_counter() - refine_started) * 1000
+                refined_role_queries = {
+                    role: [
+                        question
+                        for question in proposed[role]
+                        if " ".join(question.casefold().split()) not in attempted_identities
+                    ]
+                    for role in ("q_minus", "q_plus")
+                }
+                refinement_trace.append(
+                    {
+                        "input": {
+                            "query": retrieval_query,
+                            "attempted": attempted_snapshot,
+                        },
+                        "output": refined_role_queries,
+                    }
+                )
+                if not any(refined_role_queries.values()):
+                    break
+
+                for role in ("q_minus", "q_plus"):
+                    channel_queries[role] = list(dict.fromkeys([*channel_queries[role], *refined_role_queries[role]]))
+                    attempted_questions.extend(refined_role_queries[role])
+                    attempted_identities.update(
+                        " ".join(question.casefold().split()) for question in refined_role_queries[role]
+                    )
+
+                next_context, next_nodes, next_timing = await execute_retrieval(
+                    channel_queries,
+                    preview_selection_variant,
+                )
+                total_timing["retrieve_ms"] += float(next_timing.get("retrieve_ms", 0.0))
+                total_timing["traversal_ms"] += float(next_timing.get("traversal_ms", 0.0))
+                current_context, current_nodes = next_context, next_nodes
+
+                if RAGConfig.QUERY_REWRITE_VARIANT == "role_aligned_evidence":
+                    break
+
+                # Continue only when the accumulated role queries introduce a
+                # previously unseen selected chunk. Exact question and chunk
+                # identities provide the stopping rule; no score threshold or
+                # dataset-specific round count participates.
+                current_evidence_ids = {self._node_identity(node) for node in current_nodes}
+                new_evidence_ids = current_evidence_ids - seen_evidence_ids
+                seen_evidence_ids.update(current_evidence_ids)
+                if not new_evidence_ids:
+                    break
+
+            if RAGConfig.SOURCE_SELECTION_VARIANT == "role_body_list_ranking":
+                final_context, final_nodes, final_timing = await execute_retrieval(channel_queries)
+                total_timing["retrieve_ms"] += float(final_timing.get("retrieve_ms", 0.0))
+                total_timing["traversal_ms"] += float(final_timing.get("traversal_ms", 0.0))
+                retrieval_result = (final_context, final_nodes, total_timing)
+            else:
+                retrieval_result = (current_context, current_nodes, total_timing)
+
+        if retrieval_result is None:
+            retrieval_result = await execute_retrieval(channel_queries)
+        context, nodes, timing = retrieval_result
 
         retrieved_nodes = nodes if isinstance(nodes, list) else []
         sources = self._build_unique_sources(retrieved_nodes)
@@ -266,6 +406,14 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                     "input": {"query": retrieval_query, "variant": RAGConfig.QUERY_REWRITE_VARIANT},
                     "output": role_queries,
                     "rewrite_ms": rewrite_ms,
+                }
+            )
+        for refinement in refinement_trace:
+            trace.append(
+                {
+                    "step": "evidence_query_rewrite",
+                    "input": refinement["input"],
+                    "output": refinement["output"],
                 }
             )
         trace.append(
@@ -296,7 +444,9 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         context = self._fit_ranked_context(retrieved_nodes, retrieval_query)
         if not context:
             answer = self._ensure_answer_prefix("Insufficient evidence.")
-            trace.append({"step": "synthesis", "output": {"answer": answer, "reason": "context_budget"}, "synthesis_ms": 0.0})
+            trace.append(
+                {"step": "synthesis", "output": {"answer": answer, "reason": "context_budget"}, "synthesis_ms": 0.0}
+            )
             return answer, sources, trace
         prompt = self._build_answer_prompt(context, retrieval_query)
         messages = [{"role": "user", "content": prompt}]

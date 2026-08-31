@@ -216,9 +216,7 @@ class NaiveRAG:
 
     @staticmethod
     def _build_context_from_nodes(nodes: list[dict]) -> str:
-        return "\n\n---\n\n".join(
-            f"[[{node['title']}, {node['sent_id']}]]\n{node['text']}" for node in nodes
-        )
+        return "\n\n---\n\n".join(f"[[{node['title']}, {node['sent_id']}]]\n{node['text']}" for node in nodes)
 
     def _fit_ranked_context(self, nodes: list[dict], query: str) -> tuple[str, list[dict]]:
         """Pack complete fixed windows in retrieval order within the context budget."""

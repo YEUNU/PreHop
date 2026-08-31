@@ -196,6 +196,32 @@ def test_config_rejects_unknown_query_rewrite_variant(monkeypatch):
         RAGConfig.validate()
 
 
+def test_continuation_query_branch_requires_linked_schema(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "QUESTION_SCHEMA", "legacy")
+    monkeypatch.setattr(RAGConfig, "CONTINUATION_EDGES_ENABLED", True)
+    with pytest.raises(ValueError, match="requires RAG_QUESTION_SCHEMA=linked_v2"):
+        RAGConfig.validate()
+
+
+def test_all_grounded_anchor_policy_requires_linked_schema(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "QUESTION_SCHEMA", "legacy")
+    monkeypatch.setattr(RAGConfig, "CONTINUATION_ANCHOR_POLICY", "all_grounded")
+    with pytest.raises(ValueError, match="all_grounded requires"):
+        RAGConfig.validate()
+
+
+def test_config_rejects_unknown_continuation_anchor_policy(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "CONTINUATION_ANCHOR_POLICY", "frequency_tuned")
+    with pytest.raises(ValueError, match="CONTINUATION_ANCHOR_POLICY"):
+        RAGConfig.validate()
+
+
 def test_config_rejects_negative_query_rewrite_word_limit(monkeypatch):
     from core.config import RAGConfig
 
@@ -247,6 +273,8 @@ def test_index_policy_records_semantic_embedding_and_hop_identity(monkeypatch):
     assert policy["embedding_query_instruction"] == "resolved instruction"
     assert policy["embedding_revision"] == "revision-1"
     assert policy["hop_construction"] == "qplus_to_qminus_owner"
+    assert policy["sentence_channel_enabled"] is RAGConfig.SENTENCE_CHANNEL_ENABLED
+    assert policy["continuation_anchor_policy"] == RAGConfig.CONTINUATION_ANCHOR_POLICY
 
     naive_policy = _resolved_index_policy("naive", "default")
     assert naive_policy["chunk_sentences"] == RAGConfig.CHUNK_SENTENCES
@@ -393,6 +421,74 @@ async def test_grounded_question_schema_preserves_source_verifiable_fields(monke
     assert result["q_minus"][0]["question_schema"] == "grounded_v1"
     assert result["q_plus"][0]["missing_information"] == "The jurisdiction of incorporation."
     assert result["q_plus"][0]["anchor_entities"] == ["Acme"]
+
+
+@pytest.mark.asyncio
+async def test_linked_question_schema_preserves_complete_grounded_answer_anchor(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "QUESTION_SCHEMA", "linked_v2")
+    rag = GraphRAG(strategy="prehop")
+    rag.indexing_llm = AsyncMock()
+    rag.indexing_llm.generate_json.return_value = {
+        "q_minus": [
+            {
+                "question": "Who founded Acme?",
+                "answer": "Kim Park",
+                "continuation_anchor": "Kim Park",
+                "grounding_quote": "Acme was founded by Kim Park.",
+                "anchor_entities": ["Acme", "Kim Park"],
+            }
+        ],
+        "q_plus": [],
+    }
+
+    result = await rag.extract_hoprag_queries("Acme was founded by Kim Park.", "Acme")
+
+    assert result["q_minus"][0]["question_schema"] == "linked_v2"
+    assert result["q_minus"][0]["continuation_anchor"] == "Kim Park"
+
+
+def test_linked_question_schema_clears_partial_answer_anchor_without_losing_qminus():
+    records = GraphRAG._validate_grounded_items(
+        [
+            {
+                "question": "Who founded Acme?",
+                "answer": "Kim Park",
+                "continuation_anchor": "Kim",
+                "grounding_quote": "Acme was founded by Kim Park.",
+                "anchor_entities": ["Acme", "Kim Park"],
+            }
+        ],
+        "Q-",
+        "Acme was founded by Kim Park.",
+        "Acme",
+        question_schema="linked_v2",
+    )
+
+    assert records[0]["text"] == "Who founded Acme?"
+    assert records[0]["continuation_anchor"] == ""
+
+
+def test_linked_question_schema_filters_auxiliary_anchors_without_losing_question():
+    records = GraphRAG._validate_grounded_items(
+        [
+            {
+                "question": "Who founded Acme?",
+                "answer": "Kim Park",
+                "continuation_anchor": "Kim Park",
+                "grounding_quote": "Acme was founded by Kim Park.",
+                "anchor_entities": ["Acme", "Kim Park", "Invented alias"],
+            }
+        ],
+        "Q-",
+        "Acme was founded by Kim Park.",
+        "Acme",
+        question_schema="linked_v2",
+    )
+
+    assert records[0]["anchor_entities"] == ["Acme", "Kim Park"]
+    assert records[0]["continuation_anchor"] == "Kim Park"
 
 
 def test_grounded_question_schema_rejects_unverifiable_quote():
@@ -614,7 +710,9 @@ async def test_naive_batches_embeddings_across_source_documents(monkeypatch):
 @pytest.mark.asyncio
 async def test_embedding_strict_input_rejects_provider_context_overflow(monkeypatch):
     client = VLLMClient()
-    monkeypatch.setattr(client, "_create_embedding_request", AsyncMock(side_effect=ValueError("maximum context length")))
+    monkeypatch.setattr(
+        client, "_create_embedding_request", AsyncMock(side_effect=ValueError("maximum context length"))
+    )
 
     with pytest.raises(ValueError, match="truncation is forbidden"):
         await client.get_embeddings(["complete document"], allow_truncation=False)
