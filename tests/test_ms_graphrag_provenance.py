@@ -231,3 +231,24 @@ async def test_ms_local_search_requests_metric_compatible_short_answer(monkeypat
     assert sources == []
     assert trace == [{"step": "ms_local_search_api", "response_type": _QA_RESPONSE_TYPE}]
     assert search.await_args.kwargs["response_type"] == _QA_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_ms_local_search_marks_unlabelled_provider_response(monkeypatch):
+    import graphrag.api as gapi
+
+    search = AsyncMock(return_value=("Paris", {}))
+    monkeypatch.setattr(gapi, "local_search", search)
+    adapter = object.__new__(MSGraphRAGAdapter)
+    adapter._config = object()
+    adapter._entities = object()
+    adapter._communities = object()
+    adapter._community_reports = object()
+    adapter._text_units = object()
+    adapter._relationships = object()
+    adapter._ensure_loaded = Mock()
+    adapter._extract_sources = Mock(return_value=[])
+
+    answer, _sources, _trace = await adapter.local_search("Where was the person born?")
+
+    assert answer == "@@ANSWER: Paris"

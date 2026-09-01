@@ -13,6 +13,9 @@ MS GraphRAG LocalSearch now requests one short answer span with an explicit
 `Final Answer:` prefix. The response contract is stored in each query trace.
 This aligns its generated answer boundary with MuSiQue normalized EM/F1 while
 retaining the official LocalSearch retrieval and context construction path.
+Because a provider may still omit the requested label, the adapter now also
+attaches the shared answer boundary after both LocalSearch and GlobalSearch
+return. This post-processing changes no answer text.
 
 The shared answer extractor now recognizes explicit `Final Answer:`,
 `@@ANSWER:`, and line-leading `Answer:` markers. An unmarked response is kept

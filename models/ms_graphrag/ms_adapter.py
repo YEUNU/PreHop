@@ -24,6 +24,7 @@ from models.ms_graphrag.official_indexer import (
     output_dir_for,
     snapshot_metadata_path,
 )
+from utils.prompts.shared import mark_answer_boundary
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +287,7 @@ class MSGraphRAGAdapter:
         answer = str(response or "").strip()
         if not answer:
             raise ValueError("MS GraphRAG local search returned an empty answer")
+        answer = mark_answer_boundary(answer)
         sources = self._extract_sources(context_data)
         trace = [{"step": "ms_local_search_api", "response_type": _QA_RESPONSE_TYPE}]
         return answer, sources, trace
@@ -309,6 +311,7 @@ class MSGraphRAGAdapter:
         answer = str(response or "").strip()
         if not answer:
             raise ValueError("MS GraphRAG global search returned an empty answer")
+        answer = mark_answer_boundary(answer)
         sources = self._extract_sources(context_data)
         trace = [{"step": "ms_global_search_api", "response_type": _QA_RESPONSE_TYPE}]
         return answer, sources, trace
