@@ -7,6 +7,15 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-09-02 — Corrected MS GraphRAG MuSiQue full result
+
+The corrected official-setting LocalSearch run completed all 2,417 MuSiQue
+questions with zero errors. Answer EM/F1 are 0.2247/0.3168 and supporting-
+paragraph precision/recall/F1 are 0.0710/0.5749/0.1236. Mean recorded latency
+is 176.71 seconds at concurrency 32; it includes server saturation and is not
+used as an equal-load comparison. The complete result replaces the invalid
+0.0000/0.0584 answer row in current documents and presentation materials.
+
 ## 2026-09-01 — MS GraphRAG MuSiQue answer-boundary correction
 
 MS GraphRAG LocalSearch now requests one short answer span with an explicit

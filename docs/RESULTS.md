@@ -42,12 +42,16 @@ same-query paired confidence intervals against Prehop.
 | Prehop | **0.4150** | **0.5115** | **0.2034** | **0.8840** | **0.3267** | 23.86 |
 | Naive RAG | 0.2106 | 0.2726 | 0.1364 | 0.6241 | 0.2215 | 1.88 |
 | HopRAG | 0.2619 | 0.3394 | 0.0889 | 0.6982 | 0.1566 | 25.62† |
+| MS GraphRAG | 0.2247 | 0.3168 | 0.0710 | 0.5749 | 0.1236 | 176.71‡ |
 
 All values use the 2,417-question answerable development split. HopRAG retains
 its official retrieval and context settings. † HopRAG's
 reported result uses two complete artifacts over the same 2,417 query IDs.
 The displayed 25.62 seconds is their recorded phase sum, 12.53 + 13.09
 seconds, rather than a single-pass end-to-end measurement.
+‡ MS GraphRAG is the zero-error 2,417-query corrected-answer run at concurrency
+32. Its latency includes server saturation and is not compared with runs made
+under different load.
 
 ## 3. Which stage each MuSiQue test evaluates
 

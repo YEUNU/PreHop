@@ -104,6 +104,7 @@ the strongest comparison result are 35.45%, 12.27%, 45.44%, and 62.47%.
 | Prehop | **0.4150** | **0.5115** | **0.2034** | **0.8840** | **0.3267** |
 | Naive RAG | 0.2106 | 0.2726 | 0.1364 | 0.6241 | 0.2215 |
 | HopRAG | 0.2619 | 0.3394 | 0.0889 | 0.6982 | 0.1566 |
+| MS GraphRAG | 0.2247 | 0.3168 | 0.0710 | 0.5749 | 0.1236 |
 
 The MuSiQue values use all 2,417 questions in its answer-bearing development
 split. Prehop's relative gains over the strongest comparison result are

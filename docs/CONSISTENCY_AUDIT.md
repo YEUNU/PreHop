@@ -21,7 +21,7 @@ complete-split artifacts, manuscript, and presentation.
 | 질의 단계 시간 | 한 실행에서 여섯 단계의 겹치지 않는 타이머 기록 | 생성 단계 84.9%, 그래프 확장 1.7% | “생성 단계가 처리시간 대부분 차지” | verified |
 | MultiHop-RAG and MuSiQue results are comparable in one aggregate | Dataset adapters use different official metrics and denominators | Separate eligible gates and separate full-system tables | Never pool metrics or hop analyses | verified |
 | All submission claims use full data | Eligibility checks bind count, query digest, corpus fingerprint, and completion status | MultiHop-RAG 2,556; MuSiQue 2,417; all internal controls 2,417 | State denominators beside every table | verified |
-| External comparisons | HopRAG 및 MultiHop-RAG의 MS GraphRAG 공식 설정 유지 | 공식 설정의 전체 결과 | “성능 참고값” | verified |
+| External comparisons | HopRAG/MS GraphRAG의 공식 설정 유지 | 공식 설정의 전체 결과 | “성능 참고값” | verified |
 | 단계별 시간 | 한 실행의 단계별 타이머 합계 사용 | 동시성 32, 2,417개, 실패 0건 | 같은 실행 안의 비중 | verified |
 | 결과 추적성 | 산출물에 코드, 입력, 모델, 시드, 동시성, 색인 ID 기록 | JSON 결과와 요약 파일 | 전체 수치와 산출물 연결 | verified |
 
