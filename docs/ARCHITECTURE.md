@@ -236,11 +236,11 @@ RAG_GRAPH_HOP_DEPTH == 1 (default)
   -> retrieve(query) for seeds
   -> deterministic NEXT/HOP expansion for the configured depth
   -> RAG_GRAPH_EDGE_VARIANT selects the full, hop_only, or next_only path
-  -> owner activation admits stored provenance on a matched Q+ seed owner
+  -> a matched Q+ paragraph exposes its stored outgoing connections
   -> HOP_EDGE_FILTER=none retains every activated HOP provenance item
 
 RAG_SOURCE_SELECTION_VARIANT == role_body_list_ranking
-  -> rank the complete established candidate union by opaque paragraph IDs
+  -> select from the complete candidate union by numbered paragraph IDs
   -> return the first top_k known IDs, deterministically completing omissions
 
 empty context
@@ -248,12 +248,13 @@ empty context
 
 non-empty context
   -> one shared external synthesis call
+  -> explicit answer boundary attached without rewriting the response
 ```
 
-The current operational contract is legacy question schema, full Q−/body/Q+
-retrieval, depth-one full NEXT/HOP traversal, owner activation, unfiltered
+The current operational contract uses string Q−/Q+ questions, full Q−/body/Q+
+retrieval, depth-one full NEXT/HOP traversal, matched-paragraph connection activation, unfiltered
 stored HOP edges, evidence-conditioned iterative role rewriting for questions
-of at most 32 words, and complete candidate-list ranking. The one-pass,
+of at most 32 words, and one complete candidate-ordering call. The one-pass,
 rewrite-all, additive-view, `global`, reciprocal-filter, exact-activation,
 edge-variant, channel-variant, and no-graph paths are explicit experimental
 configurations rather than implicit fallbacks.
@@ -285,8 +286,8 @@ these values define a representation order without mixing backend-specific
 vector or lexical scores. Direction remains expressed by graph role rather
 than a learned or fitted channel weight.
 
-- `HYPO_CHANNEL_VARIANT=body_only`: body direct evidence only; this is the
-  query-time A0 control and does not require rebuilding the complete index.
+- `HYPO_CHANNEL_VARIANT=body_only`: body direct evidence only; this query-time
+  channel control does not require rebuilding the complete index.
 - `qminus_only`: Q- direct evidence only.
 - `qplus_only`: Q+ dependency seeds only.
 - `single_combined`: Q-/Q+ once each, set union, no body.
@@ -304,14 +305,17 @@ semantic score for direct/NEXT candidates; a HOP candidate uses
 `min(body similarity, best individual source-Q+ similarity)`. Candidates are
 ordered once by this semantic score and once by their retained representation
 evidence. Equal reciprocal ranks from the two orders are summed for final
-selection. This avoids calibrated raw-score interpolation and introduces no
-fitted weight or threshold. There is no dedicated reranker model, score
-threshold, metadata boost, boilerplate penalty, company filter, or domain
-gate. Role rewriting changes channel queries before retrieval but does not
-score or verify candidates. The default selection passes the complete fused
-candidate union to one opaque-ID list-ranking prompt and returns its first
-`top_k` known IDs. Unknown IDs are ignored, duplicates collapse, and omitted
-known IDs retain the deterministic input order. Publisher, publication time,
+selection. `RAG_FINAL_RANK_VARIANT=semantic_only` and
+`representation_only` retain one of those two orders for a declared
+sensitivity analysis; `fused` is the default. HOP semantic evidence can also
+be isolated with `RAG_HOP_SEMANTIC_VARIANT=body_only` or `bridge_only` instead
+of the default `body_bridge_min`. These query-time switches are written to
+benchmark ablation metadata. The default uses rank fusion rather than
+calibrated raw-score interpolation. Role rewriting changes channel queries
+before retrieval. The default selection passes the complete fused candidate
+union to one paragraph-number candidate-selection prompt
+and returns its first `top_k` known IDs. Unknown IDs are ignored, duplicates
+collapse, and omitted known IDs retain the deterministic input order. Publisher, publication time,
 author, and category are included only when present in the source-manifest
 sidecar; no dataset identity, gold label, retrieval path, score, or rank is
 exposed. `global`, `round_robin`, and the body-round policies remain explicit
@@ -365,10 +369,11 @@ unrelated Q+ attached to a direct-evidence chunk from triggering a HOP. NEXT and
 HOP paths are ranked separately per expansion step, then fused per target
 chunk. A NEXT target inherits the source's total representation evidence; a
 HOP target inherits only the source's Q+ evidence. In either case the inherited
-value is multiplied by reciprocal path length `1 / (depth + 1)`. The default
-configuration uses depth one, so indirect evidence receives one half of its
-direct source value. This structural attenuation prevents an expanded target
-from tying its directly retrieved owner without adding a fitted coefficient.
+value is multiplied by `RAG_GRAPH_PATH_DECAY`, whose default is the reciprocal
+one-edge value `1 / (depth + 1) = 0.5`. Values 0 and 1 are retained only as
+declared propagation sensitivities. This attenuation prevents an expanded
+target from tying its directly retrieved owner in the default configuration;
+the switch also makes the assumption directly testable.
 The structurally bounded results are retained without a candidate reservoir or
 graph-search floor. HOP candidates compare the query against each indexed
 source Q+ separately, take the best bridge similarity, and use
@@ -378,6 +383,10 @@ repeats retrieval only while newly proposed role questions select at least one
 unseen chunk. Exact normalized question and chunk identities provide the stop
 rule; there is no fitted round count, score gate, hop label, dataset branch,
 per-edge generation, or runtime ANN supplement.
+`RAG_QUERY_REFINEMENT_MAX_ROUNDS=0` leaves that evidence-stability rule
+unchanged. A positive value adds an operational upper bound on follow-up
+generation calls. The executed count, configured cap, and stop reason are
+written to the query-rewrite trace.
 Targets already present in the representation-union pool retain their direct
 rank evidence and semantic inputs; traversal only adds path provenance to
 them. Graph-only targets receive inherited rank evidence and bridge semantics.
@@ -385,13 +394,66 @@ them. Graph-only targets receive inherited rank evidence and bridge semantics.
 `retrieval/text_utils.py` contains only normalization, Lucene sanitization,
 context formatting, node identity/dedup, and RRF helpers.
 
+### Diagnostic controls and timing
+
+The benchmark records `retrieve_ms`, `rewrite_ms`, `synthesis_ms`, and the
+compatibility aggregate `traversal_ms`. It also splits the latter into
+`graph_expand_ms`, `deterministic_score_ms`, and `candidate_order_ms`.
+This prevents the generation-model list-ordering call from being reported as
+database traversal time.
+
+`RAG_CANDIDATE_ORDER_TRACE_PATH` is a diagnostic-only JSONL sink. When set, each
+candidate-ordering call appends the query, canonical pre-call candidate pool,
+stored source/paragraph identity, semantic and representation rank signals,
+per-channel representation scores, model-returned IDs, and final selected IDs
+under a process lock. The trace is
+used by `scripts/replay_frozen_candidate_order.py` to replay the canonical
+deterministic fused order and a deterministic hash-shuffled order over the
+exact same questions and candidate texts. The replay reports selection stability and MuSiQue supporting-paragraph
+metrics, but does not generate new answers. Duplicate question texts are joined
+through the completed benchmark's stable query IDs and the generated Q−/Q+
+views retained in both traces, not by question string alone. An
+ambiguous assignment with different gold support labels is rejected.
+Checkpointed replay artifacts can be continued
+with `--resume`; their trace path, benchmark path, gold-query path, tested
+orders, and shuffle seed must match. Normal benchmarks do not set this
+variable.
+
+`scripts/analyze_full_frozen_rank_variants.py` reconstructs deterministic rank
+variants from every captured candidate pool and evaluates MuSiQue supporting
+paragraphs. It does not call the answer model and therefore reports no answer
+EM/F1. A result is eligible only when its query count and ID mapping match the
+complete prepared split. When per-channel scores are present, decay 0.5 must
+reproduce the captured graph-only score before decay 0 and 1 are evaluated.
+
+`scripts/analyze_full_stage_profile.py` accepts one complete benchmark executed
+at a declared fixed concurrency. It validates detail/trace alignment and
+summarizes the non-overlapping rewrite, retrieval, graph expansion,
+deterministic scoring, candidate-ordering, and synthesis timers. The
+compatibility `traversal_ms` aggregate is excluded from this sum. Absolute values remain
+specific to the declared concurrency and service load, so only the within-run
+stage decomposition is used for interpretation.
+
+`scripts/analyze_gold_hop_coverage.py` persists both aggregate coverage and a
+query-level structural label. After a complete graph-on/off pair,
+`scripts/analyze_graph_shortcut_effect.py` uses that fixed label to report
+paired effects where gold paragraphs are or are not joined by a stored edge.
+The grouping is retrospective, an edge need not have been activated, and
+generation is rerun separately. The output is therefore a bounded exploratory
+test of a local-shortcut interpretation, not evidence that a complete
+multi-hop route was compressed into one hop.
+`scripts/analyze_presentation_controls.py --exclude-latency` omits latency from
+paired output when compared runs were resumed or did not share a controlled
+load window. This is an analysis-time reporting guard; it does not modify the
+source benchmark artifacts.
+
 ## Prompt inventory
 
 Project-owned prompt templates are deliberately limited to:
 
 - `utils/prompts/indexing.py`: indexing-time Q-/Q+ generation.
 - `utils/prompts/query_rewrite.py`: bounded Q−/Q+ retrieval views for compact
-  questions, evidence-conditioned follow-up views, and opaque-ID ranking of
+  questions, evidence-conditioned follow-up views, and numbered-paragraph selection of
   the complete candidate union.
 - `utils/prompts/shared.py`: one dataset-neutral final-answer prompt shared by
   Prehop, Naive, and the HopRAG adapter. It asks the model to connect required
@@ -412,10 +474,9 @@ debug runs.
 
 Prehop begins rewriting only for questions within the fixed input-length
 limit. It can add evidence-conditioned role views while exact identities keep
-changing, then makes one complete-list ranking call; it never calls the model
-once per candidate or graph edge. Official HopRAG's upstream `bfs_node` traversal
+changing, then makes one complete-list selection call. Official HopRAG's upstream `bfs_node` traversal
 includes its published LLM helpful/helpless node judgement. The adapter routes
-that call externally and does not add a local reranker or new prompt. MS
+that call externally. MS
 GraphRAG also retains the official package's extraction/community/report/search
 prompts. Those upstream prompts are baseline algorithms, not hidden Prehop
 gates.
@@ -433,6 +494,13 @@ HopRAG and MS GraphRAG retain their official budgets, so paper tables and
 captions state the unequal settings. A one-source-one-vector Naive run changes
 the evidence unit and is reported, if used, only as a separate chunking
 sensitivity analysis.
+
+Prehop, Naive, and HopRAG return an explicit answer boundary after synthesis;
+empty-context abstentions use the same boundary. MS GraphRAG instead requests
+a short `Final Answer:` span through the official LocalSearch/GlobalSearch
+response-type parameter. The canonical metric extractor recognizes these
+explicit boundaries, preserves an unmarked response in full, and does not
+truncate a marked prediction before scoring.
 
 ## Evaluation output contract
 
@@ -458,11 +526,10 @@ Evidence metrics follow the prepared gold unit for each dataset:
 
 Missing gold units are emitted as `-1`, while an evaluated query with no match
 is zero. Paper aggregates exclude failed, incomplete, and unreconciled rows.
-The fixed sample files are development ID sets, not confirmatory subsets.
-Complete-split tables remain available for benchmark comparability. Paired
-confirmatory analysis passes the relevant sample file to
-`scripts/paired_bootstrap.py --exclude-queries`, records the excluded-ID
-digest, and evaluates only the disjoint remainder.
+Subset artifacts are development records only and do not enter reported
+quantitative results. Complete-split paired analyses record the evaluated ID
+digest and are interpreted as descriptive diagnostics, because the prepared
+splits were also inspected during configuration development.
 For query-only ablations, `--expected-ablation-difference` requires the named
 metadata key and no other ablation key to differ. The active-index snapshot,
 models and seed, code provenance, benchmark concurrency, and judge state must
@@ -512,7 +579,8 @@ and Prehop phase latency, index-storage size, document/chunk/question/edge count
 Q-/Q+ and Q+-direction coverage, provenance completeness, exact NEXT topology,
 cross-document HOP invariants, and observed endpoint pressure. Retrieval and
 answer-quality attribution remains a separate benchmark/ablation concern; an
-index with valid topology is not reported as evidence that HOP improves QA.
+index with valid topology contributes structural statistics; QA effects come
+from the complete query-stage controls.
 Before publishing the corpus snapshot as complete, `cli/index.py` reads the
 live graph and enforces the index-quality contract: embeddings and ownership
 are complete; question representations are non-empty, not source-relative,

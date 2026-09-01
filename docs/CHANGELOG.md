@@ -7,6 +7,290 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-09-01 — MS GraphRAG MuSiQue answer-boundary correction
+
+MS GraphRAG LocalSearch now requests one short answer span with an explicit
+`Final Answer:` prefix. The response contract is stored in each query trace.
+This aligns its generated answer boundary with MuSiQue normalized EM/F1 while
+retaining the official LocalSearch retrieval and context construction path.
+
+The shared answer extractor now recognizes explicit `Final Answer:`,
+`@@ANSWER:`, and line-leading `Answer:` markers. An unmarked response is kept
+as the complete prediction. This prevents long citation-bearing responses
+from losing their leading answer span and prevents the ordinary word
+`answer` inside a sentence from being treated as an output marker.
+
+The same check covered every retained full-result row for Naive, Prehop, and
+HopRAG on MuSiQue and MultiHop-RAG. The corrected boundary changed the
+prediction passed to metrics for 3 Naive and 8 HopRAG MuSiQue rows, and 8
+Naive, 1 Prehop, and 60 HopRAG MultiHop-RAG rows. Answer EM did not change for
+any method. Mean answer-F1 changes were −0.00002 and −0.00003 on MuSiQue, and
++0.00003, −0.000001, and +0.00025 on MultiHop-RAG in the same method order.
+Naive and HopRAG now attach the same explicit answer boundary as Prehop,
+including abstentions, without changing the generated text. Explicitly marked
+responses are no longer cut to 400 characters during metric calculation.
+
+## 2026-09-01 — 발표·논문 문서의 용어와 실험 흐름 통일
+
+발표자료와 현재형 문서를 색인 단계, 질의 단계, 같은 후보 재평가 순서로
+맞췄다. 내부 옵션명은 재현 명령에만 두고, 본문에서는 한 단계 이웃 확장,
+근거 기반 질문 보충, 질문 역할별 후보 선택, 같은 후보의 점수 재계산처럼
+실험에서 실제로 바꾼 대상을 사용한다.
+
+구성요소 실험은 MuSiQue 2,417개 전체 결과만 사용한다. Ablation 1은 같은
+색인에서 그래프 확장을 켜고 끈 비교, Ablation 2는 반복 질문 보충 비교,
+Ablation 3은 후보 선택 정책 비교, Ablation 4는 같은 후보에서 점수식을
+바꾼 비교다. 후보 입력 순서와 단계별 시간도 2,417개 전체 결과로 제시한다.
+MultiHop-RAG와 MuSiQue의 전체 성능표와 분모는 각각 분리해 유지했다.
+
+발표자료의 방법·실험 도식에는 코드 식별자 대신 연구 개념어를 사용했다.
+결론 슬라이드는 전체 성능, 구성요소 기여, 단계별 시간의 측정 결과만
+요약하도록 정리했다.
+
+## 2026-09-01 — Full-split Prehop controls replace subset diagnostics
+
+The final documentation now maps every control to its actual pipeline
+location. Stored-edge coverage is a read-only inspection of the completed
+index. Graph on/off, refinement removal, and candidate-ordering removal reuse
+that index and change only query behavior. Candidate presentation and score
+formula analyses freeze the retrieved pool, and the timing study changes no
+retrieval behavior. `RESULTS.md`, `ABLATION_STUDY.md`, and
+`CONSISTENCY_AUDIT.md` register these boundaries, commands, artifacts, and
+accepted claim wording. A mechanical submission audit verifies both full
+eligibility gates, complete control counts, canonical values, and briefing
+terminology.
+
+The graph-on/off artifact now includes fixed MuSiQue hop-depth strata. This
+depth 1/0 control disables NEXT and HOP together and is not a HOP-only
+contrast. For
+2-hop, 3-hop, and 4-hop questions, graph-on minus graph-off Answer EM was
++0.00240, +0.00921, and +0.00741; every 95% interval included zero. Retrieval
+passes changed by +0.00559, +0.00789, and −0.00988; every interval also
+included zero. Support F1 increased by +0.00596 for 2-hop and +0.00543 for
+3-hop, but changed by −0.00268 for 4-hop. Together with 1.32% full structural
+connectivity at 3 hops and 0% at 4 hops, these results reject a complete-path
+compression claim and retain only a small local evidence-selection effect.
+
+The briefing now presents the stage map in the main sequence and the
+hop-stratified graph effect beside structural coverage in the appendix. Draft
+status language, the separate-reranker implication, future-work defenses, and
+cross-dataset component attribution were removed. External systems remain
+official-setting point-estimate references because their budgets differ and
+their outputs are not synchronized paired counterfactuals.
+
+The completed `global` candidate-selection control is also scoped to the
+broader policy: it removes the final generation-model ordering call and changes
+the deterministic refinement preview from role/body rounds to global fused
+order. Its answer/support effect is not attributed to the final call alone.
+Only the frozen-candidate replay isolates that call's input-order sensitivity.
+
+The presentation evidence scope is now fixed. External systems are retained
+only as reference results under their own official settings. The incomplete
+attempt to regenerate answers from an equal twelve-passage evidence budget was
+stopped and is excluded from the briefing, paper claims, and comparative
+tables. It is not an experiment result. MuSiQue-only Prehop controls do not
+support a claim about MultiHop-RAG.
+
+Two Prehop component-removal controls completed the full 2,417-question
+MuSiQue split with zero errors. Removing only evidence-conditioned iterative
+question refinement, while retaining the initial role-aligned questions,
+changed answer EM by −0.12784 (paired 95% bootstrap interval −0.14398 to
+−0.11212), answer F1 by −0.14000 (−0.15574 to −0.12448), paragraph-
+support F1 by −0.04811 (−0.05162 to −0.04466), and support recall by
+−0.12657 (−0.13509 to −0.11802). Omitting the generation model's single
+complete-list ordering call and using the deterministic fused top twelve
+changed answer EM by −0.08854 (−0.10343 to −0.07365), answer F1 by
+−0.09898 (−0.11427 to −0.08434), paragraph-support F1 by −0.04952
+(−0.05301 to −0.04618), and support recall by −0.11481 (−0.12350 to
+−0.10630). Prehop has no dedicated reranker; the latter control removes one
+list-ordering call made by the same configured generation model. Because the
+controls used separate generation calls and were resumed under mixed load,
+their latency fields are excluded.
+
+The fixed-concurrency full benchmark then completed all 2,417 questions with
+zero errors and captured every candidate pool. Its deterministic frozen-pool
+analysis found support F1 0.27791 under the default equal reciprocal-rank
+fusion and graph decay 0.5. Semantic-only ranking changed support F1 by
+−0.03269 (paired 95% bootstrap interval −0.03595 to −0.02943),
+representation-only by −0.00359 (−0.00582 to −0.00142), decay 0 by +0.00457
+(+0.00327 to +0.00592), decay 1 by −0.00870 (−0.01027 to −0.00721),
+body-only semantics by −0.00028 (−0.00072 to +0.00015), and bridge-only
+semantics by −0.00464 (−0.00567 to −0.00364). The full result supersedes the
+former subset impression of formula insensitivity and leaves the 0.5 decay as
+a consequential heuristic rather than an optimum.
+
+The same run separated query-stage time at concurrency 32. Mean accounted
+time was 131.69 seconds: rewrite/refinement 57.79 s, retrieval 17.61 s, graph
+expansion 2.25 s, deterministic scoring 0.09 s, candidate ordering 41.83 s,
+and synthesis 12.12 s. Generation-model stages occupied 84.9% and graph
+expansion 1.7%. Absolute values are service-load specific and are not compared
+with the official 23.86-second run; the eligible conclusion is the within-run
+decomposition.
+
+The full frozen candidate-order replay also completed all 2,417 questions
+with zero errors. A same-input-order replay reproduced the recorded selected
+set with mean Jaccard 0.96760 (95% interval 0.96363 to 0.97129). A
+query-specific fixed shuffle of the identical content had Jaccard 0.63909
+against the same-order replay (0.63090 to 0.64717), and the paired difference
+after same-order variability calibration was −0.32851 (−0.33705 to −0.31997).
+The shuffle changed support F1 by −0.00368 (−0.00535 to −0.00201). Its
+first-input selection rate exceeded the random-position expectation by only
+2.8 percentage points (+1.2 to +4.6 points), so the call is order-sensitive
+without merely copying the first item. Retrieval and answer synthesis were
+not repeated; answer EM/F1 is therefore out of scope.
+
+The former 201-question candidate-order and score diagnostics are superseded
+for presentation claims. Their historical entries remain below only as an
+engineering chronology. The presentation now uses only the completed frozen
+candidate input-order replay, deterministic score-formula sensitivity, and
+separated query-stage timing from all 2,417 MuSiQue questions.
+
+## 2026-08-31 — Presentation-defense controls and claim narrowing
+
+The professor briefing was audited against the implementation and immutable
+MuSiQue artifacts. The terminology now distinguishes deterministic score
+fusion from the one generation-model candidate-ordering call. Prehop has no
+separate learned reranker: the configured generation model produces query
+views, orders one complete candidate list, and writes the final answer. The
+briefing therefore uses “candidate ordering” rather than implying a dedicated
+reranking model.
+
+The “path compression” interpretation was also narrowed. On all 2,417
+MuSiQue questions, at least one stored HOP edge joined gold paragraphs for
+23.6% of 2-hop, 22.0% of 3-hop, and 25.7% of 4-hop questions. Gold-only paths
+were fully connected for 23.6%, 1.3%, and 0.0%, respectively. Three-hop
+questions still averaged 3.37 retrieval passes and four-hop questions 3.59.
+The current graph is therefore described only as a possible local shortcut;
+it does not compress a complete multi-hop answer path into one global hop.
+The complete-system performance tables remain valid, but they are no longer
+used as causal evidence for stored HOP edges.
+
+The graph-on/off diagnostic then completed all 2,417 questions. Graph-on minus
+graph-off was +0.00538 answer EM (95% interval −0.00455 to +0.01489), so no
+answer-accuracy gain was detected. Paragraph-support F1 increased by +0.00435
+(+0.00269 to +0.00603), while support recall changed by +0.00186 (−0.00190 to
++0.00569). The run used separate generation calls and the graph-off side was
+resumed across behavior-equivalent code segments. Its mixed-load latency is
+explicitly ineligible; `scripts.analyze_presentation_controls.py` now accepts
+`--exclude-latency` so the derived comparison artifact cannot accidentally be
+used for a timing claim.
+
+The full pair was also stratified by the precomputed structural labels. Among
+566 questions with at least one stored edge between gold paragraphs, graph-on
+minus graph-off was −0.00177 answer EM (−0.02473 to +0.02120), +0.00728
+support F1 (+0.00398 to +0.01068), +0.01075 support recall (+0.00280 to
++0.01914), and −0.00177 inferred retrieval passes (−0.02827 to +0.02650).
+Among 305 questions with a connected gold-only subgraph, support F1 increased
+by +0.00895 (+0.00534 to +0.01284) and support recall by +0.01858 (+0.00765 to
++0.03060), but answer EM and retrieval passes did not improve. This supports
+only a small local evidence-recovery effect. It does not establish answer-path
+compression or fewer online retrieval rounds.
+
+A balanced 201-query MuSiQue control then separated three online components.
+Disabling stored graph expansion changed answer EM by +0.005 relative to the
+full condition, with a paired 95% bootstrap interval of −0.030 to +0.040.
+Disabling evidence-conditioned refinement reduced answer EM by 0.100
+(−0.149 to −0.055). Removing the generation-model candidate-ordering call left
+answer EM unchanged and reduced paragraph-support F1 by 0.025
+(−0.035 to −0.016). These are explicitly labelled exploratory because the
+fixed sample was used during development.
+
+`scripts/audit_hop_question_quality.py` added a deterministic 200-path audit
+with source text, Q+, matched Q−, and target text. The configured generation
+model's non-independent diagnostic labelled 97.0% of Q+ as source-grounded and
+100% as entity-explicit, but only 5.0% of targets as answering Q+ (Wilson 95%
+interval 2.7–9.0%) and 0.5% of matched Q− as semantically equivalent. The
+dominant failure is not pronoun-only Q+: similarly worded relations about
+different named entities are connected. The output CSV deliberately leaves
+human decisions blank. The briefing includes this negative result and treats
+an entity-and-relation-bound index rebuild plus blinded human review as a
+prerequisite for a factual-edge precision claim.
+The earlier `linked_v2` answer-anchor continuation control also failed as a
+simple repair: enabling it changed paragraph-support F1 by −0.0082 on 201
+MuSiQue questions (paired 95% interval −0.0157 to −0.0010). Because that run
+used a separately built index and the global deterministic selector, it is
+reported only as evidence that an entity label alone is insufficient; the
+next schema must bind both the referenced entity and requested relation.
+
+The diagnostic implementation now supports:
+
+- `RAG_CANDIDATE_ORDER_TRACE_PATH`,
+  `RAG_CANDIDATE_ORDER_INPUT_ORDER`, and
+  checkpoint-resumable `scripts/replay_frozen_candidate_order.py` for exact
+  candidate-pool replay;
+- `RAG_FINAL_RANK_VARIANT` for fused, semantic-only, and
+  representation-only final orders;
+- `RAG_HOP_SEMANTIC_VARIANT` values `body_only` and `bridge_only` beside the
+  default body/bridge minimum;
+- `RAG_GRAPH_PATH_DECAY` for the declared zero, one-half, and one propagation
+  sensitivity;
+- `RAG_QUERY_REFINEMENT_MAX_ROUNDS`, where zero preserves evidence-driven
+  stopping and a positive value imposes an auditable operational cap;
+- separate `graph_expand_ms`, `deterministic_score_ms`, and
+  `candidate_order_ms` fields, avoiding the former graph/score/model aggregate;
+- `scripts/resynthesize_equal_evidence_budget.py` and its paired analyzer for
+  a partial equal-evidence external comparison.
+
+All six score sensitivities completed on the balanced 201-query set. Replacing
+the final equal-rank fusion by semantic-only or representation-only order,
+setting graph propagation to zero or one, and using body-only or bridge-only
+HOP semantics produced answer-EM point estimates from 0.2985 to 0.3184 and
+paragraph-support F1 from 0.3172 to 0.3214. Every paired 95% interval for
+answer EM/F1 and paragraph-support F1/recall included zero. The result narrows
+the criticism to lack of a theoretical derivation rather than observed
+sample-level brittleness; it does not establish optimality. Absolute latency
+from these heavily concurrent runs is explicitly ineligible.
+
+The equal-evidence control completed on the balanced 201 MuSiQue questions.
+All methods retained their first 12 frozen passages and used the same context
+format, answer prompt, generation model, seed, and sampling settings. Prehop
+reached 0.3085 answer EM and 0.3840 answer F1; Naive reached 0.1493/0.1795,
+HopRAG 0.1741/0.2227, and MS GraphRAG 0.0945/0.1475. The three paired
+answer-EM differences from Prehop had 95% bootstrap intervals below zero.
+Upstream retrieval calls were not equalized and mean retained text ranged
+from 6,393 to 7,289 characters, so the result remains a partial fairness
+control rather than a complete compute-budget comparison. An initial timing
+field included local semaphore queue time; the artifact marks those synthesis
+timings ineligible, and no latency claim uses them.
+
+A clean low-load run on the same balanced sample split the historical
+`traversal_ms` aggregate into its actual components. Mean end-to-end latency
+was 39.81 s: query rewriting/refinement 18.02 s, candidate ordering 12.80 s,
+answer synthesis 3.51 s, retrieval 4.03 s, graph expansion 1.35 s, and
+deterministic scoring 0.08 s. Generation therefore occupied 34.33 s (86.2%)
+of the observed mean, while graph expansion occupied 3.4%. The result corrects
+the earlier interpretation of traversal time and explicitly prevents an
+end-to-end latency claim from the offline-link design.
+
+Paired refinement-cap runs also completed. A one-call cap reduced latency by
+5.69 s (95% interval −6.92 to −4.51) but reduced paragraph-support recall by
+0.0108 (−0.0220 to −0.0004); its answer-EM difference was −0.0149 with an
+interval including zero. A two-call cap reduced latency by 1.09 s (−2.13 to
+−0.07), while answer EM changed by +0.0100 (−0.0149 to +0.0348) and support
+recall by −0.0062 (−0.0137 to 0.0000). The evidence-driven stop remains the
+full-result default; two calls are retained only as a possible operational
+trade-off.
+
+The checkpoint-resumable frozen candidate replay completed all 201 pools with
+zero errors. Repeating the captured search order produced mean top-12 set
+Jaccard 0.966 (95% interval 0.950 to 0.980) and exact-set agreement on 88.1%
+of queries. Reverse order versus the search-order replay produced Jaccard
+0.584 (0.557 to 0.614) and 4.0% exact agreement; deterministic hash shuffle
+produced 0.635 (0.607 to 0.663) and 8.0%. The first presented candidate was
+selected on 93.0% of search-order calls, 11.4% of reverse calls, and 16.9% of
+shuffled calls. The result establishes input-order dependence beyond
+same-order generation variability, but not a simple top-item copying rule.
+Because this replay does not regenerate answers, the mitigation decision
+remains a complete-split comparison between deterministic fused order and any
+multi-order consensus design.
+
+Tests cover the new configuration guards, score-signal variants, propagation
+factor, frozen candidate trace, input-order controls, and refinement cap.
+The briefing's canned Solaris/Tarkovsky example was removed because it was not
+an indexed execution case. It now uses an actual stored MuSiQue path concerning
+the 1941 declarations of war, and explicitly notes where the matched Q− is not
+semantically identical to Q+.
+
 ## 2026-08-31 — Full-split gate passed and final defaults frozen
 
 The final Prehop indexes and benchmarks completed on new, strategy-specific

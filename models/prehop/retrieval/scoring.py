@@ -1,12 +1,27 @@
 """Parameter-free fusion of indexed representation and body semantics."""
 
+import asyncio
+import hashlib
+import json
+import os
+import time
 from collections import defaultdict, deque
+from pathlib import Path
 from typing import Any
 
 from core.config import RAGConfig
 from models.prehop.llm_json import generate_json_or_raise
 from utils.prompts.query_rewrite import build_evidence_ranking_prompt
 from utils.similarity import cosine_similarity
+
+_CANDIDATE_ORDER_TRACE_LOCK = asyncio.Lock()
+
+
+def _append_jsonl(path: Path, line: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+        handle.write("\n")
 
 
 class SimilarityScoringMixin:
@@ -36,6 +51,7 @@ class SimilarityScoringMixin:
         top_k: int,
         query_text: str = "",
         selection_variant: str | None = None,
+        timing_sink: dict[str, float] | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Fuse representation ranks with body and stored bridge semantics.
 
@@ -48,6 +64,7 @@ class SimilarityScoringMixin:
         order. Neither path compares backend-specific raw scores or introduces
         a fitted interpolation weight or threshold.
         """
+        score_started = time.perf_counter()
         if not candidates:
             return [], []
         if not query_embedding:
@@ -60,7 +77,7 @@ class SimilarityScoringMixin:
                 self._validated_similarity(query_embedding, embedding) for embedding in bridge_embeddings if embedding
             ]
             bridge_score = max(bridge_scores) if bridge_scores else None
-            if bridge_score is None:
+            if bridge_score is None or RAGConfig.HOP_SEMANTIC_VARIANT == "body_only":
                 final_score = body_score
             elif RAGConfig.HOP_SEMANTIC_VARIANT == "bridge_only":
                 final_score = bridge_score
@@ -94,7 +111,7 @@ class SimilarityScoringMixin:
                 score += 1.0 / (representation_ranks[node_id] + 1)
             candidate["rank_fusion_score"] = score
 
-        ordered = sorted(
+        fused_order = sorted(
             candidates,
             key=lambda item: (
                 float(item.get("rank_fusion_score", 0.0)),
@@ -103,6 +120,15 @@ class SimilarityScoringMixin:
             ),
             reverse=True,
         )
+        if RAGConfig.FINAL_RANK_VARIANT == "semantic_only":
+            ordered = semantic_order
+        elif RAGConfig.FINAL_RANK_VARIANT == "representation_only":
+            ordered = representation_order
+        else:
+            ordered = fused_order
+        if timing_sink is not None:
+            timing_sink["deterministic_score_ms"] = (time.perf_counter() - score_started) * 1000
+        ordering_started = time.perf_counter()
         active_selection_variant = selection_variant or RAGConfig.SOURCE_SELECTION_VARIANT
         if active_selection_variant == "global":
             selected = ordered[:top_k]
@@ -122,6 +148,8 @@ class SimilarityScoringMixin:
             selected = await self._role_body_list_ranking(query_text, ordered, top_k)
         else:
             raise ValueError(f"Unsupported source selection variant: {active_selection_variant!r}")
+        if timing_sink is not None:
+            timing_sink["candidate_order_ms"] = (time.perf_counter() - ordering_started) * 1000
         return selected, ordered
 
     async def _role_body_list_ranking(
@@ -132,7 +160,7 @@ class SimilarityScoringMixin:
     ) -> list[dict[str, Any]]:
         """Rank the complete established candidate pool by opaque paragraph ID."""
         if not query_text.strip():
-            raise ValueError("Body evidence list ranking requires the original query text")
+            raise ValueError("Body evidence candidate ordering requires the original query text")
 
         pool: list[dict[str, Any]] = []
         seen_node_ids: set[str] = set()
@@ -143,6 +171,19 @@ class SimilarityScoringMixin:
                 pool.append(node)
         if not pool:
             return ordered[:top_k]
+
+        canonical_pool = list(pool)
+        if RAGConfig.CANDIDATE_ORDER_INPUT_ORDER == "reverse":
+            pool.reverse()
+        elif RAGConfig.CANDIDATE_ORDER_INPUT_ORDER == "hash_shuffle":
+            seed = RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED
+
+            def shuffle_key(node: dict[str, Any]) -> tuple[bytes, str]:
+                node_id = self._node_identity(node)
+                payload = f"{seed}\0{query_text}\0{node_id}".encode()
+                return hashlib.sha256(payload).digest(), node_id
+
+            pool.sort(key=shuffle_key)
 
         candidate_ids = [f"C{index:03d}" for index in range(len(pool))]
         node_by_candidate_id = dict(zip(candidate_ids, pool, strict=True))
@@ -178,16 +219,60 @@ class SimilarityScoringMixin:
             max_tokens=1024,
         )
 
-        ranking: list[str] = []
+        model_ranking: list[str] = []
         for value in payload["ranking"]:
             candidate_id = str(value)
             if candidate_id not in node_by_candidate_id:
                 continue
-            if candidate_id not in ranking:
-                ranking.append(candidate_id)
+            if candidate_id not in model_ranking:
+                model_ranking.append(candidate_id)
+        ranking = list(model_ranking)
         ranking.extend(candidate_id for candidate_id in candidate_ids if candidate_id not in ranking)
 
         selected = [node_by_candidate_id[candidate_id] for candidate_id in ranking[:top_k]]
+        trace_path = os.environ.get("RAG_CANDIDATE_ORDER_TRACE_PATH", "").strip()
+        if trace_path:
+            record = {
+                "query": query_text,
+                "top_k": top_k,
+                "input_order": RAGConfig.CANDIDATE_ORDER_INPUT_ORDER,
+                "shuffle_seed": RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,
+                "canonical_node_ids": [self._node_identity(node) for node in canonical_pool],
+                "candidates": [
+                    {
+                        "node_id": self._node_identity(node),
+                        "title": str(node.get("title") or node.get("doc") or ""),
+                        "source": str(node.get("source") or ""),
+                        "paragraph_id": str(node.get("paragraph_id") or ""),
+                        "metadata": {
+                            key: str(node[key])
+                            for key in ("publisher", "published_at", "author", "category")
+                            if node.get(key)
+                        },
+                        "text": str(node.get("text") or ""),
+                        "similarity_score": float(node.get("similarity_score", 0.0)),
+                        "bridge_similarity_score": (
+                            float(node["bridge_similarity_score"]) if node.get("bridge_similarity_score") is not None else None
+                        ),
+                        "final_score": float(node.get("final_score", 0.0)),
+                        "representation_score": float(node.get("representation_score", 0.0)),
+                        "representation_scores": {
+                            str(key): float(value)
+                            for key, value in (node.get("representation_scores") or {}).items()
+                        },
+                        "rank_fusion_score": float(node.get("rank_fusion_score", 0.0)),
+                        "retrieval_paths": node.get("retrieval_paths") or [],
+                    }
+                    for node in canonical_pool
+                ],
+                "model_returned_node_ids": [
+                    self._node_identity(node_by_candidate_id[candidate_id]) for candidate_id in model_ranking
+                ],
+                "selected_node_ids": [self._node_identity(node) for node in selected],
+            }
+            line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            async with _CANDIDATE_ORDER_TRACE_LOCK:
+                await asyncio.to_thread(_append_jsonl, Path(trace_path), line)
         selected_ids = {self._node_identity(node) for node in selected}
         for node in ordered:
             node_id = self._node_identity(node)

@@ -1,3 +1,19 @@
+import re
+
+ANSWER_PREFIX = "@@ANSWER:"
+_EXPLICIT_ANSWER_BOUNDARY_RE = re.compile(
+    r"(?ims)(?:(?:final\s+answer|@@ANSWER)\s*:|^[ \t]*answer[ \t]*:)"
+)
+
+
+def mark_answer_boundary(answer: str) -> str:
+    """Attach the benchmark answer boundary without changing the prediction."""
+    text = str(answer or "").strip()
+    if _EXPLICIT_ANSWER_BOUNDARY_RE.search(text):
+        return text
+    return f"{ANSWER_PREFIX} {text}"
+
+
 def answer_role() -> str:
     """Return the one dataset-neutral role shared by all current benchmarks."""
     return "a multi-hop research assistant"

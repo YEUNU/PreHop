@@ -484,6 +484,39 @@ async def test_iterative_evidence_variant_stops_when_selected_chunks_do_not_chan
 
 
 @pytest.mark.asyncio
+async def test_iterative_evidence_variant_honors_configured_round_cap(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "GRAPH_HOP_DEPTH", 1)
+    monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_VARIANT", "role_aligned_evidence_iterative")
+    monkeypatch.setattr(RAGConfig, "QUERY_REFINEMENT_MAX_ROUNDS", 1)
+    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "global")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm = MagicMock()
+    rag.llm.generate_response = AsyncMock(return_value="final answer")
+    rag._rewrite_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["first dependency?"], "q_plus": []}
+    )
+    rag._refine_query_roles = AsyncMock(  # type: ignore[method-assign]
+        return_value={"q_minus": ["second dependency?"], "q_plus": []}
+    )
+    first = {"id": "first", "title": "First", "sent_id": 0, "text": "first", "embedding": [1.0]}
+    second = {"id": "second", "title": "Second", "sent_id": 0, "text": "second", "embedding": [1.0]}
+    rag.graph_search = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            ("first context", [first], {"retrieve_ms": 1.0, "traversal_ms": 2.0}),
+            ("second context", [second], {"retrieve_ms": 3.0, "traversal_ms": 4.0}),
+        ]
+    )
+
+    _answer, _sources, trace = await rag.run_workflow("multi-step question")
+
+    assert rag.graph_search.await_count == 2
+    rag._refine_query_roles.assert_awaited_once()
+    rewrite_trace = next(item for item in trace if item["step"] == "query_rewrite")
+    assert rewrite_trace["refinement_rounds"] == 1
+    assert rewrite_trace["refinement_stop_reason"] == "configured_round_cap"
+
+
+@pytest.mark.asyncio
 async def test_naive_run_workflow_uses_shared_default_top_k():
     from core.config import RAGConfig
     from models.naive.naive_rag import NaiveRAG
@@ -495,9 +528,28 @@ async def test_naive_run_workflow_uses_shared_default_top_k():
     rag.vllm._count_tokens.return_value = 10
     rag.vllm.generate_response = AsyncMock(return_value="answer")
 
-    await rag.run_workflow("question")
+    answer, _sources, trace = await rag.run_workflow("question")
 
     rag._retrieve_nodes.assert_awaited_once_with("question", top_k=RAGConfig.DEFAULT_TOP_K)
+    assert answer == "@@ANSWER: answer"
+    assert trace[0]["output"] == answer
+
+
+@pytest.mark.asyncio
+async def test_hoprag_run_workflow_marks_answer_boundary():
+    from models.hoprag.hoprag_adapter import HopRAGAdapter
+
+    adapter = object.__new__(HopRAGAdapter)
+    adapter.top_k = 20
+    node = {"title": "Doc", "text": "context", "source": "doc.txt", "page": 0, "sent_id": 0}
+    adapter.retrieve = AsyncMock(return_value=("context", [node]))
+    adapter.llm = MagicMock()
+    adapter.llm.generate_response = AsyncMock(return_value="answer")
+
+    answer, _sources, trace = await adapter.run_workflow("question")
+
+    assert answer == "@@ANSWER: answer"
+    assert trace[0]["output"] == answer
 
 
 def test_naive_context_budget_keeps_complete_chunks_in_rank_order(monkeypatch):

@@ -15,6 +15,12 @@ Keep repository facts in one authoritative place and link to them elsewhere:
   development-result tables.
 - `docs/ARCHITECTURE.md` is the normative implementation map: module ownership,
   indexing/query data flow, algorithmic behavior, and evaluation contracts.
+- `docs/RESULTS.md` is the canonical final number-to-artifact register and keeps
+  the two datasets and their denominators separate.
+- `docs/ABLATION_STUDY.md` fixes the pipeline stage, controls, commands,
+  outcomes, and claim boundary for each submission component analysis.
+- `docs/CONSISTENCY_AUDIT.md` maps accepted claims to implementation,
+  artifacts, manuscript text, and presentation wording.
 - `docs/CHANGELOG.md` is the chronological engineering record. It records what
   changed and may summarize explicitly labelled exploratory validation, but it
   is not the current architecture specification or a paper-results source.
@@ -29,8 +35,11 @@ When behavior changes, update the implementation contract in
 `docs/ARCHITECTURE.md`, the concise user-facing description in `README.md` if
 externally relevant, and the chronological entry in `docs/CHANGELOG.md`.
 Update `docs/prehop_paper.md` only for method, protocol, analysis, or claim
-changes. Update this file when the supported state, workflow rules, or these
-document responsibilities change. Do not copy full sections between files.
+changes. Update `RESULTS.md`, `ABLATION_STUDY.md`, and
+`CONSISTENCY_AUDIT.md` when a final artifact, component boundary, or accepted
+claim changes. Update this file when the supported state, workflow rules, or
+these document responsibilities change. Do not copy full sections between
+files.
 
 ### Documentation style
 
@@ -68,15 +77,14 @@ document responsibilities change. Do not copy full sections between files.
   run ID. `VLLM_MAX_NUM_SEQS` records endpoint capacity; each adapter's worker
   controls must remain within that capacity.
 - The configuration selected for confirmatory evaluation uses legacy Q−/Q+,
-  owner activation, materialized reciprocal provenance, depth-one full
+  matched-paragraph connection activation, materialized reciprocal provenance, depth-one full
   NEXT/HOP traversal, global selection, and role-aligned rewriting for
   questions of at most 32 words. Exact activation, rewrite-all, no-rewrite,
   and online reciprocal filtering are explicit ablations. The complete
   algorithm belongs in `ARCHITECTURE.md`.
-- Query-time retrieval makes at most one bounded role-rewrite call and uses no
-  learned reranker, runtime HOP construction, iterative generation, or
-  heuristic domain gate. A single final synthesis call is made only when
-  context is non-empty.
+- Query-time retrieval uses a bounded role rewrite, stored HOP links, one
+  complete-list candidate-selection call to the configured generation model,
+  and one final synthesis call when context is available.
 - Query-time filtering must not mutate or replace the offline HOP graph. Fresh
   indexes must materialize reciprocal provenance before the offline filter is
   enabled.
@@ -235,6 +243,11 @@ chunk unit. The controlled comparison changes the retrieval architecture while
 holding the evidence unit and budget fixed. A one-source-one-vector run is a
 separately labelled chunking sensitivity analysis and cannot replace the
 controlled baseline or a Prehop component ablation.
+Prehop, Naive, and HopRAG must attach the shared explicit answer boundary to
+both generated answers and fixed abstentions. MS GraphRAG must declare its
+equivalent short-answer boundary through the official search API response
+type. Metric code must preserve the complete prediction when no explicit
+boundary is present and must not apply hidden prefix or suffix truncation.
 HopRAG retains the upstream official end-to-end top-k 20; MS GraphRAG retains
 its official context budget. These unequal official settings must be stated in
 the paper. A controlled equal-budget retrieval experiment is reported

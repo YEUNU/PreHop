@@ -12,7 +12,9 @@ from utils.prompts import MULTIHOPRAG_JUDGE_PROMPT
 logger = logging.getLogger(__name__)
 
 _BOXED_RE = re.compile(r"\\boxed\{([^{}]+(?:\{[^{}]*\}[^{}]*)*)\}")
-_FINAL_LABEL_RE = re.compile(r"(?is)(?:final\s+answer|@@ANSWER|answer)\s*:?\s*(.+?)(?:\n\n|\Z)")
+_FINAL_LABEL_RE = re.compile(
+    r"(?ims)(?:(?:final\s+answer|@@ANSWER)\s*:|^[ \t]*answer[ \t]*:)[ \t]*(.+?)(?=\n[ \t]*\n|\Z)"
+)
 
 
 def normalize_answer(s):
@@ -51,8 +53,11 @@ def extract_final_answer(answer_text: str) -> str:
         return boxed[-1].strip()
     matches = _FINAL_LABEL_RE.findall(answer_text)
     if matches:
-        return matches[-1].strip()[:400]
-    return answer_text[-300:].strip()
+        return matches[-1].strip()
+    # A response without an explicit answer marker is itself the prediction.
+    # Truncating from the left can silently discard a correct entity that
+    # appears near the beginning of a citation-bearing baseline response.
+    return answer_text.strip()
 
 
 def _answer_overlap_metrics(prediction: str, reference: str) -> tuple[float, float, float, float]:

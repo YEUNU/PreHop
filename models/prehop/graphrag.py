@@ -22,10 +22,12 @@ from utils.prompts.query_rewrite import (
     build_evidence_conditioned_query_prompt,
     build_role_aligned_query_prompt,
 )
-from utils.prompts.shared import build_answer_prompt as build_shared_answer_prompt
-
-_ANSWER_PREFIX = "@@ANSWER:"
-
+from utils.prompts.shared import (
+    build_answer_prompt as build_shared_answer_prompt,
+)
+from utils.prompts.shared import (
+    mark_answer_boundary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +86,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
     # ---------- helpers ----------
     @classmethod
     def _ensure_answer_prefix(cls, answer: str) -> str:
-        text = str(answer or "")
-        if _ANSWER_PREFIX not in text:
-            return f"{_ANSWER_PREFIX} {text}"
-        return text
+        return mark_answer_boundary(answer)
 
     @staticmethod
     def _strip_format_instruction(query: str) -> str:
@@ -281,7 +280,20 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 {"retrieve_ms": (time.perf_counter() - t_retrieve0) * 1000, "traversal_ms": 0.0},
             )
 
+        retrieval_timing_keys = (
+            "retrieve_ms",
+            "traversal_ms",
+            "graph_expand_ms",
+            "deterministic_score_ms",
+            "candidate_order_ms",
+        )
+
+        def add_timing(target: dict[str, float], source: dict[str, float]) -> None:
+            for key in retrieval_timing_keys:
+                target[key] = float(target.get(key, 0.0)) + float(source.get(key, 0.0))
+
         refinement_trace: list[dict[str, Any]] = []
+        refinement_stop_reason = "not_applicable"
         retrieval_result: tuple[str, list[dict[str, Any]], dict[str, float]] | None = None
         evidence_variants = {
             "role_aligned_evidence",
@@ -295,10 +307,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 channel_queries,
                 preview_selection_variant,
             )
-            total_timing = {
-                "retrieve_ms": float(current_timing.get("retrieve_ms", 0.0)),
-                "traversal_ms": float(current_timing.get("traversal_ms", 0.0)),
-            }
+            total_timing = {key: float(current_timing.get(key, 0.0)) for key in retrieval_timing_keys}
             attempted_questions = list(
                 dict.fromkeys(
                     [
@@ -310,10 +319,18 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             )
             attempted_identities = {" ".join(question.casefold().split()) for question in attempted_questions}
             seen_evidence_ids = {self._node_identity(node) for node in current_nodes}
+            refinement_stop_reason = "evidence_or_question_stability"
 
             while current_context and current_nodes:
+                if (
+                    RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS > 0
+                    and len(refinement_trace) >= RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS
+                ):
+                    refinement_stop_reason = "configured_round_cap"
+                    break
                 refinement_evidence = self._fit_ranked_context(current_nodes, retrieval_query)
                 if not refinement_evidence:
+                    refinement_stop_reason = "context_budget"
                     break
                 attempted_snapshot = {role: list(channel_queries[role]) for role in ("q_minus", "q_plus")}
                 refine_started = time.perf_counter()
@@ -341,6 +358,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                     }
                 )
                 if not any(refined_role_queries.values()):
+                    refinement_stop_reason = "no_new_questions"
                     break
 
                 for role in ("q_minus", "q_plus"):
@@ -354,11 +372,11 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                     channel_queries,
                     preview_selection_variant,
                 )
-                total_timing["retrieve_ms"] += float(next_timing.get("retrieve_ms", 0.0))
-                total_timing["traversal_ms"] += float(next_timing.get("traversal_ms", 0.0))
+                add_timing(total_timing, next_timing)
                 current_context, current_nodes = next_context, next_nodes
 
                 if RAGConfig.QUERY_REWRITE_VARIANT == "role_aligned_evidence":
+                    refinement_stop_reason = "single_refinement_variant"
                     break
 
                 # Continue only when the accumulated role queries introduce a
@@ -369,12 +387,12 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 new_evidence_ids = current_evidence_ids - seen_evidence_ids
                 seen_evidence_ids.update(current_evidence_ids)
                 if not new_evidence_ids:
+                    refinement_stop_reason = "no_new_evidence"
                     break
 
             if RAGConfig.SOURCE_SELECTION_VARIANT == "role_body_list_ranking":
                 final_context, final_nodes, final_timing = await execute_retrieval(channel_queries)
-                total_timing["retrieve_ms"] += float(final_timing.get("retrieve_ms", 0.0))
-                total_timing["traversal_ms"] += float(final_timing.get("traversal_ms", 0.0))
+                add_timing(total_timing, final_timing)
                 retrieval_result = (final_context, final_nodes, total_timing)
             else:
                 retrieval_result = (current_context, current_nodes, total_timing)
@@ -406,6 +424,9 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                     "input": {"query": retrieval_query, "variant": RAGConfig.QUERY_REWRITE_VARIANT},
                     "output": role_queries,
                     "rewrite_ms": rewrite_ms,
+                    "refinement_rounds": len(refinement_trace),
+                    "refinement_max_rounds": RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS,
+                    "refinement_stop_reason": refinement_stop_reason,
                 }
             )
         for refinement in refinement_trace:
@@ -427,6 +448,9 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 },
                 "retrieve_ms": timing.get("retrieve_ms", 0.0),
                 "traversal_ms": timing.get("traversal_ms", 0.0),
+                "graph_expand_ms": timing.get("graph_expand_ms", 0.0),
+                "deterministic_score_ms": timing.get("deterministic_score_ms", 0.0),
+                "candidate_order_ms": timing.get("candidate_order_ms", 0.0),
             }
         )
 

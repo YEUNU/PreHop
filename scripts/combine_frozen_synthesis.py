@@ -172,6 +172,17 @@ def combine_frozen_synthesis(
     )
     aggregate_answers = {f"avg_{field}": _mean(answer_rows, field) for field in answer_fields}
     aggregate_support = {f"avg_{field}": _mean(support_rows, field) for field in support_fields}
+    avg_synthesis_seconds = synthesis_seconds / len(answer_rows)
+    baseline_latency_count = int(baseline.get("eligible_latency_count") or 0)
+    baseline_avg_latency = baseline.get("avg_latency")
+    has_complete_baseline_timing = (
+        baseline_latency_count == len(queries)
+        and isinstance(baseline_avg_latency, (int, float))
+        and float(baseline_avg_latency) > 0.0
+    )
+    avg_recorded_phase_sum_seconds = (
+        float(baseline_avg_latency) + avg_synthesis_seconds if has_complete_baseline_timing else None
+    )
     for field, value in aggregate_support.items():
         if not math.isclose(float(baseline[field]), value, rel_tol=0.0, abs_tol=1e-12):
             raise ValueError(f"Baseline summary {field} differs from the recomputed raw retrieval result")
@@ -230,8 +241,17 @@ def combine_frozen_synthesis(
             **{f"eligible_{field}_count": len(answer_rows) for field in answer_fields},
             **aggregate_support,
             **{f"eligible_{field}_count": len(support_rows) for field in support_fields},
-            "avg_synthesis_seconds": synthesis_seconds / len(answer_rows),
+            "avg_synthesis_seconds": avg_synthesis_seconds,
             "eligible_synthesis_seconds_count": len(answer_rows),
+            "avg_recorded_phase_sum_seconds": avg_recorded_phase_sum_seconds,
+            "eligible_recorded_phase_sum_seconds_count": len(answer_rows) if has_complete_baseline_timing else 0,
+            "recorded_phase_sum_definition": (
+                "Mean latency of the original complete HopRAG workflow plus mean latency of the "
+                "separate full answer-only run. This is the recorded cost of the two phases used "
+                "to produce the combined result, not a single-pass end-to-end latency."
+                if has_complete_baseline_timing
+                else None
+            ),
             "avg_latency": None,
             "eligible_latency_count": 0,
             "category_summaries": category_summaries,

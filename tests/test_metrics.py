@@ -6,7 +6,9 @@ from utils.metrics import (
     calculate_musique_support_metrics,
     calculate_retrieval_ranking_metrics,
     evaluate_multihoprag_response,
+    extract_final_answer,
 )
+from utils.prompts.shared import mark_answer_boundary
 
 
 def test_judge_correctness_and_groundedness_are_independent():
@@ -90,6 +92,38 @@ def test_answer_metrics_use_final_answer_and_aliases():
     assert metrics["official_answer_em"] == 1.0
     assert metrics["official_answer_f1"] == 1.0
     assert metrics["null_refusal"] == UNJUDGED_SCORE
+
+
+def test_answer_extraction_preserves_unmarked_long_response():
+    response = "Correct entity appears first. " + "supporting context " * 40
+
+    assert len(response) > 300
+    assert extract_final_answer(response) == response.strip()
+
+
+def test_answer_extraction_does_not_match_answer_as_an_ordinary_word():
+    response = "I do not know the answer, as the supplied passages omit it."
+
+    assert extract_final_answer(response) == response
+
+
+def test_answer_extraction_accepts_explicit_markers_only():
+    assert extract_final_answer("Reasoning. Final Answer: Paris") == "Paris"
+    assert extract_final_answer("Reasoning.\nAnswer: Paris") == "Paris"
+
+
+def test_answer_extraction_does_not_truncate_marked_long_response():
+    response = "@@ANSWER: " + "complete answer text " * 30
+
+    assert len(response) > 400
+    assert extract_final_answer(response) == response.removeprefix("@@ANSWER: ").strip()
+
+
+def test_answer_boundary_marker_preserves_an_existing_explicit_marker():
+    response = "Reasoning.\nFinal Answer: Paris"
+
+    assert mark_answer_boundary(response) == response
+    assert extract_final_answer(mark_answer_boundary(response)) == "Paris"
 
 
 def test_null_queries_use_refusal_metric_not_answer_em():

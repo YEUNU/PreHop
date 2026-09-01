@@ -27,6 +27,8 @@ from models.ms_graphrag.official_indexer import (
 
 logger = logging.getLogger(__name__)
 
+_QA_RESPONSE_TYPE = "a single short answer span prefixed with 'Final Answer:', without explanation or citations"
+
 
 class MSGraphRAGAdapter:
     def __init__(self, model_id: str = "default", corpus_tag: str = "default"):
@@ -277,7 +279,7 @@ class MSGraphRAGAdapter:
             relationships=self._relationships,
             covariates=None,
             community_level=2,
-            response_type="single concise answer",
+            response_type=_QA_RESPONSE_TYPE,
             query=query,
         )
 
@@ -285,7 +287,7 @@ class MSGraphRAGAdapter:
         if not answer:
             raise ValueError("MS GraphRAG local search returned an empty answer")
         sources = self._extract_sources(context_data)
-        trace = [{"step": "ms_local_search_api"}]
+        trace = [{"step": "ms_local_search_api", "response_type": _QA_RESPONSE_TYPE}]
         return answer, sources, trace
 
     async def global_search(self, query: str) -> tuple[str, list, list]:
@@ -300,7 +302,7 @@ class MSGraphRAGAdapter:
             community_reports=self._community_reports,
             community_level=2,
             dynamic_community_selection=False,
-            response_type="single concise answer",
+            response_type=_QA_RESPONSE_TYPE,
             query=query,
         )
 
@@ -308,7 +310,7 @@ class MSGraphRAGAdapter:
         if not answer:
             raise ValueError("MS GraphRAG global search returned an empty answer")
         sources = self._extract_sources(context_data)
-        trace = [{"step": "ms_global_search_api"}]
+        trace = [{"step": "ms_global_search_api", "response_type": _QA_RESPONSE_TYPE}]
         return answer, sources, trace
 
     # ------------------------------------------------------------------ workflow

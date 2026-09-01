@@ -21,7 +21,7 @@ export RAG_BENCHMARK_TIMESTAMP="${RAG_BENCHMARK_TIMESTAMP:-$RAG_RUN_ID}"
 PYTHON_BIN="$(resolve_python "$SCRIPT_DIR")" || exit 1
 
 # Default values
-QUERIES_FILE="data/multihoprag_sample200_queries.json"
+QUERIES_FILE="data/multihoprag_queries.json"
 MODEL="prehop"
 LLM="default"
 RUN_ALL=false

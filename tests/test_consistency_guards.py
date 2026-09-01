@@ -155,6 +155,30 @@ def test_config_rejects_unknown_graph_edge_variant(monkeypatch):
         RAGConfig.validate()
 
 
+def test_config_rejects_unknown_candidate_order_input_order(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "CANDIDATE_ORDER_INPUT_ORDER", "typo")
+    with pytest.raises(ValueError, match="CANDIDATE_ORDER_INPUT_ORDER"):
+        RAGConfig.validate()
+
+
+def test_config_rejects_unknown_final_rank_variant(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "FINAL_RANK_VARIANT", "typo")
+    with pytest.raises(ValueError, match="FINAL_RANK_VARIANT"):
+        RAGConfig.validate()
+
+
+def test_config_rejects_graph_path_decay_outside_unit_interval(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "GRAPH_PATH_DECAY", 1.1)
+    with pytest.raises(ValueError, match="GRAPH_PATH_DECAY"):
+        RAGConfig.validate()
+
+
 def test_config_rejects_unknown_hop_edge_filter(monkeypatch):
     from core.config import RAGConfig
 
@@ -193,6 +217,15 @@ def test_config_rejects_unknown_query_rewrite_variant(monkeypatch):
 
     monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_VARIANT", "typo")
     with pytest.raises(ValueError, match="QUERY_REWRITE_VARIANT"):
+        RAGConfig.validate()
+
+
+def test_config_rejects_negative_query_refinement_cap(monkeypatch):
+    from core.config import RAGConfig
+
+    monkeypatch.setattr(RAGConfig, "QUERY_REFINEMENT_MAX_ROUNDS", -1)
+
+    with pytest.raises(ValueError, match="RAG_QUERY_REFINEMENT_MAX_ROUNDS"):
         RAGConfig.validate()
 
 

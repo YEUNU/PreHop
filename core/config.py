@@ -87,6 +87,7 @@ class RAGConfig:
     # Zero disables graph expansion for ablation; one enables the fixed
     # bidirectional NEXT and outgoing HOP_ANSWER expansion.
     GRAPH_HOP_DEPTH = int(os.environ.get("RAG_GRAPH_HOP_DEPTH", "1"))
+    GRAPH_PATH_DECAY = float(os.environ.get("RAG_GRAPH_PATH_DECAY", "0.5"))
     GRAPH_EDGE_VARIANT = os.environ.get("RAG_GRAPH_EDGE_VARIANT", "full").strip().lower() or "full"
     # Read-only traversal policy over the existing offline graph. The final
     # cross-dataset selection uses every materialized HOP edge; reciprocal
@@ -133,6 +134,9 @@ class RAGConfig:
     # perturb the explicit source and relation constraints already present in
     # long questions. Zero disables this input-length gate for ablations.
     QUERY_REWRITE_MAX_WORDS = int(os.environ.get("RAG_QUERY_REWRITE_MAX_WORDS", "32"))
+    # Operational guard for evidence-conditioned rewrite calls. Zero keeps
+    # the evidence-driven stopping rule; positive values cap refinement calls.
+    QUERY_REFINEMENT_MAX_ROUNDS = int(os.environ.get("RAG_QUERY_REFINEMENT_MAX_ROUNDS", "0"))
 
     # --- Ablation & Experimental Toggles ---
     # Q-/Q+ channel ablations.
@@ -168,6 +172,14 @@ class RAGConfig:
         os.environ.get("RAG_SOURCE_SELECTION_VARIANT", "role_body_list_ranking").strip().lower()
         or "role_body_list_ranking"
     )
+    # Input-order control for the generation-model candidate-ordering call.
+    # ``search`` preserves the primary system; alternatives are diagnostics
+    # over the same frozen candidate pool.
+    CANDIDATE_ORDER_INPUT_ORDER = (
+        os.environ.get("RAG_CANDIDATE_ORDER_INPUT_ORDER", "search").strip().lower() or "search"
+    )
+    CANDIDATE_ORDER_SHUFFLE_SEED = int(os.environ.get("RAG_CANDIDATE_ORDER_SHUFFLE_SEED", "0"))
+    FINAL_RANK_VARIANT = os.environ.get("RAG_FINAL_RANK_VARIANT", "fused").strip().lower() or "fused"
 
     @classmethod
     def validate(cls) -> None:
@@ -203,6 +215,8 @@ class RAGConfig:
             )
         if cls.GRAPH_HOP_DEPTH not in {0, 1}:
             raise ValueError("RAG_GRAPH_HOP_DEPTH must be 0 or 1")
+        if not 0.0 <= cls.GRAPH_PATH_DECAY <= 1.0:
+            raise ValueError("RAG_GRAPH_PATH_DECAY must be between 0 and 1")
         if cls.GRAPH_EDGE_VARIANT not in {"full", "hop_only", "next_only"}:
             raise ValueError("RAG_GRAPH_EDGE_VARIANT must be full, hop_only, or next_only")
         if cls.HOP_EDGE_FILTER not in {"none", "reciprocal", "reciprocal_offline"}:
@@ -217,8 +231,8 @@ class RAGConfig:
             raise ValueError("RAG_CONTINUATION_ANCHOR_POLICY must be named_only or all_grounded")
         if cls.CONTINUATION_ANCHOR_POLICY != "named_only" and cls.QUESTION_SCHEMA != "linked_v2":
             raise ValueError("RAG_CONTINUATION_ANCHOR_POLICY=all_grounded requires RAG_QUESTION_SCHEMA=linked_v2")
-        if cls.HOP_SEMANTIC_VARIANT not in {"body_bridge_min", "bridge_only"}:
-            raise ValueError("RAG_HOP_SEMANTIC_VARIANT must be body_bridge_min or bridge_only")
+        if cls.HOP_SEMANTIC_VARIANT not in {"body_bridge_min", "body_only", "bridge_only"}:
+            raise ValueError("RAG_HOP_SEMANTIC_VARIANT must be body_bridge_min, body_only, or bridge_only")
         if cls.HOP_EDGE_FILTER == "reciprocal_offline" and not cls.PRECOMPUTE_RECIPROCAL_HOPS:
             raise ValueError("RAG_HOP_EDGE_FILTER=reciprocal_offline requires RAG_PRECOMPUTE_RECIPROCAL_HOPS=true")
         if cls.QUESTION_SCHEMA not in {"legacy", "grounded_v1", "linked_v2"}:
@@ -237,6 +251,8 @@ class RAGConfig:
             )
         if cls.QUERY_REWRITE_MAX_WORDS < 0:
             raise ValueError("RAG_QUERY_REWRITE_MAX_WORDS must be zero or positive")
+        if cls.QUERY_REFINEMENT_MAX_ROUNDS < 0:
+            raise ValueError("RAG_QUERY_REFINEMENT_MAX_ROUNDS must be zero or positive")
         if not cls.EMBEDDING_QUERY_INSTRUCTION:
             raise ValueError("EMBEDDING_QUERY_INSTRUCTION must not be empty")
 
@@ -267,3 +283,7 @@ class RAGConfig:
                 "source_balanced_graph_pairs, round_robin, role_body_owners, "
                 "role_body_rounds, role_body_list_ranking, or global"
             )
+        if cls.CANDIDATE_ORDER_INPUT_ORDER not in {"search", "reverse", "hash_shuffle"}:
+            raise ValueError("RAG_CANDIDATE_ORDER_INPUT_ORDER must be search, reverse, or hash_shuffle")
+        if cls.FINAL_RANK_VARIANT not in {"fused", "semantic_only", "representation_only"}:
+            raise ValueError("RAG_FINAL_RANK_VARIANT must be fused, semantic_only, or representation_only")

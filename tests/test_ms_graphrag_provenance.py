@@ -1,11 +1,11 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pandas as pd
 import pytest
 
 from models.ms_graphrag import official_indexer as ms_official_indexer
-from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter
+from models.ms_graphrag.ms_adapter import _QA_RESPONSE_TYPE, MSGraphRAGAdapter
 from models.ms_graphrag.official_indexer import _ms_indexable_text
 from utils.metrics import _source_paragraph_identity
 
@@ -207,3 +207,27 @@ async def test_ms_workflow_uses_fixed_official_local_search_without_keyword_rout
     assert result == ("answer", [], [])
     adapter.local_search.assert_awaited_once()
     adapter.global_search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ms_local_search_requests_metric_compatible_short_answer(monkeypatch):
+    import graphrag.api as gapi
+
+    search = AsyncMock(return_value=("Final Answer: Paris", {}))
+    monkeypatch.setattr(gapi, "local_search", search)
+    adapter = object.__new__(MSGraphRAGAdapter)
+    adapter._config = object()
+    adapter._entities = object()
+    adapter._communities = object()
+    adapter._community_reports = object()
+    adapter._text_units = object()
+    adapter._relationships = object()
+    adapter._ensure_loaded = Mock()
+    adapter._extract_sources = Mock(return_value=[])
+
+    answer, sources, trace = await adapter.local_search("Where was the person born?")
+
+    assert answer == "Final Answer: Paris"
+    assert sources == []
+    assert trace == [{"step": "ms_local_search_api", "response_type": _QA_RESPONSE_TYPE}]
+    assert search.await_args.kwargs["response_type"] == _QA_RESPONSE_TYPE

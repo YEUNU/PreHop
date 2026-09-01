@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -191,6 +192,31 @@ async def test_final_order_preserves_representation_rank_without_fitted_weight()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("variant", "expected"),
+    [
+        ("semantic_only", ["semantic-first", "representation-first"]),
+        ("representation_only", ["representation-first", "semantic-first"]),
+    ],
+)
+async def test_final_rank_signal_variants_isolate_one_order(monkeypatch, variant, expected):
+    monkeypatch.setattr(RAGConfig, "FINAL_RANK_VARIANT", variant)
+    rag = GraphRAG(strategy="prehop")
+
+    selected, _ = await rag._score_and_select(
+        [1.0, 0.0],
+        [
+            {"id": "semantic-first", "embedding": [1.0, 0.0], "representation_score": 0.5},
+            {"id": "representation-first", "embedding": [0.8, 0.6], "representation_score": 1.0},
+        ],
+        top_k=2,
+        selection_variant="global",
+    )
+
+    assert [node["id"] for node in selected] == expected
+
+
+@pytest.mark.asyncio
 async def test_hop_candidate_scoring_preserves_bridge_question_semantics():
     rag = GraphRAG(strategy="prehop")
     candidate = {
@@ -223,6 +249,23 @@ async def test_bridge_only_hop_scoring_does_not_require_direct_query_body_match(
     assert selected[0]["similarity_score"] == pytest.approx(0.6)
     assert selected[0]["bridge_similarity_score"] == pytest.approx(0.8)
     assert selected[0]["final_score"] == pytest.approx(0.8)
+
+
+@pytest.mark.asyncio
+async def test_body_only_hop_scoring_ignores_bridge_similarity(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "HOP_SEMANTIC_VARIANT", "body_only")
+    rag = GraphRAG(strategy="prehop")
+    candidate = {
+        "id": "target",
+        "embedding": [0.6, 0.8],
+        "bridge_embeddings": [[0.8, 0.6]],
+    }
+
+    selected, _ = await rag._score_and_select([1.0, 0.0], [candidate], top_k=1, selection_variant="global")
+
+    assert selected[0]["similarity_score"] == pytest.approx(0.6)
+    assert selected[0]["bridge_similarity_score"] == pytest.approx(0.8)
+    assert selected[0]["final_score"] == pytest.approx(0.6)
 
 
 def test_final_selection_round_robins_sources_without_fraction_parameter():
@@ -475,6 +518,68 @@ async def test_role_body_list_ranking_completes_known_omissions(monkeypatch):
     assert "Do not include more than 2 IDs" in prompt
 
 
+@pytest.mark.asyncio
+async def test_role_body_list_ranking_can_reverse_input_order_for_position_control(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "CANDIDATE_ORDER_INPUT_ORDER", "reverse")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm.generate_json = AsyncMock(return_value={"ranking": ["C000", "C001"]})
+    ordered = [
+        {"id": "first", "title": "First", "text": "first evidence"},
+        {"id": "second", "title": "Second", "text": "second evidence"},
+    ]
+
+    selected = await rag._role_body_list_ranking("Which evidence is needed?", ordered, top_k=2)
+
+    assert [node["id"] for node in selected] == ["second", "first"]
+    prompt = rag.llm.generate_json.await_args.args[0][0]["content"]
+    assert prompt.index("Second") < prompt.index("First")
+
+
+@pytest.mark.asyncio
+async def test_role_body_list_ranking_hash_shuffle_is_deterministic(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "CANDIDATE_ORDER_INPUT_ORDER", "hash_shuffle")
+    monkeypatch.setattr(RAGConfig, "CANDIDATE_ORDER_SHUFFLE_SEED", 17)
+    rag = GraphRAG(strategy="prehop")
+    rag.llm.generate_json = AsyncMock(return_value={"ranking": ["C000", "C001", "C002"]})
+    ordered = [
+        {"id": "first", "title": "First", "text": "first evidence"},
+        {"id": "second", "title": "Second", "text": "second evidence"},
+        {"id": "third", "title": "Third", "text": "third evidence"},
+    ]
+
+    first = await rag._role_body_list_ranking("Which evidence is needed?", ordered, top_k=3)
+    second = await rag._role_body_list_ranking("Which evidence is needed?", ordered, top_k=3)
+
+    assert [node["id"] for node in first] == [node["id"] for node in second]
+
+
+@pytest.mark.asyncio
+async def test_role_body_list_ranking_trace_freezes_canonical_pool(monkeypatch, tmp_path):
+    trace_path = tmp_path / "ranking-pools.jsonl"
+    monkeypatch.setenv("RAG_CANDIDATE_ORDER_TRACE_PATH", str(trace_path))
+    monkeypatch.setattr(RAGConfig, "CANDIDATE_ORDER_INPUT_ORDER", "reverse")
+    rag = GraphRAG(strategy="prehop")
+    rag.llm.generate_json = AsyncMock(return_value={"ranking": ["C000"]})
+    ordered = [
+        {"id": "first", "title": "First", "text": "first evidence"},
+        {"id": "second", "title": "Second", "text": "second evidence"},
+    ]
+
+    await rag._role_body_list_ranking("Which evidence is needed?", ordered, top_k=1)
+
+    record = json.loads(trace_path.read_text())
+    assert record["canonical_node_ids"] == ["first", "second"]
+    assert record["input_order"] == "reverse"
+    assert record["model_returned_node_ids"] == ["second"]
+    assert record["selected_node_ids"] == ["second"]
+    assert [candidate["node_id"] for candidate in record["candidates"]] == ["first", "second"]
+    assert all("source" in candidate for candidate in record["candidates"])
+    assert all("paragraph_id" in candidate for candidate in record["candidates"])
+    assert all("final_score" in candidate for candidate in record["candidates"])
+    assert all("representation_score" in candidate for candidate in record["candidates"])
+    assert all("representation_scores" in candidate for candidate in record["candidates"])
+
+
 def test_role_body_round_selection_completes_each_rank_before_the_next():
     ordered = [
         {
@@ -695,7 +800,9 @@ async def test_retrieval_records_every_direct_representation_path():
 
 
 @pytest.mark.asyncio
-async def test_hop_target_inherits_only_the_qplus_seed_rank():
+@pytest.mark.parametrize(("decay", "expected_score"), [(0.0, 0.0), (0.5, 0.25), (1.0, 0.5)])
+async def test_hop_target_inherits_only_the_qplus_seed_rank(monkeypatch, decay, expected_score):
+    monkeypatch.setattr(RAGConfig, "GRAPH_PATH_DECAY", decay)
     rag = GraphRAG(strategy="prehop")
     seed = {
         "id": "seed",
@@ -734,7 +841,7 @@ async def test_hop_target_inherits_only_the_qplus_seed_rank():
     await rag.graph_search(["query"], depth=1, top_k=2)
 
     target = next(candidate for candidate in captured if candidate["id"] == "target")
-    assert target["representation_score"] == 0.25
+    assert target.get("representation_score", 0.0) == expected_score
 
 
 @pytest.mark.asyncio

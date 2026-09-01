@@ -7,7 +7,7 @@ from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient
 from models.prehop.indexing.chunking import parse_pages_offline, split_fixed_sentence_windows
-from utils.prompts.shared import build_answer_prompt
+from utils.prompts.shared import build_answer_prompt, mark_answer_boundary
 
 
 class NaiveRAG:
@@ -236,12 +236,14 @@ class NaiveRAG:
         _ = history
         nodes = await self._retrieve_nodes(query, top_k=RAGConfig.DEFAULT_TOP_K)
         if not nodes:
-            return "Insufficient evidence.", [], [{"step": "naive_qa", "output": "empty_context"}]
+            return mark_answer_boundary("Insufficient evidence."), [], [
+                {"step": "naive_qa", "output": "empty_context"}
+            ]
 
         context, context_nodes = self._fit_ranked_context(nodes, query)
         if not context:
             return (
-                "Insufficient evidence.",
+                mark_answer_boundary("Insufficient evidence."),
                 [],
                 [
                     {
@@ -263,6 +265,7 @@ class NaiveRAG:
         )
         if not str(answer or "").strip():
             raise ValueError("Answer synthesis returned an empty response")
+        answer = mark_answer_boundary(answer)
         # Preserve source filename as an opaque identity; MuSiQue uses it to
         # distinguish different paragraphs with the same Wikipedia title.
         trace = [

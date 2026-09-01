@@ -201,6 +201,36 @@ def test_benchmark_resume_rejects_metadata_mismatch_and_enabled_judge(tmp_path):
         )
 
 
+def test_benchmark_resume_migrates_behavior_equivalent_candidate_order_metadata(tmp_path):
+    result_file = _write_resume_fixture(tmp_path, [{"query_id": "q1", "query": "first"}], strategy="prehop")
+    payload = json.loads(result_file.read_text(encoding="utf-8"))
+    payload["ablation"] = {
+        "graph_hop_depth": 0,
+        "rerank_input_order": "search",
+        "rerank_shuffle_seed": 0,
+    }
+    result_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    retained, _metadata = _resume_benchmark_rows(
+        result_file,
+        [{"_id": "q1", "query": "first"}],
+        {
+            "strategy": "prehop",
+            "ablation": {
+                "graph_hop_depth": 0,
+                "graph_path_decay": 0.5,
+                "query_refinement_max_rounds": 0,
+                "candidate_order_input_order": "search",
+                "candidate_order_shuffle_seed": 0,
+                "final_rank_variant": "fused",
+            },
+        },
+        judge_enabled=False,
+    )
+
+    assert [row["query_id"] for row in retained] == ["q1"]
+
+
 def test_evaluation_scope_uses_actual_evaluated_count_before_filename():
     assert _evaluation_scope(
         "multihoprag", 2556, "custom_sample_name.json", OFFICIAL_QUERY_ID_DIGESTS["multihoprag"]

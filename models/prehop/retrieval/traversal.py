@@ -1,11 +1,11 @@
 """Level-batched traversal over pre-built NEXT/HOP_ANSWER edges.
 
 The complete representation-union seed pool is expanded in one Neo4j request.
-Only query-matched Q+ owners expose HOP at level zero. The default P2 path
-activates that owner's reciprocal HOP provenance; the exact matched-ID
-intersection remains selectable for ablation. Later levels expose NEXT only. All structurally bounded results are
-retained until final indexed-embedding selection, so traversal has no
-reservoir multiplier.
+Only query-matched Q+ owners expose HOP at level zero. The default path
+activates all stored provenance on that owner; reciprocal filtering and exact
+matched-ID activation remain selectable ablations. Later levels expose NEXT
+only. All structurally bounded results are retained until final
+indexed-embedding selection, so traversal has no reservoir multiplier.
 """
 
 import time
@@ -49,12 +49,17 @@ class TraversalMixin:
             selection_variant=selection_variant,
         )
         retrieve_ms = (time.perf_counter() - t_retrieve0) * 1000
+        graph_expand_ms = 0.0
+        score_timing: dict[str, float] = {}
 
         def timing() -> dict[str, float]:
             total_ms = (time.perf_counter() - t0) * 1000
             return {
                 "retrieve_ms": retrieve_ms,
                 "traversal_ms": max(0.0, total_ms - retrieve_ms),
+                "graph_expand_ms": graph_expand_ms,
+                "deterministic_score_ms": float(score_timing.get("deterministic_score_ms", 0.0)),
+                "candidate_order_ms": float(score_timing.get("candidate_order_ms", 0.0)),
             }
 
         base_candidates = [node for node in base_candidates if self._node_identity(node) not in excluded_ids]
@@ -96,6 +101,7 @@ class TraversalMixin:
             for source_id, question_ids in continuation_source_question_ids.items()
             if source_id and question_ids
         }
+        graph_expand_started = time.perf_counter()
         rows = await self._expand_frontier(
             frontier_ids,
             excluded_ids,
@@ -104,6 +110,7 @@ class TraversalMixin:
             query_embedding,
             top_k,
         )
+        graph_expand_ms = (time.perf_counter() - graph_expand_started) * 1000
         for row, edge_rank in self._rank_frontier_rows(rows):
             target_id = str(row.get("id") or "").strip()
             path_type = str(row.get("path_type") or "").strip().lower()
@@ -141,11 +148,12 @@ class TraversalMixin:
                     inherited_score = float(source_candidate.get("representation_score", 0.0))
                 # A graph-only target is supported indirectly through one
                 # edge. Its inherited rank evidence therefore receives the
-                # reciprocal path length 1 / (depth + 1), rather than being
-                # treated as strongly as a directly retrieved owner. Direct
-                # candidates retain their original score; only their path
-                # provenance is enriched below.
-                inherited_score *= 1.0 / (int(depth) + 1)
+                # default reciprocal one-edge factor 1 / (depth + 1) = 0.5,
+                # rather than being treated as strongly as a directly
+                # retrieved owner. The env-driven value exists only for the
+                # declared sensitivity experiment. Direct candidates retain
+                # their original score; only their path provenance is enriched.
+                inherited_score *= RAGConfig.GRAPH_PATH_DECAY
                 if inherited_score > float(candidate.get("representation_score", 0.0)):
                     candidate["representation_score"] = inherited_score
             bridge_embeddings = [embedding for embedding in (row.get("bridge_embeddings") or []) if embedding]
@@ -173,6 +181,7 @@ class TraversalMixin:
             query_embedding,
             ranked_candidates,
             top_k,
+            timing_sink=score_timing,
             **score_kwargs,
         )
         output_nodes = [self._without_transient_retrieval_scores(node) for node in nodes]

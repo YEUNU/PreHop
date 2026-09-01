@@ -1,4 +1,4 @@
-# Prehop: Offline Question Links for Deterministic Multi-Hop Retrieval
+# Prehop: Offline Question Links for Multi-Hop Retrieval
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -6,17 +6,21 @@
 
 Reference implementation of a GraphRAG candidate whose core design is
 indexing-time HOP construction: inspectable question-level evidence links are
-constructed once, offline, into chunk-to-chunk edges, so the query path expands
-the graph deterministically with no per-hop LLM edge decision. Query-time
-generation is limited to role-based query refinement, one complete candidate
-ranking, and final answer synthesis.
+constructed once, offline, into chunk-to-chunk edges. At query time, the system
+refines the question by evidence role, expands stored neighbors, selects twelve
+candidate paragraphs with the configured generation model, and synthesizes the
+answer.
 
 Documentation is separated by role: this README is the user-facing overview
 and command guide; [ARCHITECTURE](docs/ARCHITECTURE.md) is the normative
 implementation and evaluation contract; [CHANGELOG](docs/CHANGELOG.md) is the
 chronological engineering record; and `CLAUDE.md` defines repository and
 experiment-maintenance policy. The local, gitignored `docs/prehop_paper.md` is
-the AI-research manuscript/specification, not a general operating guide.
+the research manuscript and experiment specification, not a general operating
+guide. [RESULTS](docs/RESULTS.md) maps every final number to its full-split
+artifact, [ABLATION_STUDY](docs/ABLATION_STUDY.md) identifies the exact
+index/query stage tested by each control, and
+[CONSISTENCY_AUDIT](docs/CONSISTENCY_AUDIT.md) fixes the accepted claim wording.
 
 ---
 
@@ -67,15 +71,21 @@ index question representations or construct and traverse graph edges. This
 isolates Prehop's retrieval architecture instead of adding a chunk-size or
 evidence-budget difference to the comparison.
 The optional LLM judge is disabled by default and is not a primary metric.
-Samples are development artifacts. Complete-split tables are reported for
-benchmark comparability, while selection-free paired claims exclude the fixed
-development query IDs as specified in the local paper protocol.
+Subset runs are development artifacts and are not used in the results below.
+
+Prehop, Naive RAG, and HopRAG attach an explicit answer boundary before
+evaluation. MS GraphRAG requests the equivalent `Final Answer:` contract from
+its official search API. The evaluator scores the complete marked span; an
+unmarked response remains the complete prediction and is never replaced by a
+fixed-length suffix.
 
 ### Final full-split results
 
-All entries use the prepared full split. The gate chooses the strongest
-non-Prehop row independently for each official metric and requires a 10%
-relative gain.
+All entries use the prepared full split. MultiHop-RAG and MuSiQue are reported
+in separate tables because their metrics and denominators differ. Naive RAG is
+the same-budget in-repository control; HopRAG and MS GraphRAG are retained only
+as reference results under their official retrieval and context settings. No
+equal-evidence answer regeneration is included.
 
 | MultiHop-RAG system | Hits@4 | Hits@10 | MRR@10 | MAP@10 |
 |---|---:|---:|---:|---:|
@@ -84,19 +94,48 @@ relative gain.
 | HopRAG | 0.6843 | 0.8457 | 0.5660 | 0.2800 |
 | MS GraphRAG | 0.4705 | 0.5348 | 0.3033 | 0.1482 |
 
-Prehop's relative gains over the strongest comparison result are 35.45%,
-12.27%, 45.44%, and 62.47%, respectively.
+The MultiHop-RAG split has 2,556 questions. The four retrieval metrics above
+use the 2,255 answerable questions; the 301 unanswerable questions are reported
+separately and are not mixed into these values. Prehop's relative gains over
+the strongest comparison result are 35.45%, 12.27%, 45.44%, and 62.47%.
 
 | MuSiQue system | Answer EM | Answer F1 | Support P | Support R | Support F1 |
 |---|---:|---:|---:|---:|---:|
 | Prehop | **0.4150** | **0.5115** | **0.2034** | **0.8840** | **0.3267** |
 | Naive RAG | 0.2106 | 0.2726 | 0.1364 | 0.6241 | 0.2215 |
 | HopRAG | 0.2619 | 0.3394 | 0.0889 | 0.6982 | 0.1566 |
-| MS GraphRAG | 0.0000 | 0.0584 | 0.0710 | 0.5749 | 0.1236 |
 
-Prehop's relative gains over the strongest comparison result are 58.45%,
-50.71%, 49.12%, 26.60%, and 47.50%, respectively. Both generated gate
-artifacts are paper-eligible and pass every metric.
+The MuSiQue values use all 2,417 questions in its answer-bearing development
+split. Prehop's relative gains over the strongest comparison result are
+58.45%, 50.71%, 49.12%, 26.60%, and 47.50%, respectively.
+
+### Component-level interpretation
+
+The final component evidence is MuSiQue-only and uses all 2,417 questions.
+MultiHop-RAG remains a separate complete-system evaluation.
+
+| Tested stage | Full-split control | Main result |
+|---|---|---|
+| Stored connection structure | Compare Q+→foreign-Q− paragraph links with gold paragraphs | Complete gold-only connectivity: 2-hop 23.56%, 3-hop 1.32%, 4-hop 0.00% |
+| Query graph expansion | Same index, depth-one NEXT+HOP vs no graph expansion | ΔAnswer EM +0.00538, CI includes 0; ΔSupport F1 +0.00435 |
+| Query refinement | Remove evidence-conditioned follow-up views | ΔAnswer EM −0.12784; ΔSupport F1 −0.04811 |
+| Candidate selection policy | Question-role selection vs integrated top 12 | ΔAnswer EM −0.08854; ΔSupport F1 −0.04952 |
+| Fixed candidate input order | Reference order vs fixed shuffle | Calibrated Jaccard −0.32851; ΔSupport F1 −0.00368 |
+| Fixed-candidate rank rule | Signal and distance-weight variants | Decay 0 exceeds default decay 0.5 by Support F1 +0.00457 |
+| Query-stage timing | One complete concurrency-32 run | Generation stages 84.9%; graph expansion 1.7% |
+
+The graph-on/off Answer EM and retrieval-pass intervals include zero overall
+and within every 2/3/4-hop group. Support F1 is positive overall and in the
+2-hop and 3-hop groups. The candidate-selection control compares the complete
+question-role policy with one integrated ranking. The fixed-candidate replay
+measures input-order sensitivity, and the rank variants measure how signal and
+distance choices alter Support F1. The rank rule is a consequential heuristic without a probabilistic or generally optimal
+interpretation.
+
+See [RESULTS](docs/RESULTS.md) for all estimates and artifacts and
+[ABLATION_STUDY](docs/ABLATION_STUDY.md) for stage boundaries, controls, and
+commands. No complete entity/relation-bound labels exist for stored edges, so
+the repository makes no edge-precision or entity-binding claim.
 
 ---
 
@@ -196,7 +235,7 @@ configuration.
 
 # 3) Benchmark
 ./run_benchmark.sh --model prehop \
-  --queries data/multihoprag_sample200_queries.json --corpus-tag multihoprag
+  --queries data/multihoprag_queries.json --corpus-tag multihoprag
 
 # 4) Stop services
 ./stop_servers.sh all
@@ -236,15 +275,9 @@ dataset's corpus, queries, and tags so you don't pass them by hand:
 ./run_multihoprag.sh benchmark --model prehop --queries full
 
 # MuSiQue: preparation defaults to all 2,417 answerable dev rows.
-# Keep the committed development IDs fixed while refreshing their annotations.
 .venv/bin/python scripts/datasets/prepare_musique.py
-.venv/bin/python scripts/datasets/refresh_sample_records.py \
-  --dataset musique --sample data/musique_sample201_queries.json
 ./run_dataset.sh musique all --model prehop
 ```
-
-Use `make_sample.py` only to create a newly named exploratory sample. It must
-not overwrite the fixed development sets after method selection begins.
 
 See `CLAUDE.md` "Data and tags" for corpus/query file details per dataset.
 
@@ -345,6 +378,55 @@ strongest supplied non-Prehop baseline and requires a 10% relative gain. Only
 complete full-split artifacts are paper-eligible; sample use requires
 `--allow-exploratory` and remains diagnostic.
 
+### Complete-split presentation diagnostics
+
+These utilities require the complete MuSiQue split for reported presentation
+results and preserve the distinction between structural diagnostics and human
+annotation:
+
+```bash
+# Capture every MuSiQue candidate pool during a complete benchmark, then
+# replay only the ordering call in the deterministic fused order and a fixed shuffle.
+RAG_CANDIDATE_ORDER_TRACE_PATH=data/results/diagnostics/frozen_candidate_pools_2417.jsonl \
+  ./run_benchmark.sh --model prehop --queries data/musique_queries.json \
+  --corpus-tag musique_final_20260830
+.venv/bin/python -m scripts.replay_frozen_candidate_order \
+  --trace data/results/diagnostics/frozen_candidate_pools_2417.jsonl \
+  --queries data/musique_queries.json --benchmark <complete-result.json> \
+  --orders search hash_shuffle \
+  --out data/results/diagnostics/frozen_candidate_order_replay_2417.json \
+  --expected-traces 2417 --resume
+
+# Re-evaluate deterministic rank variants on all frozen candidate pools.
+.venv/bin/python -m scripts.analyze_full_frozen_rank_variants \
+  --trace data/results/diagnostics/frozen_candidate_pools_2417.jsonl \
+  --queries data/musique_queries.json --benchmark <complete-result.json> \
+  --out data/results/diagnostics/frozen_rank_variants_2417.json \
+  --expected-queries 2417
+
+# Summarize non-overlapping stage timers from that fixed-concurrency full run.
+.venv/bin/python -m scripts.analyze_full_stage_profile \
+  --artifact <complete-result.json> \
+  --out data/results/diagnostics/full_stage_profile_2417.json \
+  --expected-queries 2417 --declared-concurrency 32
+
+# After a same-query full graph-on/off pair, test effects separately where
+# stored HOP edges do and do not connect gold paragraphs.
+.venv/bin/python -m scripts.analyze_graph_shortcut_effect \
+  --graph-on <graph-on-result.json> --graph-off <graph-off-result.json> \
+  --coverage data/results/diagnostics/gold_hop_coverage.json \
+  --out data/results/diagnostics/graph_shortcut_effect.json \
+  --expected-queries 2417
+```
+
+The fixed-candidate order replay reports selection stability and
+supporting-paragraph metrics. The rank-variant analysis reports
+supporting-paragraph metrics on the same candidate pools. See
+[ARCHITECTURE](docs/ARCHITECTURE.md#diagnostic-controls-and-timing) for the
+measurement boundaries.
+The stored-connection subgroup analysis compares graph expansion effects by
+whether gold paragraphs share a stored connection.
+
 ---
 
 ## Ablation toggles
@@ -362,20 +444,23 @@ Query-only ablations do not require rebuilding the index:
 |---|---|---|
 | `RAG_HYPO_CHANNEL_VARIANT` | `full` | `body_only`, `qminus_only`, `qplus_only`, `single_combined` |
 | `RAG_GRAPH_HOP_DEPTH` | `1` | `0` disables graph expansion |
+| `RAG_GRAPH_PATH_DECAY` | `0.5` | `0` and `1` are declared propagation sensitivities |
 | `RAG_GRAPH_EDGE_VARIANT` | `full` | `hop_only` or `next_only` isolates traversal-edge contributions |
 | `RAG_HOP_EDGE_FILTER` | `none` | `reciprocal_offline` uses materialized reverse-Q+ agreement; `reciprocal` recomputes it online |
 | `RAG_QPLUS_HOP_ACTIVATION` | `owner` | `exact` restricts activation to the matched Q+ IDs as an ablation |
 | `RAG_CONTINUATION_EDGES_ENABLED` | `false` | `true` activates exact matched-Q− continuation edges on a `linked_v2` index |
 | `RAG_QUERY_REWRITE_VARIANT` | `role_aligned_evidence_iterative` | `none` disables rewriting; `role_aligned` performs only the initial bounded rewrite |
 | `RAG_QUERY_REWRITE_MAX_WORDS` | `32` | Questions above the limit skip rewriting; `0` rewrites every question |
+| `RAG_QUERY_REFINEMENT_MAX_ROUNDS` | `0` | `0` uses evidence stability; a positive value is an operational call cap |
 | `RAG_SOURCE_SELECTION_VARIANT` | `role_body_list_ranking` | `global` uses the fixed fused order directly; `round_robin` diversifies sources |
+| `RAG_CANDIDATE_ORDER_INPUT_ORDER` | `search` | `reverse` and `hash_shuffle` are position-dependence diagnostics over a frozen pool |
+| `RAG_FINAL_RANK_VARIANT` | `fused` | `semantic_only` and `representation_only` isolate final deterministic signals |
+| `RAG_HOP_SEMANTIC_VARIANT` | `body_bridge_min` | `body_only` and `bridge_only` isolate HOP semantic evidence |
 
-The primary causal ablation is cumulative through body-only retrieval, question
-representations, and NEXT-only traversal. Raw and reciprocal HOP then form two
-branches from the same NEXT-only control. Exact matched-Q+ activation is a
-stricter sensitivity analysis of the selected raw-HOP branch.
-Direction-only variants are supporting diagnostics. The complete protocol is
-fixed in the local paper specification.
+The submission component controls are the same-index MuSiQue graph on/off,
+refinement removal, candidate-selection policy comparison, fixed-candidate
+order replay, rank variants, and fixed-concurrency stage profile. The complete protocol is fixed in
+[ABLATION_STUDY](docs/ABLATION_STUDY.md).
 
 Index-changing ablations use distinct corpus tags. Query-only ablations reuse
 the same immutable index and are recorded in result metadata.
@@ -387,12 +472,13 @@ source-verifiable structured Q−/Q+, and the latter enables the
 It adds complete grounded Q− answer anchors and exact cross-document
 continuation links. Repeated answers share one anchor node, so common entities
 do not create a source-question × target-mention edge product. The links can be
-enabled or disabled at query time on the same snapshot. Both tested
-continuation policies regressed on MuSiQue and are not operational defaults.
+enabled or disabled at query time on the same snapshot. Continuation edges are
+outside the submitted configuration and final component claims.
 
-The final query-time defaults use the legacy schema, owner activation,
-unfiltered stored HOP edges, evidence-conditioned role rewriting for questions
-of at most 32 words, and complete candidate-list ranking. Top-k remains 12.
+The final query path uses Q−/Q+ question representations, all stored outgoing
+connections from a matched Q+ paragraph, evidence-conditioned role rewriting
+for questions of at most 32 words, and one complete-list candidate-selection
+call. Top-k remains 12.
 
 ---
 
@@ -408,19 +494,18 @@ Full list in the paper appendix; the most important:
 | Questions per direction | 3 | fixed output-schema bound for Q− and Q+ |
 | HOP targets | at most one candidate per Q+ | nearest cross-document Q− owner |
 | Query representations | role-normalized set union | original body query plus bounded Q−/Q+ views for questions of at most 32 words |
-| Query rewrite | evidence-conditioned role refinement, at most 32 input words | stops on no new role question or no new selected chunk |
+| Query rewrite | evidence-conditioned role refinement, at most 32 input words | stops on no new role question or selected chunk; optional operational round cap |
 | Query-time rank fusion | equal reciprocal ranks | representation order + body/bridge semantic order; no fitted weight |
 | Graph rank propagation | reciprocal path length | a one-edge target inherits half of its source rank evidence |
 | Offline HOP selection | nearest cross-document Q+→Q− owner resolution | reciprocal provenance is retained only for ablation |
 | Q+ activation | owner | exact matched-Q+ activation is an ablation |
 | Embedding dim | `NEO4J_VECTOR_DIMENSIONS` | must match the configured embedding model's output dimension |
 
-Offline candidate construction is rank-based and has no learned reranker,
-fixed cosine threshold, domain gate, semantic judge, or tuned acceptance
-score. Query-time candidate ordering is also threshold-free: it retains each
+Offline candidate construction uses rank-based Q+→Q− matching. Query-time
+candidate ordering retains each
 representation's reciprocal ranks, combines the resulting representation
 order with the semantic order using equal reciprocal ranks, then asks the
-configured generation model for one opaque-ID ranking of the complete
+configured generation model to select paragraph numbers from the complete
 candidate pool before final answer synthesis.
 
 ---

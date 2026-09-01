@@ -13,7 +13,7 @@ from core.vllm_client import get_llm_client
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from utils.io import _safe_float, _write_json
-from utils.metrics import evaluate_multihoprag_response
+from utils.metrics import evaluate_multihoprag_response, extract_final_answer
 from utils.provenance import code_provenance
 from utils.reporting import _write_model_report_artifacts
 
@@ -31,10 +31,6 @@ OFFICIAL_QUERY_ID_DIGESTS = {
 }
 CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
 INDEX_STATS_DIR = Path("data/index_stats")
-
-
-_BOXED_RE = re.compile(r"\\boxed\{([^{}]+(?:\{[^{}]*\}[^{}]*)*)\}")
-_FINAL_LABEL_RE = re.compile(r"(?is)(?:final\s+answer|@@ANSWER|answer)\s*:?\s*(.+?)(?:\n\n|\Z)")
 
 
 def _read_json_file(path: Path | str) -> Any:
@@ -339,20 +335,8 @@ def _judge_independence(eval_model: str, model_id: str, default_model: str, allo
 
 
 def _extract_final_answer(answer_text: str) -> str:
-    """Extract the final answer from a model response that may contain
-    step-by-step reasoning. Order: \\boxed{...} > 'Final Answer:' marker >
-    last 300 chars. Avoids substring-matching the reasoning body for
-    abstain detection.
-    """
-    if not answer_text:
-        return ""
-    boxed = _BOXED_RE.findall(answer_text)
-    if boxed:
-        return boxed[-1].strip()
-    matches = _FINAL_LABEL_RE.findall(answer_text)
-    if matches:
-        return matches[-1].strip()[:400]
-    return answer_text[-300:].strip()
+    """Use the canonical metric answer boundary for reporting labels."""
+    return extract_final_answer(answer_text)
 
 
 def _build_benchmark_query(query: str, item: dict[str, Any]) -> str:
@@ -390,10 +374,15 @@ def _extract_stage_timing(trace: Any) -> dict[str, float]:
             if "rewrite_ms" in step:
                 timing["rewrite_ms"] = float(step.get("rewrite_ms") or 0.0)
         elif step.get("step") == "retrieve":
-            if "retrieve_ms" in step:
-                timing["retrieve_ms"] = float(step.get("retrieve_ms") or 0.0)
-            if "traversal_ms" in step:
-                timing["traversal_ms"] = float(step.get("traversal_ms") or 0.0)
+            for key in (
+                "retrieve_ms",
+                "traversal_ms",
+                "graph_expand_ms",
+                "deterministic_score_ms",
+                "candidate_order_ms",
+            ):
+                if key in step:
+                    timing[key] = float(step.get(key) or 0.0)
         elif step.get("step") == "synthesis" and "synthesis_ms" in step:
             timing["synthesis_ms"] = float(step.get("synthesis_ms") or 0.0)
     return timing
@@ -716,7 +705,22 @@ def _resume_benchmark_rows(
             f"Resume requires an in_progress artifact, found status={prior.get('status')!r}: {result_file}"
         )
     for field, expected in expected_metadata.items():
-        if prior.get(field) != expected:
+        observed = prior.get(field)
+        if field == "ablation" and isinstance(observed, dict):
+            # Resume artifacts written immediately before the public
+            # candidate-order terminology and diagnostic controls were added.
+            # These values reproduce the only behavior that existed in that
+            # revision; non-default or otherwise different settings still
+            # fail the strict metadata comparison below.
+            observed = dict(observed)
+            if "candidate_order_input_order" not in observed and "rerank_input_order" in observed:
+                observed["candidate_order_input_order"] = observed.pop("rerank_input_order")
+            if "candidate_order_shuffle_seed" not in observed and "rerank_shuffle_seed" in observed:
+                observed["candidate_order_shuffle_seed"] = observed.pop("rerank_shuffle_seed")
+            observed.setdefault("graph_path_decay", 0.5)
+            observed.setdefault("query_refinement_max_rounds", 0)
+            observed.setdefault("final_rank_variant", "fused")
+        if observed != expected:
             raise RuntimeError(
                 f"Resume metadata mismatch for {field}: prior={prior.get(field)!r}, current={expected!r}"
             )
@@ -1160,6 +1164,7 @@ async def run_benchmark(
                     **({"chunk_sentences": RAGConfig.CHUNK_SENTENCES} if strategy in {"prehop", "naive"} else {}),
                     "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
                     "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
+                    "graph_path_decay": RAGConfig.GRAPH_PATH_DECAY,
                     "graph_edge_variant": RAGConfig.GRAPH_EDGE_VARIANT,
                     "hop_edge_filter": RAGConfig.HOP_EDGE_FILTER,
                     "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
@@ -1170,11 +1175,15 @@ async def run_benchmark(
                     "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
                     "query_rewrite_variant": RAGConfig.QUERY_REWRITE_VARIANT,
                     "query_rewrite_max_words": RAGConfig.QUERY_REWRITE_MAX_WORDS,
+                    "query_refinement_max_rounds": RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS,
                     "default_top_k": RAGConfig.DEFAULT_TOP_K,
                     "candidate_pool_multiplier": RAGConfig.CANDIDATE_POOL_MULTIPLIER,
                     "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
                     "hypo_channel_variant": RAGConfig.HYPO_CHANNEL_VARIANT,
                     "source_selection_variant": RAGConfig.SOURCE_SELECTION_VARIANT,
+                    "candidate_order_input_order": RAGConfig.CANDIDATE_ORDER_INPUT_ORDER,
+                    "candidate_order_shuffle_seed": RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,
+                    "final_rank_variant": RAGConfig.FINAL_RANK_VARIANT,
                 },
             },
             judge_enabled=judge_enabled,
@@ -1247,6 +1256,7 @@ async def run_benchmark(
                 **({"chunk_sentences": RAGConfig.CHUNK_SENTENCES} if strategy in {"prehop", "naive"} else {}),
                 "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
                 "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
+                "graph_path_decay": RAGConfig.GRAPH_PATH_DECAY,
                 "graph_edge_variant": RAGConfig.GRAPH_EDGE_VARIANT,
                 "hop_edge_filter": RAGConfig.HOP_EDGE_FILTER,
                 "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
@@ -1257,11 +1267,15 @@ async def run_benchmark(
                 "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
                 "query_rewrite_variant": RAGConfig.QUERY_REWRITE_VARIANT,
                 "query_rewrite_max_words": RAGConfig.QUERY_REWRITE_MAX_WORDS,
+                "query_refinement_max_rounds": RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS,
                 "default_top_k": RAGConfig.DEFAULT_TOP_K,
                 "candidate_pool_multiplier": RAGConfig.CANDIDATE_POOL_MULTIPLIER,
                 "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
                 "hypo_channel_variant": RAGConfig.HYPO_CHANNEL_VARIANT,
                 "source_selection_variant": RAGConfig.SOURCE_SELECTION_VARIANT,
+                "candidate_order_input_order": RAGConfig.CANDIDATE_ORDER_INPUT_ORDER,
+                "candidate_order_shuffle_seed": RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,
+                "final_rank_variant": RAGConfig.FINAL_RANK_VARIANT,
             },
         }
         if resume_metadata is not None:

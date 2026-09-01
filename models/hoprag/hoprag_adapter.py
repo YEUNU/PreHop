@@ -19,7 +19,7 @@ from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient, get_llm_client
 from utils.formatters import format_context_from_nodes
-from utils.prompts.shared import build_answer_prompt
+from utils.prompts.shared import build_answer_prompt, mark_answer_boundary
 
 logger = logging.getLogger(__name__)
 _SYNC_LOOP_STATE = threading.local()
@@ -366,7 +366,7 @@ class HopRAGAdapter:
         context, nodes = await self.retrieve(query, top_k=self.top_k)
         if not context:
             return (
-                "Insufficient evidence.",
+                mark_answer_boundary("Insufficient evidence."),
                 [],
                 [{"step": "hoprag_official_hopretriever_qa", "output": "empty_context"}],
             )
@@ -380,6 +380,7 @@ class HopRAGAdapter:
         )
         if not str(answer or "").strip():
             raise ValueError("Answer synthesis returned an empty response")
+        answer = mark_answer_boundary(answer)
         trace = [{"step": "hoprag_official_hopretriever_qa", "input": messages, "output": answer}]
         sources = [
             {
