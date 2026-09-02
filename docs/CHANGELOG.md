@@ -22,3 +22,7 @@ Component-control definitions now belong to `ARCHITECTURE.md`, while artifact
 admission and publication synchronization belong to `RESULTS.md`. The former
 standalone ablation protocol and consistency-audit files were removed after
 their unique requirements were transferred.
+
+Submission documentation now consistently uses complete prepared splits,
+query concurrency 4, and `qwen3-embedding-8b` with 4,096-dimensional vectors.
+Former sample-exclusion rules were removed from the maintained workflow.

@@ -1,9 +1,9 @@
 # Result Evidence Register
 
-This register admits results from the current clean 8B matrix only. Each row
-must come from a completed, integrity-checked full-split artifact and retain
-its recorded dataset, strategy, model revisions, index identity, and query
-identity.
+This register defines the current clean 8B run matrix and the conditions for
+admitting its complete results. Every reported value must come from a
+completed, integrity-checked full-split artifact and retain its recorded
+dataset, strategy, model revisions, index identity, and query identity.
 
 ## Evaluation configuration
 
@@ -16,7 +16,7 @@ identity.
 | Seed | 42 |
 | LLM judge | disabled |
 
-## Full-system matrix
+## Run matrix
 
 | Dataset | Strategy | Run ID |
 |---|---|---|

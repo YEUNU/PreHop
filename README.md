@@ -2,8 +2,6 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> Final numbers below come from complete, integrity-checked prepared splits.
-
 Prehop is a GraphRAG retrieval system that constructs inspectable,
 question-level chunk links during indexing. At query time, it refines the
 question by evidence role, expands stored neighbors, selects twelve candidate
@@ -71,7 +69,7 @@ index question representations or construct and traverse graph edges. This
 isolates Prehop's retrieval architecture instead of adding a chunk-size or
 evidence-budget difference to the comparison.
 The optional LLM judge is disabled by default and is not a primary metric.
-Subset runs are development artifacts and are not used in the results below.
+Only complete prepared-split runs are eligible for submission results.
 
 Prehop, Naive RAG, and HopRAG attach an explicit answer boundary before
 evaluation. MS GraphRAG requests the equivalent `Final Answer:` contract from
@@ -199,8 +197,8 @@ Result JSON is written to `data/results/<timestamp>/prehop/<corpus_tag>/*.json`.
 It contains per-query deterministic answer and evidence metrics, category
 breakdowns, eligibility metadata, and aggregate metrics. Optional judge fields
 appear only when judging is enabled. Missing gold units use `-1`; evaluated
-misses are zero; runtime-error rows are excluded from aggregates. Sample,
-incomplete, and failed runs cannot be reported as final paper results.
+misses are zero; runtime-error rows are excluded from aggregates. A result is
+reportable only after the complete prepared split finishes without failed rows.
 
 Command logs are isolated by run, dataset, and strategy under
 `logs/{index|benchmark}/<run-id>/<corpus-tag>/<strategy>.log`. MS GraphRAG's
@@ -329,8 +327,7 @@ artifacts rather than copied into a hand-edited table:
 
 For each dataset-specific official metric, the gate independently selects the
 strongest supplied non-Prehop baseline and requires a 10% relative gain. Only
-complete full-split artifacts are paper-eligible; sample use requires
-`--allow-exploratory` and remains diagnostic.
+complete full-split artifacts are paper-eligible.
 
 ### Complete-split presentation diagnostics
 
@@ -362,7 +359,7 @@ RAG_CANDIDATE_ORDER_TRACE_PATH=data/results/diagnostics/frozen_candidate_pools_2
 .venv/bin/python -m scripts.analyze_full_stage_profile \
   --artifact <complete-result.json> \
   --out data/results/diagnostics/full_stage_profile_2417.json \
-  --expected-queries 2417 --declared-concurrency 32
+  --expected-queries 2417 --declared-concurrency 4
 
 # After a same-query full graph-on/off pair, test effects separately where
 # stored HOP edges do and do not connect gold paragraphs.

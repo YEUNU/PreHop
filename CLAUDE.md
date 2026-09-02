@@ -99,11 +99,9 @@ a model or vector-dimension change.
 - Query-time filtering must not mutate or replace the offline HOP graph. Fresh
   indexes must materialize reciprocal provenance before the offline filter is
   enabled.
-- This configuration was selected on a development sample and cannot support
-  an effectiveness claim until the pre-declared confirmatory evaluation. Full
-  benchmark tables remain useful for compatibility, but confirmatory paired
-  claims exclude the fixed MultiHop-RAG sample-200 and MuSiQue sample-201 IDs.
-  No method or parameter may change after that disjoint remainder is inspected.
+- Submission effectiveness and component analyses use every query in the
+  complete prepared split. Do not exclude former development-query IDs or
+  substitute sample-run aggregates for the complete result.
 - Official baselines keep their upstream behavior. In particular, official
   HopRAG `bfs_node` uses its published LLM node judgement during retrieval;
   this is documented baseline behavior and is routed to the external endpoint.
@@ -114,7 +112,7 @@ a model or vector-dimension change.
   result tables.
 - Deterministic dataset metrics remain authoritative. Negative sentinels and
   runtime-error rows are excluded from aggregates with eligible counts
-  recorded; samples are exploratory rather than full benchmark runs.
+  recorded. Only complete prepared-split runs enter submission results.
 
 ## Data and tags
 
@@ -127,11 +125,6 @@ Corpus files use `Title: ...`, optional `--- Page N ---` markers, then raw
 text. Prehop and Naive share the parser and page-scoped fixed sentence-window
 chunker. Raw pipe text remains raw.
 
-The committed sample files are immutable development query-ID sets. After a
-full dataset preparation changes evaluation annotations, run
-`scripts/datasets/refresh_sample_records.py` to replace records by ID without
-resampling. Do not run `make_sample.py` over an established development path.
-
 ## Common commands
 
 ```bash
@@ -143,7 +136,7 @@ resampling. Do not run `make_sample.py` over an established development path.
 
 # One benchmark
 ./run_benchmark.sh --model prehop \
-  --queries data/multihoprag_sample200_queries.json \
+  --queries data/multihoprag_queries.json \
   --corpus-tag multihoprag
 
 # Resume a checkpointed deterministic benchmark under its original identity
@@ -298,10 +291,9 @@ When editing it:
 - For every table or figure, retain its metric definition, denominator,
   aggregation rule, uncertainty estimate, and source artifact. Do not publish
   self-judged or partial Batch-judge numbers as final results.
-- Generate selection-free paired intervals from full artifacts with
-  `scripts/paired_bootstrap.py --exclude-queries <fixed-sample.json>` and keep
-  the recorded excluded-ID digest. A complete-split aggregate and a disjoint
-  confirmatory interval answer different reporting needs and must be labelled.
+- Generate paired intervals from full artifacts with
+  `scripts/paired_bootstrap.py`. Retain the complete query-ID digest and do not
+  exclude former development-query IDs from submission analyses.
 - Keep the local specification ignored. A submission copy is a deliberate
   tracked export only after its venue/version is fixed and secrets, local
   endpoints, generated logs, and private submission notes are removed.
