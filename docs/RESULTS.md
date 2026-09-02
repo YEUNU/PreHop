@@ -44,3 +44,15 @@ Every result row must satisfy all of the following conditions:
    progress log.
 6. MultiHop-RAG and MuSiQue retain separate metrics and denominators.
 7. Indexing cost and query latency are reported separately.
+
+## Publication synchronization
+
+- `README.md`, this register, and `docs/prehop_paper.md` must use values read
+  from admitted artifacts.
+- Presentation sources must use the same values, model identities,
+  denominators, and comparison scope.
+- Relative changes, chart dimensions, and latency summaries must be recomputed
+  from the artifacts; exported presentation files must be regenerated after
+  their sources change.
+- `scripts/verify_submission_consistency.py` is the manual matrix and document
+  check. It is not a CI job.

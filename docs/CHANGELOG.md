@@ -16,3 +16,9 @@ the complete query set with concurrency 4 and the LLM judge disabled.
 
 Previous-model results, caches, baseline outputs, logs, and document records
 were removed before the new result register was produced.
+
+Documentation responsibilities were reduced to one source per concern.
+Component-control definitions now belong to `ARCHITECTURE.md`, while artifact
+admission and publication synchronization belong to `RESULTS.md`. The former
+standalone ablation protocol and consistency-audit files were removed after
+their unique requirements were transferred.

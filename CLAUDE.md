@@ -14,13 +14,11 @@ Keep repository facts in one authoritative place and link to them elsewhere:
   layout, setup, commands, and links to deeper contracts. It does not carry
   development-result tables.
 - `docs/ARCHITECTURE.md` is the normative implementation map: module ownership,
-  indexing/query data flow, algorithmic behavior, and evaluation contracts.
+  indexing/query data flow, algorithmic behavior, evaluation contracts, and
+  component-control definitions.
 - `docs/RESULTS.md` is the canonical final number-to-artifact register and keeps
-  the two datasets and their denominators separate.
-- `docs/ABLATION_STUDY.md` fixes the pipeline stage, controls, commands,
-  outcomes, and claim boundary for each submission component analysis.
-- `docs/CONSISTENCY_AUDIT.md` maps accepted claims to implementation,
-  artifacts, manuscript text, and presentation wording.
+  the two datasets and their denominators separate. It also defines the checks
+  required before values are copied into the manuscript or presentation.
 - `docs/CHANGELOG.md` is the chronological engineering record. It records what
   changed and may summarize explicitly labelled exploratory validation, but it
   is not the current architecture specification or a paper-results source.
@@ -30,16 +28,19 @@ Keep repository facts in one authoritative place and link to them elsewhere:
   Development history, rejected variants, intermediate checkpoints, and
   negative exploratory results belong in `docs/CHANGELOG.md`, not in the
   manuscript.
+- `SUBMISSION_TARGET.md` is the local, gitignored venue, deadline, and run
+  logistics note. It is not a method or result source.
+- `third_party/HopRAG/README.md` is vendored upstream documentation. Preserve
+  it with the upstream code; it is not a Prehop documentation source.
 
 When behavior changes, update the implementation contract in
 `docs/ARCHITECTURE.md`, the concise user-facing description in `README.md` if
 externally relevant, and the chronological entry in `docs/CHANGELOG.md`.
 Update `docs/prehop_paper.md` only for method, protocol, analysis, or claim
-changes. Update `RESULTS.md`, `ABLATION_STUDY.md`, and
-`CONSISTENCY_AUDIT.md` when a final artifact, component boundary, or accepted
-claim changes. Update this file when the supported state, workflow rules, or
-these document responsibilities change. Do not copy full sections between
-files.
+changes. Update `docs/RESULTS.md` when a final artifact or accepted numerical
+claim changes. Component-boundary changes belong in `docs/ARCHITECTURE.md`.
+Update this file when the supported state, workflow rules, or these document
+responsibilities change. Do not copy full sections between files.
 
 Every result and component control must use the current recorded model
 configuration. Do not carry results, artifact paths, or derived claims across

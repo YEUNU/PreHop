@@ -401,6 +401,31 @@ context formatting, node identity/dedup, and RRF helpers.
 
 ### Diagnostic controls and timing
 
+#### Component evaluation contract
+
+All component analyses use the 2,417-question MuSiQue split and the current
+4,096-dimensional `qwen3-embedding-8b` index. Paired query-stage conditions
+reuse one completed index and hold query IDs, model revisions, seed, top-k,
+prompts, and judge state fixed. Results are joined by immutable query ID and
+paired effects use 10,000 bootstrap resamples with seed 42. Latency is compared
+only within one synchronized fixed-concurrency run; fixed-candidate analyses
+remain separate from complete query-pipeline runs.
+
+| ID | Stage | Intervention | Primary output |
+|---|---|---|---|
+| Ablation 1 | Query: graph expansion | One-step `NEXT` and `HOP_ANSWER` expansion on versus off | Answer, support, and retrieval passes |
+| Ablation 2 | Query: refinement | Evidence-conditioned follow-up views on versus initial rewrite only | Answer and support |
+| Ablation 3 | Query: candidate selection | Question-role selection versus integrated top 12 | Answer and support |
+| Ablation 4 | Fixed candidates: ranking | Recompute rank signals and graph-distance weights | Support |
+| Robustness | Fixed candidates: input order | Reference order versus deterministic shuffle | Selected-set overlap and support |
+| Timing | Complete query path | Record non-overlapping stage timers | Within-run stage shares |
+
+Ablations 1–3 rerun the complete query path while changing only the named
+query-stage condition. Ablation 4 and the order robustness test reuse identical
+candidate IDs, titles, texts, and annotations; they do not generate new
+answers. The timing analysis separates query refinement, retrieval, graph
+expansion, deterministic scoring, candidate selection, and synthesis.
+
 The benchmark records `retrieve_ms`, `rewrite_ms`, `synthesis_ms`, and the
 compatibility aggregate `traversal_ms`. It also splits the latter into
 `graph_expand_ms`, `deterministic_score_ms`, and `candidate_order_ms`.

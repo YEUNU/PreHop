@@ -9,16 +9,18 @@ question-level chunk links during indexing. At query time, it refines the
 question by evidence role, expands stored neighbors, selects twelve candidate
 paragraphs with the configured generation model, and synthesizes the answer.
 
-Documentation is separated by role: this README is the user-facing overview
-and command guide; [ARCHITECTURE](docs/ARCHITECTURE.md) is the normative
-implementation and evaluation contract; [CHANGELOG](docs/CHANGELOG.md) is the
-chronological engineering record; and `CLAUDE.md` defines repository and
-experiment-maintenance policy. The local, gitignored `docs/prehop_paper.md` is
-the research manuscript and experiment specification, not a general operating
-guide. [RESULTS](docs/RESULTS.md) maps every final number to its full-split
-artifact, [ABLATION_STUDY](docs/ABLATION_STUDY.md) identifies the exact
-index/query stage tested by each control, and
-[CONSISTENCY_AUDIT](docs/CONSISTENCY_AUDIT.md) fixes the accepted claim wording.
+Each document has one role:
+
+| Document | Role |
+|---|---|
+| `README.md` | Public overview, setup, and command guide |
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | Normative implementation, evaluation, and component-control specification |
+| [RESULTS](docs/RESULTS.md) | Canonical complete-result and artifact register |
+| [CHANGELOG](docs/CHANGELOG.md) | Chronological engineering record |
+| `CLAUDE.md` | Maintainer and experiment-operation policy |
+
+The gitignored `docs/prehop_paper.md` is the research manuscript, and the
+gitignored `SUBMISSION_TARGET.md` contains private submission logistics.
 
 ---
 
@@ -83,9 +85,8 @@ The complete-system matrix evaluates Prehop, Naive RAG, HopRAG, and MS
 GraphRAG independently on the full MultiHop-RAG and MuSiQue prepared splits.
 All rows use `gemma-4-31b-it` generation and `qwen3-embedding-8b`
 4,096-dimensional embeddings. MultiHop-RAG and MuSiQue remain in separate
-tables because their metrics and denominators differ. The exact artifact and
-document checks are defined in [RESULTS](docs/RESULTS.md) and
-[CONSISTENCY_AUDIT](docs/CONSISTENCY_AUDIT.md).
+tables because their metrics and denominators differ. The artifact-admission
+and publication checks are defined in [RESULTS](docs/RESULTS.md).
 
 ---
 
@@ -412,8 +413,9 @@ Query-only ablations do not require rebuilding the index:
 
 The submission component controls are the same-index MuSiQue graph on/off,
 refinement removal, candidate-selection policy comparison, fixed-candidate
-order replay, rank variants, and fixed-concurrency stage profile. The complete protocol is fixed in
-[ABLATION_STUDY](docs/ABLATION_STUDY.md).
+order replay, rank variants, and fixed-concurrency stage profile. Their exact
+stages, fixed conditions, and outputs are specified in
+[ARCHITECTURE](docs/ARCHITECTURE.md#component-evaluation-contract).
 
 Index-changing ablations use distinct corpus tags. Query-only ablations reuse
 the same immutable index and are recorded in result metadata.
