@@ -77,68 +77,15 @@ its official search API. The evaluator scores the complete marked span; an
 unmarked response remains the complete prediction and is never replaced by a
 fixed-length suffix.
 
-### Final full-split results
+### Result admission
 
-All entries use the prepared full split. MultiHop-RAG and MuSiQue are reported
-in separate tables because their metrics and denominators differ. Naive RAG is
-the same-budget in-repository control; HopRAG and MS GraphRAG are retained only
-as reference results under their official retrieval and context settings. No
-equal-evidence answer regeneration is included.
-
-| MultiHop-RAG system | Hits@4 | Hits@10 | MRR@10 | MAP@10 |
-|---|---:|---:|---:|---:|
-| Prehop | **0.9268** | **0.9494** | **0.8232** | **0.4550** |
-| Naive RAG | 0.6820 | 0.8404 | 0.5442 | 0.2586 |
-| HopRAG | 0.6843 | 0.8457 | 0.5660 | 0.2800 |
-| MS GraphRAG | 0.4705 | 0.5348 | 0.3033 | 0.1482 |
-
-The MultiHop-RAG split has 2,556 questions. The four retrieval metrics above
-use the 2,255 answerable questions; the 301 unanswerable questions are reported
-separately and are not mixed into these values. Prehop's relative gains over
-the strongest comparison result are 35.45%, 12.27%, 45.44%, and 62.47%.
-
-| MuSiQue system | Answer EM | Answer F1 | Support P | Support R | Support F1 |
-|---|---:|---:|---:|---:|---:|
-| Prehop | **0.4150** | **0.5115** | **0.2034** | **0.8840** | **0.3267** |
-| Naive RAG | 0.2106 | 0.2726 | 0.1364 | 0.6241 | 0.2215 |
-| HopRAG | 0.2619 | 0.3394 | 0.0889 | 0.6982 | 0.1566 |
-| MS GraphRAG | 0.2247 | 0.3168 | 0.0710 | 0.5749 | 0.1236 |
-
-The MuSiQue values use all 2,417 questions in its answer-bearing development
-split. Prehop's relative gains over the strongest comparison result are
-58.45%, 50.71%, 49.12%, 26.60%, and 47.50%, respectively.
-
-### Component-level interpretation
-
-The component evidence is MuSiQue-only and uses all 2,417 questions. These
-controls retain their recorded `qwen3-embedding-4b`, 2,560-dimensional index;
-they are not same-configuration deltas for the separately rebuilt
-`qwen3-embedding-8b` complete-system matrix. MultiHop-RAG remains a separate
-complete-system evaluation.
-
-| Tested stage | Full-split control | Main result |
-|---|---|---|
-| Stored connection structure | Compare Q+→foreign-Q− paragraph links with gold paragraphs | Complete gold-only connectivity: 2-hop 23.56%, 3-hop 1.32%, 4-hop 0.00% |
-| Query graph expansion | Same index, depth-one NEXT+HOP vs no graph expansion | ΔAnswer EM +0.00538, CI includes 0; ΔSupport F1 +0.00435 |
-| Query refinement | Remove evidence-conditioned follow-up views | ΔAnswer EM −0.12784; ΔSupport F1 −0.04811 |
-| Candidate selection policy | Question-role selection vs integrated top 12 | ΔAnswer EM −0.08854; ΔSupport F1 −0.04952 |
-| Fixed candidate input order | Reference order vs fixed shuffle | Calibrated Jaccard −0.32851; ΔSupport F1 −0.00368 |
-| Fixed-candidate rank rule | Signal and distance-weight variants | Decay 0 exceeds default decay 0.5 by Support F1 +0.00457 |
-| Query-stage timing | One complete concurrency-32 run | Generation stages 84.9%; graph expansion 1.7% |
-
-The graph-on/off Answer EM and retrieval-pass intervals include zero overall
-and within every 2/3/4-hop group. Support F1 is positive overall and in the
-2-hop and 3-hop groups. The candidate-selection control compares the complete
-question-role policy with one integrated ranking. The fixed-candidate replay
-measures input-order sensitivity, and the rank variants measure how signal and
-distance choices alter Support F1. The rank rule is a consequential heuristic;
-the results do not support a probabilistic interpretation or a claim of
-general optimality.
-
-See [RESULTS](docs/RESULTS.md) for all estimates and artifacts and
-[ABLATION_STUDY](docs/ABLATION_STUDY.md) for stage boundaries, controls, and
-commands. No complete entity/relation-bound labels exist for stored edges, so
-the repository makes no edge-precision or entity-binding claim.
+The complete-system matrix evaluates Prehop, Naive RAG, HopRAG, and MS
+GraphRAG independently on the full MultiHop-RAG and MuSiQue prepared splits.
+All rows use `gemma-4-31b-it` generation and `qwen3-embedding-8b`
+4,096-dimensional embeddings. MultiHop-RAG and MuSiQue remain in separate
+tables because their metrics and denominators differ. The exact artifact and
+document checks are defined in [RESULTS](docs/RESULTS.md) and
+[CONSISTENCY_AUDIT](docs/CONSISTENCY_AUDIT.md).
 
 ---
 
@@ -395,7 +342,7 @@ annotation:
 # replay only the ordering call in the deterministic fused order and a fixed shuffle.
 RAG_CANDIDATE_ORDER_TRACE_PATH=data/results/diagnostics/frozen_candidate_pools_2417.jsonl \
   ./run_benchmark.sh --model prehop --queries data/musique_queries.json \
-  --corpus-tag musique_final_20260830
+  --corpus-tag musique
 .venv/bin/python -m scripts.replay_frozen_candidate_order \
   --trace data/results/diagnostics/frozen_candidate_pools_2417.jsonl \
   --queries data/musique_queries.json --benchmark <complete-result.json> \

@@ -1,8 +1,7 @@
-"""Verify the final submission claims against complete-split artifacts.
+"""Validate the current clean full-system matrix and its published values.
 
-This check is intentionally narrow: it validates the immutable evidence used
-by the manuscript and scans the presentation for wording that would overstate
-the executed controls. It does not rerun model inference.
+This is a manually invoked repository check. It does not run model inference
+and is not wired to CI.
 """
 
 from __future__ import annotations
@@ -14,184 +13,214 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
-ARTIFACTS = {
-    "multihoprag_gate": Path("data/results/final-multihoprag-performance-gate-20260831.json"),
-    "musique_gate": Path("data/results/final-musique-performance-gate-20260831.json"),
-    "coverage": Path("data/results/presentation-p0-analysis/gold_hop_coverage.json"),
-    "graph_effect": Path("data/results/presentation-p0-analysis/graph_shortcut_effect_2417.json"),
-    "components": Path("data/results/presentation-full-analysis/full_component_controls_2417.json"),
-    "order": Path("data/results/presentation-full-analysis/frozen_candidate_order_replay_2417.json"),
-    "rank": Path("data/results/presentation-full-analysis/frozen_rank_variants_2417.json"),
-    "stages": Path("data/results/presentation-full-analysis/full_stage_profile_2417.json"),
+DATASETS = {
+    "multihoprag": {
+        "count": 2556,
+        "metrics": (
+            "avg_official_hits@4",
+            "avg_official_hits@10",
+            "avg_official_mrr@10",
+            "avg_official_map@10",
+        ),
+    },
+    "musique": {
+        "count": 2417,
+        "metrics": (
+            "avg_official_answer_em",
+            "avg_official_answer_f1",
+            "avg_paragraph_support_precision",
+            "avg_paragraph_support_recall",
+            "avg_paragraph_support_f1",
+        ),
+    },
 }
+
+STRATEGIES = ("prehop", "naive", "hoprag", "ms_graphrag")
+GENERATION_MODEL = "gemma-4-31b-it"
+EMBEDDING_MODEL = "qwen3-embedding-8b"
+EMBEDDING_DIMENSIONS = 4096
 
 DOCUMENTS = (
     Path("README.md"),
-    Path("docs/prehop_paper.md"),
     Path("docs/RESULTS.md"),
-    Path("docs/ABLATION_STUDY.md"),
-    Path("docs/CONSISTENCY_AUDIT.md"),
-    Path("presentation/prehop-academic-v2.html"),
-    Path("presentation/prehop-professor-briefing.html"),
+    Path("docs/prehop_paper.md"),
 )
 
 PRESENTATIONS = (
-    Path("presentation/prehop-academic-v2.html"),
+    Path("presentation/prehop-academic.html"),
     Path("presentation/prehop-professor-briefing.html"),
 )
 
-PRESENTATION_FORBIDDEN = (
-    "미실행",
-    "아직 산출",
-    "아직 계산",
-    "재실행 필요",
-    "점수로 재정렬",
-    "rerank model",
-    "reranker model",
-    "동일 근거 재생성",
-)
+
+def _artifact_path(prefix: str, dataset: str, strategy: str) -> Path:
+    run_id = f"{prefix}-{dataset}-{strategy}"
+    filename = f"{strategy}_{dataset}.json"
+    return Path("data/results") / run_id / strategy / dataset / "seed_42" / filename
 
 
 def _load(path: Path) -> dict[str, Any]:
-    with (ROOT / path).open(encoding="utf-8") as handle:
-        value = json.load(handle)
-    if not isinstance(value, dict):
-        raise TypeError(f"Expected an object in {path}")
-    return value
+    payload = json.loads((ROOT / path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError(f"{path}: expected a JSON object")
+    return payload
 
 
-def _close(actual: float, expected: float, tolerance: float = 5e-6) -> bool:
-    return abs(float(actual) - expected) <= tolerance
-
-
-def verify() -> dict[str, Any]:
+def _validate_artifact(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    dataset: str,
+    strategy: str,
+    expected_count: int,
+) -> list[str]:
     errors: list[str] = []
-    checks: list[str] = []
 
-    missing = [str(path) for path in (*ARTIFACTS.values(), *DOCUMENTS) if not (ROOT / path).is_file()]
-    if missing:
-        return {"status": "failed", "checks": checks, "errors": [f"Missing {path}" for path in missing]}
-
-    mhr_gate = _load(ARTIFACTS["multihoprag_gate"])
-    mus_gate = _load(ARTIFACTS["musique_gate"])
-    for name, gate, dataset, metric_count in (
-        ("MultiHop-RAG", mhr_gate, "multihoprag", 4),
-        ("MuSiQue", mus_gate, "musique", 5),
-    ):
-        if gate.get("dataset") != dataset or gate.get("evaluation_scope") != "full_benchmark":
-            errors.append(f"{name} gate has the wrong dataset or scope")
-        if gate.get("paper_eligible") is not True or gate.get("pass") is not True:
-            errors.append(f"{name} gate is not paper eligible")
-        if len(gate.get("metrics", [])) != metric_count or not all(row.get("pass") for row in gate.get("metrics", [])):
-            errors.append(f"{name} gate metric rows are incomplete")
-    checks.append("complete-system eligibility gates")
-
-    coverage = _load(ARTIFACTS["coverage"])
-    expected_depths = {"2hop": 1252, "3hop": 760, "4hop": 405}
-    observed_depths = {
-        depth: int(coverage.get("by_depth", {}).get(depth, {}).get("queries", -1)) for depth in expected_depths
+    expected = {
+        "strategy": strategy,
+        "corpus_tag": dataset,
+        "evaluation_scope": "full_benchmark",
+        "evaluated_queries_count": expected_count,
+        "queries_count": expected_count,
+        "total_queries": expected_count,
+        "status": "completed",
+        "benchmark_concurrency": 4,
+        "judge_enabled": False,
     }
-    if observed_depths != expected_depths or sum(observed_depths.values()) != 2417:
-        errors.append(f"MuSiQue hop counts mismatch: {observed_depths}")
-    if len(coverage.get("details", [])) != 2417:
-        errors.append("Structural coverage does not contain 2,417 query details")
-    if coverage.get("by_depth", {}).get("4hop", {}).get("gold_subgraph_connected_rate") != 0.0:
-        errors.append("The 4-hop full-connectivity result is not zero")
-    checks.append("MuSiQue structural hop coverage")
+    for field, value in expected.items():
+        if payload.get(field) != value:
+            errors.append(f"{path}: {field}={payload.get(field)!r}, expected {value!r}")
 
-    graph = _load(ARTIFACTS["graph_effect"])
-    groups = graph.get("groups", {})
-    expected_group_counts = {"all": 2417, **expected_depths}
-    for group, count in expected_group_counts.items():
-        if groups.get(group, {}).get("queries") != count:
-            errors.append(f"Graph effect group {group} has the wrong count")
-    all_metrics = groups.get("all", {}).get("metrics", {})
-    if not _close(all_metrics.get("answer_em", {}).get("effect_on_minus_off", {}).get("mean", 9), 0.0053785685):
-        errors.append("Graph-on/off Answer EM effect changed")
-    if not _close(all_metrics.get("support_f1", {}).get("effect_on_minus_off", {}).get("mean", 9), 0.0043464948):
-        errors.append("Graph-on/off Support F1 effect changed")
-    checks.append("same-index graph-on/off effects")
+    if payload.get("corpus_index_fingerprint_status") != "matched":
+        errors.append(f"{path}: corpus/index fingerprint is not matched")
+    if payload.get("index_manifest_status") != "complete":
+        errors.append(f"{path}: index manifest is not complete")
+    if payload.get("active_index_snapshot", {}).get("status") != "matched":
+        errors.append(f"{path}: active index snapshot is not matched")
 
-    components = _load(ARTIFACTS["components"])
-    if components.get("queries") != 2417 or components.get("latency_included") is not False:
-        errors.append("Component-control scope or latency eligibility changed")
-    conditions = components.get("conditions", {})
-    for condition in ("no_refinement", "no_candidate_order"):
-        if condition not in conditions:
-            errors.append(f"Missing component condition {condition}")
-    checks.append("query-stage component controls")
+    models = payload.get("models", {})
+    for field, value in {
+        "default": GENERATION_MODEL,
+        "generation_revision": GENERATION_MODEL,
+        "embedding": EMBEDDING_MODEL,
+        "embedding_revision": EMBEDDING_MODEL,
+    }.items():
+        if models.get(field) != value:
+            errors.append(f"{path}: models.{field}={models.get(field)!r}, expected {value!r}")
 
-    order = _load(ARTIFACTS["order"])
-    if order.get("status") != "completed" or order.get("valid_records") != 2417 or order.get("failed_records") != 0:
-        errors.append("Frozen candidate-order replay is incomplete")
-    calibrated = order.get("order_effect_beyond_same_order_variability", {}).get(
-        "hash_shuffle_vs_search_replay", {}
-    ).get("jaccard")
-    if calibrated is None or not _close(calibrated, -0.3285086362):
-        errors.append("Frozen order calibrated Jaccard changed")
-    checks.append("frozen candidate input-order replay")
+    policy = payload.get("index_provenance", {}).get("policy", {})
+    if policy.get("embedding_dimensions") != EMBEDDING_DIMENSIONS:
+        errors.append(
+            f"{path}: embedding_dimensions={policy.get('embedding_dimensions')!r}, "
+            f"expected {EMBEDDING_DIMENSIONS}"
+        )
 
-    rank = _load(ARTIFACTS["rank"])
-    if rank.get("queries") != 2417:
-        errors.append("Frozen rank analysis does not cover 2,417 queries")
-    decay_zero = rank.get("variants", {}).get("graph_decay_zero_fused", {}).get(
-        "paired_vs_fused", {}
-    ).get("paragraph_support_f1", {}).get("mean")
-    if decay_zero is None or not _close(decay_zero, 0.0045669):
-        errors.append("Frozen rank decay-0 effect changed")
-    checks.append("frozen deterministic rank variants")
+    for metric in DATASETS[dataset]["metrics"]:
+        value = payload.get(metric)
+        if not isinstance(value, (int, float)) or value < 0:
+            errors.append(f"{path}: missing or invalid metric {metric}")
 
-    stages = _load(ARTIFACTS["stages"])
-    if stages.get("queries") != 2417 or stages.get("declared_concurrency") != 32:
-        errors.append("Stage profile scope or concurrency changed")
-    if stages.get("timing_eligible") is not True or stages.get("cross_run_absolute_timing_eligible") is not False:
-        errors.append("Stage profile timing eligibility changed")
-    generation_share = stages.get("mean_generation_share_of_accounted_stages")
-    if generation_share is None or not _close(generation_share, 0.8485297):
-        errors.append("Stage profile generation share changed")
-    checks.append("fixed-concurrency stage profile")
+    return errors
 
-    presentation = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in PRESENTATIONS)
-    for phrase in PRESENTATION_FORBIDDEN:
-        if phrase.casefold() in presentation.casefold():
-            errors.append(f"Presentation contains forbidden wording: {phrase}")
-    for required in (
-        "A1–A3는 같은 4B 통제 색인에서 질의 단계를 비교하고",
-        "저장 연결 구조",
-        "Ablation 1",
-        "Ablation 2",
-        "Ablation 3",
-        "Ablation 4",
-        "한 단계 확장 켬/끔",
-        "후보 선택 정책",
-        "MuSiQue 2,417개",
-        "기록 합계",
-        "qwen3-embedding-8b",
-        "qwen3-embedding-4b",
-    ):
-        if required not in presentation:
-            errors.append(f"Presentation is missing required wording: {required}")
-    checks.append("presentation stage boundaries and claim wording")
 
-    document_text = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in DOCUMENTS)
-    for required in ("0.9268", "0.9494", "0.4150", "0.5115", "0.00435", "84.9%"):
-        if required not in document_text:
-            errors.append(f"Submission documents are missing canonical value {required}")
-    checks.append("canonical values in submission documents")
+def verify(prefix: str, *, check_documents: bool, check_presentations: bool) -> dict[str, Any]:
+    errors: list[str] = []
+    artifacts: dict[str, dict[str, Any]] = {}
+    paths: dict[str, str] = {}
+
+    for dataset, dataset_spec in DATASETS.items():
+        for strategy in STRATEGIES:
+            key = f"{dataset}:{strategy}"
+            path = _artifact_path(prefix, dataset, strategy)
+            paths[key] = str(path)
+            if not (ROOT / path).is_file():
+                errors.append(f"missing artifact: {path}")
+                continue
+            try:
+                payload = _load(path)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+                errors.append(f"{path}: {error}")
+                continue
+            artifacts[key] = payload
+            errors.extend(
+                _validate_artifact(
+                    path,
+                    payload,
+                    dataset=dataset,
+                    strategy=strategy,
+                    expected_count=int(dataset_spec["count"]),
+                )
+            )
+
+    for dataset in DATASETS:
+        group = [artifacts.get(f"{dataset}:{strategy}") for strategy in STRATEGIES]
+        if any(payload is None for payload in group):
+            continue
+        for field in ("evaluated_query_ids_sha256", "corpus_manifest_fingerprint"):
+            values = {payload.get(field) for payload in group if payload is not None}
+            if len(values) != 1 or None in values:
+                errors.append(f"{dataset}: strategies disagree on {field}: {sorted(map(str, values))}")
+
+    source_digests = {
+        payload.get("query_provenance", {}).get("source_tree_sha256")
+        for payload in artifacts.values()
+    }
+    if artifacts and (None in source_digests or len(source_digests) != 1):
+        errors.append(f"matrix strategies disagree on executable source digest: {sorted(map(str, source_digests))}")
+
+    if check_documents or check_presentations:
+        current_values = {
+            f"{float(payload[field]):.4f}"
+            for dataset in DATASETS
+            for strategy in STRATEGIES
+            if (payload := artifacts.get(f"{dataset}:{strategy}")) is not None
+            for field in DATASETS[dataset]["metrics"]
+        }
+        current_values.update(
+            f"{float(payload['avg_latency']):.2f}"
+            for payload in artifacts.values()
+            if isinstance(payload.get("avg_latency"), (int, float))
+        )
+
+        targets: tuple[Path, ...] = ()
+        if check_documents:
+            targets += DOCUMENTS
+        if check_presentations:
+            targets += PRESENTATIONS
+        for path in targets:
+            if not (ROOT / path).is_file():
+                errors.append(f"missing publication file: {path}")
+                continue
+            text = (ROOT / path).read_text(encoding="utf-8")
+            missing_values = sorted(value for value in current_values if value not in text)
+            if missing_values:
+                errors.append(f"{path}: missing current values {missing_values}")
+            for required in (GENERATION_MODEL, EMBEDDING_MODEL, "4,096"):
+                if required not in text:
+                    errors.append(f"{path}: missing current configuration value {required}")
 
     return {
         "status": "passed" if not errors else "failed",
-        "checks": checks,
+        "matrix_prefix": prefix,
+        "artifacts_found": len(artifacts),
+        "artifacts_expected": len(DATASETS) * len(STRATEGIES),
         "errors": errors,
-        "artifact_paths": {name: str(path) for name, path in ARTIFACTS.items()},
+        "artifact_paths": paths,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, help="Optional JSON report path, relative to the repository root")
+    parser.add_argument("--matrix-prefix", default="final-clean-20260902")
+    parser.add_argument("--check-documents", action="store_true")
+    parser.add_argument("--check-presentations", action="store_true")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    result = verify()
+
+    result = verify(
+        args.matrix_prefix,
+        check_documents=args.check_documents,
+        check_presentations=args.check_presentations,
+    )
     rendered = json.dumps(result, ensure_ascii=False, indent=2)
     print(rendered)
     if args.output:

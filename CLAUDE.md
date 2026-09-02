@@ -41,11 +41,9 @@ claim changes. Update this file when the supported state, workflow rules, or
 these document responsibilities change. Do not copy full sections between
 files.
 
-Complete-system tables and internal-control tables may use different recorded
-model configurations only when each table states its own model identity and
-vector dimension. Never describe a control from the 2,560-dimensional
-`qwen3-embedding-4b` index as a paired intervention on a separately rebuilt
-4,096-dimensional `qwen3-embedding-8b` index.
+Every result and component control must use the current recorded model
+configuration. Do not carry results, artifact paths, or derived claims across
+a model or vector-dimension change.
 
 ### Documentation style
 
