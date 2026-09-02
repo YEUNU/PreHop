@@ -39,9 +39,9 @@ same controlled comparison.
 | 강건성 | 고정 후보: 입력 순서 | 후보 제시 순서의 영향 | 기준 순서 ↔ 질의별 고정 섞기 | 같은 후보 |
 | 단계별 시간 | 질의 전체 | 단계별 처리시간 비중 | 동시성 32 전수 실행 | 같은 실행 |
 
-Ablation 1–3은 같은 최종 색인에서 질의 단계를 비교한다. Ablation 4와
-강건성 실험은 검색된 후보를 고정한 뒤 점수 계산과 제시 순서를 각각
-바꾼다. 따라서 어떤 단계에서 무엇을 바꿨는지가 결과 해석의 단위가 된다.
+Ablation 1–3은 같은 최종 색인에서 질의 단계만 비교한다. Ablation 4와
+강건성 실험은 검색 후보를 고정하고 점수 계산과 제시 순서를 각각 바꾼다.
+결과는 표에 적힌 단계와 변경 조건의 범위에서만 해석한다.
 
 ## 3. Executed MuSiQue controls
 
@@ -51,10 +51,11 @@ Ablation 1–3은 같은 최종 색인에서 질의 단계를 비교한다. Abla
   포괄하는지 확인한다.
 - **대상.** Q+와 가장 가까운 외부 문서 Q− 문단의 저장 연결.
 - **실험 방식.** 최종 색인의 저장 연결을 MuSiQue 정답 문단과 전수 대조한다.
-- **Data.** All 2,417 MuSiQue questions: 1,252 2-hop, 760 3-hop, and 405 4-hop.
-- **Primary metric.** Gold-only graph fully connected.
-- **Secondary metric.** At least one edge between gold paragraphs.
-- **Baseline.** The official gold paragraph set for each query.
+- **데이터.** MuSiQue 전체 2,417개: 2-hop 1,252개, 3-hop 760개,
+  4-hop 405개.
+- **주요 지표.** 정답 문단만으로 구성한 그래프의 전체 연결 여부.
+- **보조 지표.** 정답 문단 사이에 저장 연결이 하나 이상 있는지 여부.
+- **비교 기준.** 질의별 공식 정답 문단 집합.
 - **결과.** 정답 문단 전체 연결률은 2-hop 23.56%, 3-hop 1.32%, 4-hop
   0.00%였다. 하나 이상의 정답 문단 연결은 각각 23.56%, 21.97%,
   25.68%였다.
@@ -70,18 +71,18 @@ Reproduction command:
   --out data/results/presentation-p0-analysis/gold_hop_coverage.json
 ```
 
-### Ablation 1. Query-time graph expansion
+### Ablation 1. 질의 단계 그래프 확장
 
 - **의도.** 질의 단계의 한 단계 이웃 확장이 답과 근거 선택에 기여하는지
   확인한다.
 - **대상.** 앞뒤 문단과 문서 간 연결을 함께 사용하는 한 단계 확장.
-- **Fixed controls.** Same completed index, query IDs, query text, model IDs,
-  seed, top-k, rewrite policy, ordering policy, and synthesis prompt.
-- **Data.** All 2,417 MuSiQue questions, with fixed 2/3/4-hop strata.
-- **Primary metrics.** Answer EM and retrieval passes.
-- **Secondary metrics.** Answer F1, paragraph Support F1/Recall, and
-  retrospective gold-edge subgroups.
-- **Baseline.** Final graph-on run with depth 1; control sets depth 0.
+- **고정 조건.** 완성된 색인, 질의 ID와 본문, 모델 ID, 시드, top-k,
+  질문 보충 정책, 후보 선택 정책, 답변 생성 프롬프트.
+- **데이터.** MuSiQue 전체 2,417개와 고정된 2/3/4-hop 구간.
+- **주요 지표.** Answer EM과 검색 회차.
+- **보조 지표.** Answer F1, 문단 Support F1/Recall, 저장된 정답 연결
+  유무에 따른 사후 하위집단.
+- **비교 조건.** 깊이 1의 그래프 확장을 사용한 최종 실행과 깊이 0 통제.
 - **결과.** 전체 Support F1은 +0.00435였다. Answer EM은 +0.00538,
   검색 회차는 +0.00372였으며 두 신뢰구간은 0을 포함했다. 깊이별
   Support F1 차이는 2-hop +0.00596, 3-hop +0.00543, 4-hop −0.00268이었다.
@@ -114,17 +115,16 @@ RAG_GRAPH_HOP_DEPTH=0 \
 - **의도.** 검색된 문단을 보고 만든 추가 질문이 답과 근거 선택에 기여하는지
   확인한다.
 - **대상.** 근거 기반 Q−/Q+ 추가 질문과 반복 검색.
-- **Fixed controls.** Same index and all final settings; the initial
-  role-aligned rewrite remains enabled.
-- **Data.** All 2,417 MuSiQue questions.
-- **Primary metrics.** Answer EM and Support F1.
-- **Secondary metrics.** Answer F1, Support Recall, and candidate-set overlap.
-- **Baseline.** Final `role_aligned_evidence_iterative`; control uses
-  `role_aligned`.
-- **Decision.** Removing refinement changes Answer EM by −0.12784 and Support
-  F1 by −0.04811, with both 95% intervals below zero. Refinement is a major
-  contributor to the complete pipeline.
-- **Artifacts.** Control under
+- **고정 조건.** 같은 색인과 최종 설정을 사용하며, 최초 질문의 역할별
+  재작성은 유지한다.
+- **데이터.** MuSiQue 전체 2,417개.
+- **주요 지표.** Answer EM과 Support F1.
+- **보조 지표.** Answer F1, Support Recall, 후보 집합 중복률.
+- **비교 조건.** 최종 `role_aligned_evidence_iterative`와 질문 보충을
+  제거한 `role_aligned`.
+- **결과.** 질문 보충을 제거했을 때 변화량은 Answer EM −0.12784,
+  Support F1 −0.04811이었다. 두 차이의 95% 신뢰구간은 모두 음수였다.
+- **산출물.** 통제 실행은
   `data/results/prehop-full-no-refinement-2417-20260901/`; paired report in
   `data/results/presentation-full-analysis/full_component_controls_2417.json`.
 
@@ -143,15 +143,15 @@ RAG_QUERY_REWRITE_VARIANT=role_aligned \
 - **의도.** 직접 근거·연결 근거·본문 후보를 구분해 고르는 정책이 통합 순위
   상위 12개를 고르는 정책보다 답과 근거 선택에 기여하는지 확인한다.
 - **대상.** 질의 단계의 후보 선택 정책.
-- **Fixed controls.** Same index, query text, model IDs, seed, top-k, scoring
-  signals, rewrite variant, and synthesis prompt.
-- **Data.** All 2,417 MuSiQue questions.
-- **Primary metrics.** Answer EM and Support F1.
-- **Secondary metrics.** Answer F1, Support Recall, and candidate-set overlap.
+- **고정 조건.** 같은 색인, 질의 본문, 모델 ID, 시드, top-k, 점수 신호,
+  질문 보충 방식, 답변 생성 프롬프트.
+- **데이터.** MuSiQue 전체 2,417개.
+- **주요 지표.** Answer EM과 Support F1.
+- **보조 지표.** Answer F1, Support Recall, 후보 집합 중복률.
 - **비교 조건.** 질문 역할별 선택 정책과 통합 순위 상위 12개 선택 정책.
 - **결과.** 통합 순위 정책으로 바꾸면 Answer EM이 0.08854, Support F1이
-  0.04952 낮아졌다. 두 차이의 95% 신뢰구간은 0보다 작았다.
-- **Artifacts.** Control under
+  0.04952 낮아졌다. 두 차이의 95% 신뢰구간은 모두 음수였다.
+- **산출물.** 통제 실행은
   `data/results/prehop-full-no-candidate-order-global-2417-20260901/`; paired report in
   `data/results/presentation-full-analysis/full_component_controls_2417.json`.
 
@@ -165,23 +165,21 @@ RAG_SOURCE_SELECTION_VARIANT=global \
   --corpus-tag musique_final_20260830
 ```
 
-### 강건성. 후보 입력 순서
+### 강건성 실험. 후보 입력 순서
 
-- **Hypothesis.** If the ordering call is content-based and presentation-order
-  invariant, a fixed shuffle of identical candidates should preserve selected
-  sets after accounting for same-order generation variability.
-- **Component.** Presentation order entering the generation-model ordering
-  prompt.
-- **Fixed controls.** Exact question, candidate IDs, titles, texts, metadata,
-  model, prompt, top-k, and shuffle seed.
-- **Data.** 고정된 후보 목록 2,417개, 실패 0건.
-- **Primary metric.** Selected-set Jaccard relative to same-order replay.
-- **Secondary metric.** Support F1 and first-input selection rate.
-- **Baseline.** Same deterministic fused input order replay.
-- **Decision.** Fixed shuffle lowers calibrated Jaccard by −0.32851 and Support
-  F1 by −0.00368. The call is input-order sensitive, though the 22.1% first-item
-  selection rate does not indicate simple first-item copying.
-- **Artifact.**
+- **의도.** 후보 내용이 같을 때 제시 순서가 선택 결과에 미치는 영향을
+  측정한다.
+- **대상.** 생성 모델의 후보 선택 프롬프트에 들어가는 문단 순서.
+- **고정 조건.** 질의, 후보 ID, 제목, 본문, 메타데이터, 모델, 프롬프트,
+  top-k, 섞기 시드.
+- **데이터.** 고정된 후보 목록 2,417개, 실패 0건.
+- **주요 지표.** 같은 순서 재실행을 기준으로 한 선택 집합 Jaccard.
+- **보조 지표.** Support F1과 첫 입력 문단 선택률.
+- **비교 조건.** 결정적 통합 순위와 질의별 고정 섞기 순서.
+- **결과.** 고정 섞기 순서에서 변화량은 보정 Jaccard −0.32851,
+  Support F1 −0.00368이었다. 입력 순서의 영향은 확인됐지만, 첫 문단 선택률
+  22.1%만으로 첫 문단을 그대로 복사한다고 볼 수는 없다.
+- **산출물.**
   `data/results/presentation-full-analysis/frozen_candidate_order_replay_2417.json`.
 
 ```bash
@@ -197,20 +195,19 @@ RAG_SOURCE_SELECTION_VARIANT=global \
 
 ### Ablation 4. 점수식 변형
 
-- **Hypothesis.** Equal reciprocal-rank fusion and graph attenuation affect
-  evidence selection, but are heuristics rather than a probability model.
-- **Component.** Semantic order, representation order, HOP semantic input, and
-  graph-path decay.
-- **Fixed controls.** 같은 후보 문단과 문단 식별자.
-- **Data.** 고정된 후보 목록 2,417개.
-- **Primary metric.** Paragraph Support F1.
-- **Secondary metrics.** Support precision and recall.
-- **Baseline.** Equal reciprocal-rank fusion with decay 0.5.
-- **Decision.** Semantic-only and representation-only reduce Support F1;
-  decay 0 improves it by 0.00457 and decay 1 reduces it by 0.00870. The rule is
-  consequential, and no probabilistic or generally optimal interpretation is
-  supported.
-- **Artifact.**
+- **의도.** 순위 신호와 그래프 거리 가중치가 근거 선택에 미치는 영향을
+  같은 후보에서 측정한다.
+- **대상.** 의미 순위, 표현 순위, HOP 의미 점수 입력, 그래프 경로 감쇠.
+- **고정 조건.** 같은 후보 문단과 문단 식별자.
+- **데이터.** 고정된 후보 목록 2,417개.
+- **주요 지표.** 문단 Support F1.
+- **보조 지표.** Support precision과 recall.
+- **비교 조건.** 동일 가중 reciprocal-rank fusion과 감쇠 0.5.
+- **결과.** 의미 순위만 사용하거나 표현 순위만 사용하면 Support F1이
+  낮아졌다. 감쇠 0에서는 0.00457 높아졌고, 감쇠 1에서는 0.00870
+  낮아졌다. 이 결과는 점수식의 영향을 보여주지만 확률적 해석이나
+  일반적 최적성을 뒷받침하지는 않는다.
+- **산출물.**
   `data/results/presentation-full-analysis/frozen_rank_variants_2417.json`.
 
 ```bash
@@ -222,21 +219,20 @@ RAG_SOURCE_SELECTION_VARIANT=global \
   --expected-queries 2417
 ```
 
-### Timing profile. Query-stage latency
+### 단계별 시간. 질의 처리 지연시간
 
-- **Hypothesis.** The dominant online cost comes from generation-model stages,
-  not graph traversal.
-- **Component.** Non-overlapping rewrite/refinement, retrieval, graph,
-  deterministic scoring, candidate-ordering, and synthesis timers.
-- **Fixed controls.** One complete run at declared concurrency 32.
-- **Data.** All 2,417 MuSiQue questions; zero failed rows.
-- **Primary metric.** Within-run stage share of accounted time.
-- **Secondary metric.** Mean stage time.
-- **Baseline.** Total of the six non-overlapping timers in the same run.
-- **Decision.** Generation-model stages account for 84.9%; graph expansion is
-  1.7%. The architecture shifts edge construction offline but still has a
-  generation-heavy online pipeline.
-- **Artifact.**
+- **의도.** 질의 처리시간이 어느 단계에서 발생하는지 측정한다.
+- **대상.** 서로 겹치지 않는 질문 재작성·보충, 검색, 그래프 확장,
+  결정적 점수 계산, 후보 선택, 답변 생성 시간.
+- **고정 조건.** 동시성 32로 수행한 하나의 전체 실행.
+- **데이터.** MuSiQue 전체 2,417개, 실패 0건.
+- **주요 지표.** 같은 실행에서 측정한 단계별 시간 비중.
+- **보조 지표.** 단계별 평균 시간.
+- **비교 기준.** 같은 실행의 여섯 비중복 타이머 합계.
+- **결과.** 생성 모델을 사용하는 단계가 84.9%, 그래프 확장이 1.7%를
+  차지했다. 간선 구성은 오프라인에서 수행하지만 온라인 질의 경로의
+  대부분은 생성 모델 처리시간이다.
+- **산출물.**
   `data/results/presentation-full-analysis/full_stage_profile_2417.json`.
 
 ```bash

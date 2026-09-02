@@ -4,12 +4,10 @@
 
 > Final numbers below come from complete, integrity-checked prepared splits.
 
-Reference implementation of a GraphRAG candidate whose core design is
-indexing-time HOP construction: inspectable question-level evidence links are
-constructed once, offline, into chunk-to-chunk edges. At query time, the system
-refines the question by evidence role, expands stored neighbors, selects twelve
-candidate paragraphs with the configured generation model, and synthesizes the
-answer.
+Prehop is a GraphRAG retrieval system that constructs inspectable,
+question-level chunk links during indexing. At query time, it refines the
+question by evidence role, expands stored neighbors, selects twelve candidate
+paragraphs with the configured generation model, and synthesizes the answer.
 
 Documentation is separated by role: this README is the user-facing overview
 and command guide; [ARCHITECTURE](docs/ARCHITECTURE.md) is the normative
@@ -46,10 +44,10 @@ body channel always uses the original question. Retrieval searches Q⁻/body
 direct evidence and Q⁺ dependency seeds in parallel, applies reciprocal-rank
 fusion of representation and semantic orders, and performs deterministic
 batched 1-hop traversal over bidirectional `NEXT` and outgoing `HOP_ANSWER`
-edges. One complete-list call ranks the resulting candidate union and the
-first 12 paragraphs feed one synthesis call. Rank evidence propagated over a graph edge is
-attenuated by reciprocal path length, so indirect evidence does not enter the
-representation order as strongly as a directly retrieved owner.
+edges. One complete-list call ranks the resulting candidate union, and the
+first 12 paragraphs feed one synthesis call. Rank evidence propagated over a
+graph edge is attenuated by reciprocal path length, so indirect evidence
+receives less weight than evidence from a directly retrieved owner.
 Q+ retrieval retains the exact matched question-node IDs when results collapse
 to owner chunks. The default activates every stored HOP provenance item on a
 matched Q+ owner; reciprocal filtering and exact-ID activation remain
@@ -130,8 +128,9 @@ and within every 2/3/4-hop group. Support F1 is positive overall and in the
 2-hop and 3-hop groups. The candidate-selection control compares the complete
 question-role policy with one integrated ranking. The fixed-candidate replay
 measures input-order sensitivity, and the rank variants measure how signal and
-distance choices alter Support F1. The rank rule is a consequential heuristic without a probabilistic or generally optimal
-interpretation.
+distance choices alter Support F1. The rank rule is a consequential heuristic;
+the results do not support a probabilistic interpretation or a claim of
+general optimality.
 
 See [RESULTS](docs/RESULTS.md) for all estimates and artifacts and
 [ABLATION_STUDY](docs/ABLATION_STUDY.md) for stage boundaries, controls, and

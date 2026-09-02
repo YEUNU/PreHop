@@ -1,8 +1,8 @@
 # Final Results and Evidence Register
 
-This document is the canonical register for submission-facing numbers. It
-separates the two datasets, identifies the stage tested by each internal
-control, and links every conclusion to a complete-split artifact.
+This register maps each submission result to a complete-split artifact. It
+keeps the two datasets separate and identifies the pipeline stage tested by
+each internal control.
 
 ## 1. Eligible complete-system runs
 
@@ -65,9 +65,9 @@ under different load.
 | Ranking rule | Recompute ranking variants on the same candidate pools | Same candidates | Support | Ranking signals and distance weights change Support F1 |
 | Query-time latency | Measure non-overlapping timers in one complete fixed-concurrency run | Same run | Complete run | Generation-model stages 84.9%; graph expansion 1.7% |
 
-Ablation 1–3 reuse the same completed index and compare query-stage behavior.
-Ablation 4 and the order robustness test keep the candidate texts fixed. This
-separates query-pipeline effects from score- and presentation-order effects.
+Ablations 1–3 reuse the completed index and compare query-stage behavior.
+Ablation 4 and the order-robustness test keep candidate texts fixed, isolating
+score and presentation-order effects from the query pipeline.
 
 ## 4. Stored connection coverage
 
@@ -141,8 +141,8 @@ candidate. Source:
 | Graph decay 0 | +0.00457 [+0.00327, +0.00592] |
 | Graph decay 1 | −0.00870 [−0.01027, −0.00721] |
 
-The signal choice and propagation weight materially change Support F1. On this
-split, decay 0 exceeds the default decay 0.5 by 0.00457. Source:
+Signal choice and propagation weight change Support F1. On this split, decay 0
+exceeds the default decay 0.5 by 0.00457. Source:
 `data/results/presentation-full-analysis/frozen_rank_variants_2417.json`.
 
 ## 7. Cost and stage timing

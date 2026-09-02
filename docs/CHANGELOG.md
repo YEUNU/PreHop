@@ -1,11 +1,10 @@
 # Changelog
 
-This file is the chronological engineering record. `ARCHITECTURE.md` defines
-current behavior, `README.md` is the user-facing guide, `CLAUDE.md` defines
-maintenance policy, and the local `prehop_paper.md` owns paper prose and claims.
-Entries are newest first. Older entries describe behavior at that point in
-development and may be superseded; they are not a current configuration guide
-or a source of paper claims.
+This file records engineering changes in reverse chronological order.
+`ARCHITECTURE.md` defines current behavior, `README.md` is the user guide,
+`CLAUDE.md` defines maintenance policy, and the local `prehop_paper.md` contains
+the manuscript and research claims. Older entries describe the system as it
+existed at the time and may no longer match the current configuration.
 
 ## 2026-09-02 — Embedding model change and cold full-system matrix
 
@@ -60,8 +59,8 @@ responses are no longer cut to 400 characters during metric calculation.
 
 ## 2026-09-01 — 발표·논문 문서의 용어와 실험 흐름 통일
 
-발표자료와 현재형 문서를 색인 단계, 질의 단계, 같은 후보 재평가 순서로
-맞췄다. 내부 옵션명은 재현 명령에만 두고, 본문에서는 한 단계 이웃 확장,
+발표자료와 현재형 문서의 순서를 색인 단계, 질의 단계, 같은 후보 재평가로
+통일했다. 내부 옵션명은 재현 명령에만 두고, 본문에서는 한 단계 이웃 확장,
 근거 기반 질문 보충, 질문 역할별 후보 선택, 같은 후보의 점수 재계산처럼
 실험에서 실제로 바꾼 대상을 사용한다.
 

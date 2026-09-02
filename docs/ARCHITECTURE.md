@@ -1,10 +1,10 @@
 # Architecture
 
-This is the module-level source of truth for the current indexing and query
-paths. All model inference is sent to configured external OpenAI-compatible
-generation and embedding endpoints. The repository never starts a local model.
-It describes current behavior, not chronological changes or paper claims;
-those belong in `CHANGELOG.md` and the local `prehop_paper.md`, respectively.
+This document defines the current indexing and query paths at module level.
+All inference uses configured external OpenAI-compatible generation and
+embedding endpoints; the repository does not start a local model. Historical
+changes belong in `CHANGELOG.md`, and research claims belong in the local
+`prehop_paper.md`.
 
 ## Shared input contract
 
@@ -25,7 +25,7 @@ window splitter:
 - Official HopRAG and MS GraphRAG retain their own upstream chunkers because
   changing those would no longer be an official baseline comparison.
 
-## Strategy dispatch and every indexing branch
+## Strategy dispatch and indexing branches
 
 `cli/index.py::run_indexing` obtains a per-`(strategy, corpus_tag)` file lock,
 then `run_indexing_unlocked` dispatches as follows:
@@ -59,8 +59,9 @@ anything else
   -> ValueError
 ```
 
-All `.txt` and `.md` files are selected. There is no company/sample filter and
-no unsupported-dataset fallback grouping. HopRAG accepts only the active known
+The indexer selects all `.txt` and `.md` files. It applies no company or sample
+filter and has no fallback grouping for unsupported datasets. HopRAG accepts
+only the active known
 corpus tags (`multihoprag`, `musique`) because each needs its
 official problem-context grouping; another tag fails explicitly.
 
@@ -217,7 +218,7 @@ change its generated questions.
   isolated under `data/ms_graphrag_output/<corpus_tag>`.
 - Expected output tables are verified; workflow errors fail the target.
 
-## Prehop query path and every branch
+## Prehop query path and branches
 
 `models/prehop/graphrag.py::run_workflow` strips only the benchmark output
 format suffix and then:

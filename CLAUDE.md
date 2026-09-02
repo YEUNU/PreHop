@@ -82,11 +82,12 @@ files.
   run ID. `VLLM_MAX_NUM_SEQS` records endpoint capacity; each adapter's worker
   controls must remain within that capacity.
 - The configuration selected for confirmatory evaluation uses legacy Q−/Q+,
-  matched-paragraph connection activation, materialized reciprocal provenance, depth-one full
-  NEXT/HOP traversal, global selection, and role-aligned rewriting for
-  questions of at most 32 words. Exact activation, rewrite-all, no-rewrite,
-  and online reciprocal filtering are explicit ablations. The complete
-  algorithm belongs in `ARCHITECTURE.md`.
+  matched-paragraph connection activation, materialized reciprocal provenance,
+  depth-one full NEXT/HOP traversal, question-role candidate selection, and
+  role-aligned rewriting for questions of at most 32 words. Exact activation,
+  rewrite-all, no-rewrite, integrated-rank selection, and online reciprocal
+  filtering are explicit controls. The complete algorithm belongs in
+  `ARCHITECTURE.md`.
 - Query-time retrieval uses a bounded role rewrite, stored HOP links, one
   complete-list candidate-selection call to the configured generation model,
   and one final synthesis call when context is available.
@@ -285,9 +286,10 @@ When editing it:
 - Keep official-baseline behavior and Prehop ablations clearly distinct. Do
   not silently equalize top-k/context budgets or alter upstream HopRAG/MS
   GraphRAG behavior; label any controlled comparison separately.
-- Report indexing and query-time costs separately. State that Prehop uses
-  offline Q-/Q+/HOP construction, has no query-time retrieval LLM call, and
-  makes one final synthesis call only when context is non-empty.
+- Report indexing and query-time costs separately. State that Prehop constructs
+  Q-/Q+/HOP links offline, uses the configured generation model for bounded
+  query refinement and candidate selection, and makes one final synthesis call
+  only when context is non-empty.
 - For every table or figure, retain its metric definition, denominator,
   aggregation rule, uncertainty estimate, and source artifact. Do not publish
   self-judged or partial Batch-judge numbers as final results.
