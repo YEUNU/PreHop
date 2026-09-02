@@ -75,11 +75,12 @@ fi
 if [ "$SKIP_SERVER" != true ]; then
     echo "Step 1: Checking indexing services..."
 
-    # Start Neo4j
-    ./run_servers.sh neo4j
-    if ! wait_for_server "http://localhost:7474" "Neo4j"; then
-        echo "Fatal: Neo4j failed." >&2
-        exit 1
+    if [ "$MODEL" != "ms_graphrag" ] && [ "$MODEL" != "browsenet" ] && [ "$MODEL" != "proprag" ]; then
+        ./run_servers.sh neo4j
+        if ! wait_for_server "http://localhost:7474" "Neo4j"; then
+            echo "Fatal: Neo4j failed." >&2
+            exit 1
+        fi
     fi
 
     # Start Generation Server
@@ -89,11 +90,12 @@ if [ "$SKIP_SERVER" != true ]; then
         exit 1
     fi
 
-    # Start Embedding Service
-    ./run_servers.sh embed
-    if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then
-        echo "Fatal: Embedding service failed." >&2
-        exit 1
+    if [ "$MODEL" != "browsenet" ] && [ "$MODEL" != "proprag" ]; then
+        ./run_servers.sh embed
+        if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then
+            echo "Fatal: Embedding service failed." >&2
+            exit 1
+        fi
     fi
 
     # HOP-edge pre-scoring uses the Neo4j ANN vector-index score directly.

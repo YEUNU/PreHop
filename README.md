@@ -71,18 +71,20 @@ evidence-budget difference to the comparison.
 The optional LLM judge is disabled by default and is not a primary metric.
 Only complete prepared-split runs are eligible for submission results.
 
-Prehop, Naive RAG, and HopRAG attach an explicit answer boundary before
-evaluation. MS GraphRAG requests the equivalent `Final Answer:` contract from
-its official search API. The evaluator scores the complete marked span; an
-unmarked response remains the complete prediction and is never replaced by a
-fixed-length suffix.
+Prehop, Naive RAG, HopRAG, BrowseNet, and PropRAG attach an explicit answer
+boundary before evaluation. MS GraphRAG requests the equivalent
+`Final Answer:` contract from its official search API. The evaluator scores
+the complete marked span; an unmarked response remains the complete prediction
+and is never replaced by a fixed-length suffix.
 
 ### Result admission
 
-The complete-system matrix evaluates Prehop, Naive RAG, HopRAG, and MS
-GraphRAG independently on the full MultiHop-RAG and MuSiQue prepared splits.
-All rows use `gemma-4-31b-it` generation and `qwen3-embedding-8b`
-4,096-dimensional embeddings. MultiHop-RAG and MuSiQue remain in separate
+The evaluator supports six independent strategies: Prehop, Naive RAG, HopRAG,
+MS GraphRAG, BrowseNet, and PropRAG. Each target uses the full prepared
+MultiHop-RAG or MuSiQue split. Answer synthesis uses `gemma-4-31b-it` across
+the controlled evaluator paths. BrowseNet and PropRAG retain their published
+`NV-Embed-v2` retrieval encoders; the other strategies use the configured
+`qwen3-embedding-8b` endpoint. MultiHop-RAG and MuSiQue remain in separate
 tables because their metrics and denominators differ. The artifact-admission
 and publication checks are defined in [RESULTS](docs/RESULTS.md).
 
@@ -107,7 +109,9 @@ prehop/
 │   │   └── retrieval/                # hybrid (RRF), cosine ordering, deterministic traversal
 │   ├── naive/                       # baseline (shared fixed-window chunks + vector search)
 │   ├── hoprag/                      # baseline (runtime hop traversal via official HopRAG)
-│   └── ms_graphrag/                 # baseline (community-report retrieval via graphrag package)
+│   ├── ms_graphrag/                 # baseline (community-report retrieval via graphrag package)
+│   ├── browsenet/                   # external official BrowseNet adapter
+│   └── proprag/                     # external official PropRAG adapter
 ├── utils/
 │   ├── abstain.py                   # honest-abstain detection + shared 3-way answer_label
 │   ├── metrics.py                   # deferred Batch judge + retrieval metrics
@@ -169,6 +173,30 @@ Prehop and MS GraphRAG generation calls use temperature 0. HopRAG retains its
 upstream indexing temperature 0.1 and retrieval-time node judgement. External
 server hardware and launch options are not part of the reported method
 configuration.
+
+### BrowseNet and PropRAG runtimes
+
+BrowseNet and PropRAG run in isolated Python 3.10 environments because their
+official dependencies conflict with the main project environment. Install the
+pinned official revisions once:
+
+```bash
+./scripts/setup_official_baselines.sh
+```
+
+The setup keeps official source, model dependencies, and downloaded weights
+under the ignored `data/official_baselines/` directory. The repository stores
+only the adapters and exact upstream commit identifiers. Run either strategy
+through the same dataset entrypoint used by the other baselines:
+
+```bash
+./run_dataset.sh musique all --model browsenet --queries full
+./run_dataset.sh musique all --model proprag --queries full
+```
+
+MuSiQue uses BrowseNet's native question-decomposition template. BrowseNet has
+no MultiHop-RAG template, so that dataset uses its official HotpotQA template;
+the retrieval implementation and published defaults remain unchanged.
 
 ---
 
@@ -248,11 +276,15 @@ the printed fingerprint with every reported result.
 ./scripts/run_paper_target.sh multihoprag naive mhr-naive-cold-01
 ./scripts/run_paper_target.sh multihoprag hoprag mhr-hoprag-cold-01
 ./scripts/run_paper_target.sh multihoprag ms_graphrag mhr-ms-cold-01
+./scripts/run_paper_target.sh multihoprag browsenet mhr-browsenet-cold-01
+./scripts/run_paper_target.sh multihoprag proprag mhr-proprag-cold-01
 
 ./scripts/run_paper_target.sh musique prehop musique-prehop-cold-01
 ./scripts/run_paper_target.sh musique naive musique-naive-cold-01
 ./scripts/run_paper_target.sh musique hoprag musique-hoprag-cold-01
 ./scripts/run_paper_target.sh musique ms_graphrag musique-ms-cold-01
+./scripts/run_paper_target.sh musique browsenet musique-browsenet-cold-01
+./scripts/run_paper_target.sh musique proprag musique-proprag-cold-01
 ```
 
 For the dataset files used by this revision, preparation must print the
@@ -322,6 +354,7 @@ artifacts rather than copied into a hand-edited table:
 .venv/bin/python scripts/performance_gate.py \
   --prehop <prehop-summary.json> \
   --baselines <naive-summary.json> <hoprag-summary.json> <ms-summary.json> \
+              <browsenet-summary.json> <proprag-summary.json> \
   --margin 0.10 --output data/results/<run-id>/official_metric_gate.json
 ```
 

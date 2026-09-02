@@ -232,6 +232,9 @@ data/index_stats/
 data/index_failures/
 data/ms_graphrag_output/
 data/hoprag_output/
+data/browsenet_output/
+data/proprag_output/
+data/official_baselines/
 
 # graphrag library writes its default file_storage here when reporting_config
 # isn't overridden (separate from our explicit output_storage).

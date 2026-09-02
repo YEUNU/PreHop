@@ -12,7 +12,7 @@
 #   ./run_dataset.sh musique all --model prehop              # index + benchmark, one strategy
 #
 # Options:
-#   --model   {prehop|naive|hoprag|ms_graphrag}              default: prehop
+#   --model   {prehop|naive|hoprag|ms_graphrag|browsenet|proprag} default: prehop
 #   --queries {sample200|full}                                default: sample200
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
@@ -61,8 +61,8 @@ if { [ "$STAGE" = "benchmark" ] || [ "$STAGE" = "bench" ] || [ "$STAGE" = "all" 
 fi
 
 case "$MODEL" in
-    prehop|naive|hoprag|ms_graphrag) ;;
-    *) echo "Unknown --model '$MODEL' (use prehop|naive|hoprag|ms_graphrag)" >&2; exit 1 ;;
+    prehop|naive|hoprag|ms_graphrag|browsenet|proprag) ;;
+    *) echo "Unknown --model '$MODEL'" >&2; exit 1 ;;
 esac
 
 do_index() {
@@ -79,5 +79,5 @@ case "$STAGE" in
     index)           do_index ;;
     benchmark|bench) do_benchmark ;;
     all)             do_index; do_benchmark ;;
-    *) echo "Usage: $0 <musique> <index|benchmark|all> [--model prehop|naive|hoprag|ms_graphrag] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
+    *) echo "Usage: $0 <musique> <index|benchmark|all> [--model prehop|naive|hoprag|ms_graphrag|browsenet|proprag] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
 esac

@@ -415,7 +415,13 @@ def _plot(results: dict, metrics: list[str], fig_path: Path, treatment_strat: st
     import matplotlib.pyplot as plt
 
     baselines = list(next(iter(results.values())).keys())
-    colors = {"naive": "#888888", "hoprag": "#4C72B0", "ms_graphrag": "#DD8452"}
+    colors = {
+        "naive": "#888888",
+        "hoprag": "#4C72B0",
+        "ms_graphrag": "#DD8452",
+        "browsenet": "#55A868",
+        "proprag": "#C44E52",
+    }
     ncol = len(metrics)
     fig, axes = plt.subplots(1, ncol, figsize=(3.0 * ncol, 3.4), sharey=True)
     if ncol == 1:

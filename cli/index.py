@@ -79,24 +79,44 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
     """Record semantic index settings separately from throughput controls."""
     if strategy == "prehop":
         resolved_generation_model = RAGConfig.DEFAULT_MODEL if indexing_model_id == "default" else indexing_model_id
-    elif strategy in {"hoprag", "ms_graphrag"}:
+    elif strategy in {"hoprag", "ms_graphrag", "browsenet", "proprag"}:
         resolved_generation_model = RAGConfig.DEFAULT_MODEL
     else:
         resolved_generation_model = None
-    embedding_model = (
-        os.environ.get("RAG_HOP_EMBED_MODEL_NAME", RAGConfig.EMBEDDING_MODEL)
-        if strategy == "hoprag"
-        else RAGConfig.EMBEDDING_MODEL
-    )
+    if strategy == "hoprag":
+        embedding_model = os.environ.get("RAG_HOP_EMBED_MODEL_NAME", RAGConfig.EMBEDDING_MODEL)
+    elif strategy == "browsenet":
+        semantic_model = os.environ.get("RAG_BROWSENET_SEM_MODEL", "nvembedv2")
+        embedding_model = {
+            "miniLM": "multi-qa-MiniLM-L6-cos-v1",
+            "stella": "dunzhang/stella_en_400M_v5",
+            "granite": "ibm-granite/granite-embedding-125m-english",
+            "nvembedv2": "nvidia/NV-Embed-v2",
+            "qwen2": "Alibaba-NLP/gte-Qwen2-7B-instruct",
+        }.get(semantic_model, semantic_model)
+    elif strategy == "proprag":
+        embedding_model = os.environ.get("RAG_PROPRAG_EMBEDDING_MODEL", "nvidia/NV-Embed-v2")
+    else:
+        embedding_model = RAGConfig.EMBEDDING_MODEL
     policy = {
         "strategy": strategy,
         "indexing_model": resolved_generation_model,
         "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
         "generation_seed": RAGConfig.LLM_SEED,
         "embedding_model": embedding_model,
-        "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
-        "embedding_query_instruction": RAGConfig.EMBEDDING_QUERY_INSTRUCTION,
-        "embedding_dimensions": RAGConfig.EMBEDDING_DIMENSIONS,
+        "embedding_revision": (
+            None
+            if strategy in {"browsenet", "proprag"}
+            else os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None
+        ),
+        "embedding_query_instruction": (
+            "official_native" if strategy in {"browsenet", "proprag"} else RAGConfig.EMBEDDING_QUERY_INSTRUCTION
+        ),
+        "embedding_dimensions": (
+            4096
+            if strategy in {"browsenet", "proprag"} and embedding_model == "nvidia/NV-Embed-v2"
+            else (None if strategy in {"browsenet", "proprag"} else RAGConfig.EMBEDDING_DIMENSIONS)
+        ),
         "embedding_max_input_tokens": RAGConfig.MAX_EMBEDDING_LENGTH,
         "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
     }
@@ -118,6 +138,30 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
                     if RAGConfig.QUESTION_SCHEMA == "linked_v2" and RAGConfig.ABLATION_Q_MINUS
                     else ("qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation")
                 ),
+            }
+        )
+    elif strategy == "browsenet":
+        policy.update(
+            {
+                "official_revision": "ba82eeceb089104de2999d00b744cd02583fe8a4",
+                "ner_model": os.environ.get("RAG_BROWSENET_NER_MODEL", "gliner"),
+                "semantic_model": os.environ.get("RAG_BROWSENET_SEM_MODEL", "nvembedv2"),
+                "subquery_model": os.environ.get("RAG_BROWSENET_SUBQUERY_MODEL", RAGConfig.DEFAULT_MODEL),
+                "colbert_threshold": float(os.environ.get("RAG_BROWSENET_COLBERT_THRESHOLD", "0.9")),
+                "subgraphs": int(os.environ.get("RAG_BROWSENET_N_SUBGRAPHS", "5")),
+                "hybrid_alpha": float(os.environ.get("RAG_BROWSENET_ALPHA", "0.0")),
+            }
+        )
+    elif strategy == "proprag":
+        policy.update(
+            {
+                "official_revision": "3ec103488abd5589e569ee0fdd6e0c7067e5b783",
+                "semantic_model": os.environ.get("RAG_PROPRAG_EMBEDDING_MODEL", "nvidia/NV-Embed-v2"),
+                "retrieval_top_k": 200,
+                "linking_top_k": 5,
+                "qa_top_k": 5,
+                "use_propositions": True,
+                "graph_type": "facts_and_sim_passage_node_unidirectional",
             }
         )
     return policy
@@ -318,11 +362,25 @@ async def _collect_index_capacity(
 ) -> dict[str, object]:
     """Measure strategy storage with the fixed comparison-table definitions."""
     safe_corpus = re.sub(r"[^A-Za-z0-9_]", "_", corpus_tag)
-    if strategy == "ms_graphrag":
-        root = Path("data/ms_graphrag_output") / corpus_tag
+    if strategy in {"ms_graphrag", "browsenet", "proprag"}:
+        env_key = {
+            "ms_graphrag": "RAG_MS_OUTPUT_ROOT",
+            "browsenet": "RAG_BROWSENET_OUTPUT_ROOT",
+            "proprag": "RAG_PROPRAG_OUTPUT_ROOT",
+        }[strategy]
+        default_root = {
+            "ms_graphrag": "data/ms_graphrag_output",
+            "browsenet": "data/browsenet_output",
+            "proprag": "data/proprag_output",
+        }[strategy]
+        root = Path(os.environ.get(env_key, default_root)) / corpus_tag
         if not root.is_dir():
-            raise FileNotFoundError(f"MS GraphRAG retrieval artifact directory not found: {root}")
-        excluded = {"_cache", "_logs", "_input"}
+            raise FileNotFoundError(f"{strategy} retrieval artifact directory not found: {root}")
+        excluded = (
+            {"_cache", "_logs", "_input"}
+            if strategy == "ms_graphrag"
+            else {"input", "datasets", "results", "logs", "llm_cache"}
+        )
         total_bytes = sum(
             path.stat().st_size
             for path in root.rglob("*")
@@ -919,6 +977,44 @@ async def _run_indexing_unlocked(
         index_capacity = None
         try:
             adapter_timing = await run_ms_index(
+                dataset_path=dataset_path,
+                corpus_tag=corpus_tag or "default",
+                corpus_manifest=corpus_manifest,
+            )
+            timing.update(adapter_timing or {})
+            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
+            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
+            index_capacity = await _collect_index_capacity(strategy, corpus_tag or "default")
+        except BaseException:
+            official_status = "failed"
+            raise
+        finally:
+            timing.setdefault("official_pipeline_seconds", time.perf_counter() - official_started)
+            timing.setdefault("total_elapsed_seconds", time.perf_counter() - started_at)
+            _write_runtime_stage_stats(
+                strategy,
+                corpus_tag or "default",
+                dataset_path,
+                timing,
+                official_status,
+                corpus_manifest,
+                model_id,
+                index_capacity,
+            )
+        return
+
+    if strategy in {"browsenet", "proprag"}:
+        if strategy == "browsenet":
+            from models.browsenet.official_indexer import run_official_index
+        else:
+            from models.proprag.official_indexer import run_official_index
+
+        official_started = time.perf_counter()
+        timing = {}
+        official_status = "complete"
+        index_capacity = None
+        try:
+            adapter_timing = await run_official_index(
                 dataset_path=dataset_path,
                 corpus_tag=corpus_tag or "default",
                 corpus_manifest=corpus_manifest,

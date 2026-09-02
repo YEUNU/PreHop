@@ -35,9 +35,10 @@ DATASETS = {
     },
 }
 
-STRATEGIES = ("prehop", "naive", "hoprag", "ms_graphrag")
+STRATEGIES = ("prehop", "naive", "hoprag", "ms_graphrag", "browsenet", "proprag")
 GENERATION_MODEL = "gemma-4-31b-it"
 EMBEDDING_MODEL = "qwen3-embedding-8b"
+OFFICIAL_EMBEDDING_MODEL = "nvidia/NV-Embed-v2"
 EMBEDDING_DIMENSIONS = 4096
 
 DOCUMENTS = (
@@ -108,6 +109,14 @@ def _validate_artifact(
             errors.append(f"{path}: models.{field}={models.get(field)!r}, expected {value!r}")
 
     policy = payload.get("index_provenance", {}).get("policy", {})
+    expected_policy_embedding = (
+        OFFICIAL_EMBEDDING_MODEL if strategy in {"browsenet", "proprag"} else EMBEDDING_MODEL
+    )
+    if policy.get("embedding_model") != expected_policy_embedding:
+        errors.append(
+            f"{path}: index embedding_model={policy.get('embedding_model')!r}, "
+            f"expected {expected_policy_embedding!r}"
+        )
     if policy.get("embedding_dimensions") != EMBEDDING_DIMENSIONS:
         errors.append(
             f"{path}: embedding_dimensions={policy.get('embedding_dimensions')!r}, "

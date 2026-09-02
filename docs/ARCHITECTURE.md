@@ -22,8 +22,9 @@ window splitter:
 - Prehop and Naive apply the same fixed window splitter after parsing. This
   makes the in-repo Naive path a controlled retrieval baseline rather than a
   claim that Naive RAG has one canonical chunker.
-- Official HopRAG and MS GraphRAG retain their own upstream chunkers because
-  changing those would no longer be an official baseline comparison.
+- Official HopRAG, MS GraphRAG, BrowseNet, and PropRAG retain their upstream
+  indexing units because changing them would no longer be a full-system
+  comparison.
 
 ## Strategy dispatch and indexing branches
 
@@ -55,9 +56,32 @@ strategy == ms_graphrag
   -> text units/entities/relationships/communities/reports/embeddings
   -> corpus-scoped parquet + LanceDB output
 
+strategy == browsenet
+  -> isolated official BrowseNet revision
+  -> GLiNER entities + ColBERT entity linking + Graph-of-Chunks
+  -> NV-Embed-v2 passage embeddings + file-backed artifacts
+
+strategy == proprag
+  -> isolated official PropRAG revision
+  -> proposition extraction + entity/proposition/passage graph
+  -> NV-Embed-v2 stores + file-backed graph artifacts
+
 anything else
   -> ValueError
 ```
+
+BrowseNet and PropRAG use a process boundary rather than importing their
+dependencies into the main environment. `scripts/setup_official_baselines.sh`
+checks out exact upstream commits into an ignored directory. The parent stages
+the prepared corpus, starts the official index or persistent retrieval worker,
+and accepts only structured JSON responses. Snapshot metadata binds the
+official revision, source digest, and corpus fingerprint before evaluation.
+MuSiQue uses BrowseNet's native decomposition template. Because BrowseNet does
+not provide a MultiHop-RAG template, MultiHop-RAG uses its official HotpotQA
+template without changing the retrieval algorithm. PropRAG's official example
+indexes and queries on one object; the persistent query worker therefore calls
+its cache-aware index entry point once at startup to restore the transient
+proposition maps from the completed artifacts.
 
 The indexer selects all `.txt` and `.md` files. It applies no company or sample
 filter and has no fallback grouping for unsupported datasets. HopRAG accepts
@@ -217,6 +241,18 @@ change its generated questions.
 - LiteLLM routes generation and embedding to external endpoints. Output is
   isolated under `data/ms_graphrag_output/<corpus_tag>`.
 - Expected output tables are verified; workflow errors fail the target.
+
+`models/browsenet/official_indexer.py` and
+`models/proprag/official_indexer.py`
+
+- Stage the complete prepared corpus into a run-specific file output and call
+  the pinned official implementation through an isolated Python process.
+- A complete snapshot records the upstream commit, source identities, staged
+  content digest, and prepared-corpus fingerprint. Evaluation fails before
+  retrieval if any identity differs.
+- One persistent worker loads the completed official index and serializes its
+  GPU retrieval calls. The parent evaluator receives the ordered passages and
+  applies the common answer and metric boundary.
 
 ## Prehop query path and branches
 
@@ -519,15 +555,21 @@ gates.
 - MS GraphRAG uses the official LocalSearch API and context-budget
   configuration for entity-grounded passage QA. The adapter does not route
   between LocalSearch and GlobalSearch using query keywords.
+- BrowseNet keeps its official five-subgraph retrieval, GLiNER extraction,
+  ColBERT threshold 0.9, and NV-Embed-v2 encoder. The evaluator supplies the
+  shared short-answer synthesis after official retrieval.
+- PropRAG keeps proposition extraction, 200 retrieved passages, five passages
+  for answer context, and NV-Embed-v2. The evaluator records the full ranking
+  for retrieval metrics and uses the first five passages for synthesis.
 
-HopRAG and MS GraphRAG retain their official budgets, so paper tables and
-captions state the unequal settings. A one-source-one-vector Naive run changes
-the evidence unit and is reported, if used, only as a separate chunking
-sensitivity analysis.
+Official full-system baselines retain their published budgets, so paper tables
+and captions state the unequal settings. A one-source-one-vector Naive run
+changes the evidence unit and is reported, if used, only as a separate
+chunking sensitivity analysis.
 
-Prehop, Naive, and HopRAG return an explicit answer boundary after synthesis;
-empty-context abstentions use the same boundary. MS GraphRAG instead requests
-a short `Final Answer:` span through the official LocalSearch/GlobalSearch
+Prehop, Naive, HopRAG, BrowseNet, and PropRAG return an explicit answer boundary
+after synthesis; empty-context abstentions use the same boundary. MS GraphRAG
+instead requests a short `Final Answer:` span through the official LocalSearch
 response-type parameter. The canonical metric extractor recognizes these
 explicit boundaries, preserves an unmarked response in full, and does not
 truncate a marked prediction before scoring.
@@ -622,16 +664,16 @@ are online. Coverage, linkage rate, and graph density remain descriptive and
 do not become dataset-tuned pass thresholds. Held-out retrieval metrics test
 effectiveness separately.
 
-For official MS GraphRAG and HopRAG adapters, the stored timing includes the
-explicit aggregate `official_pipeline_seconds` plus adapter-observed workflow
-or stage timings; the runner does not fabricate boundaries that the upstream
-package does not expose. Prehop retains its finer adapter phase timings;
-Naive reports its aggregate pipeline and measurement timing only.
+For official MS GraphRAG, HopRAG, BrowseNet, and PropRAG adapters, the stored
+timing includes `official_pipeline_seconds` plus any stage boundaries exposed
+by the adapter; the runner does not infer boundaries that the upstream package
+does not expose. Prehop retains its finer phase timings; Naive reports its
+aggregate pipeline and measurement timing only.
 `scripts/run_paper_target.sh` creates a cold target without deleting shared
-state: it disables the in-repo chunk and embedding caches, gives HopRAG and MS
-GraphRAG new run-specific output roots, clears Neo4j, and runs the complete
-prepared split at query concurrency 4. Existing run IDs and dirty tracked
-worktrees are rejected.
+state: it disables the in-repo chunk and embedding caches, gives every
+file-backed official baseline a new run-specific output root, clears Neo4j
+when the selected strategy uses it, and runs the complete prepared split at
+query concurrency 4. Existing run IDs and dirty tracked worktrees are rejected.
 MS GraphRAG relationship drops caused by missing extracted entities are
 recorded as integrity warnings in the target result rather than silently
 treated as a clean graph.

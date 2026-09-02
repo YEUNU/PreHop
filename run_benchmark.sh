@@ -61,7 +61,7 @@ else
 fi
 
 echo "Step 0: Python/Dependency preflight..."
-if [ "$MODEL" = "hoprag" ] || [ "$MODEL" = "ms_graphrag" ] || [ "$RUN_ALL" = true ]; then
+if [ "$MODEL" = "hoprag" ] || [ "$MODEL" = "ms_graphrag" ] || [ "$MODEL" = "browsenet" ] || [ "$MODEL" = "proprag" ] || [ "$RUN_ALL" = true ]; then
     if ! PREFLIGHT_MODEL="$MODEL" PREFLIGHT_ALL="$RUN_ALL" "$PYTHON_BIN" - <<'PY'
 import importlib
 import os
@@ -76,6 +76,13 @@ if model == "hoprag" or run_all:
     from models.hoprag.hoprag_adapter import HopRAGAdapter  # noqa: F401
 if model == "ms_graphrag" or run_all:
     from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter  # noqa: F401
+if model in {"browsenet", "proprag"}:
+    from models.official_baseline_runtime import validate_runtime
+    validate_runtime(model)
+if run_all:
+    from models.official_baseline_runtime import validate_runtime
+    validate_runtime("browsenet")
+    validate_runtime("proprag")
 print("Dependency preflight: OK")
 PY
     then
@@ -89,7 +96,7 @@ if [ "$SKIP_SERVER" != true ]; then
 
     # MS GraphRAG's benchmark reads its parquet/LanceDB artifacts directly. The
     # other strategies query Neo4j, as does benchmark_all.
-    if [ "$MODEL" != "ms_graphrag" ] || [ "$RUN_ALL" = true ]; then
+    if { [ "$MODEL" != "ms_graphrag" ] && [ "$MODEL" != "browsenet" ] && [ "$MODEL" != "proprag" ]; } || [ "$RUN_ALL" = true ]; then
         ./run_servers.sh neo4j
         if ! wait_for_server "http://localhost:7474" "Neo4j"; then exit 1; fi
     fi
@@ -99,8 +106,10 @@ if [ "$SKIP_SERVER" != true ]; then
     if ! wait_for_server "${VLLM_URL%/}/models" "Generation Model" "200"; then exit 1; fi
 
     # Start Embedding Service
-    ./run_servers.sh embed
-    if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then exit 1; fi
+    if { [ "$MODEL" != "browsenet" ] && [ "$MODEL" != "proprag" ]; } || [ "$RUN_ALL" = true ]; then
+        ./run_servers.sh embed
+        if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then exit 1; fi
+    fi
 
 else
     echo "Step 1: Skipping server startup (requested by caller)"

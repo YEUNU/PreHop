@@ -6,7 +6,7 @@
 # corpus, queries, and corpus tag. MultiHop-RAG articles are plain text, so
 # there is no OCR stage.
 #
-# Tagging: all four strategies share one dataset-level corpus tag (`multihoprag`)
+# Tagging: all strategies share one dataset-level corpus tag (`multihoprag`)
 # because the strategy is already encoded in the Neo4j label prefix
 # (PR_/NA_/HO_) and the ms_graphrag parquet path. Benchmarks are still run
 # per strategy.
@@ -17,7 +17,7 @@
 #   ./run_multihoprag.sh benchmark --model prehop --queries full
 #
 # Options:
-#   --model   {prehop|naive|hoprag|ms_graphrag}       default: prehop
+#   --model   {prehop|naive|hoprag|ms_graphrag|browsenet|proprag} default: prehop
 #   --queries {sample200|full}                         default: sample200
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
@@ -55,8 +55,8 @@ if { [ "$STAGE" = "benchmark" ] || [ "$STAGE" = "bench" ] || [ "$STAGE" = "all" 
 fi
 
 case "$MODEL" in
-    prehop|naive|hoprag|ms_graphrag) ;;
-    *) echo "Unknown --model '$MODEL' (use prehop|naive|hoprag|ms_graphrag)" >&2; exit 1 ;;
+    prehop|naive|hoprag|ms_graphrag|browsenet|proprag) ;;
+    *) echo "Unknown --model '$MODEL'" >&2; exit 1 ;;
 esac
 
 do_index() {
@@ -73,5 +73,5 @@ case "$STAGE" in
     index)           do_index ;;
     benchmark|bench) do_benchmark ;;
     all)             do_index; do_benchmark ;;
-    *) echo "Usage: $0 <index|benchmark|all> [--model prehop|naive|hoprag|ms_graphrag] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
+    *) echo "Usage: $0 <index|benchmark|all> [--model prehop|naive|hoprag|ms_graphrag|browsenet|proprag] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
 esac

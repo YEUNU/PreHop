@@ -1,8 +1,8 @@
 # Prehop repository guide
 
-The current system evaluates Prehop, Naive RAG, official HopRAG, and official
-MS GraphRAG on MultiHop-RAG and MuSiQue. The detailed module and
-branch map is in `docs/ARCHITECTURE.md`.
+The current system evaluates Prehop, Naive RAG, official HopRAG, official MS
+GraphRAG, BrowseNet, and PropRAG on MultiHop-RAG and MuSiQue. The detailed
+module and branch map is in `docs/ARCHITECTURE.md`.
 
 ## Documentation responsibilities
 
@@ -105,6 +105,10 @@ a model or vector-dimension change.
 - Official baselines keep their upstream behavior. In particular, official
   HopRAG `bfs_node` uses its published LLM node judgement during retrieval;
   this is documented baseline behavior and is routed to the external endpoint.
+- BrowseNet and PropRAG keep their official NV-Embed-v2 retrieval encoders and
+  published retrieval budgets. BrowseNet uses its MuSiQue decomposition
+  template for MuSiQue and its HotpotQA template for MultiHop-RAG because the
+  official repository has no MultiHop-RAG-specific template.
 - Benchmark LLM judging is disabled by default. When explicitly enabled for
   exploratory error analysis, it uses OpenAI Batch by default and never
   silently falls back to synchronous paid calls. Without qualified-human
@@ -152,7 +156,7 @@ RAG_BENCHMARK_RESUME=true ./run_benchmark.sh \
 
 # Run each dataset and strategy independently. Use a new run id for each cold run.
 ./scripts/run_paper_target.sh <multihoprag|musique> \
-  <prehop|naive|hoprag|ms_graphrag> <run-id>
+  <prehop|naive|hoprag|ms_graphrag|browsenet|proprag> <run-id>
 
 # Resume an already submitted OpenAI Batch judge after interruption
 .venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
@@ -185,22 +189,27 @@ Naive batches 32 source documents per embedding/write transaction. The paper
 environment allows 64 active Prehop files; each file generates one chunk at a
 time, and clients on the same endpoint/event loop share the 120-request
 generation limit. Official HopRAG and MS GraphRAG retain their
-adapter-specific worker limits.
+adapter-specific worker limits. BrowseNet and PropRAG run in pinned, isolated
+Python 3.10 environments created by `scripts/setup_official_baselines.sh`.
+Their official source and model artifacts remain under ignored
+`data/official_baselines/`; the main process exchanges JSON records with one
+persistent query worker per strategy.
 
 A measured cold run must:
 
 1. stop any prior indexing process;
 2. clear Neo4j nodes, constraints, and non-lookup indexes;
-3. remove prior `data/index_cache`, HopRAG outputs/caches, MS GraphRAG outputs,
-   debug, failure, and stats artifacts for the selected targets;
+3. remove prior `data/index_cache`, strategy output roots, debug, failure, and
+   stats artifacts for the selected targets;
 4. set `RAG_CHUNK_CACHE=off` and disable baseline cache reuse;
 5. use a new `RAG_RUN_ID`;
 6. run endpoint/model/dimension preflight before launching the target.
 
 The supported paper wrapper satisfies these rules without deleting another
-run's baseline cache: it uses run-specific HopRAG and MS GraphRAG output roots
-and disables the shared Prehop chunk and embedding caches. It also requires
-explicit generation and embedding model identifiers in `.env`.
+run's baseline cache: it uses run-specific HopRAG, MS GraphRAG, BrowseNet, and
+PropRAG output roots and disables the shared Prehop chunk and embedding caches.
+It also requires explicit generation and embedding model identifiers in
+`.env`.
 
 Each target writes an isolated stdout/stderr log. A target with any document,
 workflow, graph-finalization, or integrity failure is failed, never silently
@@ -247,15 +256,16 @@ chunk unit. The controlled comparison changes the retrieval architecture while
 holding the evidence unit and budget fixed. A one-source-one-vector run is a
 separately labelled chunking sensitivity analysis and cannot replace the
 controlled baseline or a Prehop component ablation.
-Prehop, Naive, and HopRAG must attach the shared explicit answer boundary to
-both generated answers and fixed abstentions. MS GraphRAG must declare its
-equivalent short-answer boundary through the official search API response
-type. Metric code must preserve the complete prediction when no explicit
-boundary is present and must not apply hidden prefix or suffix truncation.
-HopRAG retains the upstream official end-to-end top-k 20; MS GraphRAG retains
-its official context budget. These unequal official settings must be stated in
-the paper. A controlled equal-budget retrieval experiment is reported
-separately from official-baseline results.
+Prehop, Naive, HopRAG, BrowseNet, and PropRAG must attach the shared explicit
+answer boundary to both generated answers and fixed abstentions. MS GraphRAG
+must declare its equivalent short-answer boundary through the official search
+API response type. Metric code must preserve the complete prediction when no
+explicit boundary is present and must not apply hidden prefix or suffix
+truncation. HopRAG retains upstream top-k 20; MS GraphRAG retains its official
+context budget; BrowseNet retains five subgraphs; PropRAG records top-k 200 and
+uses the first five passages for synthesis. State these unequal official
+settings in the paper. Report controlled equal-budget retrieval separately
+from official-baseline results.
 
 ## Paper specification rules
 

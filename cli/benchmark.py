@@ -303,7 +303,7 @@ async def _verify_active_index_snapshot(
     if source_ids is None:
         return {"status": "manifest_absent"}
     try:
-        if strategy == "ms_graphrag":
+        if strategy in {"ms_graphrag", "browsenet", "proprag"}:
             metadata = await asyncio.to_thread(engine.verify_active_snapshot, source_ids, corpus_manifest)
             return {
                 "status": "matched",
@@ -1049,6 +1049,14 @@ async def run_benchmark(
             from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter
 
             engine = MSGraphRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
+        elif strategy == "browsenet":
+            from models.browsenet.browsenet_adapter import BrowseNetAdapter
+
+            engine = BrowseNetAdapter(model_id=model_id, corpus_tag=corpus_tag)
+        elif strategy == "proprag":
+            from models.proprag.proprag_adapter import PropRAGAdapter
+
+            engine = PropRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
 
@@ -1455,6 +1463,8 @@ async def run_benchmark(
     )
 
     if not results:
+        if hasattr(engine, "close"):
+            await asyncio.to_thread(engine.close)
         return None
 
     # The final write is unconditional so an empty pending set after a valid
@@ -1509,6 +1519,8 @@ async def run_benchmark(
 
     print(f"\n  Final results saved to: {result_file}")
     print(f"{'=' * 50}\n")
+    if hasattr(engine, "close"):
+        await asyncio.to_thread(engine.close)
     if summary.get("status") != "pending_judge":
         _assert_benchmark_complete(summary, result_file)
     return summary

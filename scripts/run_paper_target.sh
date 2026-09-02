@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <multihoprag|musique> <prehop|naive|hoprag|ms_graphrag> <run-id> [--check]" >&2
+    echo "Usage: $0 <multihoprag|musique> <prehop|naive|hoprag|ms_graphrag|browsenet|proprag> <run-id> [--check]" >&2
     exit 2
 }
 
@@ -21,7 +21,7 @@ case "$dataset" in
     *) usage ;;
 esac
 case "$strategy" in
-    prehop|naive|hoprag|ms_graphrag) ;;
+    prehop|naive|hoprag|ms_graphrag|browsenet|proprag) ;;
     *) usage ;;
 esac
 case "$run_id" in
@@ -63,7 +63,9 @@ fi
 
 hop_root="data/hoprag_output/runs/$run_id"
 ms_root="data/ms_graphrag_output/runs/$run_id"
-if [ -e "$hop_root" ] || [ -e "$ms_root" ]; then
+browse_root="data/browsenet_output/runs/$run_id"
+prop_root="data/proprag_output/runs/$run_id"
+if [ -e "$hop_root" ] || [ -e "$ms_root" ] || [ -e "$browse_root" ] || [ -e "$prop_root" ]; then
     echo "Isolated baseline output already exists for run ID: $run_id" >&2
     exit 1
 fi
@@ -74,6 +76,8 @@ export RAG_CHUNK_CACHE=off
 export RAG_EMBEDDING_CACHE=off
 export RAG_HOP_OUTPUT_ROOT=$hop_root
 export RAG_MS_OUTPUT_ROOT=$ms_root
+export RAG_BROWSENET_OUTPUT_ROOT=$browse_root
+export RAG_PROPRAG_OUTPUT_ROOT=$prop_root
 export RAG_BENCHMARK_CONCURRENCY=4
 export RAG_BENCHMARK_CHECKPOINT_EVERY=10
 export RAG_JUDGE_ENABLED=false

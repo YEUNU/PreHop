@@ -104,7 +104,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["index", "benchmark", "benchmark_all", "hop_rebuild", "clear_graph"],
         required=True,
     )
-    parser.add_argument("--strategy", choices=["naive", "prehop", "hoprag", "ms_graphrag"], default="prehop")
+    parser.add_argument(
+        "--strategy",
+        choices=["naive", "prehop", "hoprag", "ms_graphrag", "browsenet", "proprag"],
+        default="prehop",
+    )
     parser.add_argument("--model", default="default")
     parser.add_argument("--dataset", default=_DEFAULT_DATASET)
     parser.add_argument("--queries_file", default=_DEFAULT_QUERIES_FILE)
@@ -137,11 +141,13 @@ async def main():
             logger.info("Neo4j graph and application schema cleared successfully.")
         elif args.mode == "index":
             RAGConfig.validate()
-            if args.clear_graph:
+            if args.clear_graph and args.strategy in {"prehop", "naive", "hoprag"}:
                 neo4j = Neo4jService()
                 logger.warning("Clearing all Neo4j data and application schema before indexing...")
                 await _clear_graph_and_schema(neo4j)
                 logger.info("Neo4j graph and application schema cleared successfully.")
+            elif args.clear_graph:
+                logger.info("%s uses file artifacts; Neo4j clear is not applicable.", args.strategy)
             await run_indexing(args.dataset, args.strategy, args.model, args.corpus_tag, args.save_intermediate)
         elif args.mode == "hop_rebuild":
             RAGConfig.validate()
@@ -181,7 +187,7 @@ async def main():
             results_dir.mkdir(parents=True, exist_ok=True)
             logger.info("Batch benchmark results will be saved to: %s", results_dir)
             strategy_failures = []
-            for strategy in ["naive", "prehop", "hoprag", "ms_graphrag"]:
+            for strategy in ["naive", "prehop", "hoprag", "ms_graphrag", "browsenet", "proprag"]:
                 print(f"\n>>> Running Benchmark for: {strategy.upper()}")
                 try:
                     await run_benchmark_multi_seed(
