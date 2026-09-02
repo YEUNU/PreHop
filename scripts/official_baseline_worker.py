@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import traceback
 import types
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 RESULT_PREFIX = "__PREHOP_OFFICIAL_RESULT__="
 
@@ -37,6 +40,77 @@ def load_corpus(output_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+class LiteLLMEmbeddingEncoder:
+    """Synchronous embedding facade for the configured OpenAI-compatible proxy."""
+
+    def __init__(self, global_config: Any | None = None, device: str | None = None):
+        from openai import OpenAI
+
+        _ = device
+        self.embedding_model_name = os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
+        self.embedding_dim = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "4096"))
+        self.batch_size = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "512"))
+        if global_config is not None:
+            self.embedding_model_name = global_config.embedding_model_name
+            self.batch_size = int(global_config.embedding_batch_size)
+        if self.batch_size < 1:
+            raise ValueError("RAG_EMBEDDING_BATCH_SIZE must be at least 1")
+        base_url = os.environ.get("VLLM_EMBED_URL")
+        if not base_url:
+            raise ValueError("VLLM_EMBED_URL is required for official baseline embeddings")
+        self.client = OpenAI(
+            api_key=os.environ.get("VLLM_API_KEY") or "EMPTY",
+            base_url=base_url,
+            timeout=float(os.environ.get("RAG_OFFICIAL_EMBED_TIMEOUT", "600")),
+            max_retries=5,
+        )
+
+    @staticmethod
+    def _normalized(vectors: list[list[float]]) -> np.ndarray:
+        array = np.asarray(vectors, dtype=np.float32)
+        if array.ndim != 2 or not len(array):
+            raise ValueError("LiteLLM embedding response is empty or malformed")
+        norms = np.linalg.norm(array, axis=1, keepdims=True)
+        if np.any(norms == 0) or not np.isfinite(array).all():
+            raise ValueError("LiteLLM embedding response contains an invalid vector")
+        return array / norms
+
+    def _encode(self, texts: list[str]) -> np.ndarray:
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self.batch_size):
+            response = self.client.embeddings.create(
+                model=self.embedding_model_name,
+                input=texts[start : start + self.batch_size],
+            )
+            ordered = sorted(response.data, key=lambda item: item.index)
+            vectors.extend(item.embedding for item in ordered)
+        result = self._normalized(vectors)
+        if result.shape != (len(texts), self.embedding_dim):
+            raise ValueError(
+                "LiteLLM embedding shape mismatch: "
+                f"expected {(len(texts), self.embedding_dim)}, got {result.shape}"
+            )
+        return result
+
+    def encode(self, texts: str | list[str], prompt: str = "passage", **kwargs: Any) -> np.ndarray:
+        _ = kwargs
+        values = [texts] if isinstance(texts, str) else list(texts)
+        if "query" in prompt:
+            instruction = os.environ.get(
+                "EMBEDDING_QUERY_INSTRUCTION",
+                "Given a web search query, retrieve relevant passages that answer the query",
+            )
+            values = [f"Instruct: {instruction}\nQuery:{text}" for text in values]
+        return self._encode(values)
+
+    def batch_encode(self, texts: str | list[str], instruction: str = "", **kwargs: Any) -> np.ndarray:
+        _ = kwargs
+        values = [texts] if isinstance(texts, str) else list(texts)
+        if instruction:
+            values = [f"Instruct: {instruction}\nQuery: {text}" for text in values]
+        return self._encode(values)
+
+
 def _browsenet_dataset_key(corpus_tag: str) -> str:
     # BrowseNet chooses its official few-shot decomposition prompt by a
     # substring in the dataset name. MultiHop-RAG is closest to its HotpotQA
@@ -54,6 +128,10 @@ def _patch_browsenet_storage(official_root: Path, output_dir: Path) -> None:
 
     for module in (browse_module, NER, colbertv2_knn, kg_construct, subquerygeneration):
         module.ROOT_DIR = output_dir
+    # BrowseNet's graph construction and retrieval remain unchanged. Replace
+    # only its semantic encoder transport so the shared LiteLLM embedding
+    # endpoint is used instead of loading a second 8B model on local CUDA.
+    browse_module.NVEmbedEncoder = LiteLLMEmbeddingEncoder
     colbert_runtime = output_dir / "colbert_runtime"
     (colbert_runtime / "colbert").mkdir(parents=True, exist_ok=True)
     (colbert_runtime / "exp").mkdir(parents=True, exist_ok=True)
@@ -85,7 +163,9 @@ def browsenet_index(official_root: Path, output_dir: Path, corpus_tag: str) -> d
         dataset=dataset,
         device="cuda" if torch.cuda.is_available() else "cpu",
         ner_model=os.environ.get("RAG_BROWSENET_NER_MODEL", "gliner"),
-        sem_model=os.environ.get("RAG_BROWSENET_SEM_MODEL", "nvembedv2"),
+        # This value selects BrowseNet's dense-semantic branch; the class used
+        # by that branch is replaced with LiteLLMEmbeddingEncoder above.
+        sem_model="nvembedv2",
         subquery_model=os.environ.get(
             "RAG_BROWSENET_SUBQUERY_MODEL", os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
         ),
@@ -113,7 +193,7 @@ class BrowseNetService:
             dataset=self.dataset,
             device="cuda" if torch.cuda.is_available() else "cpu",
             ner_model=os.environ.get("RAG_BROWSENET_NER_MODEL", "gliner"),
-            sem_model=os.environ.get("RAG_BROWSENET_SEM_MODEL", "nvembedv2"),
+            sem_model="nvembedv2",
             subquery_model=os.environ.get(
                 "RAG_BROWSENET_SUBQUERY_MODEL", os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
             ),
@@ -180,6 +260,30 @@ def _patch_proprag_config(official_root: Path) -> tuple[Any, Any]:
     from proprag.PropRAG import PropRAG
     from proprag.utils.config_utils import BaseConfig
 
+    proprag_module = __import__("proprag.PropRAG", fromlist=["PropRAG"])
+    proprag_module.logger.setLevel(logging.INFO)
+
+    # PropRAG prints the entire configuration during construction. Its
+    # dataclass repr includes the API key, so redact that field before any
+    # engine instance is created. Keep the patch idempotent for repeated setup
+    # calls in one worker process.
+    if not getattr(BaseConfig, "_prehop_redacted_repr", False):
+        original_repr = BaseConfig.__repr__
+
+        def _redacted_repr(config):
+            rendered = original_repr(config)
+            secret = str(getattr(config, "api_key", "") or "")
+            return rendered.replace(secret, "***") if secret else rendered
+
+        BaseConfig.__repr__ = _redacted_repr
+        BaseConfig._prehop_redacted_repr = True
+
+    def _remote_embedding_factory(config, use_cache=True):
+        _ = use_cache
+        return LiteLLMEmbeddingEncoder(global_config=config)
+
+    proprag_module._get_embedding_model_class = _remote_embedding_factory
+
     def _post_init(config):
         if config.save_dir is None:
             config.save_dir = "outputs" if config.dataset is None else os.path.join("outputs", config.dataset)
@@ -195,7 +299,7 @@ def _proprag_config(BaseConfig: Any, output_dir: Path, corpus_len: int):
         llm_name=os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model"),
         dataset=None,
         save_dir=str(output_dir / "outputs"),
-        embedding_model_name=os.environ.get("RAG_PROPRAG_EMBEDDING_MODEL", "nvidia/NV-Embed-v2"),
+        embedding_model_name=os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model"),
         force_index_from_scratch=False,
         force_openie_from_scratch=False,
         retrieval_top_k=200,

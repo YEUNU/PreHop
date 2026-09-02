@@ -105,8 +105,9 @@ a model or vector-dimension change.
 - Official baselines keep their upstream behavior. In particular, official
   HopRAG `bfs_node` uses its published LLM node judgement during retrieval;
   this is documented baseline behavior and is routed to the external endpoint.
-- BrowseNet and PropRAG keep their official NV-Embed-v2 retrieval encoders and
-  published retrieval budgets. BrowseNet uses its MuSiQue decomposition
+- BrowseNet and PropRAG route semantic embeddings through the same configured
+  LiteLLM endpoint as the other strategies and keep their published retrieval
+  procedures and budgets. BrowseNet uses its MuSiQue decomposition
   template for MuSiQue and its HotpotQA template for MultiHop-RAG because the
   official repository has no MultiHop-RAG-specific template.
 - Benchmark LLM judging is disabled by default. When explicitly enabled for

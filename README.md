@@ -81,9 +81,8 @@ and is never replaced by a fixed-length suffix.
 
 The evaluator supports six independent strategies: Prehop, Naive RAG, HopRAG,
 MS GraphRAG, BrowseNet, and PropRAG. Each target uses the full prepared
-MultiHop-RAG or MuSiQue split. Answer synthesis uses `gemma-4-31b-it` across
-the controlled evaluator paths. BrowseNet and PropRAG retain their published
-`NV-Embed-v2` retrieval encoders; the other strategies use the configured
+MultiHop-RAG or MuSiQue split. Generation and answer synthesis use
+`gemma-4-31b-it`; semantic retrieval embeddings use the configured
 `qwen3-embedding-8b` endpoint. MultiHop-RAG and MuSiQue remain in separate
 tables because their metrics and denominators differ. The artifact-admission
 and publication checks are defined in [RESULTS](docs/RESULTS.md).
@@ -110,8 +109,8 @@ prehop/
 │   ├── naive/                       # baseline (shared fixed-window chunks + vector search)
 │   ├── hoprag/                      # baseline (runtime hop traversal via official HopRAG)
 │   ├── ms_graphrag/                 # baseline (community-report retrieval via graphrag package)
-│   ├── browsenet/                   # external official BrowseNet adapter
-│   └── proprag/                     # external official PropRAG adapter
+│   ├── browsenet/                   # pinned BrowseNet reference adapter
+│   └── proprag/                     # pinned PropRAG reference adapter
 ├── utils/
 │   ├── abstain.py                   # honest-abstain detection + shared 3-way answer_label
 │   ├── metrics.py                   # deferred Batch judge + retrieval metrics
@@ -186,8 +185,11 @@ pinned official revisions once:
 
 The setup keeps official source, model dependencies, and downloaded weights
 under the ignored `data/official_baselines/` directory. The repository stores
-only the adapters and exact upstream commit identifiers. Run either strategy
-through the same dataset entrypoint used by the other baselines:
+only the adapters and exact upstream commit identifiers. Generation and
+semantic embeddings use the configured LiteLLM endpoints; BrowseNet's GLiNER
+and ColBERT components remain local because they are algorithm-specific rather
+than general generation or embedding endpoints. Run either strategy through
+the same dataset entrypoint used by the other baselines:
 
 ```bash
 ./run_dataset.sh musique all --model browsenet --queries full
@@ -196,7 +198,7 @@ through the same dataset entrypoint used by the other baselines:
 
 MuSiQue uses BrowseNet's native question-decomposition template. BrowseNet has
 no MultiHop-RAG template, so that dataset uses its official HotpotQA template;
-the retrieval implementation and published defaults remain unchanged.
+the upstream graph retrieval procedure and search budgets remain unchanged.
 
 ---
 

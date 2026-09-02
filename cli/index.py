@@ -85,17 +85,6 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
         resolved_generation_model = None
     if strategy == "hoprag":
         embedding_model = os.environ.get("RAG_HOP_EMBED_MODEL_NAME", RAGConfig.EMBEDDING_MODEL)
-    elif strategy == "browsenet":
-        semantic_model = os.environ.get("RAG_BROWSENET_SEM_MODEL", "nvembedv2")
-        embedding_model = {
-            "miniLM": "multi-qa-MiniLM-L6-cos-v1",
-            "stella": "dunzhang/stella_en_400M_v5",
-            "granite": "ibm-granite/granite-embedding-125m-english",
-            "nvembedv2": "nvidia/NV-Embed-v2",
-            "qwen2": "Alibaba-NLP/gte-Qwen2-7B-instruct",
-        }.get(semantic_model, semantic_model)
-    elif strategy == "proprag":
-        embedding_model = os.environ.get("RAG_PROPRAG_EMBEDDING_MODEL", "nvidia/NV-Embed-v2")
     else:
         embedding_model = RAGConfig.EMBEDDING_MODEL
     policy = {
@@ -104,19 +93,14 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
         "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
         "generation_seed": RAGConfig.LLM_SEED,
         "embedding_model": embedding_model,
-        "embedding_revision": (
-            None
-            if strategy in {"browsenet", "proprag"}
-            else os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None
-        ),
+        "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
         "embedding_query_instruction": (
-            "official_native" if strategy in {"browsenet", "proprag"} else RAGConfig.EMBEDDING_QUERY_INSTRUCTION
+            "Given a question, retrieve relevant sentences that best answer the question. "
+            "Please make sure each sentence is connected to the next through at least a shared entity."
+            if strategy == "proprag"
+            else RAGConfig.EMBEDDING_QUERY_INSTRUCTION
         ),
-        "embedding_dimensions": (
-            4096
-            if strategy in {"browsenet", "proprag"} and embedding_model == "nvidia/NV-Embed-v2"
-            else (None if strategy in {"browsenet", "proprag"} else RAGConfig.EMBEDDING_DIMENSIONS)
-        ),
+        "embedding_dimensions": RAGConfig.EMBEDDING_DIMENSIONS,
         "embedding_max_input_tokens": RAGConfig.MAX_EMBEDDING_LENGTH,
         "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
     }
@@ -145,7 +129,7 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
             {
                 "official_revision": "ba82eeceb089104de2999d00b744cd02583fe8a4",
                 "ner_model": os.environ.get("RAG_BROWSENET_NER_MODEL", "gliner"),
-                "semantic_model": os.environ.get("RAG_BROWSENET_SEM_MODEL", "nvembedv2"),
+                "embedding_transport": "litellm",
                 "subquery_model": os.environ.get("RAG_BROWSENET_SUBQUERY_MODEL", RAGConfig.DEFAULT_MODEL),
                 "colbert_threshold": float(os.environ.get("RAG_BROWSENET_COLBERT_THRESHOLD", "0.9")),
                 "subgraphs": int(os.environ.get("RAG_BROWSENET_N_SUBGRAPHS", "5")),
@@ -156,7 +140,7 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
         policy.update(
             {
                 "official_revision": "3ec103488abd5589e569ee0fdd6e0c7067e5b783",
-                "semantic_model": os.environ.get("RAG_PROPRAG_EMBEDDING_MODEL", "nvidia/NV-Embed-v2"),
+                "embedding_transport": "litellm",
                 "retrieval_top_k": 200,
                 "linking_top_k": 5,
                 "qa_top_k": 5,

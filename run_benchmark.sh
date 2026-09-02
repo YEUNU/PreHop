@@ -105,11 +105,9 @@ if [ "$SKIP_SERVER" != true ]; then
     ./run_servers.sh gen
     if ! wait_for_server "${VLLM_URL%/}/models" "Generation Model" "200"; then exit 1; fi
 
-    # Start Embedding Service
-    if { [ "$MODEL" != "browsenet" ] && [ "$MODEL" != "proprag" ]; } || [ "$RUN_ALL" = true ]; then
-        ./run_servers.sh embed
-        if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then exit 1; fi
-    fi
+    # Every strategy uses the configured embedding endpoint.
+    ./run_servers.sh embed
+    if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then exit 1; fi
 
 else
     echo "Step 1: Skipping server startup (requested by caller)"

@@ -24,10 +24,8 @@ Every result row must satisfy all of the following conditions:
    rows.
 2. The evaluated query digest and corpus fingerprint match across all listed
    strategies for the dataset.
-3. The index and query traces record the declared generation and retrieval
-   model revisions. Controlled endpoint strategies use
-   `qwen3-embedding-8b` at 4,096 dimensions; official standalone strategies
-   retain the retrieval encoder recorded in their index policy.
+3. The index and query traces record `gemma-4-31b-it` generation and
+   `qwen3-embedding-8b` retrieval embeddings at 4,096 dimensions.
 4. The index snapshot is complete and matches the active corpus manifest.
 5. Metrics are recomputed from the saved query rows rather than copied from a
    progress log.

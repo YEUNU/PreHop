@@ -50,12 +50,16 @@ def test_official_python_preserves_virtualenv_symlink_path(tmp_path, monkeypatch
 
 def test_external_snapshot_verification_is_fail_closed(tmp_path, monkeypatch):
     monkeypatch.setenv("RAG_PROPRAG_OUTPUT_ROOT", str(tmp_path / "output"))
+    monkeypatch.setenv("VLLM_SERVED_EMBED_MODEL_NAME", "test-embedding")
+    monkeypatch.setenv("RAG_EMBEDDING_REVISION", "test-revision")
     target = tmp_path / "output" / "musique"
     target.mkdir(parents=True)
     metadata = {
         "status": "complete",
         "strategy": "proprag",
         "official_revision": OFFICIAL_REVISIONS["proprag"],
+        "embedding_model": "test-embedding",
+        "embedding_revision": "test-revision",
         "source_count": 2,
         "source_set_sha256": source_set_sha256(["a", "b"]),
         "corpus_records_sha256": corpus_records_sha256(
@@ -83,6 +87,9 @@ def test_external_snapshot_verification_is_fail_closed(tmp_path, monkeypatch):
         verify_snapshot("proprag", "musique", ["a", "c"], {"fingerprint": "fingerprint"})
     with pytest.raises(RuntimeError, match="fingerprint"):
         verify_snapshot("proprag", "musique", ["a", "b"], {"fingerprint": "changed"})
+    monkeypatch.setenv("RAG_EMBEDDING_REVISION", "changed-revision")
+    with pytest.raises(RuntimeError, match="embedding revision"):
+        verify_snapshot("proprag", "musique", ["a", "b"], {"fingerprint": "fingerprint"})
 
 
 class _FakeWorker:
@@ -152,17 +159,24 @@ async def test_external_capacity_excludes_staged_input(tmp_path, monkeypatch, st
 
 
 @pytest.mark.parametrize("strategy", ["browsenet", "proprag"])
-def test_external_index_policy_records_official_embedding(monkeypatch, strategy):
+def test_external_index_policy_records_litellm_embedding(monkeypatch, strategy):
     from cli.index import _resolved_index_policy
-
-    monkeypatch.delenv("RAG_BROWSENET_SEM_MODEL", raising=False)
-    monkeypatch.delenv("RAG_PROPRAG_EMBEDDING_MODEL", raising=False)
+    from core.config import RAGConfig
 
     policy = _resolved_index_policy(strategy, "default")
 
-    assert policy["embedding_model"] == "nvidia/NV-Embed-v2"
-    assert policy["embedding_dimensions"] == 4096
-    assert policy["embedding_query_instruction"] == "official_native"
+    assert policy["embedding_model"] == RAGConfig.EMBEDDING_MODEL
+    assert policy["embedding_dimensions"] == RAGConfig.EMBEDDING_DIMENSIONS
+    assert policy["embedding_transport"] == "litellm"
+
+
+def test_proprag_index_policy_records_its_query_instruction():
+    from cli.index import _resolved_index_policy
+
+    policy = _resolved_index_policy("proprag", "default")
+
+    assert policy["embedding_query_instruction"].startswith("Given a question")
+    assert "shared entity" in policy["embedding_query_instruction"]
 
 
 def test_persistent_worker_protocol_ignores_upstream_stdout(tmp_path, monkeypatch):

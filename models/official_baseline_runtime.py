@@ -38,6 +38,14 @@ def corpus_records_sha256(records: list[dict[str, Any]]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def configured_embedding_model() -> str:
+    return os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
+
+
+def configured_embedding_revision() -> str | None:
+    return os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None
+
+
 def official_root(strategy: str) -> Path:
     key = f"RAG_{strategy.upper()}_ROOT"
     return Path(os.environ.get(key, f"data/official_baselines/{strategy}/source")).resolve()
@@ -260,6 +268,10 @@ def verify_snapshot(strategy: str, corpus_tag: str, expected_source_ids: list[st
         raise RuntimeError(f"{strategy} snapshot is not complete")
     if metadata.get("official_revision") != OFFICIAL_REVISIONS[strategy]:
         raise RuntimeError(f"{strategy} snapshot uses a different official revision")
+    if metadata.get("embedding_model") != configured_embedding_model():
+        raise RuntimeError(f"{strategy} snapshot uses a different embedding model")
+    if metadata.get("embedding_revision") != configured_embedding_revision():
+        raise RuntimeError(f"{strategy} snapshot uses a different embedding revision")
     expected = sorted(expected_source_ids)
     if metadata.get("source_count") != len(expected) or metadata.get("source_set_sha256") != source_set_sha256(expected):
         raise RuntimeError(f"{strategy} snapshot source set does not match the prepared corpus")

@@ -90,12 +90,10 @@ if [ "$SKIP_SERVER" != true ]; then
         exit 1
     fi
 
-    if [ "$MODEL" != "browsenet" ] && [ "$MODEL" != "proprag" ]; then
-        ./run_servers.sh embed
-        if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then
-            echo "Fatal: Embedding service failed." >&2
-            exit 1
-        fi
+    ./run_servers.sh embed
+    if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then
+        echo "Fatal: Embedding service failed." >&2
+        exit 1
     fi
 
     # HOP-edge pre-scoring uses the Neo4j ANN vector-index score directly.

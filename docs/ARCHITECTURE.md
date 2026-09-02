@@ -59,12 +59,12 @@ strategy == ms_graphrag
 strategy == browsenet
   -> isolated official BrowseNet revision
   -> GLiNER entities + ColBERT entity linking + Graph-of-Chunks
-  -> NV-Embed-v2 passage embeddings + file-backed artifacts
+  -> LiteLLM passage embeddings + file-backed artifacts
 
 strategy == proprag
   -> isolated official PropRAG revision
   -> proposition extraction + entity/proposition/passage graph
-  -> NV-Embed-v2 stores + file-backed graph artifacts
+  -> LiteLLM embedding stores + file-backed graph artifacts
 
 anything else
   -> ValueError
@@ -556,13 +556,15 @@ gates.
   configuration for entity-grounded passage QA. The adapter does not route
   between LocalSearch and GlobalSearch using query keywords.
 - BrowseNet keeps its official five-subgraph retrieval, GLiNER extraction,
-  ColBERT threshold 0.9, and NV-Embed-v2 encoder. The evaluator supplies the
-  shared short-answer synthesis after official retrieval.
+  and ColBERT threshold 0.9. Its semantic encoder calls the configured LiteLLM
+  embedding endpoint, and the evaluator supplies the shared short-answer
+  synthesis after official retrieval.
 - PropRAG keeps proposition extraction, 200 retrieved passages, five passages
-  for answer context, and NV-Embed-v2. The evaluator records the full ranking
+  for answer context, and its graph retrieval procedure. Semantic vectors come
+  from the configured LiteLLM endpoint. The evaluator records the full ranking
   for retrieval metrics and uses the first five passages for synthesis.
 
-Official full-system baselines retain their published budgets, so paper tables
+External reference systems retain their stated search budgets, so paper tables
 and captions state the unequal settings. A one-source-one-vector Naive run
 changes the evidence unit and is reported, if used, only as a separate
 chunking sensitivity analysis.

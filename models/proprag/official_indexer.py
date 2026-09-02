@@ -4,6 +4,8 @@ import time
 
 from models.official_baseline_runtime import (
     OFFICIAL_REVISIONS,
+    configured_embedding_model,
+    configured_embedding_revision,
     corpus_records_sha256,
     run_index_worker,
     snapshot_metadata_path,
@@ -29,6 +31,8 @@ async def run_official_index(dataset_path: str, corpus_tag: str, corpus_manifest
             "strategy": "proprag",
             "corpus_tag": corpus_tag,
             "official_revision": OFFICIAL_REVISIONS["proprag"],
+            "embedding_model": configured_embedding_model(),
+            "embedding_revision": configured_embedding_revision(),
             "source_count": len(source_ids),
             "source_set_sha256": source_set_sha256(source_ids),
             "corpus_records_sha256": corpus_records_sha256(records),
