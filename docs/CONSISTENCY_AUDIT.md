@@ -25,6 +25,7 @@ complete-split artifacts, manuscript, and presentation.
 | 단계별 시간 | 한 실행의 단계별 타이머 합계 사용 | 동시성 32, 2,417개, 실패 0건 | 같은 실행 안의 비중 | verified |
 | 결과 추적성 | 산출물에 코드, 입력, 모델, 시드, 동시성, 색인 ID 기록 | JSON 결과와 요약 파일 | 전체 수치와 산출물 연결 | verified |
 | 설정 변경 경계 | 모델 버전이나 벡터 차원을 바꾸면 새 실행 ID로 처음부터 색인 | 표의 모든 수치는 해당 산출물의 설정을 유지 | 과거 수치를 새 설정으로 바꾸어 표기하지 않음 | verified |
+| 전체 성능과 내부 통제의 설정 경계 | 전체 성능과 내부 통제 산출물의 모델 ID·벡터 차원을 각각 확인 | 전체 시스템: 8B 재구축 행렬; 내부 통제: 기록된 4B 색인 | 두 설정의 수치를 같은 설정의 paired effect로 표현하지 않음 | verified |
 
 ## 2. Dataset and denominator audit
 
@@ -84,3 +85,6 @@ hold:
    2,560-dimensional `qwen3-embedding-4b` index; they are not presented as a
    same-configuration intervention on a separately rebuilt 4,096-dimensional
    index.
+9. Presentation and manuscript tables label complete-system and internal-control
+   configurations separately when their embedding model or vector dimension
+   differs.

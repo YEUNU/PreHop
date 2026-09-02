@@ -30,7 +30,14 @@ DOCUMENTS = (
     Path("docs/prehop_paper.md"),
     Path("docs/RESULTS.md"),
     Path("docs/ABLATION_STUDY.md"),
+    Path("docs/CONSISTENCY_AUDIT.md"),
     Path("presentation/prehop-academic-v2.html"),
+    Path("presentation/prehop-professor-briefing.html"),
+)
+
+PRESENTATIONS = (
+    Path("presentation/prehop-academic-v2.html"),
+    Path("presentation/prehop-professor-briefing.html"),
 )
 
 PRESENTATION_FORBIDDEN = (
@@ -144,12 +151,12 @@ def verify() -> dict[str, Any]:
         errors.append("Stage profile generation share changed")
     checks.append("fixed-concurrency stage profile")
 
-    presentation = (ROOT / "presentation/prehop-academic-v2.html").read_text(encoding="utf-8")
+    presentation = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in PRESENTATIONS)
     for phrase in PRESENTATION_FORBIDDEN:
         if phrase.casefold() in presentation.casefold():
             errors.append(f"Presentation contains forbidden wording: {phrase}")
     for required in (
-        "A1–A3는 같은 최종 색인에서 질의 단계를 비교하고",
+        "A1–A3는 같은 4B 통제 색인에서 질의 단계를 비교하고",
         "저장 연결 구조",
         "Ablation 1",
         "Ablation 2",
@@ -159,6 +166,8 @@ def verify() -> dict[str, Any]:
         "후보 선택 정책",
         "MuSiQue 2,417개",
         "기록 합계",
+        "qwen3-embedding-8b",
+        "qwen3-embedding-4b",
     ):
         if required not in presentation:
             errors.append(f"Presentation is missing required wording: {required}")

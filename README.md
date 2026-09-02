@@ -110,8 +110,11 @@ split. Prehop's relative gains over the strongest comparison result are
 
 ### Component-level interpretation
 
-The final component evidence is MuSiQue-only and uses all 2,417 questions.
-MultiHop-RAG remains a separate complete-system evaluation.
+The component evidence is MuSiQue-only and uses all 2,417 questions. These
+controls retain their recorded `qwen3-embedding-4b`, 2,560-dimensional index;
+they are not same-configuration deltas for the separately rebuilt
+`qwen3-embedding-8b` complete-system matrix. MultiHop-RAG remains a separate
+complete-system evaluation.
 
 | Tested stage | Full-split control | Main result |
 |---|---|---|

@@ -100,9 +100,12 @@ paired artifact is
 
 ## 5. Query-stage component controls
 
-All effects below are control minus the complete Prehop result on the same
-2,417 query IDs. Separate generation calls make these descriptive paired
-complete-split diagnostics rather than decoding-invariant counterfactuals.
+All effects below use the recorded `qwen3-embedding-4b`, 2,560-dimensional
+control index and report control minus the complete Prehop result on the same
+2,417 query IDs. They are not paired deltas for the separately rebuilt
+`qwen3-embedding-8b` complete-system matrix. Separate generation calls make
+these descriptive paired complete-split diagnostics rather than
+decoding-invariant counterfactuals.
 
 | Removed query-stage component | Δ Answer EM (95% CI) | Δ Answer F1 (95% CI) | Δ Support F1 (95% CI) | Δ Support R (95% CI) |
 |---|---:|---:|---:|---:|
@@ -113,8 +116,8 @@ Source: `data/results/presentation-full-analysis/full_component_controls_2417.js
 
 ## 6. Fixed-candidate controls
 
-These analyses reuse the same candidate texts and report selection and support
-metrics.
+These analyses reuse candidate texts retrieved with the same 4B control
+configuration and report selection and support metrics.
 
 ### 6.1. Candidate input order
 
