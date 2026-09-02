@@ -261,6 +261,9 @@ data/musique_queries.json
 run_mhr_finish.sh
 run_flashinfer_switch.sh
 run_mhr_full_benchmark.sh
+.tmp*
+*.tmp
+*.tmp.sh
 .DS_Store
 
 # Submission-strategy details (target venue, deadlines, rejection history) —

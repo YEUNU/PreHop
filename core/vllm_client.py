@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 import os
+import re
 from typing import Any, ClassVar
 
 import httpx
@@ -194,6 +195,35 @@ class VLLMClient:
         if 0 <= marker < len(excerpt):
             excerpt = excerpt[:marker] + "<<<ERR>>>" + excerpt[marker] + "<<<ERR>>>" + excerpt[marker + 1 :]
         return excerpt.replace("\n", "\\n").replace("\r", "\\r")
+
+    @staticmethod
+    def _extract_json_payload(raw: str) -> dict[str, Any] | None:
+        """Recover a JSON object from noisy model output."""
+        if not isinstance(raw, str):
+            return None
+
+        text = raw.strip()
+        if not text:
+            return None
+
+        candidates: list[str] = [text]
+        fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            candidates.append(fenced.group(1).strip())
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidates.append(text[start : end + 1])
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
 
     def _embedding_token_limit(self, aggressive: bool = False) -> int:
         """
@@ -459,8 +489,17 @@ class VLLMClient:
     ) -> dict[str, Any]:
         last_error_hint = ""
         last_parse_error: Exception | None = None
+        last_response_preview = ""
         max_retries = max_retries or RAGConfig.RETRY_COUNT
         json_debug_label = str(kwargs.pop("json_debug_label", "") or "").strip()
+
+        def _preview(text: Any, max_len: int = 500) -> str:
+            raw = str(text or "")
+            if not raw:
+                return ""
+            raw = raw.replace("\\n", "\\\\n").replace("\\r", "\\\\r")
+            return raw if len(raw) <= max_len else raw[:max_len] + "..."
+
         for attempt in range(max_retries):
             current_messages = copy.deepcopy(messages)
             if last_error_hint:
@@ -474,22 +513,48 @@ class VLLMClient:
                         return parsed
                     last_error_hint = "Output ONLY one non-empty JSON object."
                     last_parse_error = ValueError("evaluation model returned an empty JSON object")
+                    last_response_preview = "empty-response"
                     continue
 
                 response_text = await self.generate_response(
                     current_messages, response_format={"type": "json_object"}, **kwargs
                 )
-                parsed = json.loads(response_text)
+                last_response_preview = _preview(response_text)
+                parsed = None
+                try:
+                    parsed = json.loads(response_text)
+                except json.JSONDecodeError:
+                    parsed = self._extract_json_payload(response_text)
+                    if parsed is None:
+                        raise
+                    self.logger.info(
+                        "generate_json fallback parse succeeded [stage=%s] (attempt %d/%d)",
+                        json_debug_label or "unknown",
+                        attempt + 1,
+                        max_retries,
+                    )
+
                 if isinstance(parsed, dict):
                     return parsed
+
                 last_parse_error = TypeError(f"expected JSON object, got {type(parsed).__name__}")
                 last_error_hint = (
                     f"Invalid JSON type '{type(parsed).__name__}'. "
                     "Output ONLY one JSON object (not array/string/markdown)."
                 )
+                last_response_preview = _preview(response_text, max_len=800)
+                self.logger.warning(
+                    "generate_json type mismatch [stage=%s] (attempt %d/%d): %s | preview=%s",
+                    json_debug_label or "unknown",
+                    attempt + 1,
+                    max_retries,
+                    type(parsed).__name__,
+                    _preview(response_text, max_len=160),
+                )
             except json.JSONDecodeError as e:
                 last_parse_error = e
                 snippet = self._json_error_context(response_text, e.pos)
+                last_response_preview = _preview(response_text, max_len=800)
                 self.logger.warning(
                     "generate_json parse failed [stage=%s] (attempt %d/%d): %s | len=%d pos=%d line=%d col=%d | snippet=%s",
                     json_debug_label or "unknown",
@@ -508,7 +573,8 @@ class VLLMClient:
                 )
         stage = json_debug_label or "unknown"
         raise ValueError(
-            f"generate_json exhausted {max_retries} parse attempts for stage={stage}"
+            f"generate_json exhausted {max_retries} parse attempts for stage={stage}: "
+            f"{last_error_hint or 'no further hint'} | last_response={last_response_preview or 'n/a'}"
         ) from last_parse_error
 
     async def generate_eval_json(self, messages: list[dict[str, str]], **kwargs) -> dict[str, Any]:
