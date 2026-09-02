@@ -126,7 +126,11 @@ the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
 - Batches cache misses through the external embedding endpoint.
 - Cold timing runs disable both generation and embedding caches.
 - Restores sparse results to original positions and verifies response count,
-  non-empty vectors, and consistent dimensions.
+  non-empty vectors, and consistent dimensions. Every returned vector must
+  match `NEO4J_VECTOR_DIMENSIONS` before it can be written or queried.
+- Index artifacts record the served model, declared revision, and vector
+  dimension. A measured run that changes any of these values builds a new
+  cold index under a new run ID; an earlier index is not relabelled or reused.
 
 The Q−/Q+ generation cache key includes the generation model, declared model
 revision, sampling seed, question schema, prompt digest, source digest, and

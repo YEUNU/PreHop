@@ -205,14 +205,17 @@ need to activate the environment.
 `run_servers.sh` validates the configured external generation and embedding
 endpoints. It never launches local model processes.
 
-The paper configuration uses the following model identities. The same names
-are copied to `RAG_GENERATION_REVISION` and `RAG_EMBEDDING_REVISION` so index
-and benchmark artifacts retain them directly.
+The current cold-run configuration uses the following model identities. The
+same names are copied to `RAG_GENERATION_REVISION` and
+`RAG_EMBEDDING_REVISION` so index and benchmark artifacts retain them directly.
 
 | Role | Served model | Required setting |
 |---|---|---|
 | Generation and synthesis | `gemma-4-31b-it` | `VLLM_SERVED_MODEL_NAME` |
-| Embeddings | `qwen3-embedding-4b`, 2560 dimensions | `VLLM_SERVED_EMBED_MODEL_NAME` |
+| Embeddings | `qwen3-embedding-8b`, 4,096 dimensions | `VLLM_SERVED_EMBED_MODEL_NAME` |
+
+Result tables retain the model identity stored in their cited artifacts. A
+runtime configuration change does not relabel an earlier result.
 
 Prehop and MS GraphRAG generation calls use temperature 0. HopRAG retains its
 upstream indexing temperature 0.1 and retrieval-time node judgement. External

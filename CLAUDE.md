@@ -70,6 +70,11 @@ files.
 - The embedding dimension in `NEO4J_VECTOR_DIMENSIONS` must equal the endpoint's
   actual vector length. Startup probes validate the configured model ids and
   dimensions.
+- The current cold-run configuration uses `gemma-4-31b-it` for generation and
+  `qwen3-embedding-8b` for 4,096-dimensional embeddings. The declared model
+  revisions must match those served identities. Changing a model, revision,
+  or vector dimension requires a new run ID and a cold index; never relabel an
+  existing result with the new configuration.
 - `EMBEDDING_MAX_NUM_SEQS=512` records the embedding endpoint's batch capacity.
   The client uses one batch of up to 512 texts, independently from the
   generation endpoint's `VLLM_MAX_NUM_SEQS` limit.

@@ -5,6 +5,12 @@ official-setting reference results only. Component attribution uses Prehop
 internal controls on all 2,417 MuSiQue questions. The two datasets are never
 pooled, and no subset result is reported.
 
+These completed controls use the recorded `qwen3-embedding-4b`,
+2,560-dimensional Prehop index. They remain evidence for that configuration.
+Results from a separately rebuilt 4,096-dimensional `qwen3-embedding-8b`
+index are not combined with these paired deltas as though they came from the
+same controlled comparison.
+
 ## 1. Reporting rules
 
 1. A query-stage control reuses the completed

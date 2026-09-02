@@ -24,6 +24,7 @@ complete-split artifacts, manuscript, and presentation.
 | External comparisons | HopRAG/MS GraphRAG의 공식 설정 유지 | 공식 설정의 전체 결과 | “성능 참고값” | verified |
 | 단계별 시간 | 한 실행의 단계별 타이머 합계 사용 | 동시성 32, 2,417개, 실패 0건 | 같은 실행 안의 비중 | verified |
 | 결과 추적성 | 산출물에 코드, 입력, 모델, 시드, 동시성, 색인 ID 기록 | JSON 결과와 요약 파일 | 전체 수치와 산출물 연결 | verified |
+| 설정 변경 경계 | 모델 버전이나 벡터 차원을 바꾸면 새 실행 ID로 처음부터 색인 | 표의 모든 수치는 해당 산출물의 설정을 유지 | 과거 수치를 새 설정으로 바꾸어 표기하지 않음 | verified |
 
 ## 2. Dataset and denominator audit
 
@@ -78,3 +79,8 @@ hold:
    hidden notes entering the visible frame.
 7. Repository tests, formatting checks, and document-link checks pass from the
    current workspace state.
+8. A complete-system table does not mix model revisions or vector dimensions.
+   The completed MuSiQue component controls remain scoped to their recorded
+   2,560-dimensional `qwen3-embedding-4b` index; they are not presented as a
+   same-configuration intervention on a separately rebuilt 4,096-dimensional
+   index.

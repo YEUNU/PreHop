@@ -7,6 +7,22 @@ Entries are newest first. Older entries describe behavior at that point in
 development and may be superseded; they are not a current configuration guide
 or a source of paper claims.
 
+## 2026-09-02 — Embedding model change and cold full-system matrix
+
+The external embedding endpoint now serves `qwen3-embedding-8b` instead of
+`qwen3-embedding-4b`. The runtime model name and recorded embedding revision
+were changed together, and `NEO4J_VECTOR_DIMENSIONS` was increased from 2,560
+to the endpoint's verified 4,096-element output. The generation model remains
+`gemma-4-31b-it`.
+
+Neo4j data and application schema were cleared before starting a new matrix.
+The matrix runs all four systems on MultiHop-RAG and MuSiQue as eight isolated
+cold targets at query concurrency 4 with the LLM judge disabled. Each target
+uses a `final-clean-20260902-*` run ID and performs complete indexing,
+integrity checks, and full-split evaluation. Partial checkpoints do not replace
+the existing result register. The earlier full results and MuSiQue component
+controls retain their recorded 2,560-dimensional embedding configuration.
+
 ## 2026-09-02 — Corrected MS GraphRAG MuSiQue full result
 
 The corrected official-setting LocalSearch run completed all 2,417 MuSiQue
