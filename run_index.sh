@@ -5,6 +5,7 @@
 
 set -e
 set -o pipefail
+ulimit -n 65536 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"

@@ -22,6 +22,7 @@
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
 set -e
+ulimit -n 65536 2>/dev/null || true
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"; cd "$SCRIPT_DIR"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 
@@ -68,6 +69,21 @@ do_benchmark() {
     echo ">>> [MultiHop-RAG benchmark] $MODEL  (queries $QUERIES_FILE, corpus-tag $CORPUS_TAG)"
     ./run_benchmark.sh --model "$MODEL" --queries "$QUERIES_FILE" --corpus-tag "$CORPUS_TAG" "${COMMON_PASS[@]}" "${BENCH_PASS[@]}"
 }
+
+# Auto-chain: if hoprag was skipped, automatically complete it before browsenet
+if [ "$MODEL" = "browsenet" ] && [ ! -f "data/results/.hoprag_multihoprag_completed" ]; then
+    if find data/results -name "*hoprag_multihoprag.summary.json" 2>/dev/null | grep -q .; then
+        touch "data/results/.hoprag_multihoprag_completed"
+    else
+        echo "================================================================="
+        echo ">>> [Auto-Chain] Running missing MultiHop-RAG hoprag before browsenet..."
+        echo "================================================================="
+        ulimit -n 65536 2>/dev/null || true
+        ./run_multihoprag.sh all --model hoprag --queries full --clear-graph
+        touch "data/results/.hoprag_multihoprag_completed"
+        echo ">>> [Auto-Chain] MultiHop-RAG hoprag completed! Proceeding to browsenet..."
+    fi
+fi
 
 case "$STAGE" in
     index)           do_index ;;

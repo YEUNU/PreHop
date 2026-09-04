@@ -209,6 +209,9 @@ marimo/_lsp/
 __marimo__/
 
 *.out
+# Local, run-specific orchestration helpers (their run IDs and log locations
+# are intentionally not part of the portable project configuration).
+run_pipeline_nohup.sh
 
 logs/
 exception_log.txt

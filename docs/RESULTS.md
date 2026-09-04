@@ -43,3 +43,13 @@ Every result row must satisfy all of the following conditions:
   their sources change.
 - `scripts/verify_submission_consistency.py` is the manual matrix and document
   check. It is not a CI job.
+
+## Verified evaluation runs
+
+### MultiHop-RAG (2,556 questions)
+
+| Strategy | Run ID | Hits@4 | Hits@10 | MRR@10 | MAP@10 | QA Acc | Null Refusal | Latency | Status |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| **Prehop** | `20260903_064500_336304548_765319` | 0.9215 | 0.9499 | 0.8229 | 0.4584 | 0.3513 | 0.9967 | 24.50s | Completed |
+| **Naive RAG** | `20260903_061601_249614384_747808` | 0.6962 | 0.8439 | 0.5505 | 0.2615 | 0.2868 | 0.9934 | 2.32s | Completed |
+| **MS GraphRAG** | `20260903_143020_647669664_1030700` | 0.4541 | 0.5069 | 0.2965 | 0.1479 | 0.3584 | 0.9402 | 12.11s | Completed |
