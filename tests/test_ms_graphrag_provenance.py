@@ -6,7 +6,11 @@ import pytest
 
 from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.ms_graphrag.ms_adapter import _QA_RESPONSE_TYPE, MSGraphRAGAdapter
-from models.ms_graphrag.official_indexer import _ms_indexable_text
+from models.ms_graphrag.official_indexer import (
+    _ms_concurrent_requests,
+    _ms_indexable_text,
+    _ms_query_embedding_text,
+)
 from utils.metrics import _source_paragraph_identity
 
 
@@ -110,6 +114,39 @@ def test_ms_indexing_extends_litellm_client_cache_ttl(monkeypatch):
     assert client_cache.default_ttl == 7200
 
 
+def test_ms_concurrency_defaults_to_shared_endpoint_cap(monkeypatch):
+    monkeypatch.delenv("RAG_MS_CONCURRENT_REQUESTS", raising=False)
+    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "4")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "32")
+
+    assert _ms_concurrent_requests() == 4
+
+
+def test_ms_concurrency_never_exceeds_server_capacity(monkeypatch):
+    monkeypatch.setenv("RAG_MS_CONCURRENT_REQUESTS", "48")
+    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "30")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "16")
+
+    assert _ms_concurrent_requests() == 16
+
+
+def test_ms_query_embedding_uses_recorded_asymmetric_instruction(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "Retrieve evidence")
+
+    assert _ms_query_embedding_text("Who founded it?") == "Instruct: Retrieve evidence\nQuery: Who founded it?"
+
+
+def test_ms_config_separates_query_embedding_from_index_embeddings(tmp_path, monkeypatch):
+    monkeypatch.setattr(ms_official_indexer, "_register_external_models_with_litellm", lambda: None)
+    monkeypatch.setattr(ms_official_indexer, "_install_litellm_router_for_gen", lambda: None)
+
+    config = ms_official_indexer.build_config("musique", tmp_path / "input")
+
+    assert config.local_search.embedding_model_id == "query_embedding_model"
+    assert config.embedding_models["default_embedding_model"].type == "litellm"
+    assert config.embedding_models["query_embedding_model"].type == "prehop_query_instruction"
+
+
 def test_ms_indexing_closes_litellm_clients_when_pipeline_fails(tmp_path, monkeypatch):
     corpus = tmp_path / "corpus"
     corpus.mkdir()
@@ -150,6 +187,36 @@ def test_ms_source_map_uses_dataframe_index_like_official_api():
     assert short_map == {"42": "doc-hash"}
     assert "7" not in short_map
     assert doc_map == {"doc-hash": "source.txt"}
+
+
+def test_ms_query_view_keeps_entities_omitted_by_community_clustering():
+    entities = pd.DataFrame([{"id": "clustered"}, {"id": "isolated"}])
+    communities = pd.DataFrame(
+        [
+            {
+                "id": "c0",
+                "human_readable_id": 0,
+                "community": 0,
+                "level": 0,
+                "parent": -1,
+                "children": [],
+                "title": "Community 0",
+                "entity_ids": ["clustered"],
+                "relationship_ids": [],
+                "text_unit_ids": [],
+                "period": "2026",
+                "size": 1,
+            }
+        ]
+    )
+
+    completed = MSGraphRAGAdapter._complete_query_community_view(entities, communities)
+
+    assert len(completed) == 2
+    assert completed.iloc[1]["entity_ids"] == ["isolated"]
+    assert completed.iloc[1]["level"] == 0
+    assert completed.iloc[1]["community"] == -1
+    assert len(communities) == 1
 
 
 @pytest.mark.parametrize(
@@ -224,6 +291,7 @@ async def test_ms_local_search_requests_metric_compatible_short_answer(monkeypat
     adapter._relationships = object()
     adapter._ensure_loaded = Mock()
     adapter._extract_sources = Mock(return_value=[])
+    adapter._complete_query_community_view = Mock(return_value="completed communities")
 
     answer, sources, trace = await adapter.local_search("Where was the person born?")
 
@@ -231,6 +299,7 @@ async def test_ms_local_search_requests_metric_compatible_short_answer(monkeypat
     assert sources == []
     assert trace == [{"step": "ms_local_search_api", "response_type": _QA_RESPONSE_TYPE}]
     assert search.await_args.kwargs["response_type"] == _QA_RESPONSE_TYPE
+    assert search.await_args.kwargs["communities"] == "completed communities"
 
 
 @pytest.mark.asyncio
@@ -248,6 +317,7 @@ async def test_ms_local_search_marks_unlabelled_provider_response(monkeypatch):
     adapter._relationships = object()
     adapter._ensure_loaded = Mock()
     adapter._extract_sources = Mock(return_value=[])
+    adapter._complete_query_community_view = Mock(return_value="completed communities")
 
     answer, _sources, _trace = await adapter.local_search("Where was the person born?")
 

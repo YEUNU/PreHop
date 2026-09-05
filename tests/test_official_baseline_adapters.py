@@ -14,6 +14,12 @@ from models.official_baseline_runtime import (
     stage_corpus,
     verify_snapshot,
 )
+from scripts.official_baseline_worker import (
+    _bounded_thread_pool_executor,
+    _normalize_proprag_entities,
+    _normalize_proprag_propositions,
+    _parse_proprag_ner_response,
+)
 
 
 def test_stage_corpus_removes_only_transport_headers(tmp_path, monkeypatch):
@@ -177,6 +183,46 @@ def test_proprag_index_policy_records_its_query_instruction():
 
     assert policy["embedding_query_instruction"].startswith("Given a question")
     assert "shared entity" in policy["embedding_query_instruction"]
+
+
+def test_proprag_ner_accepts_string_and_typed_entity_json_without_eval():
+    response = """```json
+    {"entities": ["OpenAI", {"name": "Sam Altman", "type": "PERSON"}, {"entity": "ChatGPT"}]}
+    ```"""
+
+    assert _parse_proprag_ner_response(response) == ["OpenAI", "Sam Altman", "ChatGPT"]
+
+
+def test_proprag_entity_normalization_is_ordered_deduplicated_and_strict():
+    assert _normalize_proprag_entities([" OpenAI ", {"text": "OpenAI"}, {"value": "ChatGPT"}]) == [
+        "OpenAI",
+        "ChatGPT",
+    ]
+    with pytest.raises(ValueError, match="no textual value"):
+        _normalize_proprag_entities([{"type": "PERSON"}])
+
+
+def test_proprag_proposition_entities_are_normalized_to_strings():
+    payload = {
+        "propositions": [
+            {"text": " Sam leads OpenAI. ", "entities": [{"name": "Sam"}, "OpenAI"]},
+        ]
+    }
+
+    assert _normalize_proprag_propositions(payload) == {
+        "propositions": [{"text": "Sam leads OpenAI.", "entities": ["Sam", "OpenAI"]}]
+    }
+
+
+def test_proprag_upstream_thread_pool_honors_shared_cap(monkeypatch):
+    monkeypatch.setenv("RAG_PROPRAG_CONCURRENT_REQUESTS", "300")
+    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "3")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "16")
+    executor = _bounded_thread_pool_executor(max_workers=300)
+    try:
+        assert executor._max_workers == 3
+    finally:
+        executor.shutdown()
 
 
 def test_persistent_worker_protocol_ignores_upstream_stdout(tmp_path, monkeypatch):

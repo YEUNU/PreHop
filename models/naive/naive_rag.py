@@ -4,6 +4,7 @@ import logging
 import re
 
 from core.config import RAGConfig
+from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient
 from models.prehop.indexing.chunking import parse_pages_offline, split_fixed_sentence_windows
@@ -18,7 +19,7 @@ class NaiveRAG:
         self.strategy = strategy.lower()
         self.prefix = self.strategy[:2].upper() + "_"
         self.corpus_tag = corpus_tag or "default"
-        branch_token = self._safe_token(self.corpus_tag)
+        branch_token = index_namespace(self.corpus_tag)
         self.chunk_label = f"{self.prefix}{branch_token}_Chunk"
         self.vector_index = f"{self.strategy}_{branch_token}_vector_idx"
         self.branch_namespace = self.corpus_tag

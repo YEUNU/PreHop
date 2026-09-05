@@ -289,6 +289,16 @@ the printed fingerprint with every reported result.
 ./scripts/run_paper_target.sh musique proprag musique-proprag-cold-01
 ```
 
+To preflight or run the complete 12-target matrix in a fixed order:
+
+```bash
+./scripts/run_paper_matrix.sh submission-01 --check
+./scripts/run_paper_matrix.sh submission-01
+```
+
+The matrix is fail-fast: it preserves the first nonzero exit code and never
+launches a dependent or fallback model implicitly.
+
 For the dataset files used by this revision, preparation must print the
 following identities. A different fingerprint is a different prepared corpus
 and must not be mixed with these runs.
@@ -299,10 +309,13 @@ and must not be mixed with these runs.
 | MuSiQue answerable dev | 21,099 | 2,417 | `7560a2113c736776b7d4970ec02e3a8c8a2c04bf495f1b5ee4bf67718c323735` |
 
 The wrapper requires a clean tracked worktree, disables Prehop chunk and
-embedding caches, assigns run-specific HopRAG/MS GraphRAG output roots, clears
-Neo4j, fixes benchmark concurrency at 4, disables the optional judge, and uses
-the full prepared query file. It refuses an existing run ID instead of reusing
-artifacts. An interrupted or failed index is incomplete and must be rebuilt
+embedding caches, assigns run-specific output roots to file-backed baselines,
+and assigns a run-specific Neo4j label/index namespace while retaining the
+canonical dataset tag in result paths. Consequently, `--clear-graph` clears
+only the new target namespace and cannot delete a concurrently queried default
+index. It fixes benchmark concurrency at 4, disables the optional judge, and
+uses the full prepared query file. It refuses an existing run ID instead of
+reusing artifacts. An interrupted or failed index is incomplete and must be rebuilt
 under a new run ID after resolving the cause. A
 deterministic benchmark interrupted after valid checkpoints can resume under
 the same run ID only when the runner verifies identical queries, models,

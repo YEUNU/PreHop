@@ -71,9 +71,9 @@ class HybridSearchMixin:
                 RETURN owner.id AS id, owner.title AS title,
                        owner.sent_id AS sent_id, owner.page AS page,
                        owner.text AS text, owner.source AS source,
-                       owner.author AS author, owner.publisher AS publisher,
-                       owner.published_at AS published_at,
-                       owner.category AS category, owner.url AS url,
+                       owner[$author_property] AS author, owner[$publisher_property] AS publisher,
+                       owner[$published_at_property] AS published_at,
+                       owner[$category_property] AS category, owner[$url_property] AS url,
                        owner.embedding AS embedding,
                        matched_question_ids,
                        score AS score, 'vector' AS type, $channel AS channel
@@ -87,9 +87,9 @@ class HybridSearchMixin:
                 RETURN owner.id AS id, owner.title AS title,
                        owner.sent_id AS sent_id, owner.page AS page,
                        owner.text AS text, owner.source AS source,
-                       owner.author AS author, owner.publisher AS publisher,
-                       owner.published_at AS published_at,
-                       owner.category AS category, owner.url AS url,
+                       owner[$author_property] AS author, owner[$publisher_property] AS publisher,
+                       owner[$published_at_property] AS published_at,
+                       owner[$category_property] AS category, owner[$url_property] AS url,
                        owner.embedding AS embedding,
                        matched_question_ids,
                        score AS score, 'text' AS type, $channel AS channel
@@ -101,9 +101,9 @@ class HybridSearchMixin:
                 RETURN node.id AS id, node.title AS title,
                        node.sent_id AS sent_id, node.page AS page,
                        node.text AS text, node.source AS source,
-                       node.author AS author, node.publisher AS publisher,
-                       node.published_at AS published_at,
-                       node.category AS category, node.url AS url,
+                       node[$author_property] AS author, node[$publisher_property] AS publisher,
+                       node[$published_at_property] AS published_at,
+                       node[$category_property] AS category, node[$url_property] AS url,
                        node.embedding AS embedding,
                        score AS score, 'vector' AS type, $channel AS channel
             """
@@ -113,9 +113,9 @@ class HybridSearchMixin:
                 RETURN node.id AS id, node.title AS title,
                        node.sent_id AS sent_id, node.page AS page,
                        node.text AS text, node.source AS source,
-                       node.author AS author, node.publisher AS publisher,
-                       node.published_at AS published_at,
-                       node.category AS category, node.url AS url,
+                       node[$author_property] AS author, node[$publisher_property] AS publisher,
+                       node[$published_at_property] AS published_at,
+                       node[$category_property] AS category, node[$url_property] AS url,
                        node.embedding AS embedding,
                        score AS score, 'text' AS type, $channel AS channel
             """
@@ -137,6 +137,11 @@ class HybridSearchMixin:
                 "embedding": query_embedding,
                 "query": fulltext_query,
                 "channel": channel,
+                "author_property": "author",
+                "publisher_property": "publisher",
+                "published_at_property": "published_at",
+                "category_property": "category",
+                "url_property": "url",
             },
         )
 

@@ -72,6 +72,11 @@ fi
 
 export RAG_RUN_ID=$run_id
 export RAG_BENCHMARK_TIMESTAMP=$run_id
+# Keep the public corpus tag stable for result aggregation while placing all
+# Neo4j-backed strategies in fresh, run-scoped labels/indexes. This makes
+# --clear-graph safe even when another benchmark is using the dataset's
+# default labels in the same database.
+export RAG_INDEX_NAMESPACE="${dataset}_${run_id}"
 export RAG_CHUNK_CACHE=off
 export RAG_EMBEDDING_CACHE=off
 export RAG_HOP_OUTPUT_ROOT=$hop_root

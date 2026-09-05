@@ -1017,7 +1017,8 @@ async def test_hybrid_search_derives_modality_width_from_owner_budget():
     body_limits = [call.args[1]["limit"] for call in rag._run_channel_query.await_args_list]
     assert body_limits == [7]
     assert "CALL () {" in rag._run_channel_query.await_args.args[0]
-    assert "node.publisher AS publisher" in rag._run_channel_query.await_args.args[0]
+    assert "node[$publisher_property] AS publisher" in rag._run_channel_query.await_args.args[0]
+    assert rag._run_channel_query.await_args.args[1]["publisher_property"] == "publisher"
 
     rag._run_channel_query.reset_mock()
     await rag._hybrid_rrf_candidates("query", [1.0], limit=7, channel="sentence")

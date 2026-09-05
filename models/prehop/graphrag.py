@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from core.config import RAGConfig
+from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
@@ -43,7 +44,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         self.strategy = strategy.lower()
         self.corpus_tag = corpus_tag or "default"
         self.prefix = self.strategy[:2].upper() + "_"
-        self._safe_corpus = re.sub(r"[^A-Za-z0-9_]", "_", self.corpus_tag)
+        self._safe_corpus = index_namespace(self.corpus_tag)
 
         self.chunk_label = f"{self.prefix}{self._safe_corpus}_Chunk"
         self.doc_label = f"{self.prefix}{self._safe_corpus}_Document"

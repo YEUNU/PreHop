@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from core.config import RAGConfig
+from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
@@ -89,6 +90,12 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
         embedding_model = RAGConfig.EMBEDDING_MODEL
     policy = {
         "strategy": strategy,
+        "index_namespace": (
+            index_namespace("default")
+            if strategy in {"prehop", "naive", "hoprag"}
+            and os.environ.get("RAG_INDEX_NAMESPACE", "").strip()
+            else None
+        ),
         "indexing_model": resolved_generation_model,
         "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
         "generation_seed": RAGConfig.LLM_SEED,
@@ -234,10 +241,12 @@ async def _set_neo4j_snapshot_state(
     it cannot participate in vector/full-text retrieval or alter an upstream
     strategy's scoring, ranking, top-k, or traversal.
     """
+    namespace = index_namespace(corpus_tag)
     await engine.neo4j.execute_query(
         f"""
-        MERGE (m:{_SNAPSHOT_LABEL} {{strategy: $strategy, corpus_tag: $corpus_tag}})
+        MERGE (m:{_SNAPSHOT_LABEL} {{strategy: $strategy, index_namespace: $index_namespace}})
         SET m.status = $status,
+            m.corpus_tag = $corpus_tag,
             m.snapshot_version = $_version,
             m.corpus_manifest_fingerprint = $fingerprint,
             m.corpus_manifest_paragraph_count = $paragraph_count,
@@ -246,6 +255,7 @@ async def _set_neo4j_snapshot_state(
         {
             "strategy": strategy,
             "corpus_tag": corpus_tag,
+            "index_namespace": namespace,
             "status": status,
             "_version": _SNAPSHOT_VERSION,
             "fingerprint": (corpus_manifest or {}).get("fingerprint"),
@@ -281,10 +291,12 @@ async def _verify_and_publish_neo4j_snapshot(
             f"missing={missing[:5]} unexpected={unexpected[:5]}"
         )
     source_digest = _source_set_sha256(actual_ids)
+    namespace = index_namespace(corpus_tag)
     await engine.neo4j.execute_query(
         f"""
-        MERGE (m:{_SNAPSHOT_LABEL} {{strategy: $strategy, corpus_tag: $corpus_tag}})
+        MERGE (m:{_SNAPSHOT_LABEL} {{strategy: $strategy, index_namespace: $index_namespace}})
         SET m.status = 'complete',
+            m.corpus_tag = $corpus_tag,
             m.snapshot_version = $_version,
             m.corpus_manifest_fingerprint = $fingerprint,
             m.corpus_manifest_paragraph_count = $paragraph_count,
@@ -296,6 +308,7 @@ async def _verify_and_publish_neo4j_snapshot(
         {
             "strategy": strategy,
             "corpus_tag": corpus_tag,
+            "index_namespace": namespace,
             "_version": _SNAPSHOT_VERSION,
             "fingerprint": (corpus_manifest or {}).get("fingerprint"),
             "paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
@@ -345,7 +358,7 @@ async def _collect_index_capacity(
     neo4j: Neo4jService | None = None,
 ) -> dict[str, object]:
     """Measure strategy storage with the fixed comparison-table definitions."""
-    safe_corpus = re.sub(r"[^A-Za-z0-9_]", "_", corpus_tag)
+    safe_corpus = index_namespace(corpus_tag)
     if strategy in {"ms_graphrag", "browsenet", "proprag"}:
         env_key = {
             "ms_graphrag": "RAG_MS_OUTPUT_ROOT",
@@ -394,23 +407,22 @@ async def _collect_index_capacity(
             MATCH (n)
             WHERE any(label IN labels(n) WHERE label IN {label_literal})
             RETURN sum(coalesce(size(n.embedding), 0) + coalesce(size(n.query_embedding), 0)) AS floats,
-                   sum(coalesce(size(n.text), 0) + coalesce(size(n.id), 0) +
-                       coalesce(size(n.source), 0) + coalesce(size(n.title), 0) +
-                       coalesce(size(n.filename), 0) + coalesce(size(n.author), 0) +
-                       coalesce(size(n.publisher), 0) + coalesce(size(n.published_at), 0) +
-                       coalesce(size(n.category), 0) + coalesce(size(n.url), 0)) AS chars,
+                   sum(reduce(total = 0, key IN
+                       ['text', 'id', 'source', 'title', 'filename', 'author',
+                        'publisher', 'published_at', 'category', 'url'] |
+                       total + coalesce(size(n[key]), 0))) AS chars,
                    0 AS list_items, count(n) AS records
             """,
             f"""
             MATCH (a)-[r]->()
             WHERE any(label IN labels(a) WHERE label IN {label_literal})
             RETURN 0 AS floats,
-                   sum(coalesce(size(r.question), 0) + coalesce(size(r.type), 0)) AS chars,
-                   sum(coalesce(size(r.source_question_texts), 0) +
-                       coalesce(size(r.direct_channels), 0) +
-                       coalesce(size(r.source_question_ids), 0) +
-                       coalesce(size(r.reciprocal_source_question_ids), 0) +
-                       coalesce(size(r.bridge_answers), 0)) AS list_items,
+                   sum(reduce(total = 0, key IN ['question', 'type'] |
+                       total + coalesce(size(r[key]), 0))) AS chars,
+                   sum(reduce(total = 0, key IN
+                       ['source_question_texts', 'direct_channels', 'source_question_ids',
+                        'reciprocal_source_question_ids', 'bridge_answers'] |
+                       total + coalesce(size(r[key]), 0))) AS list_items,
                    count(r) AS records
             """,
         ]
@@ -643,8 +655,10 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         if RAGConfig.ABLATION_Q_MINUS
         else int(provenance.get("missing_supported_by", 0) or 0)
     )
-    continuation_rows = await engine.neo4j.execute_query(
-        f"""
+    continuation: dict[str, object] = {}
+    if RAGConfig.CONTINUATION_EDGES_ENABLED:
+        continuation_rows = await engine.neo4j.execute_query(
+            f"""
         CALL () {{
             MATCH (anchor:{answer_anchor})
             RETURN count(anchor) AS anchors,
@@ -676,10 +690,10 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         RETURN anchors, question_links, mention_links,
                invalid_records + invalid_question_links AS invalid_edges,
                0 AS missing_source_questions
-    """,
-        {"anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY},
-    )
-    continuation = continuation_rows[0] if continuation_rows else {}
+        """,
+            {"anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY},
+        )
+        continuation = continuation_rows[0] if continuation_rows else {}
     degree_rows = await engine.neo4j.execute_query(f"""
         MATCH (source:{chunk})-[h:HOP_ANSWER]->()
         WITH source, count(h) AS degree
@@ -775,13 +789,15 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     """)
     question_stats = question_rows[0] if question_rows else {}
 
-    sentence_rows = await engine.neo4j.execute_query(f"""
-        MATCH (c:{chunk_label})
-        OPTIONAL MATCH (c)-[:HAS_SENTENCE]->(s:{sentence_label})
-        RETURN count(DISTINCT s) AS sentences,
-               count(DISTINCT CASE WHEN s IS NOT NULL THEN c END) AS sentence_chunks
-    """)
-    sentence_stats = sentence_rows[0] if sentence_rows else {}
+    sentence_stats: dict[str, object] = {}
+    if RAGConfig.SENTENCE_CHANNEL_ENABLED:
+        sentence_rows = await engine.neo4j.execute_query(f"""
+            MATCH (c:{chunk_label})
+            OPTIONAL MATCH (c)-[:HAS_SENTENCE]->(s:{sentence_label})
+            RETURN count(DISTINCT s) AS sentences,
+                   count(DISTINCT CASE WHEN s IS NOT NULL THEN c END) AS sentence_chunks
+        """)
+        sentence_stats = sentence_rows[0] if sentence_rows else {}
 
     edge_rows = await engine.neo4j.execute_query(f"""
         OPTIONAL MATCH (:{chunk_label})-[hop:HOP_ANSWER]->(:{chunk_label})
@@ -792,18 +808,20 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
         RETURN total_hop_edges, answered_by_edges, count(body) AS supported_by_edges
     """)
     edge_stats = edge_rows[0] if edge_rows else {}
-    continuation_rows = await engine.neo4j.execute_query(f"""
-        OPTIONAL MATCH (anchor:{answer_anchor_label})
-        WITH count(anchor) AS answer_anchors
-        OPTIONAL MATCH (:{q_minus_label})-[question_link:ANSWER_ANCHOR]
-                       ->(:{answer_anchor_label})
-        WITH answer_anchors, count(question_link) AS continuation_question_links
-        OPTIONAL MATCH (:{answer_anchor_label})-[mention_link:MENTIONED_IN]
-                       ->(:{chunk_label})
-        RETURN answer_anchors, continuation_question_links,
-               count(mention_link) AS continuation_mention_links
-    """)
-    continuation_stats = continuation_rows[0] if continuation_rows else {}
+    continuation_stats: dict[str, object] = {}
+    if RAGConfig.CONTINUATION_EDGES_ENABLED:
+        continuation_rows = await engine.neo4j.execute_query(f"""
+            OPTIONAL MATCH (anchor:{answer_anchor_label})
+            WITH count(anchor) AS answer_anchors
+            OPTIONAL MATCH (:{q_minus_label})-[question_link:ANSWER_ANCHOR]
+                           ->(:{answer_anchor_label})
+            WITH answer_anchors, count(question_link) AS continuation_question_links
+            OPTIONAL MATCH (:{answer_anchor_label})-[mention_link:MENTIONED_IN]
+                           ->(:{chunk_label})
+            RETURN answer_anchors, continuation_question_links,
+                   count(mention_link) AS continuation_mention_links
+        """)
+        continuation_stats = continuation_rows[0] if continuation_rows else {}
     direction_rows = await engine.neo4j.execute_query(f"""
         MATCH (q:{q_plus_label})
         RETURN count(q) AS total_q_plus,

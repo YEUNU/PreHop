@@ -57,6 +57,59 @@ _OUTPUT_ROOT = Path(os.environ.get("RAG_MS_OUTPUT_ROOT", "data/ms_graphrag_outpu
 SNAPSHOT_METADATA_FILENAME = "index_snapshot_metadata.json"
 _SNAPSHOT_VERSION = 2
 _PAGE_MARKER_RE = re.compile(r"^-+\s*Page\s+\d+\s*-+$", re.IGNORECASE)
+_QUERY_EMBEDDING_TYPE = "prehop_query_instruction"
+
+
+def _ms_concurrent_requests() -> int:
+    """Resolve GraphRAG concurrency from the repository-wide endpoint cap."""
+    shared_limit = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
+    requested = int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", str(shared_limit)))
+    server_limit = int(os.environ.get("VLLM_MAX_NUM_SEQS", str(shared_limit)))
+    if min(requested, shared_limit, server_limit) < 1:
+        raise ValueError("RAG_MS_CONCURRENT_REQUESTS must be at least 1")
+    return min(requested, shared_limit, server_limit)
+
+
+def _ms_query_embedding_text(text: str) -> str:
+    instruction = os.environ.get(
+        "EMBEDDING_QUERY_INSTRUCTION",
+        "Given a web search query, retrieve relevant passages that answer the query",
+    ).strip()
+    value = str(text)
+    return f"Instruct: {instruction}\nQuery: {value}" if instruction else value
+
+
+def _register_query_embedding_model() -> None:
+    """Register a query-only wrapper while leaving indexed passage text raw."""
+    from graphrag_llm.embedding.embedding_factory import embedding_factory, register_embedding
+
+    if _QUERY_EMBEDDING_TYPE in embedding_factory:
+        return
+
+    from graphrag_llm.embedding.lite_llm_embedding import LiteLLMEmbedding
+
+    class QueryInstructionEmbedding(LiteLLMEmbedding):
+        @staticmethod
+        def _prepare(kwargs: dict) -> dict:
+            prepared = dict(kwargs)
+            values = prepared.get("input", [])
+            if isinstance(values, str):
+                prepared["input"] = [_ms_query_embedding_text(values)]
+            else:
+                prepared["input"] = [_ms_query_embedding_text(value) for value in values]
+            return prepared
+
+        def embedding(self, /, **kwargs):
+            return super().embedding(**self._prepare(kwargs))
+
+        async def embedding_async(self, /, **kwargs):
+            return await super().embedding_async(**self._prepare(kwargs))
+
+    register_embedding(
+        embedding_type=_QUERY_EMBEDDING_TYPE,
+        embedding_initializer=QueryInstructionEmbedding,
+        scope="singleton",
+    )
 
 
 def _configure_litellm_client_lifecycle() -> None:
@@ -434,6 +487,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     """Construct a GraphRagConfig pointing LiteLLM at external inference."""
     _register_external_models_with_litellm()
     _install_litellm_router_for_gen()
+    _register_query_embedding_model()
 
     from graphrag.config.models.graph_rag_config import GraphRagConfig
     from graphrag.config.models.reporting_config import ReportingConfig
@@ -497,6 +551,14 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
                 api_key=_GEN_API_KEY,
                 call_args={"encoding_format": "float"},
             ),
+            "query_embedding_model": ModelConfig(
+                type=_QUERY_EMBEDDING_TYPE,
+                model_provider="openai",
+                model=_EMBED_MODEL_NAME,
+                api_base=_EMBED_API_BASE,
+                api_key=_GEN_API_KEY,
+                call_args={"encoding_format": "float"},
+            ),
         },
         input=InputConfig(file_pattern=r".*\.(txt|md)$"),
         input_storage=StorageConfig(
@@ -533,11 +595,15 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     # Route community-report generation to the higher-max_tokens model so long
     # reports don't truncate; extract_graph stays on the cached default model.
     cfg.community_reports.completion_model_id = "report_completion_model"
+    # Qwen3-style embedding models use asymmetric passage/query formatting.
+    # Indexing keeps the official raw entity descriptions; LocalSearch alone
+    # uses the repository's recorded query instruction.
+    cfg.local_search.embedding_model_id = "query_embedding_model"
 
-    # MS pipeline gates extract_graph + summarize via asyncio.Semaphore(num_threads=concurrent_requests).
-    # vLLM 4B handles 30+ parallel reqs comfortably (peak observed: 14 running + 7 waiting at limit 16
-    # → fully saturated). Bump to 48 to drive the queue and shave wall-clock on the 33k-text_unit corpus.
-    cfg.concurrent_requests = max(1, int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", "48")))
+    # MS pipeline gates extraction and summarization through this value. Keep
+    # it within both the repository-wide client cap and the served model's
+    # advertised sequence capacity unless an explicit smaller MS cap is set.
+    cfg.concurrent_requests = _ms_concurrent_requests()
     return cfg
 
 

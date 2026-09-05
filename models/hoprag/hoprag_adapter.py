@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import RAGConfig
+from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient, get_llm_client
 from utils.formatters import format_context_from_nodes
@@ -119,9 +120,7 @@ class HopRAGAdapter:
 
         # Match the labels, relationship type, and vector index written by the
         # official indexer.
-        import re as _re
-
-        _safe_corpus = _re.sub(r"[^A-Za-z0-9_]", "_", self.corpus_tag)
+        _safe_corpus = index_namespace(self.corpus_tag)
         self.prefix = "HO_"
         self.chunk_label = f"{self.prefix}{_safe_corpus}"
         self.edge_type = f"{self.prefix}{_safe_corpus}_p2a"

@@ -39,6 +39,8 @@ from pathlib import Path
 
 import numpy as np
 
+from core.index_namespace import index_namespace
+
 logger = logging.getLogger("Prehop")
 
 _HOPRAG_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "HopRAG"
@@ -212,16 +214,19 @@ def _set_snapshot_state(config, corpus_tag: str, corpus_manifest: dict | None, s
     """Keep an unconnected metadata node out of upstream HopRAG traversal."""
     from neo4j import GraphDatabase
 
+    namespace = index_namespace(corpus_tag)
     driver = GraphDatabase.driver(
         config.neo4j_url,
         auth=(config.neo4j_user, config.neo4j_password),
+        notifications_disabled_categories=["DEPRECATION"],
     )
     try:
         with driver.session(database=config.neo4j_dbname) as session:
             session.run(
                 f"""
-                MERGE (m:{_SNAPSHOT_LABEL} {{strategy: 'hoprag', corpus_tag: $corpus_tag}})
+                MERGE (m:{_SNAPSHOT_LABEL} {{strategy: 'hoprag', index_namespace: $index_namespace}})
                 SET m.status = $status,
+                    m.corpus_tag = $corpus_tag,
                     m.snapshot_version = $_version,
                     m.corpus_manifest_fingerprint = $fingerprint,
                     m.corpus_manifest_paragraph_count = $paragraph_count,
@@ -229,6 +234,7 @@ def _set_snapshot_state(config, corpus_tag: str, corpus_manifest: dict | None, s
                 """,
                 {
                     "corpus_tag": corpus_tag,
+                    "index_namespace": namespace,
                     "status": status,
                     "_version": _SNAPSHOT_VERSION,
                     "fingerprint": (corpus_manifest or {}).get("fingerprint"),
@@ -244,6 +250,7 @@ def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str]
     """Bind the active HopRAG representation to the complete staged corpus."""
     if builder.driver is None:
         raise RuntimeError("HopRAG active snapshot cannot be verified without its Neo4j driver")
+    namespace = index_namespace(corpus_tag)
     with builder.driver.session() as session:
         rows = session.run(
             f"""
@@ -269,8 +276,9 @@ def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str]
         omitted_digest = _source_set_sha256(omitted)
         session.run(
             f"""
-            MERGE (m:{_SNAPSHOT_LABEL} {{strategy: 'hoprag', corpus_tag: $corpus_tag}})
+            MERGE (m:{_SNAPSHOT_LABEL} {{strategy: 'hoprag', index_namespace: $index_namespace}})
             SET m.status = 'complete',
+                m.corpus_tag = $corpus_tag,
                 m.snapshot_version = $_version,
                 m.corpus_manifest_fingerprint = $fingerprint,
                 m.corpus_manifest_paragraph_count = $paragraph_count,
@@ -283,6 +291,7 @@ def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str]
             """,
             {
                 "corpus_tag": corpus_tag,
+                "index_namespace": namespace,
                 "_version": _SNAPSHOT_VERSION,
                 "fingerprint": (corpus_manifest or {}).get("fingerprint"),
                 "paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
@@ -576,7 +585,7 @@ def _setup_hoprag_modules(corpus_tag: str) -> None:
     config.signal = "\n\n"
     config.max_thread_num = max(1, int(os.environ.get("RAG_HOP_MAX_THREADS", "8")))
 
-    safe = "".join(c if c.isalnum() else "_" for c in corpus_tag)
+    safe = index_namespace(corpus_tag)
     config.dataset_name = corpus_tag
     config.corpus_tag = corpus_tag
     config.node_name = f"HO_{safe}"
@@ -1075,6 +1084,7 @@ def _patch_create_nodes_cache_batched() -> None:
                 _c.neo4j_url,
                 auth=(_c.neo4j_user, _c.neo4j_password),
                 database=_c.neo4j_dbname,
+                notifications_disabled_categories=["DEPRECATION"],
             )
 
         with open(f"{cache_dir}/node2questiondict.pkl", "rb") as fh:
@@ -1366,6 +1376,7 @@ def _patch_create_edge_batched() -> None:
                 _hop_config.neo4j_url,
                 auth=(_hop_config.neo4j_user, _hop_config.neo4j_password),
                 database=_hop_config.neo4j_dbname,
+                notifications_disabled_categories=["DEPRECATION"],
             )
 
         real_driver = self.driver
@@ -1623,6 +1634,7 @@ def _run_stage2_group_streaming(
             config.neo4j_url,
             auth=(config.neo4j_user, config.neo4j_password),
             database=config.neo4j_dbname,
+            notifications_disabled_categories=["DEPRECATION"],
         )
 
     unwind_insert = (

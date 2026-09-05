@@ -9,6 +9,7 @@ index/retrieval functions.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import logging
 import os
@@ -27,6 +28,98 @@ RESULT_PREFIX = "__PREHOP_OFFICIAL_RESULT__="
 # Hugging Face dependency imported by upstream model libraries.
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path = [entry for entry in sys.path if Path(entry or ".").resolve() != _SCRIPT_DIR]
+
+
+def _proprag_concurrency() -> int:
+    shared_limit = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
+    requested = int(os.environ.get("RAG_PROPRAG_CONCURRENT_REQUESTS", str(shared_limit)))
+    server_limit = int(os.environ.get("VLLM_MAX_NUM_SEQS", str(shared_limit)))
+    if min(requested, shared_limit, server_limit) < 1:
+        raise ValueError("RAG_PROPRAG_CONCURRENT_REQUESTS must be at least 1")
+    return min(requested, shared_limit, server_limit)
+
+
+def _bounded_thread_pool_executor(*args: Any, **kwargs: Any):
+    """Cap upstream's hard-coded 300-worker pools at the shared endpoint limit."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    requested = kwargs.get("max_workers")
+    if requested is None and args:
+        requested = args[0]
+        args = args[1:]
+    limit = _proprag_concurrency()
+    kwargs["max_workers"] = min(int(requested), limit) if requested is not None else limit
+    return ThreadPoolExecutor(*args, **kwargs)
+
+
+def _normalize_proprag_entities(values: Any) -> list[str]:
+    """Normalize common JSON-schema variants to PropRAG's list[str] contract."""
+    if not isinstance(values, list):
+        raise TypeError("PropRAG entities must be a JSON array")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, str):
+            text_value = value.strip()
+        elif isinstance(value, dict):
+            text_value = ""
+            for key in ("name", "entity", "text", "value", "title"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    text_value = candidate.strip()
+                    break
+        else:
+            text_value = ""
+        if not text_value:
+            raise ValueError(f"PropRAG entity has no textual value: {value!r}")
+        if text_value not in seen:
+            normalized.append(text_value)
+            seen.add(text_value)
+    return normalized
+
+
+def _parse_proprag_ner_response(response: str) -> list[str]:
+    """Safely parse NER JSON without upstream's ``eval`` call."""
+    if not isinstance(response, str) or not response.strip():
+        raise ValueError("PropRAG NER response is empty")
+    decoder = json.JSONDecoder()
+    candidates: list[Any] = []
+    for start, char in enumerate(response):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(response[start:])
+            candidates.append(payload)
+        except json.JSONDecodeError:
+            continue
+    if not candidates:
+        try:
+            candidates.append(ast.literal_eval(response.strip().removeprefix("```json").removesuffix("```").strip()))
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError("PropRAG NER response contains no parseable JSON object") from exc
+    for payload in candidates:
+        if not isinstance(payload, dict):
+            continue
+        for key in ("entities", "named_entities"):
+            if key in payload:
+                return _normalize_proprag_entities(payload[key])
+    raise ValueError("PropRAG NER response has no entities array")
+
+
+def _normalize_proprag_propositions(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("propositions"), list):
+        raise TypeError("PropRAG propositions response is malformed")
+    normalized = dict(payload)
+    rows: list[dict[str, Any]] = []
+    for row in payload["propositions"]:
+        if not isinstance(row, dict) or not isinstance(row.get("text"), str) or not row["text"].strip():
+            raise ValueError(f"PropRAG proposition is malformed: {row!r}")
+        clean = dict(row)
+        clean["text"] = row["text"].strip()
+        clean["entities"] = _normalize_proprag_entities(row.get("entities"))
+        rows.append(clean)
+    normalized["propositions"] = rows
+    return normalized
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -262,6 +355,34 @@ def _patch_proprag_config(official_root: Path) -> tuple[Any, Any]:
 
     proprag_module = __import__("proprag.PropRAG", fromlist=["PropRAG"])
     proprag_module.logger.setLevel(logging.INFO)
+
+    # Upstream assumes one exact JSON shape and uses ``eval`` for NER. Some
+    # OpenAI-compatible models validly emit typed entity objects instead of
+    # bare strings, which later crashes de-duplication with "unhashable dict".
+    # Normalize only this transport/schema boundary; graph construction and
+    # retrieval remain the pinned official implementation.
+    enhanced_module = __import__(
+        "proprag.information_extraction.enhanced_openie", fromlist=["EnhancedOpenIE"]
+    )
+    proposition_module = __import__(
+        "proprag.information_extraction.proposition_extraction", fromlist=["PropositionExtractor"]
+    )
+    enhanced_module._extract_ner_from_response = _parse_proprag_ner_response
+    if not getattr(proposition_module.PropositionExtractor, "_prehop_normalized_json", False):
+        original_extract = proposition_module.PropositionExtractor._extract_propositions_from_response
+
+        def _normalized_extract(extractor, response):
+            return _normalize_proprag_propositions(original_extract(extractor, response))
+
+        proposition_module.PropositionExtractor._extract_propositions_from_response = _normalized_extract
+        proposition_module.PropositionExtractor._prehop_normalized_json = True
+
+    # The pinned checkout hard-codes three 300-thread pools. Honor the same
+    # endpoint limit used by the rest of the repository instead of flooding a
+    # shared server during full-corpus indexing.
+    proprag_module.ThreadPoolExecutor = _bounded_thread_pool_executor
+    enhanced_module.ThreadPoolExecutor = _bounded_thread_pool_executor
+    proposition_module.ThreadPoolExecutor = _bounded_thread_pool_executor
 
     # PropRAG prints the entire configuration during construction. Its
     # dataclass repr includes the API key, so redact that field before any

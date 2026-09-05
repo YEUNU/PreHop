@@ -319,9 +319,9 @@ class TraversalMixin:
                        related.title AS title, related.sent_id AS sent_id,
                        related.page AS page, related.text AS text,
                        related.source AS source,
-                       related.author AS author, related.publisher AS publisher,
-                       related.published_at AS published_at,
-                       related.category AS category, related.url AS url,
+                       related[$author_property] AS author, related[$publisher_property] AS publisher,
+                       related[$published_at_property] AS published_at,
+                       related[$category_property] AS category, related[$url_property] AS url,
                        related.embedding AS embedding,
                        path_type, bridge_embeddings, activated_question_ids
                 ORDER BY source_id, path_type, id
@@ -344,6 +344,11 @@ class TraversalMixin:
                     "top_k": top_k,
                     "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
                     "qplus_vector_index": self.q_plus_vector_index,
+                    "author_property": "author",
+                    "publisher_property": "publisher",
+                    "published_at_property": "published_at",
+                    "category_property": "category",
+                    "url_property": "url",
                 },
             )
             return [dict(record) async for record in result]

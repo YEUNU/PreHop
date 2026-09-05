@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import RAGConfig
+from core.index_namespace import index_namespace
 from core.vllm_client import get_llm_client
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
@@ -204,9 +205,11 @@ async def _verify_active_neo4j_snapshot(
     corpus_manifest: dict,
 ) -> dict[str, Any]:
     """Read-only active-index integrity gate before the first benchmark query."""
+    namespace = index_namespace(corpus_tag)
     metadata_rows = await engine.neo4j.execute_query(
         """
-        MATCH (m:RAGIndexSnapshot {strategy: $strategy, corpus_tag: $corpus_tag})
+        MATCH (m:RAGIndexSnapshot {strategy: $strategy})
+        WHERE coalesce(m.index_namespace, m.corpus_tag) = $index_namespace
         RETURN m.status AS status,
                m.corpus_manifest_fingerprint AS fingerprint,
                m.corpus_manifest_paragraph_count AS paragraph_count,
@@ -218,7 +221,7 @@ async def _verify_active_neo4j_snapshot(
         ORDER BY m.completed_at_epoch DESC
         LIMIT 1
         """,
-        {"strategy": strategy, "corpus_tag": corpus_tag},
+        {"strategy": strategy, "index_namespace": namespace},
     )
     metadata = dict(metadata_rows[0]) if metadata_rows else {}
     if metadata.get("status") != "complete":

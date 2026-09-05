@@ -47,6 +47,7 @@ class MSGraphRAGAdapter:
         self._text_units: pd.DataFrame | None = None
         self._relationships: pd.DataFrame | None = None
         self._documents: pd.DataFrame | None = None
+        self._query_communities: pd.DataFrame | None = None
         self._doc_id_to_title: dict[str, str] | None = None
         self._short_id_to_doc_id: dict[str, str] | None = None
         self._source_id_to_display_title: dict[str, str] | None = None
@@ -142,6 +143,8 @@ class MSGraphRAGAdapter:
             self._relationships = self._read_parquet("relationships")
         if self._documents is None:
             self._documents = self._read_parquet("documents")
+        if self._query_communities is None:
+            self._query_communities = self._complete_query_community_view(self._entities, self._communities)
         self._short_id_to_doc_id, self._doc_id_to_title = self._build_source_maps(
             self._text_units,
             self._documents,
@@ -264,6 +267,76 @@ class MSGraphRAGAdapter:
             )
         return sources
 
+    @staticmethod
+    def _complete_query_community_view(
+        entities: pd.DataFrame,
+        communities: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Keep unclustered entities visible to the official LocalSearch API.
+
+        GraphRAG embeds every entity, but ``read_indexer_entities`` performs an
+        inner community-level filter. Isolated entities therefore remain in
+        LanceDB search results while being absent from the lookup map, causing
+        valid nearest neighbors to be silently discarded. Add query-only
+        singleton memberships; they have no community report and therefore do
+        not add fabricated report context or change stored index artifacts.
+        """
+        required_entity_columns = {"id"}
+        required_community_columns = {"community", "level", "title", "entity_ids"}
+        if missing := required_entity_columns - set(entities.columns):
+            raise RuntimeError(f"MS GraphRAG entities.parquet lacks required columns: {sorted(missing)}")
+        if missing := required_community_columns - set(communities.columns):
+            raise RuntimeError(f"MS GraphRAG communities.parquet lacks required columns: {sorted(missing)}")
+
+        clustered: set[str] = set()
+        for values in communities["entity_ids"]:
+            if values is None:
+                continue
+            if isinstance(values, str):
+                clustered.add(values)
+                continue
+            if hasattr(values, "tolist"):
+                iterable = values.tolist()
+            elif isinstance(values, (list, tuple, set)):
+                iterable = values
+            elif pd.isna(values):
+                continue
+            else:
+                raise RuntimeError("MS GraphRAG community entity_ids contains a non-list value")
+            clustered.update(str(value) for value in iterable)
+        entity_ids = [str(value) for value in entities["id"]]
+        missing_ids = [entity_id for entity_id in entity_ids if entity_id not in clustered]
+        if not missing_ids:
+            return communities
+
+        logger.info(
+            "MS GraphRAG query view: retaining %d unclustered entities out of %d",
+            len(missing_ids),
+            len(entity_ids),
+        )
+
+        rows = []
+        for ordinal, entity_id in enumerate(missing_ids, start=1):
+            row = {column: None for column in communities.columns}
+            row.update(
+                {
+                    "id": f"query-only-{entity_id}",
+                    "human_readable_id": -ordinal,
+                    "community": -ordinal,
+                    "level": 0,
+                    "parent": -1,
+                    "children": [],
+                    "title": f"query-only-unclustered-{ordinal}",
+                    "entity_ids": [entity_id],
+                    "relationship_ids": [],
+                    "text_unit_ids": [],
+                    "period": "query-only",
+                    "size": 1,
+                }
+            )
+            rows.append(row)
+        return pd.concat([communities, pd.DataFrame(rows, columns=communities.columns)], ignore_index=True)
+
     # ------------------------------------------------------------------ search APIs
 
     async def local_search(self, query: str) -> tuple[str, list, list]:
@@ -271,10 +344,13 @@ class MSGraphRAGAdapter:
 
         self._ensure_loaded()
 
+        query_communities = getattr(self, "_query_communities", None)
+        if query_communities is None:
+            query_communities = self._complete_query_community_view(self._entities, self._communities)
         response, context_data = await gapi.local_search(
             config=self._config,
             entities=self._entities,
-            communities=self._communities,
+            communities=query_communities,
             community_reports=self._community_reports,
             text_units=self._text_units,
             relationships=self._relationships,

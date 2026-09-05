@@ -223,3 +223,17 @@ def test_dataset_wrapper_rejects_multi_strategy_mode(tmp_path):
 
     assert completed.returncode != 0
     assert "Unknown --model 'all'" in completed.stderr
+
+
+def test_dataset_wrappers_never_launch_an_implicit_second_strategy():
+    multihop = (ROOT / "run_multihoprag.sh").read_text(encoding="utf-8")
+    dataset = (ROOT / "run_dataset.sh").read_text(encoding="utf-8")
+
+    assert "./run_multihoprag.sh all --model hoprag" not in multihop
+    assert "./run_multihoprag.sh all --model hoprag" not in dataset
+
+
+def test_paper_runner_uses_run_scoped_neo4j_namespace():
+    paper_runner = (ROOT / "scripts/run_paper_target.sh").read_text(encoding="utf-8")
+
+    assert 'export RAG_INDEX_NAMESPACE="${dataset}_${run_id}"' in paper_runner
