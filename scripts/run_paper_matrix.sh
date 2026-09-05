@@ -23,9 +23,11 @@ esac
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 runner="$repo_root/scripts/run_paper_target.sh"
 datasets=(multihoprag musique)
-# Run the most recently added official baselines first. Keeping strategy as the
-# outer loop also completes both datasets for one baseline before moving on.
-strategies=(proprag browsenet ms_graphrag prehop naive hoprag)
+# PropRAG is excluded from this campaign because its generation route remained
+# non-responsive even with serial requests, bounded output, and backoff.
+# Keeping strategy as the outer loop completes both datasets for one baseline
+# before moving on.
+strategies=(browsenet ms_graphrag prehop naive hoprag)
 failed_targets=()
 
 for strategy in "${strategies[@]}"; do
