@@ -87,6 +87,14 @@ export RAG_BENCHMARK_CONCURRENCY=4
 export RAG_BENCHMARK_CHECKPOINT_EVERY=10
 export RAG_JUDGE_ENABLED=false
 
+# PropRAG performs long-form extraction during indexing and fans requests out
+# across the full corpus.  Keep that strategy serial so a slow generation
+# provider cannot turn one target into a timeout/retry storm.  Other strategies
+# retain their existing indexing and benchmark concurrency.
+if [ "$strategy" = proprag ]; then
+    export RAG_PROPRAG_CONCURRENT_REQUESTS="${RAG_PROPRAG_CONCURRENT_REQUESTS:-1}"
+fi
+
 if [ "$check_only" = true ]; then
     echo "Ready: dataset=$dataset strategy=$strategy run_id=$run_id concurrency=4 judge=false"
     exit 0
