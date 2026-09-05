@@ -146,7 +146,10 @@ class LiteLLMEmbeddingEncoder:
         _ = device
         self.embedding_model_name = os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
         self.embedding_dim = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "4096"))
-        self.batch_size = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "512"))
+        # BrowseNet used to send 512 passages per request.  Large MuSiQue
+        # batches can trigger a malformed MessagePack response in the remote
+        # embedding stack, so keep the default request deliberately small.
+        self.batch_size = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "16"))
         if global_config is not None:
             self.embedding_model_name = global_config.embedding_model_name
             self.batch_size = int(global_config.embedding_batch_size)
@@ -172,15 +175,37 @@ class LiteLLMEmbeddingEncoder:
             raise ValueError("LiteLLM embedding response contains an invalid vector")
         return array / norms
 
+    def _request_embeddings(self, texts: list[str]) -> list[list[float]]:
+        try:
+            response = self.client.embeddings.create(
+                model=self.embedding_model_name,
+                input=texts,
+            )
+        except Exception as exc:
+            # LiteLLM can surface an upstream MessagePack decoder failure as a
+            # non-retryable HTTP 400.  Bisect only this known transport error;
+            # unrelated 400s (bad model, credentials, etc.) must remain fatal.
+            if len(texts) <= 1 or "MessagePack data is malformed" not in str(exc):
+                raise
+            midpoint = len(texts) // 2
+            logging.warning(
+                "Embedding transport rejected batch_size=%d; retrying as %d and %d",
+                len(texts),
+                midpoint,
+                len(texts) - midpoint,
+            )
+            return self._request_embeddings(texts[:midpoint]) + self._request_embeddings(texts[midpoint:])
+        ordered = sorted(response.data, key=lambda item: item.index)
+        if len(ordered) != len(texts):
+            raise ValueError(
+                f"LiteLLM embedding response count mismatch: expected {len(texts)}, got {len(ordered)}"
+            )
+        return [item.embedding for item in ordered]
+
     def _encode(self, texts: list[str]) -> np.ndarray:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
-            response = self.client.embeddings.create(
-                model=self.embedding_model_name,
-                input=texts[start : start + self.batch_size],
-            )
-            ordered = sorted(response.data, key=lambda item: item.index)
-            vectors.extend(item.embedding for item in ordered)
+            vectors.extend(self._request_embeddings(texts[start : start + self.batch_size]))
         result = self._normalized(vectors)
         if result.shape != (len(texts), self.embedding_dim):
             raise ValueError(

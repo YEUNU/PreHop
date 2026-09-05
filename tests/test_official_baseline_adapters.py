@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ from models.official_baseline_runtime import (
     verify_snapshot,
 )
 from scripts.official_baseline_worker import (
+    LiteLLMEmbeddingEncoder,
     _bounded_thread_pool_executor,
     _proprag_concurrency,
     _normalize_proprag_entities,
@@ -23,6 +25,45 @@ from scripts.official_baseline_worker import (
     _parse_proprag_ner_response,
     _proprag_config,
 )
+
+
+def test_browsenet_embedding_transport_bisects_malformed_messagepack_batch():
+    calls = []
+
+    class FakeEmbeddings:
+        def create(self, *, model, input):
+            calls.append((model, list(input)))
+            if len(input) > 1:
+                raise RuntimeError("MessagePack data is malformed: trailing characters")
+            return SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[3.0, 4.0])])
+
+    encoder = LiteLLMEmbeddingEncoder.__new__(LiteLLMEmbeddingEncoder)
+    encoder.client = SimpleNamespace(embeddings=FakeEmbeddings())
+    encoder.embedding_model_name = "embedding-model"
+    encoder.embedding_dim = 2
+    encoder.batch_size = 4
+
+    result = encoder._encode(["one", "two", "three", "four"])
+
+    assert result.shape == (4, 2)
+    for row in result.tolist():
+        assert row == pytest.approx([0.6, 0.8])
+    assert [len(batch) for _, batch in calls] == [4, 2, 1, 1, 2, 1, 1]
+
+
+def test_browsenet_embedding_transport_does_not_split_unrelated_errors():
+    class FakeEmbeddings:
+        def create(self, *, model, input):
+            raise RuntimeError("unknown embedding model")
+
+    encoder = LiteLLMEmbeddingEncoder.__new__(LiteLLMEmbeddingEncoder)
+    encoder.client = SimpleNamespace(embeddings=FakeEmbeddings())
+    encoder.embedding_model_name = "embedding-model"
+    encoder.embedding_dim = 2
+    encoder.batch_size = 4
+
+    with pytest.raises(RuntimeError, match="unknown embedding model"):
+        encoder._encode(["one", "two"])
 
 
 def test_proprag_concurrency_uses_conservative_strategy_default(monkeypatch):

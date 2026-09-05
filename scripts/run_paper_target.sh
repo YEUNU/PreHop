@@ -95,6 +95,9 @@ if [ "$strategy" = proprag ]; then
     export RAG_PROPRAG_CONCURRENT_REQUESTS="${RAG_PROPRAG_CONCURRENT_REQUESTS:-1}"
     export RAG_PROPRAG_MAX_NEW_TOKENS="${RAG_PROPRAG_MAX_NEW_TOKENS:-2048}"
 fi
+if [ "$strategy" = browsenet ]; then
+    export RAG_EMBEDDING_BATCH_SIZE="${RAG_BROWSENET_EMBEDDING_BATCH_SIZE:-16}"
+fi
 
 if [ "$check_only" = true ]; then
     echo "Ready: dataset=$dataset strategy=$strategy run_id=$run_id concurrency=4 judge=false"
