@@ -23,10 +23,12 @@ esac
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 runner="$repo_root/scripts/run_paper_target.sh"
 datasets=(multihoprag musique)
-strategies=(prehop naive hoprag ms_graphrag browsenet proprag)
+# Run the most recently added official baselines first. Keeping strategy as the
+# outer loop also completes both datasets for one baseline before moving on.
+strategies=(proprag browsenet ms_graphrag prehop naive hoprag)
 
-for dataset in "${datasets[@]}"; do
-    for strategy in "${strategies[@]}"; do
+for strategy in "${strategies[@]}"; do
+    for dataset in "${datasets[@]}"; do
         run_id="${campaign_id}-${dataset}-${strategy}"
         echo ">>> paper target: dataset=$dataset strategy=$strategy run_id=$run_id"
         if "$runner" "$dataset" "$strategy" "$run_id" "${check_arg[@]}"; then

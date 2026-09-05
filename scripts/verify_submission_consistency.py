@@ -215,7 +215,7 @@ def verify(prefix: str, *, check_documents: bool, check_presentations: bool) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--matrix-prefix", default="final-clean-20260902")
+    parser.add_argument("--matrix-prefix", default="naacl27-clean-20260905")
     parser.add_argument("--check-documents", action="store_true")
     parser.add_argument("--check-presentations", action="store_true")
     parser.add_argument("--output", type=Path)

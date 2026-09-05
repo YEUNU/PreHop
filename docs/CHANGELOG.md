@@ -4,21 +4,14 @@ This file records changes made after the current 8B configuration was adopted.
 Entries are listed in reverse chronological order. `ARCHITECTURE.md` defines
 current behavior, and result values belong in `RESULTS.md`.
 
-## 2026-09-03 — MultiHop-RAG Prehop, Naive, and MS GraphRAG evaluations completed
+## 2026-09-05 — Previous evaluation artifacts invalidated
 
-Completed full prepared-split (2,556 queries) evaluation of Prehop, controlled
-Naive RAG, and official MS GraphRAG under the clean 8B setting (`gemma-4-31b-it`
-generation, `qwen3-embedding-8b` 4096-dim embeddings):
-- Prehop achieved 0.9215 Hits@4, 0.9499 Hits@10, 0.8229 MRR@10, 0.4584 MAP@10,
-  and 0.3513 QA accuracy with 0.9967 null refusal (latency: 24.50s/query).
-- Controlled Naive RAG achieved 0.6962 Hits@4, 0.8439 Hits@10, 0.5505 MRR@10,
-  0.2615 MAP@10, and 0.2868 QA accuracy (latency: 2.32s/query).
-- Official MS GraphRAG completed with 0.4541 Hits@4, 0.5069 Hits@10, 0.2965
-  MRR@10, 0.1479 MAP@10, 0.3584 QA accuracy, and 0.9402 null refusal (latency:
-  12.11s/query).
-- Prehop outperforms MS GraphRAG by +46.74%p in Hits@4 and +52.64%p in MRR@10.
-- Following MS GraphRAG completion, MultiHop-RAG evaluation proceeded to
-  official HopRAG / BrowseNet.
+The previous evaluation artifacts and recorded metrics were removed after the
+audit found dirty or inconsistent code provenance and adapter defects that can
+change retrieval behavior. The replacement `naacl27-clean-20260905` campaign
+uses clean committed code, run-scoped index namespaces, isolated baseline
+outputs, and explicit one-strategy targets. Recently added PropRAG and
+BrowseNet baselines run before the remaining strategies.
 
 ## 2026-09-02 — Clean 8B full-system evaluation
  
