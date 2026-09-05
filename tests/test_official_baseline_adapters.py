@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +21,7 @@ from scripts.official_baseline_worker import (
     _normalize_proprag_entities,
     _normalize_proprag_propositions,
     _parse_proprag_ner_response,
+    _proprag_config,
 )
 
 
@@ -37,6 +39,17 @@ def test_proprag_concurrency_honors_all_explicit_caps(monkeypatch):
     monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "12")
 
     assert _proprag_concurrency() == 12
+
+
+def test_proprag_config_limits_generation_reservation(monkeypatch):
+    class CaptureConfig:
+        def __init__(self, **kwargs):
+            self.values = kwargs
+
+    monkeypatch.delenv("RAG_PROPRAG_MAX_NEW_TOKENS", raising=False)
+    config = _proprag_config(CaptureConfig, Path("output"), 10)
+
+    assert config.values["max_new_tokens"] == 2048
 
 
 def test_stage_corpus_removes_only_transport_headers(tmp_path, monkeypatch):

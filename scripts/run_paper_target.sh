@@ -93,6 +93,7 @@ export RAG_JUDGE_ENABLED=false
 # retain their existing indexing and benchmark concurrency.
 if [ "$strategy" = proprag ]; then
     export RAG_PROPRAG_CONCURRENT_REQUESTS="${RAG_PROPRAG_CONCURRENT_REQUESTS:-1}"
+    export RAG_PROPRAG_MAX_NEW_TOKENS="${RAG_PROPRAG_MAX_NEW_TOKENS:-2048}"
 fi
 
 if [ "$check_only" = true ]; then

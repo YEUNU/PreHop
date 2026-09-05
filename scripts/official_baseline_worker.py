@@ -422,6 +422,7 @@ def _proprag_config(BaseConfig: Any, output_dir: Path, corpus_len: int):
         api_key=os.environ.get("VLLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or "EMPTY",
         llm_base_url=os.environ.get("VLLM_URL") or os.environ.get("OPENAI_BASE_URL"),
         llm_name=os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model"),
+        max_new_tokens=int(os.environ.get("RAG_PROPRAG_MAX_NEW_TOKENS", "2048")),
         dataset=None,
         save_dir=str(output_dir / "outputs"),
         embedding_model_name=os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model"),
