@@ -26,6 +26,7 @@ datasets=(multihoprag musique)
 # Run the most recently added official baselines first. Keeping strategy as the
 # outer loop also completes both datasets for one baseline before moving on.
 strategies=(proprag browsenet ms_graphrag prehop naive hoprag)
+failed_targets=()
 
 for strategy in "${strategies[@]}"; do
     for dataset in "${datasets[@]}"; do
@@ -35,8 +36,15 @@ for strategy in "${strategies[@]}"; do
             :
         else
             rc=$?
-            echo "Paper matrix stopped: dataset=$dataset strategy=$strategy exit_code=$rc" >&2
-            exit "$rc"
+            echo "Paper target failed; continuing matrix: dataset=$dataset strategy=$strategy exit_code=$rc" >&2
+            failed_targets+=("$dataset/$strategy:$rc")
         fi
     done
 done
+
+if [ "${#failed_targets[@]}" -gt 0 ]; then
+    printf 'Paper matrix completed with %d failed target(s):' "${#failed_targets[@]}" >&2
+    printf ' %s' "${failed_targets[@]}" >&2
+    printf '\n' >&2
+    exit 1
+fi
