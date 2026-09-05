@@ -4,6 +4,14 @@ This file records changes made after the current 8B configuration was adopted.
 Entries are listed in reverse chronological order. `ARCHITECTURE.md` defines
 current behavior, and result values belong in `RESULTS.md`.
 
+## 2026-09-06 — BrowseNet MultiHop-RAG benchmark completed
+
+Completed the official BrowseNet full-split evaluation (2,556 queries) on
+MultiHop-RAG under `naacl27-clean-20260905-multihoprag-browsenet`. Admitted
+official metrics: Hits@4 = 0.9424, Hits@10 = 0.9676, MRR@10 = 0.7916,
+MAP@10 = 0.4488, QA Acc = 0.3658, Null Refusal = 0.9900, Latency = 26.34s.
+Updated `RESULTS.md` and `docs/prehop_paper.md` accordingly.
+
 ## 2026-09-05 — Previous evaluation artifacts invalidated
 
 The previous evaluation artifacts and recorded metrics were removed after the

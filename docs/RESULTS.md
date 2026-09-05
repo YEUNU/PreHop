@@ -46,7 +46,6 @@ Every result row must satisfy all of the following conditions:
 
 ## Verified evaluation runs
 
-No run is currently admitted. The previous artifacts were invalidated after
-the provenance and adapter audit and removed before the isolated
-`naacl27-clean-20260905` campaign. Rows will be added only after all admission
-checks above pass.
+| Run ID | Dataset | Strategy | Status | Queries | Hits@4 | Hits@10 | MRR@10 | MAP@10 | QA Acc | Null Refusal | Latency (s) |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `naacl27-clean-20260905-multihoprag-browsenet` | MultiHop-RAG | BrowseNet | `completed` | 2,556 | 0.9424 | 0.9676 | 0.7916 | 0.4488 | 0.3658 | 0.9900 | 26.34 |
