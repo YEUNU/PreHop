@@ -32,7 +32,11 @@ sys.path = [entry for entry in sys.path if Path(entry or ".").resolve() != _SCRI
 
 def _proprag_concurrency() -> int:
     shared_limit = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
-    requested = int(os.environ.get("RAG_PROPRAG_CONCURRENT_REQUESTS", str(shared_limit)))
+    # PropRAG fans one request out per corpus item.  Inheriting a large shared
+    # endpoint ceiling (120 in the paper environment) creates a retry storm
+    # when the provider slows down, so use a conservative strategy-specific
+    # default.  Operators can still opt in to a larger value explicitly.
+    requested = int(os.environ.get("RAG_PROPRAG_CONCURRENT_REQUESTS", "16"))
     server_limit = int(os.environ.get("VLLM_MAX_NUM_SEQS", str(shared_limit)))
     if min(requested, shared_limit, server_limit) < 1:
         raise ValueError("RAG_PROPRAG_CONCURRENT_REQUESTS must be at least 1")

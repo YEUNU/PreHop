@@ -16,10 +16,27 @@ from models.official_baseline_runtime import (
 )
 from scripts.official_baseline_worker import (
     _bounded_thread_pool_executor,
+    _proprag_concurrency,
     _normalize_proprag_entities,
     _normalize_proprag_propositions,
     _parse_proprag_ner_response,
 )
+
+
+def test_proprag_concurrency_uses_conservative_strategy_default(monkeypatch):
+    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "120")
+    monkeypatch.delenv("RAG_PROPRAG_CONCURRENT_REQUESTS", raising=False)
+    monkeypatch.delenv("VLLM_MAX_NUM_SEQS", raising=False)
+
+    assert _proprag_concurrency() == 16
+
+
+def test_proprag_concurrency_honors_all_explicit_caps(monkeypatch):
+    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "120")
+    monkeypatch.setenv("RAG_PROPRAG_CONCURRENT_REQUESTS", "24")
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "12")
+
+    assert _proprag_concurrency() == 12
 
 
 def test_stage_corpus_removes_only_transport_headers(tmp_path, monkeypatch):
