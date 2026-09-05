@@ -28,7 +28,7 @@ def test_proprag_concurrency_uses_conservative_strategy_default(monkeypatch):
     monkeypatch.delenv("RAG_PROPRAG_CONCURRENT_REQUESTS", raising=False)
     monkeypatch.delenv("VLLM_MAX_NUM_SEQS", raising=False)
 
-    assert _proprag_concurrency() == 16
+    assert _proprag_concurrency() == 4
 
 
 def test_proprag_concurrency_honors_all_explicit_caps(monkeypatch):
