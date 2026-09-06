@@ -29,7 +29,7 @@ def test_resolved_matrix_is_config_only_and_preserves_environment(monkeypatch):
 def test_only_changed_method_contract_invalidates_target(monkeypatch):
     first = compatibility.target_configuration('prehop', 'musique')
     unrelated = compatibility.target_configuration('hipporag2', 'musique')
-    monkeypatch.setitem(compatibility.METHOD_CONTRACT_VERSIONS, 'prehop', 'paper-method-v2')
+    monkeypatch.setitem(compatibility.METHOD_CONTRACT_VERSIONS, 'prehop', 'paper-method-future')
     assert first != compatibility.target_configuration('prehop', 'musique')
     assert unrelated == compatibility.target_configuration('hipporag2', 'musique')
 

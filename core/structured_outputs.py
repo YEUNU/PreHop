@@ -8,8 +8,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, create_model
 
-PREHOP_STRUCTURED_PROFILE = 'prehop-json-schema-v1'
-Nonempty = Annotated[StrictStr, Field(min_length=1, pattern=r'\S')]
+PREHOP_STRUCTURED_PROFILE = 'prehop-json-schema-v2'
+# JSON Schema uses search semantics; grammar backends may use full matching.
+# This accepts the same nonblank strings under both, including newlines.
+NONBLANK_PATTERN = r'[\s\S]*\S[\s\S]*'
+Nonempty = Annotated[StrictStr, Field(min_length=1, pattern=NONBLANK_PATTERN)]
 _CONFIG = ConfigDict(extra='forbid', strict=True)
 
 

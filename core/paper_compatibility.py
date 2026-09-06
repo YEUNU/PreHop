@@ -12,6 +12,7 @@ COMPATIBILITY_VERSION = 'paper-config-v1'
 EVIDENCE_VERSION = 'paper-evidence-v2'
 METHOD_CONTRACT_VERSIONS = {name: 'paper-method-v1' for name in
     ('prehop', 'naive', 'ms_graphrag', 'lightrag', 'hipporag2', 'gfm_rag', 'linear_rag', 'youtu_graphrag')}
+METHOD_CONTRACT_VERSIONS.update(prehop='paper-method-v2', naive='paper-method-v2')
 
 
 def runtime_compatibility(value: dict) -> dict:

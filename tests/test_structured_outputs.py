@@ -60,7 +60,9 @@ async def test_real_sdk_strict_raw_response_has_no_repair_or_downgrade(monkeypat
     def respond(request):
         requests.append(json.loads(request.content))
         return httpx.Response(200, json={'id': 'test', 'object': 'chat.completion', 'created': 0,
-            'model': 'gemma-4-31b-it', 'choices': [{'index': 0, 'finish_reason': finish_reason,
+            'model': 'gemma-4-31b-it', 'usage': {'prompt_tokens': 123, 'completion_tokens': 512,
+                'total_tokens': 635, 'completion_tokens_details': {'reasoning_tokens': 7}},
+            'choices': [{'index': 0, 'finish_reason': finish_reason,
             'message': {'role': 'assistant', 'content': content, 'refusal': refusal,
                         'reasoning_content': '{"q_minus":[],"q_plus":[]}'}}]})
     sdk = AsyncOpenAI(base_url='http://gateway.test/v1', api_key='synthetic',
@@ -82,8 +84,19 @@ async def test_real_sdk_strict_raw_response_has_no_repair_or_downgrade(monkeypat
         if valid:
             assert await client.generate_json([{'role': 'user', 'content': 'rewrite'}], structured_contract=contract) == {'q_minus': ['Who?'], 'q_plus': []}
         else:
-            with pytest.raises(StructuredOutputError):
+            with pytest.raises(StructuredOutputError) as caught:
                 await client.generate_json([{'role': 'user', 'content': 'rewrite'}], structured_contract=contract)
+            if finish_reason != 'stop' or refusal or content is None:
+                metadata = json.loads(str(caught.value).split('metadata=', 1)[1])
+                assert metadata['choice_count'] == 1
+                assert metadata['finish_reasons'] == [finish_reason]
+                assert metadata['effective_max_tokens'] == 512
+                assert metadata['requested_max_tokens'] is None
+                assert metadata['schema_name'] == 'prehop_rewrite_legacy_v1'
+                assert len(metadata['schema_sha256']) == 64
+                assert metadata['usage'] == {'prompt_tokens': 123, 'completion_tokens': 512,
+                                             'total_tokens': 635, 'reasoning_tokens': 7}
+                assert 'reasoning_content' not in str(caught.value)
         assert len(requests) == 1
         assert requests[0]['response_format'] == contract.response_format()
         assert finish(token)['structured_output_contracts'] == [contract.provenance()]
@@ -190,3 +203,76 @@ async def test_actual_four_paths_through_typed_transport_and_sdk(monkeypatch, in
         assert 'response_format' not in requests[-1]
     finally:
         await sdk.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('count', [0, 2])
+async def test_structured_choice_count_failure_is_distinct_and_metadata_only(monkeypatch, count):
+    from types import SimpleNamespace
+    sentinel = 'SECRET_RESPONSE_OR_REQUEST_BODY'
+    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+        message=SimpleNamespace(content=sentinel, reasoning_content=sentinel)) for _ in range(count)],
+        usage=SimpleNamespace(prompt_tokens=9, completion_tokens=11, total_tokens=20,
+                              completion_tokens_details=None), id=sentinel)
+    client = VLLMClient.__new__(VLLMClient)
+    client.model_name = 'gemma-4-31b-it'
+    client.vllm_url = 'http://gateway.test/v1'
+    client.logger = logging.getLogger('structured_count_test')
+    monkeypatch.setattr(client, '_get_cached_client', lambda url: None)
+    monkeypatch.setattr(client, '_truncate_messages', lambda messages: messages)
+    monkeypatch.setattr(client, '_resolve_output_token_limit', lambda value: 4096)
+    monkeypatch.setattr(client, '_is_openai_model', lambda model: False)
+    async def create(*args):
+        return response
+    monkeypatch.setattr(client, '_create_generation_request', create)
+    with pytest.raises(StructuredOutputError, match='choice-count mismatch') as caught:
+        await client.generate_response([{'role': 'user', 'content': sentinel}],
+            response_format=question_contract('index').response_format())
+    assert sentinel not in str(caught.value)
+    metadata = json.loads(str(caught.value).split('metadata=', 1)[1])
+    assert metadata['choice_count'] == count
+    assert metadata['finish_reasons'] == ['stop'] * count
+    assert metadata['effective_max_tokens'] == 4096
+    assert metadata['requested_max_tokens'] is None
+
+
+def test_structured_diagnostics_drop_unknown_strings_and_invalid_usage():
+    from types import SimpleNamespace
+    sentinel = 'SECRET_UNKNOWN_PROVIDER_METADATA'
+    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason=sentinel)],
+        usage=SimpleNamespace(prompt_tokens=sentinel, completion_tokens=-1, total_tokens=True,
+                              completion_tokens_details=SimpleNamespace(reasoning_tokens=sentinel)))
+    raw = VLLMClient._structured_response_diagnostics(response, {'max_tokens': 4096, 'api_key': sentinel})
+    assert sentinel not in raw
+    metadata = json.loads(raw)
+    assert metadata['finish_reasons'] == ['unknown']
+    assert set(metadata['usage'].values()) == {None}
+
+
+@pytest.mark.parametrize('text', ['', ' ', '\t\n', 'A', 'Who visited London?', '\nWho visited London?\n', '한글 질문인가요?', 'one\ntwo'])
+def test_nonblank_schema_has_equivalent_search_fullmatch_and_local_semantics(text):
+    import re
+
+    from core.structured_outputs import NONBLANK_PATTERN
+    expected = re.search(r'\S', text) is not None
+    assert (re.search(NONBLANK_PATTERN, text) is not None) == expected
+    assert (re.fullmatch(NONBLANK_PATTERN, text) is not None) == expected
+    contract = question_contract('index')
+    assert contract.schema()['properties']['q_minus']['items']['pattern'] == NONBLANK_PATTERN
+    if expected:
+        assert contract.validate({'q_minus': [text], 'q_plus': []})['q_minus'] == [text]
+    else:
+        with pytest.raises(StructuredOutputError):
+            contract.validate({'q_minus': [text], 'q_plus': []})
+
+
+def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity(monkeypatch):
+    from core import structured_outputs
+    from models.prehop.indexing.chunking import _generation_signature
+    assert structured_outputs.PREHOP_STRUCTURED_PROFILE == 'prehop-json-schema-v2'
+    assert canonical_semantic_index_policy('prehop', 'musique')['method_contract'] == 'paper-method-v2'
+    current = structured_bundle_sha256()
+    cache = _generation_signature('gemma-4-31b-it')
+    monkeypatch.setattr(structured_outputs, 'PREHOP_STRUCTURED_PROFILE', 'prehop-json-schema-v1')
+    assert structured_bundle_sha256() != current
+    assert _generation_signature('gemma-4-31b-it') != cache

@@ -4,6 +4,21 @@ This file records implementation and experiment-protocol changes.
 Entries are listed in reverse chronological order. `ARCHITECTURE.md` defines
 current behavior, and result values belong in `RESULTS.md`.
 
+## 2026-09-06 — Portable nonblank schema and completion diagnostics
+
+The first released cold PreHop index stored 13 one-character questions under
+the bare `\S` schema constraint. The v2 structured profile expresses the same
+nonblank requirement under both search and full-match decoding semantics;
+multiline sentences remain valid. Schema/index/query/cache identities change,
+while generation budgets, prompts and existing artifacts remain unchanged.
+Strict completion failures now distinguish choice-count and finish-reason
+failures and record allowlisted metadata without response text. The separate
+first-chunk diagnostic succeeded and did not reproduce the original completion
+failure; truncation is not established. With the portable v2 schema, one
+same-prompt request completed with six questions of 59–120 characters at the
+unchanged cap, temperature and seed. This validates the format correction,
+not a complete cold target or full benchmark. Full-target admission remains pending.
+
 ## 2026-09-06 — Versioned structured outputs and owned gate executors
 
 Prehop now constrains and validates all four JSON-producing operations with

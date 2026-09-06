@@ -541,6 +541,47 @@ class VLLMClient:
             message = message.split("</think>")[-1]
         return message.replace("<end>", "").strip()
 
+    @staticmethod
+    def _structured_response_diagnostics(response, params: dict, requested_max_tokens=None) -> str:
+        """Allowlisted metadata only: never response text, identifiers or credentials."""
+        import hashlib
+
+        def token_count(value):
+            return value if type(value) is int and value >= 0 else None
+
+        choices = response.choices
+        standard_reasons = {'stop', 'length', 'tool_calls', 'content_filter', 'function_call'}
+        reasons = []
+        choice_metadata = []
+        for choice in choices[:8]:
+            reason = getattr(choice, 'finish_reason', None)
+            reasons.append(reason if isinstance(reason, str) and reason in standard_reasons else ('missing' if reason is None else 'unknown'))
+            message = getattr(choice, 'message', None)
+            content = getattr(message, 'content', None)
+            reasoning = getattr(message, 'reasoning_content', None)
+            choice_metadata.append({'index': token_count(getattr(choice, 'index', None)),
+                'has_refusal': bool(getattr(message, 'refusal', None)),
+                'has_tool_calls': bool(getattr(message, 'tool_calls', None)),
+                'content_characters': len(content) if isinstance(content, str) else None,
+                'reasoning_characters': len(reasoning) if isinstance(reasoning, str) else None})
+        usage = getattr(response, 'usage', None)
+        counters = {key: token_count(getattr(usage, key, None))
+                    for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')}
+        details = getattr(usage, 'completion_tokens_details', None)
+        counters['reasoning_tokens'] = token_count(getattr(details, 'reasoning_tokens', None))
+        schema = (params.get('response_format') or {}).get('json_schema', {})
+        known_names = {'prehop_index_legacy_v1', 'prehop_index_grounded_v1_v1', 'prehop_index_linked_v2_v1',
+                       'prehop_rewrite_legacy_v1', 'prehop_refine_legacy_v1', 'prehop_ranking_v1'}
+        schema_name = schema.get('name')
+        return json.dumps({'choice_count': len(choices), 'finish_reasons': reasons, 'choices': choice_metadata,
+                           'schema_name': schema_name if schema_name in known_names else 'unknown',
+                           'schema_sha256': hashlib.sha256(json.dumps(schema.get('schema'), sort_keys=True,
+                                                                      separators=(',', ':')).encode()).hexdigest(),
+                           'finish_reasons_truncated': len(choices) > 8, 'usage': counters,
+                           'requested_max_tokens': token_count(requested_max_tokens),
+                           'effective_max_tokens': token_count(params.get('max_tokens'))},
+                          sort_keys=True, separators=(',', ':'))
+
     async def generate_response(
         self,
         messages: list[dict[str, Any]],
@@ -588,13 +629,16 @@ class VLLMClient:
             if strict_schema:
                 from core.structured_outputs import StructuredOutputError
 
-                if len(response.choices) != 1 or response.choices[0].finish_reason != "stop":
-                    raise StructuredOutputError("structured response did not finish with one complete answer")
+                diagnostics = self._structured_response_diagnostics(response, params, requested_max_tokens)
+                if len(response.choices) != 1:
+                    raise StructuredOutputError(f"structured response choice-count mismatch; metadata={diagnostics}")
+                if response.choices[0].finish_reason != "stop":
+                    raise StructuredOutputError(f"structured response did not finish with one complete answer; metadata={diagnostics}")
                 message = response.choices[0].message
                 if getattr(message, "refusal", None) or getattr(message, "tool_calls", None):
-                    raise StructuredOutputError("structured response refused or returned tool output")
+                    raise StructuredOutputError(f"structured response refused or returned tool output; metadata={diagnostics}")
                 if not isinstance(message.content, str) or not message.content.strip():
-                    raise StructuredOutputError("structured response has no raw content")
+                    raise StructuredOutputError(f"structured response has no raw content; metadata={diagnostics}")
                 return message.content
             msg = response.choices[0].message
             if hasattr(msg, "tool_calls") and msg.tool_calls:
