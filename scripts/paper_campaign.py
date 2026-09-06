@@ -6,9 +6,9 @@ import argparse
 import fcntl
 import json
 import os
+import selectors
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -407,31 +407,62 @@ def redact(text: str, environment: dict[str, str]) -> str:
     return text
 
 
+# Bound only the drain after the direct child exits. Running stages retain
+# their ordinary unlimited runtime and heartbeat updates.
+CHILD_LOG_DRAIN_SECONDS = 5.0
+
+
 def run_child(argv: list[str], env: dict[str, str], log_base: Path, handle, update) -> int:
-    """Retain the resource lock in the exact owned child and redact both log streams."""
+    """Drain both owned pipes without waiting forever on inherited descendant FDs."""
     child = subprocess.Popen(argv, cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1, pass_fds=(handle.fileno(),))
-    update({'child': identity(child.pid), 'child_argv': argv})
-    def drain(pipe, path):
-        with path.open('x') as stream:
-            for line in pipe:
-                stream.write(redact(line, env))
-                stream.flush()
-        pipe.close()
-    threads = [threading.Thread(target=drain, args=(child.stdout, log_base.with_suffix('.stdout.log'))),
-               threading.Thread(target=drain, args=(child.stderr, log_base.with_suffix('.stderr.log')))]
-    for thread in threads:
-        thread.start()
+                             stderr=subprocess.PIPE, pass_fds=(handle.fileno(),))
+    pending = {}
+    streams = {}
+    pipes = {'stdout': child.stdout, 'stderr': child.stderr}
     last_update = time.monotonic()
-    while child.poll() is None:
-        if time.monotonic() - last_update >= 10:
-            update({"heartbeat_at": time.time()})
-            last_update = time.monotonic()
-        time.sleep(.2)
-    exit_code = child.wait()
-    for thread in threads:
-        thread.join()
-    return exit_code
+    exited_at = None
+    with selectors.DefaultSelector() as selector:
+        try:
+            update({'child': identity(child.pid), 'child_argv': argv})
+            for name, pipe in pipes.items():
+                streams[name] = log_base.with_suffix(f'.{name}.log').open('x')
+                pending[name] = b''
+                os.set_blocking(pipe.fileno(), False)
+                selector.register(pipe, selectors.EVENT_READ, name)
+            while selector.get_map() or child.poll() is None:
+                if child.poll() is not None and exited_at is None:
+                    exited_at = time.monotonic()
+                if exited_at is not None and time.monotonic() - exited_at >= CHILD_LOG_DRAIN_SECONDS:
+                    break
+                for key, _events in selector.select(timeout=.2):
+                    name = key.data
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if chunk:
+                        pending[name] += chunk
+                        while b'\n' in pending[name]:
+                            line, pending[name] = pending[name].split(b'\n', 1)
+                            streams[name].write(redact((line + b'\n').decode('utf-8', errors='replace'), env))
+                        streams[name].flush()
+                    else:
+                        # Complete final lines (including no trailing newline)
+                        # are redacted as a whole, never at arbitrary read cuts.
+                        streams[name].write(redact(pending[name].decode('utf-8', errors='replace'), env))
+                        streams[name].flush()
+                        pending[name] = b''
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                if time.monotonic() - last_update >= 10:
+                    update({'heartbeat_at': time.time()})
+                    last_update = time.monotonic()
+            incomplete = [key.data for key in selector.get_map().values()]
+            update({'log_drain_complete': not incomplete, 'log_drain_incomplete_streams': sorted(incomplete),
+                    'log_drain_unwritten_partial_bytes': {name: len(pending[name]) for name in incomplete}})
+        finally:
+            for pipe in pipes.values():
+                pipe.close()
+            for stream in streams.values():
+                stream.close()
+    return child.wait()
 
 
 def supervise(plan_path: Path, *, resume: bool = False, unit: str = '') -> int:
@@ -473,15 +504,17 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '') -> int:
                 continue
             stamp = time.time_ns()
             log_base = root / f'{index:02d}-{stamp}'
-            update({'stage': step['id'], 'child': None, 'exit_code': None,
+            update({'stage': step['id'], 'child': None, 'exit_code': None, 'log_drain_complete': None,
                     'segment_provenance': code_provenance(),
                     'stdout_log': str(log_base.with_suffix('.stdout.log')), 'stderr_log': str(log_base.with_suffix('.stderr.log'))})
             exit_code = run_child(step['argv'], env, log_base, handle, update)
             update({'child': None, 'exit_code': exit_code})
             remaining = [row for row in unit_processes(unit) if row['pid'] != os.getpid()]
+            update({'remaining_owned_processes': remaining})
             if remaining:
-                update({'remaining_owned_processes': remaining})
                 raise RuntimeError('Stage left native descendants running; preserve them and block restart')
+            if not status.get('log_drain_complete'):
+                raise RuntimeError('Owned stage log pipes did not reach EOF after bounded drain; dependent stages stopped')
             if exit_code:
                 raise RuntimeError(f'Owned stage {step["id"]} exited with status {exit_code}; dependent stages stopped')
             evidence = validate_step(plan, step)

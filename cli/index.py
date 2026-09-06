@@ -1482,6 +1482,8 @@ async def _run_indexing_unlocked(
 
             try:
                 if is_graph:
+                    if getattr(engine, "graph_write_failed", False):
+                        raise RuntimeError("Indexing stopped after terminal graph persistence failure")
                     knowledge = await engine.extract_knowledge(content, source=filename, prepared_pages=prepared_pages)
                     metadata = source_metadata.get(filename)
                     if metadata:
@@ -1521,6 +1523,9 @@ async def _run_indexing_unlocked(
         while offset < len(files):
             if is_graph and len(pending_tasks) >= schedule_batch:
                 record_task_errors(await _reap_bounded_tasks(pending_tasks, wait_for_one=True))
+            if getattr(engine, "graph_write_failed", False):
+                logger.error("Stopping document scheduling after terminal graph persistence failure")
+                break
             available_slots = schedule_batch - len(pending_tasks) if is_graph else schedule_batch
             batch_names = files[offset : offset + available_slots]
             offset += len(batch_names)
@@ -1601,6 +1606,8 @@ async def _run_indexing_unlocked(
                 try:
                     for completed_parse in asyncio.as_completed(parse_tasks):
                         filename, content, prepared_pages = await completed_parse
+                        if getattr(engine, "graph_write_failed", False):
+                            break
                         errors = await _submit_bounded_task(
                             pending_tasks,
                             schedule_batch,
@@ -1752,6 +1759,8 @@ async def _run_indexing_unlocked(
     # silently report an index whose structural statistics were never read.
     if graph_stats is not None:
         graph_stats["timing_seconds"] = dict(stage_timing)
+        if hasattr(engine, "graph_write_observation"):
+            graph_stats["graph_write_operational"] = engine.graph_write_observation()
         logger.info("Graph stats: %s", graph_stats)
         stats_dir = Path("data/index_stats")
         stats_dir.mkdir(parents=True, exist_ok=True)

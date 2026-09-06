@@ -4,6 +4,21 @@ This file records implementation and experiment-protocol changes.
 Entries are listed in reverse chronological order. `ARCHITECTURE.md` defines
 current behavior, and result values belong in `RESULTS.md`.
 
+## 2026-09-07 — Bound Prehop graph-write transaction payloads
+
+The first complete-corpus Prehop preparation encountered Neo4j transaction
+memory exhaustion. Restoring each failed wave and appending later documents
+made subsequent waves larger. The writer now groups intact documents by
+logical payload size as well as document count, bisects only memory-rejected
+transactions, and retains only their unwritten suffix. A singleton failure or
+other exhausted persistence error stops further writes and new generation.
+The supervisor also bounds log draining after its direct child exits; inherited
+stdout/stderr pipes cannot prevent terminal status. Incomplete logs fail closed
+and any surviving owned process identities remain recorded, without automatic
+signaling. Document replacement, vector values, question ownership, and NEXT construction
+remain unchanged. The physical policy is recorded in index statistics; earlier
+failed artifacts are preserved and are not completion evidence.
+
 ## 2026-09-06 — Backend-compatible ranking schema
 
 The next cold PreHop attempt completed indexing, then the gateway rejected the

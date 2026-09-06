@@ -69,7 +69,48 @@ def _dedupe_question_records(values: list[Any], channel: str, source: str, sent_
     return unique
 
 
+# Logical parameter size, not a claim about Neo4j's internal heap use. A single
+# document stays atomic even when larger than this grouping budget.
+GRAPH_WRITE_PAYLOAD_BYTES = 8 * 1024 * 1024
+
+
+def _logical_payload_bytes(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    if isinstance(value, dict):
+        return sum(_logical_payload_bytes(key) + _logical_payload_bytes(item) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return sum(_logical_payload_bytes(item) for item in value)
+    return 8
+
+
+class GraphWriteFailed(RuntimeError):
+    """Terminal persistence failure; this writer cannot accept more documents."""
+
+
 class GraphWriterMixin:
+    @property
+    def graph_write_failed(self) -> bool:
+        return getattr(self, "_graph_write_error", None) is not None
+
+    def _check_graph_write_state(self):
+        if self.graph_write_failed:
+            raise GraphWriteFailed("Prehop graph writer stopped after a persistence failure") from self._graph_write_error
+
+    @staticmethod
+    def _is_memory_limit_error(error: Exception) -> bool:
+        return str(getattr(error, "code", "") or "") == "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
+
+    def graph_write_observation(self) -> dict[str, Any]:
+        return {
+            "version": "document-transaction-v1",
+            "max_documents": max(1, RAGConfig.NEO4J_BATCH_SIZE),
+            "logical_payload_budget_bytes": GRAPH_WRITE_PAYLOAD_BYTES,
+            "oversized_document": "atomic_singleton",
+            "memory_limit_handling": "bisect_documents_then_terminal_singleton",
+            "terminal_failure": self.graph_write_failed,
+        }
+
     async def setup_index(self):
         analyzer = re.sub(r"[^a-zA-Z0-9_\-]", "", RAGConfig.FULLTEXT_ANALYZER) or "english"
         vector_specs = [
@@ -139,6 +180,8 @@ class GraphWriterMixin:
 
     @staticmethod
     def _is_retryable_neo4j_error(error: Exception) -> bool:
+        if GraphWriterMixin._is_memory_limit_error(error):
+            return False
         if isinstance(error, (TransientError, ServiceUnavailable, SessionExpired)):
             return True
         code = str(getattr(error, "code", "") or "")
@@ -200,6 +243,7 @@ class GraphWriterMixin:
         return removed
 
     async def build_graph(self, knowledge: dict[str, Any], source: str, document_filename: str):
+        self._check_graph_write_state()
         chunks = knowledge.get("chunks", [])
         if not chunks:
             raise ValueError(f"No chunks generated for source={source!r}")
@@ -360,6 +404,7 @@ class GraphWriterMixin:
             )
 
         async with self._batch_lock:
+            self._check_graph_write_state()
             self._pending_batch.append(
                 {
                     "data": batch_data,
@@ -367,7 +412,8 @@ class GraphWriterMixin:
                     "doc_title": str(knowledge.get("title") or document_filename),
                 }
             )
-            if len(self._pending_batch) >= RAGConfig.NEO4J_BATCH_SIZE:
+            if (len(self._pending_batch) >= max(1, RAGConfig.NEO4J_BATCH_SIZE)
+                    or _logical_payload_bytes(self._pending_batch) >= GRAPH_WRITE_PAYLOAD_BYTES):
                 await self._flush_graph_batch_unlocked()
 
     async def flush_graph_batch(self):
@@ -375,87 +421,108 @@ class GraphWriterMixin:
             await self._flush_graph_batch_unlocked()
 
     async def _flush_graph_batch_unlocked(self):
-        if not self._pending_batch:
-            return
+        self._check_graph_write_state()
+        while self._pending_batch:
+            size = 0
+            count = 0
+            for document in self._pending_batch[:max(1, RAGConfig.NEO4J_BATCH_SIZE)]:
+                document_size = _logical_payload_bytes(document)
+                if count and size + document_size > GRAPH_WRITE_PAYLOAD_BYTES:
+                    break
+                count += 1
+                size += document_size
+            # Consume only successful transactions. An unsent suffix remains
+            # intact if a later transaction fails; committed prefixes are never
+            # replayed (replacement would delete their existing graph again).
+            try:
+                await self._write_graph_documents(self._pending_batch[:count])
+            except Exception as error:
+                self._graph_write_error = error
+                raise
 
-        current_batch = self._pending_batch
-        self._pending_batch = []
-
+    async def _write_graph_documents(self, documents):
         try:
-            await self.retry_query(
-                f"""
-                UNWIND $documents AS document
-                CALL (document) {{
-                    MERGE (d:{self.doc_label} {{filename: document.doc_id}})
-                    SET d.title = document.doc_title, d.updated_at = timestamp()
-                    WITH d, document
-                    OPTIONAL MATCH (d)-[:CONTAINS]->(old:{self.chunk_label})
-                    OPTIONAL MATCH (old)-[:HAS_Q_MINUS|HAS_Q_PLUS|HAS_SENTENCE]->(old_q)
-                    WITH d, document,
-                         collect(DISTINCT old_q) AS old_questions,
-                         collect(DISTINCT old) AS old_chunks
-                    FOREACH (q IN old_questions | DETACH DELETE q)
-                    FOREACH (c IN old_chunks | DETACH DELETE c)
-                    WITH d, document
-                    UNWIND document.data AS item
-                    MERGE (c:{self.chunk_label} {{id: item.id}})
-                    SET c.text = item.text, c.source = item.source,
-                        c.title = item.title,
-                        c.sent_id = item.sent_id, c.page = item.page,
-                        c.author = item.author, c.publisher = item.publisher,
-                        c.published_at = item.published_at,
-                        c.category = item.category, c.url = item.url,
-                        c.embedding = item.embedding
-                    MERGE (d)-[:CONTAINS]->(c)
-                    FOREACH (question IN item.q_minus |
-                        MERGE (q:{self.q_minus_label} {{id: question.id}})
-                        SET q.text = question.text, q.ordinal = question.ordinal,
-                            q.source = question.source, q.title = question.title,
-                            q.embedding = question.embedding,
-                            q.question_schema = question.question_schema,
-                            q.grounding_quote = question.grounding_quote,
-                            q.anchor_entities = question.anchor_entities,
-                            q.answer = question.answer,
-                            q.continuation_anchor = question.continuation_anchor
-                        MERGE (c)-[:HAS_Q_MINUS]->(q)
-                    )
-                    FOREACH (question IN item.q_plus |
-                        MERGE (q:{self.q_plus_label} {{id: question.id}})
-                        SET q.text = question.text, q.ordinal = question.ordinal,
-                            q.source = question.source, q.title = question.title,
-                            q.embedding = question.embedding,
-                            q.query_embedding = question.query_embedding,
-                            q.question_schema = question.question_schema,
-                            q.grounding_quote = question.grounding_quote,
-                            q.anchor_entities = question.anchor_entities,
-                            q.missing_information = question.missing_information
-                        MERGE (c)-[:HAS_Q_PLUS]->(q)
-                    )
-                    FOREACH (sentence IN item.sentences |
-                        MERGE (s:{self.sentence_label} {{id: sentence.id}})
-                        SET s.text = sentence.text, s.ordinal = sentence.ordinal,
-                            s.source = sentence.source, s.title = sentence.title,
-                            s.embedding = sentence.embedding
-                        MERGE (c)-[:HAS_SENTENCE]->(s)
-                    )
-                    RETURN count(c) AS chunks_written
-                }}
-                CALL (document) {{
-                    UNWIND range(0, size(document.data) - 2) AS i
-                    MATCH (c1:{self.chunk_label} {{id: document.data[i].id}})
-                    MATCH (c2:{self.chunk_label} {{id: document.data[i + 1].id}})
-                    MERGE (c1)-[:NEXT]->(c2)
-                    RETURN count(*) AS next_edges_written
-                }}
-                RETURN count(document) AS documents_written
-                """,
-                {"documents": current_batch},
-            )
-        except Exception:
-            # MERGE makes replay safe. Restore the whole wave, including items
-            # already written before the failure, so a later flush cannot
-            # silently lose documents when one Neo4j write exhausts retries.
-            self._pending_batch = current_batch + self._pending_batch
-            raise
+            await self._write_graph_transaction(documents)
+        except Exception as error:
+            if not self._is_memory_limit_error(error) or len(documents) == 1:
+                raise
+            middle = len(documents) // 2
+            logger.warning("Neo4j transaction memory limit: splitting %d documents into %d and %d",
+                           len(documents), middle, len(documents) - middle)
+            await self._write_graph_documents(documents[:middle])
+            await self._write_graph_documents(documents[middle:])
+        else:
+            del self._pending_batch[:len(documents)]
+
+    async def _write_graph_transaction(self, current_batch):
+        await self.retry_query(
+            f"""
+            UNWIND $documents AS document
+            CALL (document) {{
+                MERGE (d:{self.doc_label} {{filename: document.doc_id}})
+                SET d.title = document.doc_title, d.updated_at = timestamp()
+                WITH d, document
+                OPTIONAL MATCH (d)-[:CONTAINS]->(old:{self.chunk_label})
+                OPTIONAL MATCH (old)-[:HAS_Q_MINUS|HAS_Q_PLUS|HAS_SENTENCE]->(old_q)
+                WITH d, document,
+                     collect(DISTINCT old_q) AS old_questions,
+                     collect(DISTINCT old) AS old_chunks
+                FOREACH (q IN old_questions | DETACH DELETE q)
+                FOREACH (c IN old_chunks | DETACH DELETE c)
+                WITH d, document
+                UNWIND document.data AS item
+                MERGE (c:{self.chunk_label} {{id: item.id}})
+                SET c.text = item.text, c.source = item.source,
+                    c.title = item.title,
+                    c.sent_id = item.sent_id, c.page = item.page,
+                    c.author = item.author, c.publisher = item.publisher,
+                    c.published_at = item.published_at,
+                    c.category = item.category, c.url = item.url,
+                    c.embedding = item.embedding
+                MERGE (d)-[:CONTAINS]->(c)
+                FOREACH (question IN item.q_minus |
+                    MERGE (q:{self.q_minus_label} {{id: question.id}})
+                    SET q.text = question.text, q.ordinal = question.ordinal,
+                        q.source = question.source, q.title = question.title,
+                        q.embedding = question.embedding,
+                        q.question_schema = question.question_schema,
+                        q.grounding_quote = question.grounding_quote,
+                        q.anchor_entities = question.anchor_entities,
+                        q.answer = question.answer,
+                        q.continuation_anchor = question.continuation_anchor
+                    MERGE (c)-[:HAS_Q_MINUS]->(q)
+                )
+                FOREACH (question IN item.q_plus |
+                    MERGE (q:{self.q_plus_label} {{id: question.id}})
+                    SET q.text = question.text, q.ordinal = question.ordinal,
+                        q.source = question.source, q.title = question.title,
+                        q.embedding = question.embedding,
+                        q.query_embedding = question.query_embedding,
+                        q.question_schema = question.question_schema,
+                        q.grounding_quote = question.grounding_quote,
+                        q.anchor_entities = question.anchor_entities,
+                        q.missing_information = question.missing_information
+                    MERGE (c)-[:HAS_Q_PLUS]->(q)
+                )
+                FOREACH (sentence IN item.sentences |
+                    MERGE (s:{self.sentence_label} {{id: sentence.id}})
+                    SET s.text = sentence.text, s.ordinal = sentence.ordinal,
+                        s.source = sentence.source, s.title = sentence.title,
+                        s.embedding = sentence.embedding
+                    MERGE (c)-[:HAS_SENTENCE]->(s)
+                )
+                RETURN count(c) AS chunks_written
+            }}
+            CALL (document) {{
+                UNWIND range(0, size(document.data) - 2) AS i
+                MATCH (c1:{self.chunk_label} {{id: document.data[i].id}})
+                MATCH (c2:{self.chunk_label} {{id: document.data[i + 1].id}})
+                MERGE (c1)-[:NEXT]->(c2)
+                RETURN count(*) AS next_edges_written
+            }}
+            RETURN count(document) AS documents_written
+            """,
+            {"documents": current_batch},
+        )
 
         # Evidence edges are built only after every document is visible.

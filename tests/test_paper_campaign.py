@@ -143,3 +143,71 @@ def test_logs_redact_url_components_and_credentials():
     line = 'synthetic-key http://gateway.test:5000/v1 http://gateway.test:5000 gateway.test:5000 gateway.test'
     assert 'synthetic-key' not in campaign.redact(line, env)
     assert 'gateway.test' not in campaign.redact(line, env)
+
+
+@pytest.mark.parametrize("report_descendant", [True, False])
+def test_child_inherited_pipes_fail_with_owned_descendant_receipt(tmp_path, monkeypatch, report_descendant):
+    """A real grandchild retaining both FDs cannot stall a failed stage forever."""
+    monkeypatch.setattr(campaign, 'ROOT', tmp_path)
+    monkeypatch.setattr(campaign, 'CHILD_LOG_DRAIN_SECONDS', .15)
+    monkeypatch.setattr(campaign, 'resource_lock_path', lambda: tmp_path/'resource.lock')
+    monkeypatch.setattr(campaign, 'ensure_no_other_campaigns', lambda unit: None)
+    monkeypatch.setattr(campaign, 'check_plan', lambda plan: None)
+    monkeypatch.setattr(campaign, 'validate_step', lambda plan, step: pytest.fail('incomplete stage was validated'))
+    secret = 'fixture-secret-split-across-writes'
+    monkeypatch.setattr(campaign, 'safe_environment', lambda: {**os.environ, 'RAG_INFERENCE_API_KEY': secret})
+    marker = tmp_path/'descendant.json'
+    grandchild = 'import time; time.sleep(2)'
+    code = f'''
+import os,subprocess,sys,time,json
+from pathlib import Path
+sys.path.insert(0,{str(ROOT)!r})
+from scripts.paper_campaign import identity
+p = subprocess.Popen([sys.executable,'-c',{grandchild!r}])
+Path({str(marker)!r}).write_text(json.dumps(identity(p.pid)))
+os.write(1,{secret[:12].encode()!r});time.sleep(.03)
+os.write(1,{(secret[12:] + ' 문서\n').encode()!r})
+os.write(2,b'complete stderr line\\n')
+os.write(2,b'unfinished-sensitive-fragment')
+'''
+    plan = {'campaign': 'smoke', 'commit': 'fixture', 'steps': [{'id': 'fd-leak', 'argv': [sys.executable, '-c', code]}]}
+    path = tmp_path/'plan.json'
+    path.write_text(json.dumps(plan))
+
+    def owned(_unit):
+        rows = [campaign.identity(os.getpid())]
+        if report_descendant and marker.exists():
+            row = json.loads(marker.read_text())
+            if campaign.alive(row):
+                rows.append(row)
+        return rows
+
+    monkeypatch.setattr(campaign, 'unit_processes', owned)
+    started = time.monotonic()
+    assert campaign.supervise(path, unit='fixture') == 1
+    assert time.monotonic() - started < 1.5
+    status = json.loads((tmp_path/'status.json').read_text())
+    assert status['state'] == 'failed'
+    assert status['log_drain_complete'] is False
+    assert status['log_drain_incomplete_streams'] == ['stderr', 'stdout']
+    assert status['log_drain_unwritten_partial_bytes']['stderr'] > 0
+    assert status['remaining_owned_processes'] == ([json.loads(marker.read_text())] if report_descendant else [])
+    assert campaign.alive(json.loads(marker.read_text()))
+    logs = ''.join(p.read_text() for p in tmp_path.glob('*.log'))
+    assert '[REDACTED] 문서\n' in logs and 'complete stderr line\n' in logs
+    assert secret not in logs and 'unfinished-sensitive-fragment' not in logs
+    assert status['completed_steps'] == []
+    # The harmless descendant exits on its own; production does not signal it.
+    time.sleep(2)
+
+
+def test_normal_child_drains_large_streams_and_final_unterminated_line(tmp_path):
+    secret = 'fixture-final-secret'
+    code = f'import os;os.write(1,b"x"*200000+b"\\n");os.write(2,{secret.encode()!r})'
+    updates = []
+    with (tmp_path/'lock').open('w') as handle:
+        assert campaign.run_child([sys.executable, '-c', code],
+            {**os.environ, 'RAG_INFERENCE_API_KEY': secret}, tmp_path/'normal', handle, updates.append) == 0
+    assert (tmp_path/'normal.stdout.log').read_text() == 'x' * 200000 + '\n'
+    assert (tmp_path/'normal.stderr.log').read_text() == '[REDACTED]'
+    assert updates[-1]['log_drain_complete'] is True

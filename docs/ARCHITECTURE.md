@@ -346,8 +346,15 @@ change its generated questions.
 - There is no company property and no conditional index-recreation path. A
   paper cold run allocates a collision-resistant namespace and may clear only
   that namespace; it never globally deletes a concurrently usable graph.
-- Neo4j retries are restricted to transient/session/service errors. Failed
-  batches are restored for safe replay; non-transient errors fail immediately.
+- Graph writes group complete documents up to the document-count limit and
+  an 8 MiB logical parameter-size budget. An oversized document remains one
+  atomic transaction. The payload budget is not a Neo4j heap-size estimate.
+- A Neo4j transaction memory-limit error splits only the failed document group;
+  successful prefixes are never replayed. Other transient/session/service errors
+  retain bounded retries. An exhausted error or singleton memory failure stops
+  the writer and new document generation; the unwritten suffix remains pending,
+  and the run fails without building HOP edges. Physical grouping is recorded
+  in index statistics and does not change the semantic configuration.
 
 `indexing/hop_edges.py`
 
@@ -952,7 +959,11 @@ systemd user unit must contain the supervisor's actual PID, and no other paper
 unit may retain supervisor or native descendant processes. The shared user
 resource lock is acquired before reading or replacing campaign status; a
 losing launcher cannot overwrite the active owner's state. Native descendants
-left after a stage block later stages and restart without being killed.
+left after a stage block later stages and restart without being killed. After
+the direct child exits, stdout/stderr draining waits at most five seconds for
+EOF. Inherited open pipes produce a failed stage with incomplete-stream names,
+unwritten partial-line byte counts, and remaining owned PID/start identities.
+Complete log lines retain redaction; incomplete lines are not emitted.
 
 Atomic status and per-stage exit receipts complement content-bound gate
 validation. Successful process exit is followed by actual evidence validation;

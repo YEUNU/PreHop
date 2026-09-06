@@ -137,6 +137,7 @@ def test_supervisor_inheritance_is_not_mutated_as_new_steps_finish(previous, mon
     monkeypatch.setattr(c, 'final_admissions', lambda *a: [{'status': 'fixture-only'}])
     def child(argv, *args):
         executed.append(argv)
+        args[-1]({'log_drain_complete': True})
         return 0
     monkeypatch.setattr(c, 'run_child', child)
     assert c.supervise(successor_path, unit='owned-fixture') == 0
