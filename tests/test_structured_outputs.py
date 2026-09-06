@@ -269,10 +269,70 @@ def test_nonblank_schema_has_equivalent_search_fullmatch_and_local_semantics(tex
 def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity(monkeypatch):
     from core import structured_outputs
     from models.prehop.indexing.chunking import _generation_signature
-    assert structured_outputs.PREHOP_STRUCTURED_PROFILE == 'prehop-json-schema-v2'
-    assert canonical_semantic_index_policy('prehop', 'musique')['method_contract'] == 'paper-method-v2'
+    assert structured_outputs.PREHOP_STRUCTURED_PROFILE == 'prehop-json-schema-v3'
+    assert canonical_semantic_index_policy('prehop', 'musique')['method_contract'] == 'paper-method-v3'
     current = structured_bundle_sha256()
     cache = _generation_signature('gemma-4-31b-it')
     monkeypatch.setattr(structured_outputs, 'PREHOP_STRUCTURED_PROFILE', 'prehop-json-schema-v1')
     assert structured_bundle_sha256() != current
     assert _generation_signature('gemma-4-31b-it') != cache
+
+
+def test_every_materialized_schema_uses_reviewed_wire_keywords():
+    from core.structured_outputs import validate_wire_schema
+    contracts = [question_contract('index', mode) for mode in ('legacy', 'grounded_v1', 'linked_v2')]
+    contracts += [question_contract(stage) for stage in ('rewrite', 'refine')]
+    contracts += [ranking_contract(['A'], 1), ranking_contract(['A', 'B', 'C'], 2)]
+    for contract in contracts:
+        schema = contract.response_format()['json_schema']['schema']
+        validate_wire_schema(schema)
+        assert 'uniqueItems' not in json.dumps(schema)
+        assert 'minLength' not in json.dumps(schema)
+    assert contracts[-1].schema()['properties']['ranking']['minItems'] == 2
+    assert contracts[-1].schema()['properties']['ranking']['maxItems'] == 2
+    assert contracts[-2].schema()['properties']['ranking']['items']['const'] == 'A'
+
+
+@pytest.mark.parametrize('key', ['uniqueItems', 'contains', 'minContains', 'maxContains',
+                                  'multipleOf', 'patternProperties', 'propertyNames', 'minLength', 'maxLength'])
+def test_unreviewed_schema_features_fail_before_transmission(key):
+    from core.structured_outputs import validate_wire_schema
+    schema = {'type': 'object', 'properties': {'ranking': {'type': 'array', 'items': {'type': 'string'}, key: True}}}
+    with pytest.raises(StructuredOutputError, match='unsupported registered wire-schema keys'):
+        validate_wire_schema(schema)
+    # Field names and literal values are data, not schema keywords.
+    validate_wire_schema({'type': 'object', 'properties': {key: {'type': 'string', 'enum': [key]}}})
+
+
+@pytest.mark.asyncio
+async def test_sdk_ranking_duplicate_is_rejected_locally_without_wire_unique_items(monkeypatch):
+    requests = []
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'id': 'fixture', 'object': 'chat.completion', 'created': 0,
+            'model': 'gemma-4-31b-it', 'choices': [{'index': 0, 'finish_reason': 'stop',
+            'message': {'role': 'assistant', 'content': '{"ranking":["A","A"]}'}}]})
+    sdk = AsyncOpenAI(base_url='http://gateway.test/v1', api_key='synthetic',
+                      http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
+    client = VLLMClient.__new__(VLLMClient)
+    client.model_name = 'gemma-4-31b-it'
+    client.vllm_url = 'http://gateway.test/v1'
+    client.logger = logging.getLogger('ranking_duplicates')
+    monkeypatch.setattr(client, '_get_cached_client', lambda url: sdk)
+    monkeypatch.setattr(client, '_truncate_messages', lambda messages: messages)
+    monkeypatch.setattr(client, '_resolve_output_token_limit', lambda value: 1024)
+    monkeypatch.setattr(client, '_is_openai_model', lambda model: False)
+    async def create(sdk, params):
+        return await sdk.chat.completions.create(**params)
+    monkeypatch.setattr(client, '_create_generation_request', create)
+    try:
+        with pytest.raises(StructuredOutputError, match='duplicate candidate IDs'):
+            await client.generate_json([{'role': 'user', 'content': 'Rank the candidates'}],
+                                       structured_contract=ranking_contract(['A', 'B'], 2))
+        assert len(requests) == 1
+        array = requests[0]['response_format']['json_schema']['schema']['properties']['ranking']
+        assert 'uniqueItems' not in array
+        assert array['minItems'] == array['maxItems'] == 2
+        assert array['items']['enum'] == ['A', 'B']
+    finally:
+        await sdk.close()

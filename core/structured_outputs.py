@@ -8,11 +8,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, create_model
 
-PREHOP_STRUCTURED_PROFILE = 'prehop-json-schema-v2'
+PREHOP_STRUCTURED_PROFILE = 'prehop-json-schema-v3'
 # JSON Schema uses search semantics; grammar backends may use full matching.
 # This accepts the same nonblank strings under both, including newlines.
 NONBLANK_PATTERN = r'[\s\S]*\S[\s\S]*'
-Nonempty = Annotated[StrictStr, Field(min_length=1, pattern=NONBLANK_PATTERN)]
+Nonempty = Annotated[StrictStr, Field(pattern=NONBLANK_PATTERN)]
 _CONFIG = ConfigDict(extra='forbid', strict=True)
 
 
@@ -27,7 +27,9 @@ class StructuredContract:
     unique_ranking: bool = False
 
     def schema(self) -> dict[str, Any]:
-        return self.model.model_json_schema()
+        schema = self.model.model_json_schema()
+        validate_wire_schema(schema)
+        return schema
 
     def provenance(self) -> dict[str, str]:
         encoded = json.dumps(self.schema(), sort_keys=True, separators=(',', ':')).encode()
@@ -79,8 +81,7 @@ def ranking_contract(candidate_ids: list[str], top_k: int) -> StructuredContract
     count = min(top_k, len(candidate_ids))
     identifier = Literal[tuple(candidate_ids)]
     model = create_model('prehop_ranking_v1', __config__=_CONFIG,
-                         ranking=(list[identifier], Field(..., min_length=count, max_length=count,
-                                                         json_schema_extra={'uniqueItems': True})))
+                         ranking=(list[identifier], Field(..., min_length=count, max_length=count)))
     return StructuredContract('prehop_ranking_v1', model, unique_ranking=True)
 
 
@@ -90,5 +91,26 @@ def structured_bundle_sha256() -> str:
     schemas += [question_contract(stage).schema() for stage in ('rewrite', 'refine')]
     schemas.append(ranking_contract(['C000', 'C001'], 1).schema())
     bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas,
-              'validation_contract': 'strict-json-schema-v1'}
+              'validation_contract': 'strict-json-schema-local-unique-v2'}
     return hashlib.sha256(json.dumps(bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+# Approved subset used by our materialized PreHop schemas. New keywords require
+# explicit backend validation, not silent removal or a weaker decoding fallback.
+# https://docs.vllm.ai/en/latest/api/vllm/v1/structured_output/backend_xgrammar/
+WIRE_SCHEMA_KEYS = frozenset({'$defs', '$ref', 'type', 'title', 'properties', 'required',
+    'additionalProperties', 'items', 'minItems', 'maxItems', 'pattern', 'enum', 'const'})
+
+
+def validate_wire_schema(schema: dict[str, Any]) -> None:
+    """Reject unreviewed keywords before sending a constrained request."""
+    unsupported = set(schema) - WIRE_SCHEMA_KEYS
+    if unsupported:
+        raise StructuredOutputError(f'unsupported registered wire-schema keys: {sorted(unsupported)}')
+    for key in ('$defs', 'properties'):
+        for child in schema.get(key, {}).values():
+            validate_wire_schema(child)
+    for key in ('items', 'additionalProperties'):
+        child = schema.get(key)
+        if isinstance(child, dict):
+            validate_wire_schema(child)

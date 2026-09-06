@@ -140,7 +140,7 @@ STRATEGIES = (
         "prehop",
         primary=True,
         paper_index_policy=(
-            ("structured_output_profile", "prehop-json-schema-v2"),
+            ("structured_output_profile", "prehop-json-schema-v3"),
             ("chunk_sentences", 6),
             ("default_top_k", 12),
             ("questions_per_direction", 3),
@@ -154,13 +154,13 @@ STRATEGIES = (
             ("continuation_anchor_policy", "named_only"),
             ("hop_construction", "qplus_to_qminus_owner"),
         ),
-        paper_query_policy=_CORE_QUERY_POLICY + (("structured_output_profile", None, "prehop-json-schema-v2"),),
+        paper_query_policy=_CORE_QUERY_POLICY + (("structured_output_profile", None, "prehop-json-schema-v3"),),
     ),
     StrategySpec(
         "naive",
         primary=True,
         paper_index_policy=(
-            ("structured_output_profile", "prehop-json-schema-v2"),
+            ("structured_output_profile", "prehop-json-schema-v3"),
             ("chunk_sentences", 6),
             ("default_top_k", 12),
             ("question_schema", "legacy"),
@@ -170,7 +170,7 @@ STRATEGIES = (
             ("precompute_reciprocal_hops", True),
             ("fulltext_analyzer", "english"),
         ),
-        paper_query_policy=_CORE_QUERY_POLICY + (("structured_output_profile", None, "prehop-json-schema-v2"),),
+        paper_query_policy=_CORE_QUERY_POLICY + (("structured_output_profile", None, "prehop-json-schema-v3"),),
     ),
     StrategySpec("hoprag"),
     StrategySpec(

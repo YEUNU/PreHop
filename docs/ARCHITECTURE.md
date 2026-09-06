@@ -52,7 +52,7 @@ repair an invalid ranking. Empty question directions and linked-schema empty
 continuation anchors retain their existing meaning. Final answer synthesis
 keeps its text response contract.
 
-`core/structured_outputs.py` owns these schemas. Profile
+`core/structured_outputs.py` owns these schemas.
 Nonblank strings use `[\s\S]*\S[\s\S]*`, preserving the intended
 non-whitespace requirement under both JSON Schema search and constrained-decoder
 full-match semantics, including multiline text. The previous bare `\S`
@@ -60,7 +60,18 @@ constraint produced one-character questions in a failed cold attempt; those
 artifacts remain preserved. Completion failures record only allowlisted schema,
 choice, finish-reason and token-count metadata, never response text.
 
-`prehop-json-schema-v2` and the materialized-schema bundle digest enter index policy,
+The v3 wire schema omits `uniqueItems`; exact ranking count and candidate IDs
+remain constrained, and the local validator rejects duplicate IDs without
+repair or filling. Redundant `minLength` on patterned strings is also omitted.
+A reviewed keyword subset is checked recursively before transmission, keeping
+property names and enum/const values separate from schema keywords. This follows
+[vLLM's documented XGrammar feature checks](https://docs.vllm.ai/en/latest/api/vllm/v1/structured_output/backend_xgrammar/).
+Local compiler acceptance alone does not establish serving support: one local
+compiler accepted `uniqueItems` that the actual gateway rejected. All seven
+current schema variants were therefore also checked through the production
+request helper and gateway; this is integration evidence, not full admission.
+
+`prehop-json-schema-v3` and the materialized-schema bundle digest enter index policy,
 query metadata, and the v4 chunk-generation cache signature. Per-request
 schema digests also enter inference telemetry. Fresh paper runs use separate
 `data/index_cache/runs/<run>/<strategy>/<dataset>` directories; an existing

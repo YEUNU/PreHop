@@ -4,6 +4,22 @@ This file records implementation and experiment-protocol changes.
 Entries are listed in reverse chronological order. `ARCHITECTURE.md` defines
 current behavior, and result values belong in `RESULTS.md`.
 
+## 2026-09-06 — Backend-compatible ranking schema
+
+The next cold PreHop attempt completed indexing, then the gateway rejected the
+ranking request's unsupported `uniqueItems` key. Structured profile v3 removes
+that wire key while retaining exact count, candidate membership and strict
+local duplicate rejection. It also removes redundant length metadata already
+implied by the nonblank pattern and rejects unreviewed schema keywords before
+sending a request. Local validation semantics and generation budgets remain
+unchanged; schema/index/query/cache identities advance.
+
+All seven materialized variants—three index formats, rewrite, refinement and
+single/multiple-candidate ranking—passed actual production-helper/gateway checks
+with HTTP 200, one stopped completion and strict local validation. Both ranking
+outputs were unique. These probes do not admit a complete cold target or full
+benchmark. Earlier failed artifacts remain preserved.
+
 ## 2026-09-06 — Portable nonblank schema and completion diagnostics
 
 The first released cold PreHop index stored 13 one-character questions under
