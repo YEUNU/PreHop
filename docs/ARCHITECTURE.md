@@ -1,10 +1,85 @@
 # Architecture
 
 This document defines the current indexing and query paths at module level.
-All inference uses configured external OpenAI-compatible generation and
-embedding endpoints; the repository does not start a local model. Historical
-changes belong in `CHANGELOG.md`, and research claims belong in the local
-`prehop_paper.md`.
+Remote generation and remote embeddings use one configured, fail-closed
+OpenAI-compatible LiteLLM gateway; the repository does not start a local
+generation model. Pinned local ancillary models remain part of methods that
+define them. Historical changes belong in `CHANGELOG.md`, and research claims
+belong in the local `prehop_paper.md`.
+
+## External package installation
+
+Pinned checkouts are runtime source references, not packaging work directories.
+`scripts/build_official_package.py` exports the approved revision to a unique
+strategy-local `artifacts/builds/` directory and passes that export to package
+installation. It records the archive digest and rejects tracked, untracked,
+or ignored changes in the original source before and after the build.
+`RAG_OFFICIAL_BASELINE_HOME` selects the same runtime layout for setup and
+worker source, interpreter, snapshot, and freeze resolution. Existing failed
+attempts remain in place when a new runtime home is selected.
+
+## Admission and transport identity
+
+The typed transport checks the normalized gateway URL against the non-secret
+`configs/paper_gateway.json` digest before client construction. Public vendor
+endpoints, URL userinfo, and unregistered generation-model overrides fail
+closed. Primary research workers receive canonical transport fields and only
+necessary native client credentials; they do not inherit legacy routing aliases.
+
+Target admission establishes the exact run ID, output root, namespace, and
+method generation seed before comparing current and stored policy. Matrix
+execution uses that target exit status, including admission failure. Standalone
+target verification supports `--exact-run-id`. Admission revalidates current
+v2 corpus manifests and source bytes and binds their identity along with the
+result, detail rows, index statistics, runtime, and explicit evidence-contract version.
+
+HippoRAG2 retains its native unprefixed query embeddings and native newline-to-space
+normalization; its method policy records an empty instruction and `{query}`
+template. The injected encoder uses the typed embedding request timeout.
+Youtu's benchmark seed remains separate from its native unseeded generation;
+a native-answer adapter cannot silently synthesize a replacement answer.
+
+## Structured generation contracts
+
+Prehop's Q−/Q+ indexing, role rewrite, evidence refinement, and candidate
+ranking use registered `response_format.json_schema` requests with
+`strict: true` through the same typed LiteLLM transport. The client requires
+one completed, non-refused raw JSON response and validates every nested field.
+It rejects fenced/prose-wrapped JSON, wrong types, extra fields, duplicate
+keys, and incomplete generations. Ranking requires exactly the requested
+number of distinct IDs from the actual candidate pool. It does not fill or
+repair an invalid ranking. Empty question directions and linked-schema empty
+continuation anchors retain their existing meaning. Final answer synthesis
+keeps its text response contract.
+
+`core/structured_outputs.py` owns these schemas. Profile
+`prehop-json-schema-v1` and the schema-factory bundle digest enter index policy,
+query metadata, and the v4 chunk-generation cache signature. Per-request
+schema digests also enter inference telemetry. Fresh paper runs use separate
+`data/index_cache/runs/<run>/<strategy>/<dataset>` directories; an existing
+cache cannot satisfy a fresh-index step. Resume retains its own run cache.
+
+HippoRAG2's controlled `hipporag2-paper-json-object-v2` profile sets the official
+`BaseConfig.response_format` to `{"type":"json_object"}` for native NER and
+triple extraction. Native prompts, parsers, seed, temperature and 512/2048-token
+limits remain unchanged. Native QA receives no extraction response format.
+The official cache and OpenIE state identity include this setting; project
+snapshots also require the observed format and limits to match policy.
+
+Youtu's controlled `youtu-extraction-json-schema-v2` profile wraps only the
+constructor's public SDK client. It adds the frozen extraction JSON Schema,
+checks raw completion and nested shape, and returns the identical SDK response
+to the unmodified native parser. Dynamic entity/type maps and native schema
+evolution remain available. Retrieval and QA clients receive no extraction
+format. Construction retains temperature 0.3, no seed and no imposed token
+cap. The extraction-response schema digest is distinct from the approved
+starting ontology and evolved ontology digests. Old unstructured indexes
+cannot be admitted under these new profiles.
+
+The standard wire format follows the [vLLM structured-output interface](https://docs.vllm.ai/en/latest/features/structured_outputs/).
+Unsupported gateway/backend schema requests fail without an unstructured
+fallback. Local SDK acceptance is not evidence of a particular serving
+backend or version.
 
 ## Shared input contract
 
@@ -22,13 +97,21 @@ window splitter:
 - Prehop and Naive apply the same fixed window splitter after parsing. This
   makes the in-repo Naive path a controlled retrieval baseline rather than a
   claim that Naive RAG has one canonical chunker.
-- Official HopRAG, MS GraphRAG, BrowseNet, and PropRAG retain their upstream
-  indexing units because changing them would no longer be a full-system
-  comparison.
+- Primary external methods retain their upstream indexing units because
+  changing them would no longer be a full-system comparison. BrowseNet,
+  HopRAG, and PropRAG retain theirs as legacy/reserve adapters.
 
 ## Strategy dispatch and indexing branches
 
-`cli/index.py::run_indexing` obtains a per-`(strategy, corpus_tag)` file lock,
+`core/strategy_registry.py` is the typed source of truth for primary order,
+legacy support, external repository and revision, worker, output root, license
+note, transport profile, and paper embedding identity. The CLI and shell
+runners consume that registry rather than maintaining independent lists. The
+primary order is Prehop, Naive RAG, MS GraphRAG, LightRAG, HippoRAG2, GFM-RAG,
+LinearRAG, and Youtu-GraphRAG. BrowseNet, HopRAG, and PropRAG remain callable
+legacy/reserve strategies.
+
+`cli/index.py::run_indexing` obtains a namespace-aware strategy/corpus lock,
 then `run_indexing_unlocked` dispatches as follows:
 
 ```text
@@ -56,6 +139,27 @@ strategy == ms_graphrag
   -> text units/entities/relationships/communities/reports/embeddings
   -> corpus-scoped parquet + LanceDB output
 
+strategy == lightrag
+  -> pinned official LightRAG storage initialization and insertion
+  -> dual-level mix-mode retrieval and native answer path
+
+strategy == hipporag2
+  -> pinned official HippoRAG2 indexing and source metadata
+  -> native rag_qa answer with source-bearing evidence
+
+strategy == gfm_rag
+  -> pinned official GFM-RAG worker
+  -> validated model.pth/config.json and checkpoint-defined GNN components
+
+strategy == linear_rag
+  -> pinned process-isolated official relation-free Tri-Graph
+  -> local MPNet snapshot in the primary official-faithful mode
+
+strategy == youtu_graphrag
+  -> pinned official knowledge-tree construction
+  -> declared controlled public no-agent query API
+  -> local MiniLM/NER plus observational provenance sidecars
+
 strategy == browsenet
   -> isolated official BrowseNet revision
   -> GLiNER entities + ColBERT entity linking + Graph-of-Chunks
@@ -66,16 +170,37 @@ strategy == proprag
   -> proposition extraction + entity/proposition/passage graph
   -> LiteLLM embedding stores + file-backed graph artifacts
 
-anything else
-  -> ValueError
+legacy browsenet | hoprag | proprag
+  -> retained pinned official adapter; never a primary matrix target
 ```
 
-BrowseNet and PropRAG use a process boundary rather than importing their
-dependencies into the main environment. `scripts/setup_official_baselines.sh`
-checks out exact upstream commits into an ignored directory. The parent stages
-the prepared corpus, starts the official index or persistent retrieval worker,
-and accepts only structured JSON responses. Snapshot metadata binds the
-official revision, source digest, and corpus fingerprint before evaluation.
+File-backed external methods use a process boundary rather than importing
+conflicting dependencies into the main environment.
+`scripts/setup_official_baselines.sh` checks out exact upstream revisions into
+an ignored directory and creates isolated runtimes. The preflight rejects a
+revision mismatch or a tracked or untracked change in an upstream checkout.
+The parent stages the prepared corpus, starts the official index or persistent
+retrieval worker, and accepts only structured JSON responses. Snapshot metadata
+binds the official revision, source/content digests, corpus fingerprint,
+artifact inventory, exact indexed source coverage, and immutable
+semantic-configuration hash before evaluation. Throughput controls are
+operational configuration and do not silently change method semantics. The
+external research worker loads one strategy-specific thin driver through the
+typed central registry; it does not rely on placeholder modules in upstream
+checkouts.
+
+LinearRAG's GPL upstream source stays in its external checkout and is never
+copied into the MIT repository. Youtu-GraphRAG's upstream
+academic/research-use terms continue to apply. The primary LinearRAG mode uses
+an exact local MPNet snapshot and pinned `en_core_web_trf`; Youtu-GraphRAG uses
+an exact local MiniLM snapshot and pinned `en_core_web_lg`; GFM-RAG requires
+content-addressed `model.pth` and `config.json`; and Youtu-GraphRAG requires a
+content-addressed schema selected from the pinned checkout. MultiHop-RAG maps
+to upstream `hotpot`; MuSiQue maps to `musique`. The registry records this
+alias/no-chunk policy and the native effective retrieval/filter budget of 20.
+`configs/paper_runtime_requirements.json` records the
+machine-readable requirements, and `scripts/check_paper_runtime.py` validates
+them without reading or printing secrets.
 MuSiQue uses BrowseNet's native decomposition template. Because BrowseNet does
 not provide a MultiHop-RAG template, MultiHop-RAG uses its official HotpotQA
 template without changing the retrieval algorithm. PropRAG's official example
@@ -89,12 +214,14 @@ only the active known
 corpus tags (`multihoprag`, `musique`) because each needs its
 official problem-context grouping; another tag fails explicitly.
 
-Both preparation scripts publish `corpus_manifest.json` beside the corpus.
-The fingerprint binds the prepared source set and content; the manifest also
-binds the complete query ID set, and MultiHop-RAG additionally records a
-canonical prepared-query record digest. Full benchmarks require the manifest
-fingerprint to match the completed index artifact. Query IDs, and query records
-when that digest is present, are checked before any retrieval client starts.
+Both preparation scripts atomically publish `corpus_manifest.json` beside the
+corpus. The current manifest schema binds distinct source IDs, source count,
+file and corpus-record content digests, query IDs, query count, and query-record
+digest. MuSiQue keeps paragraph IDs distinct from filename-derived source IDs;
+the two digests are never aliases. Schema-v1 inputs are rejected in paper
+mode. Full benchmarks recompute the active
+corpus and query identities before a retrieval client starts and require them
+to match the completed index artifact.
 
 The in-repo path limits simultaneously active files with
 `RAG_MAX_PARALLEL_FILES`. CPU parsing uses a spawn-based `ProcessPoolExecutor`
@@ -106,6 +233,28 @@ a complete index. Graph indexing uses a bounded rolling task window: when any
 document finishes, its slot is reused immediately. A slow document therefore
 does not impose a barrier on the rest of its original scheduling batch, while
 the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
+
+### Inference transport
+
+`core/inference_transport.py` owns one typed transport: base URL, API key,
+registered generation and embedding model IDs, timeout, retry policy, remote
+embedding batch size, generation/embedding concurrency, seed semantics,
+context/input limits, dimension, reserve, and exact query instruction/template.
+The same base serves `/chat/completions` and `/embeddings`. Legacy `VLLM_*`,
+ambient provider, and direct-vendor variables are rejected as public inputs.
+Primary child processes receive canonical typed values and empty forbidden
+aliases, preventing native dotenv imports from restoring competing settings.
+Populated compatibility aliases are limited to isolated legacy children.
+Internal clients do not interpret competing URL or credential variables. Empty bases, two different
+bases, unregistered models, direct public-vendor routes, and unsupported
+fallbacks fail closed in paper mode.
+
+Remote embedding responses must contain exactly one finite, dimensionally
+consistent vector per input with unique, gap-free response indices. Only
+MessagePack/context-size errors and HTTP 413 trigger order-preserving
+bisection; an unrelated HTTP 400 or a failing singleton is raised. The paper
+operational configuration caps remote embedding batches at 16 and effective
+concurrency at 1 without reducing the independent generation concurrency.
 
 ### Prehop modules
 
@@ -176,8 +325,9 @@ change its generated questions.
   question nodes and writes its replacement subgraph. A second write creates
   forward-only ordered `NEXT` edges; stale NEXT/HOP edges disappear with the
   deleted old chunks.
-- There is no company property and no conditional index-recreation path. A cold
-  run clears the graph/schema once before indexing.
+- There is no company property and no conditional index-recreation path. A
+  paper cold run allocates a collision-resistant namespace and may clear only
+  that namespace; it never globally deletes a concurrently usable graph.
 - Neo4j retries are restricted to transient/session/service errors. Failed
   batches are restored for safe replay; non-transient errors fail immediately.
 
@@ -216,7 +366,45 @@ change its generated questions.
   Benchmark questions, gold paragraphs, hop labels, score thresholds, and
   semantic candidate widths are not inputs to this pass.
 
-### Official baseline modules
+### Primary external driver contracts
+
+The common external worker owns lifecycle, structured requests, telemetry,
+semantic provenance, and artifact inventory. Thin strategy drivers own only
+method-specific staging and upstream calls:
+
+- LightRAG supplies a NumPy-array embedding callback with exact count,
+  dimension, and finite-value validation; storage initialization, insertion,
+  insertion status, mix-mode retrieval, and finalization errors propagate.
+- HippoRAG2 maps the canonical gateway into the upstream OpenAI-compatible
+  fields, checks embedding width, calls native `rag_qa`, and retains both its
+  answer and source-bearing evidence.
+- GFM-RAG validates checkpoint/configuration hashes before constructing or
+  loading the official index. Completion requires source-document coverage in
+  the stored graph, not merely a staged corpus.
+- LinearRAG maps the official numeric passage prefix back to source IDs through
+  a sidecar, avoiding visible metadata markers in NER and embedding text. The
+  native `qa()` owns retrieval, prompt construction and answer parsing; its
+  configured `infer()` interface uses the typed gateway with the native
+  2000-token limit. The pinned MPNet snapshot is downloaded at an exact revision and passed by local
+  path for compatibility with the upstream sentence-transformers version.
+- Youtu-GraphRAG stages one MuSiQue paragraph per source, maps the public
+  corpus tag to the explicit upstream dataset alias, and uses native effective
+  `top_k=top_k_filter=20`. The pinned agent batch entrypoint does not return
+  structured answer/evidence, so the registered `controlled_adapter` calls the
+  public native no-agent query API and preserves its evidence order. Each fresh
+  worker calls the native `build_indices()` after retriever construction, as
+  the pinned entrypoint does. It records
+  staged coverage, native extraction success, and native source reachability
+  as separate content-bound sidecars without injecting visible markers or
+  changing retrieval/deduplication. Malformed, empty, sentinel, or swallowed
+  failures are fatal.
+
+GFM's entity-linker model snapshot remains under its pinned runtime artifacts.
+Its mutable PLAID cache and metadata use the current run's
+`artifacts/gfm_entity_linker` directory through the native public `root`
+setting, including the graph constructor's interpolated entity linker.
+
+### Legacy external modules
 
 `models/hoprag/official_indexer.py`
 
@@ -238,8 +426,10 @@ change its generated questions.
 `models/ms_graphrag/official_indexer.py`
 
 - Stages every corpus file and calls the official `Standard` build pipeline.
-- LiteLLM routes generation and embedding to external endpoints. Output is
-  isolated under `data/ms_graphrag_output/<corpus_tag>`.
+- The typed LiteLLM transport routes generation and embedding through the same
+  gateway. Output is isolated under the run-specific MS GraphRAG root.
+  LocalSearch receives the exact native community table; the adapter does not
+  synthesize singleton communities or augment community membership.
 - Expected output tables are verified; workflow errors fail the target.
 
 `models/browsenet/official_indexer.py` and
@@ -528,53 +718,63 @@ Project-owned prompt templates are deliberately limited to:
   request chain-of-thought.
 - `utils/prompts/evaluation.py`: the offline benchmark judge.
 
-LLM-as-a-judge is disabled by default (`RAG_JUDGE_ENABLED=false`). When it is
-explicitly enabled, the benchmark uses the OpenAI Batch API by default
-(`RAG_JUDGE_BATCH=true`). Each strategy/seed writes an atomic pending manifest
-immediately after submission; `main.py` resolves all submitted batches in
-parallel and only publishes aggregates when every expected custom ID is
-present. Submission, terminal-state, parsing, or partial-output failures are
-reported as incomplete runs and never fall back silently to more expensive
-synchronous judge calls. `RAG_JUDGE_BATCH=false` is reserved for explicit
-debug runs.
+LLM-as-a-judge is disabled for paper targets (`RAG_JUDGE_ENABLED=false`). Paper
+mode prohibits the public OpenAI Batch API and any direct vendor fallback. An
+explicit supplemental judge must use the same typed LiteLLM transport or fail
+closed; incomplete, malformed, or self-judged output never enters primary
+rankings.
 
 Prehop begins rewriting only for questions within the fixed input-length
 limit. It can add evidence-conditioned role views while exact identities keep
-changing, then makes one complete-list selection call. Official HopRAG's upstream `bfs_node` traversal
-includes its published LLM helpful/helpless node judgement. The adapter routes
-that call externally. MS
-GraphRAG also retains the official package's extraction/community/report/search
-prompts. Those upstream prompts are baseline algorithms, not hidden Prehop
-gates.
+changing, then makes one complete-list selection call. The legacy HopRAG
+adapter retains upstream `bfs_node` judgement. MS GraphRAG and the other
+primary external methods retain their declared upstream extraction, indexing,
+retrieval, and answer prompts. Those prompts are method behavior, not hidden
+Prehop gates.
 
 ## Comparison settings
 
 - Prehop and Naive use the same six-sentence chunks, top-k 12, and final
   synthesis prompt.
-- HopRAG keeps the official repository's end-to-end top-k 20.
-- MS GraphRAG uses the official LocalSearch API and context-budget
-  configuration for entity-grounded passage QA. The adapter does not route
-  between LocalSearch and GlobalSearch using query keywords.
-- BrowseNet keeps its official five-subgraph retrieval, GLiNER extraction,
-  and ColBERT threshold 0.9. Its semantic encoder calls the configured LiteLLM
-  embedding endpoint, and the evaluator supplies the shared short-answer
-  synthesis after official retrieval.
-- PropRAG keeps proposition extraction, 200 retrieved passages, five passages
-  for answer context, and its graph retrieval procedure. Semantic vectors come
-  from the configured LiteLLM endpoint. The evaluator records the full ranking
-  for retrieval metrics and uses the first five passages for synthesis.
+- MS GraphRAG retains Standard indexing and official LocalSearch context
+  construction.
+- LightRAG retains dual-level mix-mode retrieval and its native answer path.
+- HippoRAG2 retains native retrieval and `rag_qa`, while the adapter preserves
+  source-bearing evidence.
+- GFM-RAG retains its validated checkpoint-defined GNN and local components.
+- LinearRAG retains the official relation-free Tri-Graph path and pinned MPNet
+  embeddings in the primary official-faithful mode. Its controlled Qwen mode
+  is a distinct, currently unadmitted semantic configuration.
+- Youtu-GraphRAG's declared controlled variant calls the pinned public
+  `initial_question_decomposition` no-agent API, preserving its ordered
+  retrieval, reranking, retry, and final answer with `top_k_filter=20`.
+  MuSiQue staging preserves one prepared paragraph per source instead of
+  silently re-chunking it. It does not claim the non-returning agent batch path.
 
-External reference systems retain their stated search budgets, so paper tables
-and captions state the unequal settings. A one-source-one-vector Naive run
-changes the evidence unit and is reported, if used, only as a separate
-chunking sensitivity analysis.
+Official systems retain their stated search and context budgets, so tables and
+captions state unequal settings. A one-source-one-vector Naive run changes the
+evidence unit and is, if used, a separate chunking sensitivity analysis.
+BrowseNet, HopRAG, and PropRAG keep their previous contracts only as
+legacy/reserve adapters and do not supply primary cells.
 
-Prehop, Naive, HopRAG, BrowseNet, and PropRAG return an explicit answer boundary
-after synthesis; empty-context abstentions use the same boundary. MS GraphRAG
-instead requests a short `Final Answer:` span through the official LocalSearch
-response-type parameter. The canonical metric extractor recognizes these
-explicit boundaries, preserves an unmarked response in full, and does not
-truncate a marked prediction before scoring.
+### Upstream immutability boundary
+
+Pinned external source trees remain clean and immutable. Strategy adapters are
+limited to input normalization, the declared LiteLLM transport, run-local
+configuration or schema preparation, observational sidecars, and validation
+after a native API call. They do not override upstream retrieval, graph
+deduplication, serialization, or answer orchestration. A method-defining
+override is a controlled deviation, receives a different semantic fingerprint,
+and is ineligible for an official-faithful primary cell.
+
+This distinction matters for Youtu-GraphRAG. Its native entity and triple
+deduplication may retain only the first chunk identity for repeated evidence.
+The adapter reports `input_chunk_coverage_complete` independently from
+`native_source_reachability_complete`, plus the reachable and unreachable
+counts. It does not add provenance to the graph or alter `_extract_chunk_ids_*`.
+BrowseNet likewise keeps its legacy ColBERT checkpoint in the external
+runtime's `artifacts/` directory and links that artifact into a run-local
+layout; the pinned checkout itself stays clean.
 
 ## Evaluation output contract
 
@@ -599,11 +799,23 @@ Evidence metrics follow the prepared gold unit for each dataset:
   fact matcher.
 
 Missing gold units are emitted as `-1`, while an evaluated query with no match
-is zero. Paper aggregates exclude failed, incomplete, and unreconciled rows.
-Subset artifacts are development records only and do not enter reported
-quantitative results. Complete-split paired analyses record the evaluated ID
+is zero. The experiment ledger uses exactly `planned`, `canary_passed`,
+`in_progress`, `completed_unadmitted`, `admitted`, and `failed`. A synthetic
+canary is not a complete target. Completion is not admission: final admission
+recomputes exact row order and count, error rows, query and ground-truth
+identities, eligible counts, aggregates, corpus/index coverage, artifact
+inventory, semantic configuration, model revisions, operational metadata,
+exact index-stat bytes/path, runtime freeze/constraints, versioned effective method configuration,
+and post-query retrieval-artifact inventory. Result JSON detail rows must equal
+the complete JSONL bytes in manifest order.
+Only `admitted` primary artifacts enter quantitative results. Subset and
+legacy/reserve artifacts are development evidence only. Complete-split paired analyses record the evaluated ID
 digest and are interpreted as descriptive diagnostics, because the prepared
 splits were also inspected during configuration development.
+The benchmark JSON keeps the machine execution value
+`status=completed_unadmitted`. A successful per-target verifier writes the separate
+run-level `admission.json` ledger entry with `status=admitted`. This keeps
+execution completion distinct from permission to publish the artifact.
 For query-only ablations, `--expected-ablation-difference` requires the named
 metadata key and no other ablation key to differ. The active-index snapshot,
 models and seed, code provenance, benchmark concurrency, and judge state must
@@ -640,13 +852,13 @@ execution recovery, not indexing recovery or an orchestration-level retry.
 ## Run measurements
 
 Every paper run invokes one dataset/strategy target with a unique `RAG_RUN_ID`.
-The run records wall time, phase timings exposed by the adapter, structural
-integrity, and failures without an orchestration-level retry policy.
-`VLLM_MAX_NUM_SEQS` records endpoint capacity. Clients that share a generation
-endpoint and event loop share one request semaphore, and Prehop processes at
-most one generation request per active file. Embeddings use bounded batches.
-Naive flattens 32 source documents into each embedding/write batch. Official
-adapters report only timing boundaries their upstream implementations expose.
+The run records wall time, service latency, worker-queue delay, end-to-end
+latency, phase timings exposed by the adapter, effective concurrency,
+structural integrity, and failures. Remote embeddings use batch 16 and
+concurrency 1; generation has its own semaphore. Cancellation cannot leak a
+global embedding permit. Official adapters report only timing and token/cost
+fields their upstream implementations expose; unavailable telemetry is marked
+incomplete and never estimated.
 
 The measurement set directly addresses the indexing-time tradeoff: overall
 and Prehop phase latency, index-storage size, document/chunk/question/edge counts,
@@ -666,33 +878,36 @@ are online. Coverage, linkage rate, and graph density remain descriptive and
 do not become dataset-tuned pass thresholds. Held-out retrieval metrics test
 effectiveness separately.
 
-For official MS GraphRAG, HopRAG, BrowseNet, and PropRAG adapters, the stored
-timing includes `official_pipeline_seconds` plus any stage boundaries exposed
-by the adapter; the runner does not infer boundaries that the upstream package
-does not expose. Prehop retains its finer phase timings; Naive reports its
-aggregate pipeline and measurement timing only.
+For MS GraphRAG and process-isolated adapters, the stored timing includes the
+official pipeline boundary plus any stage boundaries exposed by the adapter;
+the runner does not infer boundaries that the upstream package does not
+expose. Prehop retains its finer phase timings; Naive reports its aggregate
+pipeline and measurement timing only.
 `scripts/run_paper_target.sh` creates a cold target without deleting shared
 state: it disables the in-repo chunk and embedding caches, gives every
-file-backed official baseline a new run-specific output root, clears Neo4j
-when the selected strategy uses it, and runs the complete prepared split at
-query concurrency 4. Existing run IDs and dirty tracked worktrees are rejected.
+file-backed official baseline a new run-specific output root, allocates a
+run-specific Neo4j namespace without invoking the global clear operation, and runs the complete prepared split at
+query concurrency 4. A dirty tracked worktree is warned and recorded in code
+provenance. A strictly verified completed target is skipped; a compatible
+complete index or deterministic partial benchmark may resume; corrupt or
+incompatible existing artifacts fail closed. The matrix continues after
+independent target failures and exits nonzero if any target failed.
 MS GraphRAG relationship drops caused by missing extracted entities are
 recorded as integrity warnings in the target result rather than silently
 treated as a clean graph.
 
 `index_capacity` records the size of the persisted index that each strategy
-uses during retrieval. Prehop, Naive RAG, and HopRAG retrieve from their
+uses during retrieval. Prehop, Naive RAG, and legacy HopRAG retrieve from their
 strategy-scoped Neo4j nodes, relationships, properties, and search indexes.
 Their recorded value is a versioned logical-payload estimate: vector elements,
 list elements, and graph records are counted at eight bytes, with selected text
 property characters added directly. It does not represent the physical Neo4j
 store size and excludes Neo4j record, page, transaction-log, and search-index
-file overhead. MS GraphRAG does not use Neo4j in this repository; it retrieves
-from files under `data/ms_graphrag_output/<corpus-tag>/`. Its recorded value is
-the physical size of those local retrieval artifacts, excluding copied input,
-cache, and log directories (`_input`, `_cache`, and `_logs`). Original corpus
-files, debug output, run logs, and temporary files are not index storage for
-any strategy.
+file overhead. MS GraphRAG and the file-backed external methods record the
+physical size and SHA-256 inventory of their local retrieval artifacts,
+excluding copied input, cache, log, and temporary directories. Their completion
+checks derive exact source coverage from stored chunks, passages, document
+nodes, or source sidecars; staged input alone cannot satisfy coverage.
 
 These values share the reporting concept *index-storage size* but not the same
 physical measurement method: the Neo4j values are logical estimates, whereas
@@ -706,3 +921,42 @@ capacity-measurement failure marks the indexing run incomplete.
 As a HOP-connectivity diagnostic, the runner resolves every full-query
 evidence title against indexed documents, then reports the fraction of fully resolved
 gold queries and gold document pairs connected by at least one `HOP_ANSWER`.
+
+## Campaign process ownership
+
+`paper_campaign.py` owns the ordered gate and full-matrix subprocesses. A frozen
+plan binds effective model configuration, runtime content, the explicit evidence
+contract and target order. Git/source/verifier hashes remain provenance metadata.
+Changing only a commit, comment or document does not invalidate compatible
+evidence. Each executed segment records its actual launch provenance; matching
+settings do not imply that independently launched segments used identical code. The
+systemd user unit must contain the supervisor's actual PID, and no other paper
+unit may retain supervisor or native descendant processes. The shared user
+resource lock is acquired before reading or replacing campaign status; a
+losing launcher cannot overwrite the active owner's state. Native descendants
+left after a stage block later stages and restart without being killed.
+
+Atomic status and per-stage exit receipts complement content-bound gate
+validation. Successful process exit is followed by actual evidence validation;
+the final matrix requires all sixteen current admissions. Canonical secret and
+URL values are redacted from logs. The harmless detachment regression proves
+process/status behavior only; actual host unit and linger verification belong
+to the release procedure in `RUNTIME_REQUIREMENTS.md`.
+
+### Configuration compatibility maintenance
+
+`core/paper_compatibility.py` resolves each method/dataset from the same typed
+index, query and transport policies used by production validation. Explicit
+runtime/interpreter and artifact paths retain their existing operational binding;
+this contract does not promise relocation across runtime directories.
+`core/generation_profiles.py` supplies the applied temperature/token settings
+to owned consumers and the same values to policy identity. Pinned native
+defaults retain their upstream owner and registered override metadata. Materialized
+prompt and JSON-schema contents are hashed; Python source bytes are not schema
+identity. Per-method semantic versions cover behavior not represented by those
+settings and must be changed deliberately when such behavior changes. This is
+a maintained contract, not automatic proof that arbitrary code edits preserve
+behavior. Evidence protocol versions remain strict. Old admission records
+require current revalidation; matching configuration never replaces corpus,
+query, native artifact, result/detail or dependency checks. Historical query,
+index and evaluation provenance is preserved unchanged.

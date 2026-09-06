@@ -14,6 +14,7 @@ Each document has one role:
 | `README.md` | Public overview, setup, and command guide |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | Normative implementation, evaluation, and component-control specification |
 | [RESULTS](docs/RESULTS.md) | Canonical complete-result and artifact register |
+| [RUNTIME REQUIREMENTS](docs/RUNTIME_REQUIREMENTS.md) | Pinned external setup and fail-closed preflight |
 | [CHANGELOG](docs/CHANGELOG.md) | Chronological engineering record |
 | `CLAUDE.md` | Maintainer and experiment-operation policy |
 
@@ -23,6 +24,14 @@ gitignored `SUBMISSION_TARGET.md` contains private submission logistics.
 ---
 
 ## What this repository is
+
+Paper runs require a gateway matching `configs/paper_gateway.json`, clean
+pinned external runtimes, and ordered live-gate evidence. The target runner
+accepts an exact run ID and verifies admission in that target's resolved
+environment before returning success. See [runtime requirements](docs/RUNTIME_REQUIREMENTS.md)
+for current setup limitations. Package builds use separate artifact-local
+revision exports. A fresh `RAG_OFFICIAL_BASELINE_HOME` preserves an existing
+dirty setup attempt while selecting a new runtime layout.
 
 Core indexing-time design, currently evaluated on MultiHop-RAG and MuSiQue:
 
@@ -69,25 +78,54 @@ index question representations or construct and traverse graph edges. This
 isolates Prehop's retrieval architecture instead of adding a chunk-size or
 evidence-budget difference to the comparison.
 The optional LLM judge is disabled by default and is not a primary metric.
-Only complete prepared-split runs are eligible for submission results.
+Only admitted complete prepared-split runs are eligible for submission
+results.
 
-Prehop, Naive RAG, HopRAG, BrowseNet, and PropRAG attach an explicit answer
-boundary before evaluation. MS GraphRAG requests the equivalent
-`Final Answer:` contract from its official search API. The evaluator scores
-the complete marked span; an unmarked response remains the complete prediction
-and is never replaced by a fixed-length suffix.
+Each adapter preserves its declared native answer path and exposes an explicit
+answer boundary to the evaluator. The evaluator scores the complete marked
+span; an unmarked response remains the complete prediction and is never
+replaced by a fixed-length suffix.
+
+Pinned upstream checkouts are immutable at runtime. An official-faithful
+adapter may normalize staged inputs, route supported calls through the declared
+LiteLLM gateway, prepare run-local configuration or schema files, record
+observational sidecars, and validate outputs after the native call returns. It
+must not replace retrieval, deduplication, graph serialization, or answer-path
+methods. Any change to a method-defining operation is a controlled deviation
+with a separate semantic configuration and cannot silently populate an
+official-faithful primary cell.
 
 ### Result admission
 
-The evaluator supports six independent strategies: Prehop, Naive RAG, HopRAG,
-MS GraphRAG, BrowseNet, and PropRAG. Each target uses the full prepared
+The primary paper matrix contains eight independent strategies: Prehop, Naive
+RAG, MS GraphRAG, LightRAG, HippoRAG2, GFM-RAG, LinearRAG, and
+Youtu-GraphRAG. BrowseNet, HopRAG, and PropRAG remain supported legacy
+adapters but are not primary matrix targets. Each target uses the full prepared
 MultiHop-RAG or MuSiQue split. Generation and answer synthesis use
-`gemma-4-31b-it`; semantic retrieval embeddings use the configured
-`qwen3-embedding-8b` endpoint. MultiHop-RAG and MuSiQue remain in separate
-tables because their metrics and denominators differ. The artifact-admission
+`gemma-4-31b-it` where the upstream method permits an OpenAI-compatible
+endpoint. Remote embeddings use the configured `qwen3-embedding-8b`;
+LinearRAG retains its official pinned MPNet, and the declared controlled Youtu
+no-agent adapter retains pinned MiniLM. GFM-RAG retains its
+checkpoint-defined local components. Local method components and adapter
+variants are recorded separately from controlled remote-backbone
+configurations. MultiHop-RAG and MuSiQue remain in separate
+tables because their metrics and denominators differ. A canary is not target
+completion, and completion is not admission. The artifact-admission
 and publication checks are defined in [RESULTS](docs/RESULTS.md).
 
 ---
+
+Prehop's four JSON-producing operations now use registered strict JSON Schema
+requests; final answers remain text. Hippo OpenIE and Youtu construction use
+separately versioned controlled extraction formats. See the
+[structured-generation contract](docs/ARCHITECTURE.md#structured-generation-contracts)
+and [frozen stage commands](docs/RUNTIME_REQUIREMENTS.md#frozen-stage-executors)
+for schema/cache identity, the fixed synthetic cold fixture, actual recovery
+testing, complete-corpus one-query checks, and fresh full-target admission.
+Use the [durable campaign supervisor](docs/RUNTIME_REQUIREMENTS.md#durable-campaign-ownership)
+for indexing and benchmarking after independent configuration-contract attestation. Its disk status
+and admission references remain available after the initiating task ends.
+These integration checks do not establish paper effectiveness results.
 
 ## Repository layout
 
@@ -99,6 +137,8 @@ prehop/
 │   └── benchmark.py                 # benchmark runner (single + multi-seed)
 ├── core/
 │   ├── config.py                    # RAGConfig — validated env-driven settings
+│   ├── strategy_registry.py         # primary/legacy strategy source of truth
+│   ├── inference_transport.py       # typed single-gateway contract
 │   ├── neo4j_service.py             # async Neo4j driver lifecycle
 │   └── vllm_client.py               # external generation/embedding clients
 ├── models/
@@ -110,7 +150,8 @@ prehop/
 │   ├── hoprag/                      # baseline (runtime hop traversal via official HopRAG)
 │   ├── ms_graphrag/                 # baseline (community-report retrieval via graphrag package)
 │   ├── browsenet/                   # pinned BrowseNet reference adapter
-│   └── proprag/                     # pinned PropRAG reference adapter
+│   ├── proprag/                     # pinned PropRAG reference adapter
+│   └── external_research/            # thin Light/Hippo/GFM/Linear/Youtu drivers
 ├── utils/
 │   ├── abstain.py                   # honest-abstain detection + shared 3-way answer_label
 │   ├── metrics.py                   # deferred Batch judge + retrieval metrics
@@ -123,7 +164,7 @@ prehop/
 │   ├── datasets/                    # dataset download, normalization, and sampling
 │   └── *.py                         # experiment measurement and evaluation utilities
 ├── tests/                           # chunking / retrieval / live-integration
-├── run_servers.sh                   # validate/start Neo4j + generation/embedding endpoints
+├── run_servers.sh                   # validate/start Neo4j + single inference gateway
 ├── run_index.sh / run_benchmark.sh  # low-level, dataset-agnostic
 ├── run_multihoprag.sh               # per-dataset entry: index|benchmark|all
 ├── run_dataset.sh                   # per-dataset entry for MuSiQue
@@ -145,7 +186,7 @@ docker run -d --name prehop-neo4j -p 7474:7474 -p 7687:7687 \
 
 # Configure env vars
 cp .env.example .env
-# Required: NEO4J_PASSWORD and the external generation/embedding endpoint settings
+# Required: NEO4J_PASSWORD and the single LiteLLM gateway settings
 ```
 
 `pyproject.toml` and `uv.lock` are the dependency contract, including the
@@ -153,52 +194,77 @@ HopRAG spaCy model. The run scripts
 auto-discover `.venv/bin/python` (override with `PYTHON_BIN`), so you do not
 need to activate the environment.
 
-`run_servers.sh` validates the configured external generation and embedding
-endpoints. It never launches local model processes.
+`run_servers.sh` validates the configured LiteLLM gateway and its registered
+generation and embedding models. It never launches local model processes.
 
 The current cold-run configuration uses the following model identities. The
-same names are copied to `RAG_GENERATION_REVISION` and
-`RAG_EMBEDDING_REVISION` so index and benchmark artifacts retain them directly.
+paper target derives controlled-gateway revision provenance from these exact
+registered names; local ancillary revisions come from the strategy registry.
 
 | Role | Served model | Required setting |
 |---|---|---|
-| Generation and synthesis | `gemma-4-31b-it` | `VLLM_SERVED_MODEL_NAME` |
-| Embeddings | `qwen3-embedding-8b`, 4,096 dimensions | `VLLM_SERVED_EMBED_MODEL_NAME` |
+| Generation and synthesis | `gemma-4-31b-it` | `RAG_GENERATION_MODEL` |
+| Remote embeddings | `qwen3-embedding-8b`, 4,096 dimensions | `RAG_EMBEDDING_MODEL` |
 
 Result tables retain the model identity stored in their cited artifacts. A
 runtime configuration change does not relabel an earlier result.
 
-Prehop and MS GraphRAG generation calls use temperature 0. HopRAG retains its
-upstream indexing temperature 0.1 and retrieval-time node judgement. External
-server hardware and launch options are not part of the reported method
-configuration.
+Remote generation and embedding requests use the same
+`RAG_INFERENCE_BASE_URL` and `RAG_INFERENCE_API_KEY`; a missing gateway,
+different generation/embedding bases, or a direct vendor fallback fails
+closed in paper mode. Shell entrypoints reject legacy `VLLM_*`, ambient
+provider, and direct-vendor variables. Isolated child processes receive any
+upstream compatibility names only from the validated typed transport. External server
+hardware and launch options are not part of the reported method configuration.
 
-### BrowseNet and PropRAG runtimes
+### Isolated official baseline runtimes
 
-BrowseNet and PropRAG run in isolated Python 3.10 environments because their
+Externally maintained methods run in isolated environments because their
 official dependencies conflict with the main project environment. Install the
 pinned official revisions once:
 
 ```bash
-./scripts/setup_official_baselines.sh
+./scripts/setup_official_baselines.sh --primary
 ```
 
 The setup keeps official source, model dependencies, and downloaded weights
 under the ignored `data/official_baselines/` directory. The repository stores
-only the adapters and exact upstream commit identifiers. Generation and
-semantic embeddings use the configured LiteLLM endpoints; BrowseNet's GLiNER
-and ColBERT components remain local because they are algorithm-specific rather
-than general generation or embedding endpoints. Run either strategy through
-the same dataset entrypoint used by the other baselines:
+only thin adapters and exact upstream commit identifiers. LinearRAG's GPL code
+never enters this MIT tree, and Youtu's upstream academic/research-use terms
+still apply. LinearRAG's primary official-faithful mode uses a pinned local
+MPNet snapshot and `en_core_web_trf` in its Python 3.9 environment;
+Youtu-GraphRAG's controlled no-agent adapter uses a pinned local MiniLM
+snapshot and `en_core_web_lg`;
+GFM-RAG resolves its approved checkpoint, configuration, and ColBERT entity
+linker from pinned local snapshots; Youtu-GraphRAG also requires a
+dataset-specific approved content-addressed schema in its pinned checkout.
+MultiHop-RAG explicitly uses the upstream `hotpot` dataset policy; MuSiQue uses
+the upstream `musique` policy. The native retrieval/filter budget is 20 and
+the upstream no-chunk document path is retained for both aliases.
+BrowseNet's legacy ColBERT checkpoint belongs under
+`data/official_baselines/browsenet/artifacts/colbertv2.0`, outside its source
+checkout. Existing dirty legacy checkouts and source-local checkpoints are
+preserved; setup does not clean or migrate them. Youtu post-validation separately records staged-input
+coverage, native extraction success, and source reachability observable in the
+native graph. Its public no-agent API returns ordered evidence; sentinel,
+malformed, empty, and swallowed-error results fail. Native
+deduplication can leave repeated-source provenance unreachable; that
+observational limitation is reported and does not rewrite native retrieval.
+After preparing the dataset as described below, check the target with the
+selected main environment (`PYTHON_BIN` or `UV_PROJECT_ENVIRONMENT`). These
+checks do not print credentials or synchronize the environment:
 
 ```bash
-./run_dataset.sh musique all --model browsenet --queries full
-./run_dataset.sh musique all --model proprag --queries full
+./scripts/run_paper_target.sh multihoprag linear_rag linear-preflight-01 --check
+./scripts/run_paper_target.sh multihoprag youtu_graphrag youtu-preflight-01 --check
+./scripts/run_paper_target.sh multihoprag gfm_rag gfm-preflight-01 --check
 ```
 
-MuSiQue uses BrowseNet's native question-decomposition template. BrowseNet has
-no MultiHop-RAG template, so that dataset uses its official HotpotQA template;
-the upstream graph retrieval procedure and search budgets remain unchanged.
+The machine-readable requirements, including local model revisions, approved
+checkout-relative schema paths, and schema SHA-256 values, are in
+`configs/paper_runtime_requirements.json`. The setup and preflight fail when an
+external checkout has the wrong revision or a dirty tracked or untracked
+working tree. They do not install dependencies at import time.
 
 ---
 
@@ -208,7 +274,7 @@ the upstream graph retrieval procedure and search budgets remain unchanged.
 # 0) Prepare a dataset (downloads + builds corpus + queries)
 .venv/bin/python scripts/datasets/prepare_multihoprag.py
 
-# 1) Start Neo4j and validate external generation/embedding endpoints
+# 1) Start Neo4j and validate the single external inference gateway
 ./run_servers.sh all
 
 # 2) Build the index
@@ -273,31 +339,31 @@ the printed fingerprint with every reported result.
 .venv/bin/python scripts/datasets/prepare_multihoprag.py
 .venv/bin/python scripts/datasets/prepare_musique.py
 
-# One cold index and full benchmark per invocation. Repeat for every strategy.
+# One cold index and full benchmark per invocation.
 ./scripts/run_paper_target.sh multihoprag prehop mhr-prehop-cold-01
 ./scripts/run_paper_target.sh multihoprag naive mhr-naive-cold-01
-./scripts/run_paper_target.sh multihoprag hoprag mhr-hoprag-cold-01
 ./scripts/run_paper_target.sh multihoprag ms_graphrag mhr-ms-cold-01
-./scripts/run_paper_target.sh multihoprag browsenet mhr-browsenet-cold-01
-./scripts/run_paper_target.sh multihoprag proprag mhr-proprag-cold-01
+./scripts/run_paper_target.sh multihoprag lightrag mhr-light-cold-01
 
-./scripts/run_paper_target.sh musique prehop musique-prehop-cold-01
-./scripts/run_paper_target.sh musique naive musique-naive-cold-01
-./scripts/run_paper_target.sh musique hoprag musique-hoprag-cold-01
-./scripts/run_paper_target.sh musique ms_graphrag musique-ms-cold-01
-./scripts/run_paper_target.sh musique browsenet musique-browsenet-cold-01
-./scripts/run_paper_target.sh musique proprag musique-proprag-cold-01
+# Print the authoritative primary order used by the runners.
+python3 core/strategy_registry.py --primary-lines
 ```
 
-To preflight or run the complete 12-target matrix in a fixed order:
+To preflight the complete 16-target matrix in registry order:
 
 ```bash
 ./scripts/run_paper_matrix.sh submission-01 --check
-./scripts/run_paper_matrix.sh submission-01
 ```
 
-The matrix is fail-fast: it preserves the first nonzero exit code and never
-launches a dependent or fallback model implicitly.
+A real matrix is locked behind the content-bound live-gate ledger. After an
+independent static GO, use `scripts/run_paper_live_gates.sh` in the order
+defined in [RUNTIME REQUIREMENTS](docs/RUNTIME_REQUIREMENTS.md), then run
+`./scripts/run_paper_matrix.sh submission-01`. The matrix refuses a missing,
+incomplete, changed, or stale ledger.
+
+Each target is independent. The matrix records a failure, continues with the
+remaining targets, reports every failed target, and exits nonzero if any target
+failed. It never launches a fallback model implicitly.
 
 For the dataset files used by this revision, preparation must print the
 following identities. A different fingerprint is a different prepared corpus
@@ -305,22 +371,22 @@ and must not be mixed with these runs.
 
 | Dataset | Sources | Full queries | Corpus fingerprint |
 |---|---:|---:|---|
-| MultiHop-RAG | 609 | 2,556 | `87781bfec56d944e9e57c3f0e96dc28ba473d837bf4a48d17fdc5b8690a4a0b8` |
-| MuSiQue answerable dev | 21,099 | 2,417 | `7560a2113c736776b7d4970ec02e3a8c8a2c04bf495f1b5ee4bf67718c323735` |
+| MultiHop-RAG | 609 | 2,556 | `c11b84f626c08d06d6dbc938512275824567aaffdc77a0f0b5424ad94f13a8ee` |
+| MuSiQue answerable dev | 21,099 | 2,417 | `63562ceaf17343507b305b152af93245959f458412be321662cfbc8fde9f2a34` |
 
-The wrapper requires a clean tracked worktree, disables Prehop chunk and
-embedding caches, assigns run-specific output roots to file-backed baselines,
+The wrapper records a dirty tracked worktree warning in provenance, disables
+Prehop chunk and embedding caches, assigns run-specific output roots to file-backed baselines,
 and assigns a run-specific Neo4j label/index namespace while retaining the
-canonical dataset tag in result paths. Consequently, `--clear-graph` clears
-only the new target namespace and cannot delete a concurrently queried default
-index. It fixes benchmark concurrency at 4, disables the optional judge, and
-uses the full prepared query file. It refuses an existing run ID instead of
-reusing artifacts. An interrupted or failed index is incomplete and must be rebuilt
-under a new run ID after resolving the cause. A
-deterministic benchmark interrupted after valid checkpoints can resume under
-the same run ID only when the runner verifies identical queries, models,
-configuration, and index identity. Retained and resumed code provenance remain
-separate in the result. Run artifacts record phase timings, graph integrity,
+canonical dataset tag in result paths. The wrapper never passes
+`--clear-graph`: that maintenance option deletes the whole configured Neo4j
+database and is not namespace-scoped. It fixes benchmark concurrency at 4, remote embedding batch/concurrency
+at 16/1, disables the optional judge, and uses the full prepared query file. A
+strictly verified admitted target is skipped. A complete compatible index may
+resume at benchmarking, and a deterministic benchmark may resume from valid
+checkpoints only when the runner verifies identical queries, models,
+configuration, and index identity. Corrupt, incompatible, or unsafe existing
+artifacts fail closed. Retained and resumed code provenance remain separate in
+the result. Run artifacts record phase timings, graph integrity,
 provenance coverage, index-storage size, and failures. Index-storage
 size means the persisted index used during retrieval: a logical-payload
 estimate for the Neo4j-backed Prehop, Naive RAG, and HopRAG indexes, and the
@@ -329,16 +395,17 @@ debug output, and temporary files are excluded. Detailed measurement fields,
 storage-method limitations, and adapter-specific timing boundaries are defined
 in [ARCHITECTURE](docs/ARCHITECTURE.md#run-measurements).
 
-Use `--check` as the fourth argument to validate the worktree, revision fields,
-prepared manifest, run ID, and isolated output paths without starting a run.
+Use `--check` as the fourth argument for a read-only readiness check. It warns
+about (rather than rejects) tracked worktree changes and validates the typed
+gateway/model identity plus the pinned external runtime, approved reviewed direct
+constraints where declared, and the locally captured dependency freeze. The
+target wrapper also checks its prepared inputs, run ID, and isolated output
+boundary before execution. `--check` does not start indexing or benchmarking,
+and passing it is neither a canary nor admission.
 
-LLM judging is disabled by default. When it is explicitly enabled, OpenAI Batch
-is the default transport. An interrupted submitted batch can be resumed without
-re-running retrieval:
-
-```bash
-.venv/bin/python scripts/reconcile_batch_judge.py --run-dir data/results/<run-id>
-```
+LLM judging is disabled for paper targets. Paper mode prohibits the public
+OpenAI Batch path and direct vendor fallback; an explicitly enabled
+supplemental judge must use the declared LiteLLM transport or fail closed.
 
 An interrupted deterministic benchmark uses its original run ID and timestamp:
 
@@ -362,8 +429,10 @@ and judge state. Comparisons between intentionally different index tags require
 the explicit `--allow-index-variant` flag and still require identical dataset,
 corpus fingerprint, evaluation scope, and query IDs.
 
-The predeclared relative-improvement requirement is checked from completed
-artifacts rather than copied into a hand-edited table:
+The predeclared relative-improvement requirement is checked from
+`completed_unadmitted` analysis artifacts rather than copied into a
+hand-edited table. It may be published only after its underlying targets are
+admitted:
 
 ```bash
 .venv/bin/python scripts/performance_gate.py \
@@ -375,7 +444,7 @@ artifacts rather than copied into a hand-edited table:
 
 For each dataset-specific official metric, the gate independently selects the
 strongest supplied non-Prehop baseline and requires a 10% relative gain. Only
-complete full-split artifacts are paper-eligible.
+admitted full-split artifacts are paper-eligible.
 
 ### Complete-split presentation diagnostics
 

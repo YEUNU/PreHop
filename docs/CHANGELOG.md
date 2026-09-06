@@ -1,8 +1,163 @@
 # Changelog
 
-This file records changes made after the current 8B configuration was adopted.
+This file records implementation and experiment-protocol changes.
 Entries are listed in reverse chronological order. `ARCHITECTURE.md` defines
 current behavior, and result values belong in `RESULTS.md`.
+
+## 2026-09-06 — Versioned structured outputs and owned gate executors
+
+Prehop now constrains and validates all four JSON-producing operations with
+registered schemas. Query/index metadata and generation caches bind the new
+schema profile; malformed outputs and incomplete rankings fail without repair.
+Hippo uses its official JSON-object OpenIE setting, while Youtu adds a
+construction-only strict schema through public SDK injection. Native prompts,
+parsers, retrieval, and generation budgets remain unchanged.
+
+Cold integration uses one preregistered synthetic two-document/one-query
+fixture. Repository-owned executors cover runtime reattestation, actual owned
+checkpoint interruption/resume, complete-corpus one-query targets, exact matrix
+aggregation, and fresh full-target admission. A configuration-bound systemd supervisor now owns indexing and benchmarking, with
+shared resource locking, process-start/cgroup checks, atomic disk status,
+redacted logs, failed-stage stop and actual final admission validation.
+Existing results, failed attempts, upstream checkouts, caches and services remain preserved. These
+changes require a new static/live campaign and add no admitted full result.
+
+## 2026-09-06 — GFM entity-linker cache localized
+
+A GFM cold canary passed before its native entity linker wrote 26 cache files
+under the repository's default `tmp` directory, invalidating the campaign's
+code context. The adapter now sets the public entity-linker `root` to an
+absolute directory within the current run's artifacts. Hydra propagates the
+same setting to the graph constructor's entity linker. Existing cache files
+remain preserved; no native cache, indexing or retrieval implementation changed.
+
+## 2026-09-06 — Cold-canary adapter boundaries corrected
+
+GFM now composes Hydra configuration from the same directory and basename as
+the pinned workflow. Linear calls the native `qa()` once, using a typed
+transport implementation of its configured `infer()` interface; native
+retrieval, prompt, answer parsing, passage order and 2000-token generation
+limit remain intact. Youtu's observer rejects non-string attribute items
+without changing extraction values. Shared method environment preparation
+preserves registry defaults and empty unknown dotenv aliases across native
+imports while retaining explicit overrides for policy rejection.
+
+The preserved cold-canary outcomes are recorded in `RESULTS.md`. These
+corrections add no full-target admission and do not repair native malformed
+JSON, empty evidence, or missing service prerequisites.
+
+## 2026-09-06 — Main runtime dependency admission corrected
+
+A read-only check found incompatible ambient packages in the original main
+environment after the external runtime checks had passed. Preflight now checks
+the running main interpreter's dependency compatibility and frozen project
+lock synchronization for every target. Gate identity includes that interpreter
+and its installed package metadata. Paper runners use the selected interpreter
+directly, rejecting conflicting `PYTHON_BIN` and `UV_PROJECT_ENVIRONMENT`
+settings. The original environment remains preserved; a fresh environment
+can be synchronized separately from `uv.lock`.
+
+## 2026-09-06 — Native query initialization and child environment corrected
+
+Fresh Youtu query workers now call the public native `build_indices()` method
+immediately after constructing the retriever, matching the pinned entrypoint.
+Previously only the indexing worker made that call. Primary child environments
+also retain empty forbidden-provider aliases and explicit typed defaults so
+native dotenv imports cannot restore conflicting local settings. Regressions
+use exact upstream exports for HippoRAG/GFM imports and initialize a copied
+Youtu index with network connections forbidden. These checks do not establish
+successful end-to-end retrieval or admission.
+
+## 2026-09-06 — System-Python packaging compatibility corrected
+
+The next setup attempt stopped before package installation because the staging
+helper used `hashlib.file_digest`, which is unavailable in the launcher's
+Python 3.10.12. The helper now hashes archive bytes in streaming blocks. Its
+regression runs the actual system-Python CLI, verifies the archive digest, and
+exercises setuptools output in the separate build directory. The failed
+attempt and its clean source checkout were preserved.
+
+## 2026-09-06 — Packaging moved outside pinned source checkouts
+
+The first live setup completed package dependency checks but generated ignored
+LightRAG and untracked HippoRAG build metadata inside their source checkouts.
+The attempt remained unadmitted and its files were preserved. Package setup
+now exports approved revision bytes into unique artifact-local build
+directories, records an archive digest, and checks original sources including
+ignored files before and after packaging. Worker path resolution now shares
+the setup runtime-home setting, allowing a fresh attempt without moving or
+cleaning the original directories. A temporary setuptools build regression
+exercises real build and egg-info output outside the source checkout.
+
+## 2026-09-06 — Independent audit corrections
+
+Fixed local snapshot JSON parsing, exact run-ID admission and reuse ordering,
+primary child transport alias rejection, native-answer adapter initialization,
+and per-client generation-model override validation. Gateway identity now
+requires the approved non-secret URL digest. Registry-derived shell defaults
+replace repeated transport literals. HippoRAG's recorded query input reflects
+its native unprefixed encoder and uses the typed request timeout. Youtu
+malformed triples fail observational extraction validation without changing
+native parse values; benchmark seeds no longer overwrite its native generation
+seed policy.
+
+Added current-corpus byte validation to admission and stage-specific bound
+artifacts to live gates; full-target gate evidence reruns artifact and ledger
+freshness checks. Existing dirty legacy source/checkpoint files were observed
+and preserved. These changes do not establish clean primary installation,
+passing live canaries, or admitted primary results.
+
+## 2026-09-06 — Upstream boundary and live admission gates hardened
+
+Removed Youtu runtime overrides of retriever chunk-ID extraction and builder
+deduplication/serialization. The adapter now records staged coverage, native
+extraction success, and native graph source reachability in observational
+sidecars, preserves returned evidence order, and fails on malformed, empty,
+sentinel, or swallowed-error results. Because the pinned agent batch entrypoint
+does not return structured per-query evidence, the registry now labels Youtu's
+primary target as a controlled public no-agent API variant instead of an
+official-faithful agent result. MS GraphRAG no longer augments native
+communities with synthetic singleton rows.
+
+Centralized the paper transport, method environment keysets, runtime
+identities, exact index-stat bytes, post-query artifact inventory, and
+row-ordered query content in content-bound policy/admission records. Paper
+entrypoints reject public legacy/provider aliases, and supplemental public
+OpenAI Batch submission is disabled. Added ordered live-gate evidence and a
+fresh-ledger requirement before a real 16-target matrix. These are engineering
+changes; no live canary or primary empirical result is asserted here.
+
+## 2026-09-06 — BrowseNet MuSiQue benchmark completed
+
+Completed the official BrowseNet full-split evaluation (2,417 queries) on
+MuSiQue under `naacl27-clean-20260905-musique-browsenet`. Official MuSiQue metrics:
+Answer EM = 0.2466 (24.66%), Answer F1 = 0.3170 (31.70%), Support Precision = 0.2909,
+Support Recall = 0.6797, Support F1 = 0.4016, Latency = 12.44s. The artifact is
+preserved under `data/results/` as legacy/reserve baseline evidence.
+
+## 2026-09-06 — Primary matrix and admission contract superseded
+
+Superseded the earlier six-method, twelve-target selection with a primary
+eight-method, sixteen-target matrix: Prehop, Naive RAG, MS GraphRAG, LightRAG,
+HippoRAG2, GFM-RAG, LinearRAG, and Youtu-GraphRAG on MultiHop-RAG and MuSiQue.
+BrowseNet, HopRAG, and PropRAG remain supported legacy/reserve adapters; their
+existing artifacts are preserved but cannot be reused as primary matrix cells.
+
+Added a typed strategy registry shared by Python and shell entrypoints, pinned
+isolated runtimes for the external methods, one fail-closed LiteLLM transport
+for remote generation and embeddings, and explicit pinned local components
+for LinearRAG, Youtu-GraphRAG, and GFM-RAG. LinearRAG's GPL upstream
+code remains outside the MIT tree, and Youtu-GraphRAG retains its upstream
+academic/research-use terms.
+
+Strengthened corpus, query, semantic-configuration, index-coverage, detail-row,
+and aggregate admission checks. The maintained status vocabulary is
+`planned`, `canary_passed`, `in_progress`, `completed_unadmitted`, `admitted`,
+and `failed`. A canary no longer implies completion, and completion no longer
+implies admission. Until all applicable checks pass, numerical values are not
+copied into the primary result register or manuscript. The matrix now
+continues across independent target failures and exits nonzero after reporting
+the failed targets.
 
 ## 2026-09-06 — BrowseNet MultiHop-RAG benchmark completed
 
