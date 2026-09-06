@@ -395,6 +395,12 @@ Use byte-verified real corpus/query copies and fresh outputs in that worktree;
 reuse approved external runtimes by explicit absolute paths. The owned
 campaign supervisor must hold its resource lock, record child PID/start and
 exit status, preserve failed attempts, and validate admissions after process
-success. Logout persistence requires a verified own-user linger setting;
-never infer it from a detached PID. Only the explicit recovery-test child may
-receive its planned interruption signal.
+success. The default background launcher is actual `nohup` plus `setsid`, with
+verified ignored SIGHUP, PID/start/boot/session ownership and a Linux subreaper.
+Systemd and own-user linger are required only for the optional systemd backend.
+The supervisor may send TERM to its individually verified native descendants on
+owned failure or termination; it never escalates to KILL. Preserve other runs,
+services and databases. Surviving owned descendants block subsequent campaigns.
+A separate nohup monitor appends read-only observations every three hours and
+writes a terminal receipt after cleanup or owner exit. It does not send chat
+messages. The explicit recovery-test child retains its planned interruption.

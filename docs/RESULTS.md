@@ -10,6 +10,11 @@ Admission now also binds the current validated corpus manifest and source
 bytes. A prior ledger is stale when these inputs or the verifier contract
 change. This audit adds no admitted result or numerical claim.
 
+The current Prehop controlled format-retry profile and serial benchmark
+configuration introduce no admitted full result. Index reuse preserves original
+index cost and requires a current content-bound link plus fresh full-query
+admission; a linked one-query gate is not a reportable benchmark.
+
 ## Current profile boundary
 
 The structured Prehop, Hippo and Youtu profiles and fixed synthetic cold
@@ -88,7 +93,7 @@ and do not reserve the eventual successful admission ledger.
 | Remote generation model | `gemma-4-31b-it` |
 | Controlled remote embedding model | `qwen3-embedding-8b`, 4,096 dimensions |
 | Remote embedding batch/concurrency | 16 / 1 |
-| Query concurrency | 4 |
+| Query concurrency | 1 |
 | Seed | 42 |
 | LLM judge | disabled |
 

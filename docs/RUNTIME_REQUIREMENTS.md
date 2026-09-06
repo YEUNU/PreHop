@@ -68,6 +68,18 @@ aliases. An empty base, different generation and
 embedding bases, an unregistered model, or a public-vendor fallback fails
 closed in paper mode. Do not print the API key or include it in artifacts.
 
+The historical read-only observation in `configs/serving_observation.json`
+records the server at 2026-09-06 22:28:51 UTC. The generation alias was associated
+with `nvidia/Gemma-4-31B-IT-NVFP4`, ModelOpt NVFP4 quantization and cached snapshot
+`4135a98a9b728a548947683219633b25682223ac`; the runtime dtype was `bfloat16`.
+The observed embedding repository was `Qwen/Qwen3-Embedding-8B`, with cached
+snapshot `1d8ad4ca9b3dd8059ad90a75d4983776a23d44af`. Neither serving command
+explicitly pinned `--revision`, and the model weights were not fully hashed.
+These observations do not establish complete weight reproducibility or a new
+model substitution. The recorded single-deployment, tensor-parallel-size-one
+layout is historical provenance, not the specification or evidence of a later
+server redistribution. No service change or inference probe produced this file.
+
 Remote embeddings use batch size 16 and concurrency 1. Generation concurrency
 is separate. Timeout, retry, batch, and concurrency are operational settings
 and are recorded apart from the semantic method configuration.
@@ -259,13 +271,13 @@ require compatible new evidence. Existing result bytes are never rewritten.
 
 ## Durable campaign ownership
 
-`scripts/paper_campaign.py` runs every indexing and benchmark stage under one
-systemd user supervisor. Its launch command requires an available user manager
-and a verified `Linger=yes` for the current user. The release executor may
-enable only that user's linger under the authorized background-execution
-scope, then verify it; the launcher never changes host persistence settings.
-A transient unit survives the initiating task and logout under that verified
-configuration. Reboot recovery is not claimed.
+`scripts/paper_campaign.py` runs every indexing and benchmark stage under a
+nohup/setsid supervisor by default. Launch verifies ignored SIGHUP, a distinct
+session and process group, PID/start/boot identity and Linux child-subreaper
+ownership. Systemd and own-user linger are needed only with `--backend systemd`;
+neither is a default launch requirement. Reboot recovery is not claimed.
+Owned descendants receive individually verified TERM cleanup with a 30-second
+bound and no KILL escalation. Surviving identities block a new campaign.
 
 Prepare a dedicated detached worktree at the final pushed commit, copy the
 real corpus/query files with byte verification, and generate independent
@@ -294,9 +306,12 @@ the owned child inherits that lock. Status records contain supervisor/child
 PID, process-start and boot identity, stage, actual exit status, log paths,
 checkpoint counts and bound evidence. Separate stdout/stderr files redact
 canonical keys and connection URLs. Atomic status and append-only events stay
-available after the initiating task ends. Launch verifies that the systemd
-MainPID matches the running supervisor; a submitted unit name alone is not
-success.
+available after the initiating task ends. Launch verifies actual supervisor
+ownership; a submitted PID alone is not success. The separate nohup monitor
+writes `monitor-*-observations.jsonl` every 10,800 seconds and checks terminal
+state every five seconds. It verifies current admissions and records unavailable
+ETA explicitly. `monitor-*-terminal.json` follows cleanup or supervisor exit;
+these receipts are not automatic chat notifications.
 
 `launch ... --resume` refuses a live prior owner or child. It revalidates the
 frozen context and completed evidence before proceeding. Existing incomplete
@@ -318,3 +333,8 @@ Automatic service restart is disabled. Any failed prerequisite stops dependent
 stages. The final summary requires sixteen actual full-target admissions,
 reports missing/invalid cells and exits nonzero otherwise. Effective configuration
 or runtime drift stops execution; Git and documentation changes remain provenance.
+
+All primary benchmarks use registry concurrency one. Prehop structured format
+retry shares the typed maximum of five wire attempts with transport retry and
+disables the SDK's nested automatic retries. Response schemas, caps and prompts
+remain fixed; the controlled retry profile is part of Prehop's method identity.

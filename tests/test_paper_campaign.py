@@ -36,6 +36,41 @@ def test_logout_launch_requires_actual_linger(monkeypatch):
         campaign.require_logout_persistence()
 
 
+def test_new_unit_launch_owns_descendant_term_cleanup_without_kill_escalation(tmp_path, monkeypatch):
+    from scripts import paper_stage_runner
+
+    monkeypatch.setattr(campaign, 'ROOT', tmp_path)
+    monkeypatch.setattr(paper_stage_runner, 'ROOT', tmp_path)
+    plan_path = tmp_path / 'plan.json'
+    plan_path.write_text(json.dumps({'campaign': 'cleanup-fixture', 'python': sys.executable}))
+    monkeypatch.setattr(campaign, 'check_plan', lambda plan: None)
+    monkeypatch.setattr(campaign, 'require_logout_persistence', lambda: None)
+    monkeypatch.setattr(campaign, 'ensure_no_other_campaigns', lambda: None)
+    monkeypatch.setattr(campaign, 'resource_lock_path', lambda: tmp_path / 'resource.lock')
+    monkeypatch.setattr(campaign, 'safe_environment', dict)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[0] == 'systemd-run':
+            unit = command[command.index('--unit') + 1]
+            (tmp_path / 'status.json').write_text(json.dumps({
+                'unit': unit, 'state': 'running', 'supervisor': campaign.identity(os.getpid()),
+            }))
+            return subprocess.CompletedProcess(command, 0)
+        assert command[:3] == ['systemctl', '--user', 'show']
+        return subprocess.CompletedProcess(command, 0, f'MainPID={os.getpid()}\nActiveState=active\nResult=success\n')
+
+    monkeypatch.setattr(campaign.subprocess, 'run', run)
+    receipt = campaign.launch(plan_path, backend='systemd')
+    properties = [commands[0][i + 1] for i, value in enumerate(commands[0]) if value == '--property']
+    assert 'KillMode=control-group' in properties
+    assert 'SendSIGKILL=no' in properties and 'TimeoutStopSec=30' in properties
+    assert 'Restart=no' in properties and 'KillMode=process' not in properties
+    assert len(commands) == 2
+    assert receipt['supervisor']['pid'] == os.getpid()
+
+
 def test_detached_owned_supervisor_survives_launcher_and_persists_failure(tmp_path):
     root = tmp_path/'execution'
     base = root/'data/results/smoke/supervisor'

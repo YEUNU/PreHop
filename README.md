@@ -379,7 +379,7 @@ Prehop chunk and embedding caches, assigns run-specific output roots to file-bac
 and assigns a run-specific Neo4j label/index namespace while retaining the
 canonical dataset tag in result paths. The wrapper never passes
 `--clear-graph`: that maintenance option deletes the whole configured Neo4j
-database and is not namespace-scoped. It fixes benchmark concurrency at 4, remote embedding batch/concurrency
+database and is not namespace-scoped. It fixes benchmark concurrency at 1, remote embedding batch/concurrency
 at 16/1, disables the optional judge, and uses the full prepared query file. A
 strictly verified admitted target is skipped. A complete compatible index may
 resume at benchmarking, and a deterministic benchmark may resume from valid
@@ -476,7 +476,7 @@ RAG_CANDIDATE_ORDER_TRACE_PATH=data/results/diagnostics/frozen_candidate_pools_2
 .venv/bin/python -m scripts.analyze_full_stage_profile \
   --artifact <complete-result.json> \
   --out data/results/diagnostics/full_stage_profile_2417.json \
-  --expected-queries 2417 --declared-concurrency 4
+  --expected-queries 2417 --declared-concurrency 1
 
 # After a same-query full graph-on/off pair, test effects separately where
 # stored HOP edges do and do not connect gold paragraphs.
@@ -582,3 +582,24 @@ candidate pool before final answer synthesis.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### Detached paper campaign
+
+From the prepared execution worktree, launch a validated campaign plan with
+`"$PYTHON_BIN" scripts/paper_campaign.py launch <exact-plan.json>` after setting
+`PYTHON_BIN` to the selected environment's Python executable. The default
+backend uses `nohup` and a new process session; it does not require systemd or
+user linger. `--backend systemd` retains the optional legacy service launcher.
+
+The launch receipt identifies the supervisor, private environment file and
+independent monitor. Beside the plan, `status.json` and stage logs retain
+progress and failures. `monitor-*-observations.jsonl` records a read-only check
+every three hours; `monitor-*-terminal.json` records completion, failure or a
+missing supervisor. Terminal checks wait for owned cleanup or process exit.
+The monitor verifies existing admissions and reports unavailable ETA explicitly.
+These files are persistent observations, not automatic chat notifications.
+
+After the complete-corpus one-query matrix and the separate fresh full-target
+gate pass, the final matrix reuses verified indexes with fresh result files and
+separate native query workspaces. Each result's `index_link.json` preserves the
+source configuration, data, index identity and original indexing cost.

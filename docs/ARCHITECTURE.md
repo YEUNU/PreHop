@@ -912,7 +912,7 @@ pipeline and measurement timing only.
 state: it disables the in-repo chunk and embedding caches, gives every
 file-backed official baseline a new run-specific output root, allocates a
 run-specific Neo4j namespace without invoking the global clear operation, and runs the complete prepared split at
-query concurrency 4. A dirty tracked worktree is warned and recorded in code
+query concurrency 1. A dirty tracked worktree is warned and recorded in code
 provenance. A strictly verified completed target is skipped; a compatible
 complete index or deterministic partial benchmark may resume; corrupt or
 incompatible existing artifacts fail closed. The matrix continues after
@@ -954,23 +954,35 @@ plan binds effective model configuration, runtime content, the explicit evidence
 contract and target order. Git/source/verifier hashes remain provenance metadata.
 Changing only a commit, comment or document does not invalidate compatible
 evidence. Each executed segment records its actual launch provenance; matching
-settings do not imply that independently launched segments used identical code. The
-systemd user unit must contain the supervisor's actual PID, and no other paper
-unit may retain supervisor or native descendant processes. The shared user
+settings do not imply that independently launched segments used identical code.
+The default launcher uses actual nohup and setsid with ignored SIGHUP, private
+0600 environment/log files, a verified session leader and Linux child subreaper.
+PID/start/boot and descendant ancestry identify owned processes, including
+children that create their own sessions and are adopted by the subreaper.
+Persisted observed descendants also block restart while they remain alive.
+The optional systemd backend verifies unit ownership and user linger. The shared user
 resource lock is acquired before reading or replacing campaign status; a
 losing launcher cannot overwrite the active owner's state. Native descendants
-left after a stage block later stages and restart without being killed. After
+left after a stage block later stages. Nohup cleanup sends TERM through verified
+pidfds and waits at most 30 seconds, without KILL; survivors block restart. After
 the direct child exits, stdout/stderr draining waits at most five seconds for
 EOF. Inherited open pipes produce a failed stage with incomplete-stream names,
 unwritten partial-line byte counts, and remaining owned PID/start identities.
 Complete log lines retain redaction; incomplete lines are not emitted.
+New campaign units use `KillMode=control-group`, `SendSIGKILL=no`, and
+`TimeoutStopSec=30`: unit termination sends TERM to its own remaining processes
+without an automatic KILL escalation. Surviving process identities still block
+a subsequent campaign; existing units and other services are not reconfigured.
 
 Atomic status and per-stage exit receipts complement content-bound gate
 validation. Successful process exit is followed by actual evidence validation;
 the final matrix requires all sixteen current admissions. Canonical secret and
 URL values are redacted from logs. The harmless detachment regression proves
-process/status behavior only; actual host unit and linger verification belong
-to the release procedure in `RUNTIME_REQUIREMENTS.md`.
+process/status behavior only; the actual selected backend also needs release
+verification. A separate nohup monitor records read-only progress and current
+admission validation every 10,800 seconds, checking terminal state every five
+seconds. Terminal receipts wait for owned cleanup or supervisor exit. Missing
+throughput yields an unavailable ETA, and no automatic chat message is claimed.
 
 ### Configuration compatibility maintenance
 
@@ -989,3 +1001,87 @@ behavior. Evidence protocol versions remain strict. Old admission records
 require current revalidation; matching configuration never replaces corpus,
 query, native artifact, result/detail or dependency checks. Historical query,
 index and evaluation provenance is preserved unchanged.
+
+Structured JSON parse failures retain a metadata-only replay manifest in the
+existing failure record: distinct syntax/duplicate-property/nonfinite categories,
+syntax offsets, content size and character-class counts, stopped-choice/usage
+metadata, schema hash, original and transmitted prompt hashes, and the assembled
+SDK request-parameter hash. Indexing also binds source name, document, title and
+chunk hashes plus page and chunk ordinals. To identify one exact replay input,
+read the preserved source, run the recorded parser/chunker, match these hashes,
+and rebuild the unchanged native messages/settings; verify both prompt hashes
+and the request-parameter hash before issuing a request. The manifest stores no
+response text, property names, prompt text, credentials or endpoint address.
+Diagnostics do not repair outputs or change schemas or token limits.
+
+Prehop's `prehop-controlled-format-retry-v1` profile discards raw JSON syntax,
+duplicate-property, nonfinite and registered-schema failures, then resubmits the
+identical prompt, schema, model, seed and token cap. It accepts the first valid
+response without comparing content quality. One shared typed transport budget
+allows at most five requests total across transport and format retries; SDK
+automatic retries are disabled inside this scope. Choice-count, non-stop,
+refusal, tool-output and empty-content guards fail immediately. Each discarded
+response records safe metadata, request hash, elapsed time and reported usage.
+All returned responses count toward query and index inference totals; unavailable
+provider costs or failed-transport usage remain explicitly incomplete. Existing
+phase wall times include retries. Only Prehop's method/configuration and chunk
+cache identity change: Naive uses no structured question or ranking call path.
+
+
+## Complete-index reuse for final benchmarks
+
+The final matrix reuses only the complete native indexes produced by its
+one-query matrix. The intervening Naive MultiHop-RAG full-target gate still
+builds a fresh index and evaluates the complete query split. A one-query answer,
+result, or admission never supplies a full benchmark row or full admission.
+
+Each final target creates `data/results/<target>/index_link.json` and an
+exclusive byte-identical snapshot of the source gate ledger. The link binds the
+original index run ID, raw index statistics and digest, complete corpus identity,
+recorded and current method configuration, source one-query evidence, runtime,
+and index namespace. Revalidation checks the original native artifacts and
+current canonical policy. The live campaign ledger can advance without changing
+the preserved gate snapshot. Original source statistics and snapshot metadata
+are neither rewritten nor relabelled.
+
+Prehop and Naive read their original graph namespace. For each of the six
+external methods, the runner copies the complete native output directory into
+the final target's fresh query workspace. It rejects symlinks and verifies the
+entire original and copied file inventories. The link records both absolute
+runtime roots through repository-relative paths and the explicit copy operation.
+Only the query workspace may accumulate native query caches. Its original
+snapshot metadata remains byte-identical; its origin path is provenance, while
+the configured runtime root selects the actual copied artifacts. Original
+source files remain content-bound and are rechecked before admission.
+
+The benchmark retains the source `RAG_RUN_ID` and index namespace, and uses the
+fresh target ID for `RAG_BENCHMARK_TIMESTAMP` and result output. Bootstrap sets
+these values and the registered paper settings before static configuration
+imports. The result binds its index link; the verifier permits a different index
+run ID only after validating that link. Full query counts, exact prepared query
+records, complete JSON/JSONL row equality, runtime identity, active native
+snapshot, current post-query artifacts, and fresh admission remain mandatory.
+Completed targets are reverified on matrix resume. Partial targets use the
+existing strict benchmark checkpoint gate under the same immutable link.
+
+### Index and query phase costs
+
+Index cost is the original successful index's `timing_seconds`, including its
+method phases and `total_elapsed_seconds`; reuse does not report zero indexing
+cost. Native-copy preparation time is recorded separately. Benchmark wall time
+uses uniquely identified execution segments with PID, process start ticks,
+boot ID and start time. Each checkpoint stores the current segment's cumulative
+elapsed time; resume carries each prior segment once and appends a new segment.
+Repeated checkpoint snapshots are not added together. Wall time covers benchmark
+execution through the latest checkpoint, including initialization, validation,
+retries and checkpoint work before that snapshot. Abruptly interrupted work
+after the last durable checkpoint is not claimed as measured successful time;
+failed attempt logs and supervisor timing retain that operational cost.
+
+`phase_costs.index_plus_benchmark_wall_seconds` adds the original index wall time
+to these unique benchmark segments. Preparation is separate, and index subphases
+are not added again to the index total. `query_latency_sum_seconds` sums retained
+unique query rows' service latency and is not interpreted as parallel wall time.
+Retries within an admitted benchmark remain part of its actual measured phase;
+separate failed runs remain preserved and do not populate successful indexing
+costs or primary effectiveness results.

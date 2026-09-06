@@ -241,8 +241,15 @@ def unit_processes(unit: str) -> list[dict]:
 
 
 def ensure_no_other_campaigns(own_unit: str = '') -> None:
-    output = subprocess.run(['systemctl', '--user', 'list-units', 'prehop-paper-*', '--all', '--plain', '--no-legend'],
-                            check=True, capture_output=True, text=True).stdout
+    from scripts.paper_detached_runtime import ensure_no_detached_owners
+    ensure_no_detached_owners(os.getpid())
+    try:
+        output = subprocess.run(['systemctl', '--user', 'list-units', 'prehop-paper-*', '--all', '--plain', '--no-legend'],
+                                check=True, capture_output=True, text=True).stdout
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        if own_unit:
+            raise
+        return  # nohup ownership and the shared flock do not require a user manager.
     own = own_unit.removesuffix('.service') + '.service' if own_unit else ''
     if own and not any(row['pid'] == os.getpid() for row in unit_processes(own)):
         raise RuntimeError('Supervisor process is not owned by its declared systemd unit')
@@ -252,7 +259,12 @@ def ensure_no_other_campaigns(own_unit: str = '') -> None:
             raise RuntimeError('Another paper unit still owns supervisor or native descendant processes')
 
 
-def launch(plan_path: Path, *, resume: bool = False) -> dict:
+def launch(plan_path: Path, *, resume: bool = False, backend: str = 'nohup') -> dict:
+    if backend == 'nohup':
+        from scripts.paper_detached_runtime import launch as launch_detached
+        return launch_detached(plan_path, resume=resume)
+    if backend != 'systemd':
+        raise ValueError('Unknown campaign launch backend')
     from scripts.paper_stage_runner import reference
     plan = json.loads(plan_path.read_text())
     check_plan(plan)
@@ -280,7 +292,8 @@ def launch(plan_path: Path, *, resume: bool = False) -> dict:
             stream.write(f'{key}="{quoted}"\n')
     command = ['systemd-run', '--user', '--unit', unit,
         '--property', f'WorkingDirectory={ROOT}', '--property', f'EnvironmentFile={env_path}',
-        '--property', 'Restart=no', '--property', 'UMask=0077', '--property', 'KillMode=process',
+        '--property', 'Restart=no', '--property', 'UMask=0077', '--property', 'KillMode=control-group',
+        '--property', 'SendSIGKILL=no', '--property', 'TimeoutStopSec=30',
         '--property', 'StandardOutput=null', '--property', 'StandardError=null',
         plan['python'], str(Path(__file__).resolve()), 'supervise', str(plan_path), '--unit', unit]
     if resume:
@@ -465,9 +478,11 @@ def run_child(argv: list[str], env: dict[str, str], log_base: Path, handle, upda
     return child.wait()
 
 
-def supervise(plan_path: Path, *, resume: bool = False, unit: str = '') -> int:
-    if not unit:
-        raise RuntimeError('Campaign supervision requires its actual systemd unit')
+def supervise(plan_path: Path, *, resume: bool = False, unit: str = '', detached: bool = False) -> int:
+    from scripts.paper_detached_runtime import register_owner, session_processes, terminate_owned
+    if not unit and not detached:
+        raise RuntimeError('Campaign supervision requires actual systemd unit or verified nohup session')
+    owner = register_owner(plan_path) if detached else None
     plan = json.loads(plan_path.read_text())
     root = plan_path.parent
     status_path = root / 'status.json'
@@ -483,16 +498,26 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '') -> int:
         raise RuntimeError('Existing campaign owner or child prevents this supervisor launch')
     from utils.provenance import code_provenance
     status = {'campaign': plan['campaign'], 'commit': plan['commit'], 'unit': unit, 'state': 'planned',
+              'backend': 'nohup' if detached else 'systemd', 'session_id': os.getsid(0) if detached else None,
               'supervisor': identity(os.getpid()), 'child': None, 'started_at': time.time(),
               'completed_steps': list(previous.get('completed_steps', []) if resume else plan.get('inherited_completed_steps', []))}
     def update(fields):
         if 'heartbeat_at' in fields:
             fields['checkpoints'] = checkpoint_progress(plan['campaign'])
+        if detached:
+            from scripts.paper_detached_runtime import observe_owner
+            fields['observed_owned_processes'] = observe_owner(owner)
         status.update(fields)
         status['updated_at'] = time.time()
         atomic_json(status_path, status)
         with (root / 'events.jsonl').open('a') as events:
             events.write(json.dumps({'time': status['updated_at'], **fields}, sort_keys=True) + '\n')
+    if detached:
+        import signal
+        def interrupted(signum, frame):
+            raise RuntimeError('Owned detached supervisor received termination signal')
+        signal.signal(signal.SIGTERM, interrupted)
+        signal.signal(signal.SIGINT, interrupted)
     try:
         check_plan(plan)
         update({'state': 'running'})
@@ -509,7 +534,8 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '') -> int:
                     'stdout_log': str(log_base.with_suffix('.stdout.log')), 'stderr_log': str(log_base.with_suffix('.stderr.log'))})
             exit_code = run_child(step['argv'], env, log_base, handle, update)
             update({'child': None, 'exit_code': exit_code})
-            remaining = [row for row in unit_processes(unit) if row['pid'] != os.getpid()]
+            remaining = [row for row in (session_processes(owner) if detached else unit_processes(unit))
+                         if row['pid'] != os.getpid()]
             update({'remaining_owned_processes': remaining})
             if remaining:
                 raise RuntimeError('Stage left native descendants running; preserve them and block restart')
@@ -530,18 +556,27 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '') -> int:
                 'failure_category': type(exc).__name__, 'failure': redact(str(exc), os.environ), 'finished_at': time.time()})
         return 1
     finally:
+        if detached:
+            import signal
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            remaining = terminate_owned(owner)
+            update({'remaining_owned_processes': remaining, 'owned_cleanup': 'TERM_only',
+                    'owned_cleanup_complete': not remaining})
         if handle is not None:
             handle.close()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['plan', 'retry-plan', 'launch', 'supervise', 'status'])
+    parser.add_argument('action', choices=['plan', 'retry-plan', 'launch', 'supervise', 'status', 'monitor'])
     parser.add_argument('target', help='Campaign ID for plan; exact plan.json path otherwise')
     parser.add_argument('--commit')
     parser.add_argument('--attempt', default='a1')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--unit', default='')
+    parser.add_argument('--backend', choices=['nohup', 'systemd'], default='nohup')
+    parser.add_argument('--detached', action='store_true')
     parser.add_argument('--retry-step')
     parser.add_argument('--segment')
     args = parser.parse_args()
@@ -565,11 +600,14 @@ def main() -> int:
         print(create_successor_plan(plan_path, args.retry_step, args.attempt, args.segment))
         return 0
     if args.action == 'launch':
-        print(json.dumps(launch(plan_path, resume=args.resume), sort_keys=True))
+        print(json.dumps(launch(plan_path, resume=args.resume, backend=args.backend), sort_keys=True))
         return 0
-    if not args.unit:
-        parser.error('supervise requires its actual systemd --unit; use launch')
-    return supervise(plan_path, resume=args.resume, unit=args.unit)
+    if args.action == 'monitor':
+        from scripts.paper_detached_runtime import monitor
+        return monitor(plan_path)
+    if not args.unit and not args.detached:
+        parser.error('supervise requires actual ownership; use launch')
+    return supervise(plan_path, resume=args.resume, unit=args.unit, detached=args.detached)
 
 
 if __name__ == '__main__':

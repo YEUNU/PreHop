@@ -4,6 +4,44 @@ This file records implementation and experiment-protocol changes.
 Entries are listed in reverse chronological order. `ARCHITECTURE.md` defines
 current behavior, and result values belong in `RESULTS.md`.
 
+## 2026-09-07 — Verified index reuse and phase timing
+
+Added explicit complete-index reuse from the one-query matrix into fresh full
+benchmark targets. Native query workspaces are byte-verified copies; original
+index artifacts and metadata remain preserved. Added content-bound index links
+and checkpointed benchmark timing segments so original indexing cost and actual
+query phases remain distinct. The separate fresh Naive full-target gate and
+complete-query admission checks remain required. Live full-matrix results have
+not yet been produced by this change.
+
+## 2026-09-07 — Nohup execution and serial benchmark requests
+
+The default campaign launcher now uses nohup/setsid with verified session and
+subreaper ownership, bounded TERM-only descendant cleanup and a separate
+three-hour read-only monitor. Systemd remains optional; existing units are
+unchanged. The monitor writes observations and terminal receipts, not chat
+notifications. Canonical benchmark concurrency is now one for every primary
+method; construction concurrency and remote embedding settings are unchanged.
+
+## 2026-09-07 — Bounded Prehop format retry and safe diagnostics
+
+A later complete-corpus Prehop attempt stopped after a structured response
+failed raw JSON parsing. Parse failures now distinguish syntax errors, duplicate
+properties and nonfinite constants and preserve metadata-only prompt/schema and
+native input hashes for exact replay identification. No response or prompt text
+is added to diagnostics. A separately declared controlled format-retry profile
+now retries only these format failures and registered-schema failures under one
+five-request transport/format budget. It retains prompts, schema contents,
+model, seed and caps, accepts the first valid response and records all attempts'
+reported tokens/cost and elapsed time. Prehop index/query/cache identities change;
+Naive and external method identities do not.
+
+Separately, new campaign units apply TERM cleanup to their own control group
+with a 30-second stop timeout and no automatic KILL escalation. This addresses
+native parser descendants left after a supervisor exited. Existing units and
+services retain their configuration; surviving owned processes still prevent
+restart, and prior failed artifacts remain preserved.
+
 ## 2026-09-07 — Bound Prehop graph-write transaction payloads
 
 The first complete-corpus Prehop preparation encountered Neo4j transaction
