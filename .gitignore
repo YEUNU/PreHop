@@ -229,6 +229,7 @@ data/musique_corpus/
 data/debug/
 data/results/
 data/tmp/
+tmp/
 data/embedding_cache/
 data/index_cache/
 data/index_locks/
