@@ -10,6 +10,7 @@ from cli.benchmark import (
     _validate_benchmark_data,
 )
 from cli.index import _collect_prehop_integrity, _resolved_index_policy, run_indexing
+from core.structured_outputs import StructuredOutputError, question_contract
 from core.vllm_client import VLLMClient
 from models.hoprag.hoprag_adapter import HopRAGAdapter
 from models.naive.naive_rag import NaiveRAG
@@ -367,12 +368,13 @@ async def test_json_guard_rejects_truthy_wrong_schema():
     llm = AsyncMock()
     llm.generate_json.return_value = {"unexpected": "shape"}
 
-    with pytest.raises(ValueError, match="missing required field"):
+    with pytest.raises(StructuredOutputError, match="registered schema"):
         await generate_json_or_raise(
             llm,
             [{"role": "user", "content": "prompt"}],
             "Q-/Q+ generation",
             required_fields={"q_minus": list},
+            structured_contract=question_contract("index"),
         )
 
 
@@ -393,7 +395,7 @@ async def test_knowledge_mapping_rejects_malformed_inner_schema(payload, message
     rag.indexing_llm = AsyncMock()
     rag.indexing_llm.generate_json.return_value = payload
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(StructuredOutputError, match="registered schema"):
         await rag.extract_hoprag_queries("chunk", "title")
 
 
@@ -756,7 +758,7 @@ def test_debug_output_is_namespaced_by_run_strategy_and_corpus(monkeypatch):
 
     rag = GraphRAG(strategy="prehop", corpus_tag="multi hop")
 
-    assert rag.debug_output_dir.endswith("data/debug/manual_run_one/prehop/multi_hop")
+    assert "/data/debug/manual_run_one/prehop/multi_hop_" in "/" + rag.debug_output_dir
 
 
 def test_shared_answer_prompt_is_the_prehop_prompt():

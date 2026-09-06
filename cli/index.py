@@ -13,8 +13,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from core.config import RAGConfig
+from core.embedding_policy import EmbeddingOperationalConfig
 from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
+from core.semantic_config import parse_strict_bool
+from core.strategy_registry import EXTERNAL_STRATEGIES, RESEARCH_EXTERNAL_STRATEGIES, get_strategy
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing.chunking import parse_pages_offline
@@ -76,43 +79,110 @@ def _artifact_run_id() -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._-") or "run"
 
 
-def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
+def _resolved_paper_index_policy(strategy: str, corpus_tag: str) -> dict:
+    from core.paper_policy import (
+        approved_youtu_schema,
+        canonical_operational_policy,
+        canonical_semantic_index_policy,
+        validate_canonical_index_policy,
+        validate_paper_semantic_environment,
+    )
+
+    if corpus_tag not in {"multihoprag", "musique"}:
+        raise ValueError("paper index policy requires an explicit supported corpus tag")
+    validate_paper_semantic_environment(strategy, corpus_tag)
+    policy = canonical_semantic_index_policy(strategy, corpus_tag)
+    if strategy in {"prehop", "naive"} and os.environ.get("RAG_INDEX_NAMESPACE", "").strip():
+        policy["index_namespace"] = index_namespace("default")
+    if strategy == "gfm_rag":
+        from core.runtime_requirements import runtime_requirement
+        from models.official_baseline_runtime import official_root
+
+        runtime_spec = runtime_requirement(strategy)
+        checkpoint = official_root(strategy).parent / "artifacts" / runtime_spec["checkpoint_snapshot_subdir"]
+        model_path = checkpoint / "model.pth"
+        config_path = checkpoint / "config.json"
+        if not model_path.is_file() or not config_path.is_file():
+            raise RuntimeError("GFM-RAG pinned checkpoint snapshot is incomplete")
+        policy.update(
+            {
+                "gfm_checkpoint": str(checkpoint),
+                "gfm_checkpoint_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
+                "gfm_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+            }
+        )
+    elif strategy == "youtu_graphrag":
+        from models.official_baseline_runtime import official_root
+
+        schema = approved_youtu_schema(corpus_tag)
+        schema_path = official_root(strategy) / schema["path"]
+        if not schema_path.is_file():
+            raise RuntimeError("Youtu pinned checkout is missing its approved dataset schema")
+        actual_digest = hashlib.sha256(schema_path.read_bytes()).hexdigest()
+        if actual_digest != schema["sha256"]:
+            raise RuntimeError("Youtu pinned checkout schema differs from the approved manifest")
+        policy["schema_path"] = str(schema_path)
+    policy["operational_config"] = canonical_operational_policy(strategy)
+    validate_canonical_index_policy(strategy, corpus_tag, policy)
+    return policy
+
+
+def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: str | None = None) -> dict:
     """Record semantic index settings separately from throughput controls."""
+    if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE"):
+        return _resolved_paper_index_policy(strategy, corpus_tag or "")
     if strategy == "prehop":
         resolved_generation_model = RAGConfig.DEFAULT_MODEL if indexing_model_id == "default" else indexing_model_id
-    elif strategy in {"hoprag", "ms_graphrag", "browsenet", "proprag"}:
+    elif strategy in {"hoprag", "ms_graphrag", *EXTERNAL_STRATEGIES}:
         resolved_generation_model = RAGConfig.DEFAULT_MODEL
     else:
         resolved_generation_model = None
     if strategy == "hoprag":
         embedding_model = os.environ.get("RAG_HOP_EMBED_MODEL_NAME", RAGConfig.EMBEDDING_MODEL)
+        embedding_dimensions = RAGConfig.EMBEDDING_DIMENSIONS
+    elif strategy == "linear_rag":
+        embedding_model = get_strategy(strategy).paper_embedding_model
+        embedding_dimensions = 768
+        embedding_revision = get_strategy(strategy).local_embedding_revision
+    elif strategy == "youtu_graphrag":
+        embedding_model = get_strategy(strategy).paper_embedding_model
+        embedding_dimensions = 384
+        embedding_revision = get_strategy(strategy).local_embedding_revision
+    elif strategy == "gfm_rag":
+        embedding_model = "checkpoint-defined"
+        embedding_dimensions = None
     else:
         embedding_model = RAGConfig.EMBEDDING_MODEL
+        embedding_dimensions = RAGConfig.EMBEDDING_DIMENSIONS
+    if strategy not in {"linear_rag", "youtu_graphrag"}:
+        embedding_revision = (
+            None if strategy == "gfm_rag" else os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None
+        )
     policy = {
         "strategy": strategy,
         "index_namespace": (
             index_namespace("default")
-            if strategy in {"prehop", "naive", "hoprag"}
-            and os.environ.get("RAG_INDEX_NAMESPACE", "").strip()
+            if strategy in {"prehop", "naive", "hoprag"} and os.environ.get("RAG_INDEX_NAMESPACE", "").strip()
             else None
         ),
         "indexing_model": resolved_generation_model,
         "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
         "generation_seed": RAGConfig.LLM_SEED,
         "embedding_model": embedding_model,
-        "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
+        "embedding_revision": embedding_revision,
         "embedding_query_instruction": (
             "Given a question, retrieve relevant sentences that best answer the question. "
             "Please make sure each sentence is connected to the next through at least a shared entity."
             if strategy == "proprag"
             else RAGConfig.EMBEDDING_QUERY_INSTRUCTION
         ),
-        "embedding_dimensions": RAGConfig.EMBEDDING_DIMENSIONS,
+        "embedding_dimensions": embedding_dimensions,
         "embedding_max_input_tokens": RAGConfig.MAX_EMBEDDING_LENGTH,
         "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
     }
     if strategy in {"prehop", "naive"}:
         policy["chunk_sentences"] = RAGConfig.CHUNK_SENTENCES
+        policy["default_top_k"] = RAGConfig.DEFAULT_TOP_K
     if strategy == "prehop":
         policy.update(
             {
@@ -137,12 +207,26 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
                 "official_revision": "ba82eeceb089104de2999d00b744cd02583fe8a4",
                 "ner_model": os.environ.get("RAG_BROWSENET_NER_MODEL", "gliner"),
                 "embedding_transport": "litellm",
+                "semantic_encoder": "nvembedv2-via-litellm",
                 "subquery_model": os.environ.get("RAG_BROWSENET_SUBQUERY_MODEL", RAGConfig.DEFAULT_MODEL),
                 "colbert_threshold": float(os.environ.get("RAG_BROWSENET_COLBERT_THRESHOLD", "0.9")),
                 "subgraphs": int(os.environ.get("RAG_BROWSENET_N_SUBGRAPHS", "5")),
                 "hybrid_alpha": float(os.environ.get("RAG_BROWSENET_ALPHA", "0.0")),
             }
         )
+    elif strategy == "ms_graphrag":
+        policy.update(
+            {
+                "official_revision": get_strategy(strategy).revision,
+                "extract_max_tokens": 1500,
+                "report_max_tokens": int(os.environ.get("RAG_MS_REPORT_MAX_TOKENS", "4096")),
+                "local_search_top_k_entities": 10,
+                "local_search_top_k_relationships": 10,
+                "local_search_max_context_tokens": 12000,
+            }
+        )
+    elif strategy == "hoprag":
+        policy.update({"max_hop": 4, "retrieval_top_k": 20})
     elif strategy == "proprag":
         policy.update(
             {
@@ -155,7 +239,113 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
                 "graph_type": "facts_and_sim_passage_node_unidirectional",
             }
         )
+    elif strategy in RESEARCH_EXTERNAL_STRATEGIES:
+        from models.official_baseline_runtime import OFFICIAL_REVISIONS
+
+        policy.update(
+            {
+                "official_revision": OFFICIAL_REVISIONS[strategy],
+                "backbone_mode": os.environ.get(f"RAG_{strategy.upper()}_BACKBONE_MODE", "official_faithful"),
+                "native_retrieval": True,
+            }
+        )
+        if strategy == "linear_rag":
+            policy.update(
+                {
+                    "spacy_model": "en_core_web_trf",
+                    "official_embedding_model": get_strategy(strategy).paper_embedding_model,
+                    "official_embedding_revision": embedding_revision,
+                    "retrieval_top_k": int(os.environ.get("RAG_LINEAR_RAG_TOP_K", "5")),
+                    "vectorized_retrieval": parse_strict_bool(
+                        os.environ.get("RAG_LINEAR_RAG_VECTORIZED", "false"),
+                        name="RAG_LINEAR_RAG_VECTORIZED",
+                    ),
+                }
+            )
+        elif strategy == "hipporag2":
+            policy.update(
+                {
+                    "retrieval_top_k": int(os.environ.get("RAG_HIPPORAG2_TOP_K", "5")),
+                    "openie_mode": "online",
+                    "vector_store": "local_parquet",
+                }
+            )
+        elif strategy == "gfm_rag":
+            from huggingface_hub import snapshot_download
+
+            from core.runtime_requirements import runtime_requirement
+
+            runtime_spec = runtime_requirement(strategy)
+            checkpoint = Path(
+                snapshot_download(
+                    repo_id=runtime_spec["checkpoint_model"],
+                    revision=runtime_spec["checkpoint_revision"],
+                    local_files_only=True,
+                )
+            )
+            model_path = checkpoint / "model.pth"
+            config_path = checkpoint / "config.json"
+            if not model_path.is_file() or not config_path.is_file():
+                raise RuntimeError("GFM-RAG pinned checkpoint snapshot is incomplete")
+            policy.update(
+                {
+                    "retrieval_top_k": int(os.environ.get("RAG_GFM_RAG_TOP_K", "5")),
+                    "gfm_checkpoint": str(checkpoint),
+                    "gfm_checkpoint_model": runtime_spec["checkpoint_model"],
+                    "gfm_checkpoint_revision": runtime_spec["checkpoint_revision"],
+                    "gfm_checkpoint_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
+                    "gfm_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+                    "ner_model": "official_hydra_qa_ircot",
+                    "entity_linker": "official_hydra_qa_ircot",
+                    "entity_linker_model": runtime_spec["entity_linker_model"],
+                    "entity_linker_revision": runtime_spec["entity_linker_revision"],
+                }
+            )
+        elif strategy == "lightrag":
+            policy.update(
+                {
+                    "query_mode": os.environ.get("RAG_LIGHTRAG_QUERY_MODE", "mix"),
+                    "retrieval_top_k": int(os.environ.get("RAG_LIGHTRAG_TOP_K", "60")),
+                    "chunk_top_k": int(os.environ.get("RAG_LIGHTRAG_CHUNK_TOP_K", "20")),
+                    "embedding_max_token_size": int(os.environ.get("RAG_EMBEDDING_MAX_TOKENS", "8192")),
+                }
+            )
+        else:
+            from core.paper_policy import approved_youtu_schema
+            from models.official_baseline_runtime import official_root
+
+            schema = approved_youtu_schema(corpus_tag or "")
+            schema_path = official_root(strategy) / schema["path"]
+            schema_sha256 = hashlib.sha256(schema_path.read_bytes()).hexdigest() if schema_path.is_file() else None
+            expected_schema_sha256 = schema["sha256"]
+            policy.update(
+                {
+                    "schema_path": str(schema_path),
+                    "schema_sha256": schema_sha256,
+                    "schema_expected_sha256": expected_schema_sha256,
+                    "construction_mode": os.environ.get("RAG_YOUTU_CONSTRUCTION_MODE", "agent"),
+                    "query_mode": os.environ.get("RAG_YOUTU_QUERY_MODE", "agent"),
+                    "agentic_reflection": True,
+                    "retrieval_top_k": int(os.environ.get("RAG_YOUTU_TOP_K", "20")),
+                    "retrieval_top_k_filter": int(os.environ.get("RAG_YOUTU_TOP_K_FILTER", "20")),
+                    "official_embedding_model": embedding_model,
+                    "official_embedding_revision": embedding_revision,
+                }
+            )
+    policy["operational_config"] = {
+        **EmbeddingOperationalConfig.resolve(strategy).as_dict(),
+        "generation_concurrency": RAGConfig.MAX_CONCURRENT_LLM_CALLS,
+        "inference_retry_attempts": RAGConfig.LLM_MAX_RETRIES,
+        "transport_profile": get_strategy(strategy).transport_profile,
+    }
     return policy
+
+
+def _index_policy_artifact(strategy: str, indexing_model_id: str, corpus_tag: str) -> dict[str, object]:
+    from core.semantic_config import semantic_config_sha256
+
+    policy = _resolved_index_policy(strategy, indexing_model_id, corpus_tag)
+    return {"index_policy": policy, "index_policy_sha256": semantic_config_sha256(policy)}
 
 
 def _load_corpus_manifest(dataset_path: str | Path) -> dict | None:
@@ -167,13 +357,73 @@ def _load_corpus_manifest(dataset_path: str | Path) -> dict | None:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"Invalid corpus manifest: {manifest_path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise TypeError(f"Corpus manifest must be a JSON object: {manifest_path}")
+    declared_schema_version = payload.get("schema_version")
+    schema_version = 1 if declared_schema_version is None else declared_schema_version
+    if schema_version not in {1, 2}:
+        raise ValueError(f"Unsupported corpus manifest schema_version={schema_version!r}: {manifest_path}")
+    if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") and schema_version != 2:
+        raise ValueError(f"Paper mode requires a content-bound corpus manifest schema_version=2: {manifest_path}")
     fingerprint = payload.get("fingerprint")
     paragraph_count = payload.get("paragraph_count")
     if not isinstance(fingerprint, str) or not fingerprint.strip():
         raise ValueError(f"Corpus manifest has no fingerprint: {manifest_path}")
     if not isinstance(paragraph_count, int) or paragraph_count < 0:
         raise ValueError(f"Corpus manifest has invalid paragraph_count: {manifest_path}")
-    return {"fingerprint": fingerprint, "paragraph_count": paragraph_count}
+    if declared_schema_version is not None:
+        identity_payload = {key: value for key, value in payload.items() if key != "fingerprint"}
+        expected_fingerprint = hashlib.sha256(
+            json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if fingerprint != expected_fingerprint:
+            raise ValueError(f"Corpus manifest fingerprint does not match its identity fields: {manifest_path}")
+    manifest = {
+        "fingerprint": fingerprint,
+        "paragraph_count": paragraph_count,
+    }
+    if declared_schema_version is not None:
+        manifest["schema_version"] = schema_version
+    source_ids_digest = payload.get("source_ids_sha256")
+    paragraph_ids_digest = payload.get("paragraph_ids_sha256")
+    if schema_version == 2:
+        required = ["source_ids_sha256", "corpus_records_sha256", "corpus_files_sha256"]
+        if manifest_path.parent.name == "musique_corpus":
+            required.append("paragraph_ids_sha256")
+        missing = [
+            field
+            for field in required
+            if not isinstance(payload.get(field), str)
+            or len(payload[field]) != 64
+            or any(char not in "0123456789abcdef" for char in payload[field])
+        ]
+        if missing:
+            raise ValueError(f"MuSiQue corpus manifest v2 is missing valid digest field(s) {missing}: {manifest_path}")
+    elif source_ids_digest is None and paragraph_ids_digest is not None:
+        # Schema v1 MuSiQue manifests predate the distinct source-id field.
+        # Derive filename identities only after proving the paragraph headers
+        # still match the legacy paragraph digest. Other v1 corpora retain the
+        # historical paragraph-as-source fallback.
+        files = sorted(path for path in manifest_path.parent.iterdir() if path.suffix in (".txt", ".md"))
+        if files and all(path.stem.startswith("musique_") for path in files):
+            records = _musique_corpus_records(manifest_path.parent, [path.name for path in files])
+            actual_paragraph_digest = _source_set_sha256([record["paragraph_id"] for record in records])
+            if actual_paragraph_digest != paragraph_ids_digest:
+                raise ValueError(
+                    f"Legacy MuSiQue paragraph identity digest does not match corpus headers: {manifest_path}"
+                )
+            source_ids_digest = _source_set_sha256([record["source_id"] for record in records])
+        else:
+            source_ids_digest = paragraph_ids_digest
+    if source_ids_digest is not None:
+        manifest["source_ids_sha256"] = source_ids_digest
+    if paragraph_ids_digest is not None:
+        manifest["paragraph_ids_sha256"] = paragraph_ids_digest
+    if payload.get("corpus_records_sha256") is not None:
+        manifest["corpus_records_sha256"] = payload["corpus_records_sha256"]
+    if payload.get("corpus_files_sha256") is not None:
+        manifest["corpus_files_sha256"] = payload["corpus_files_sha256"]
+    return manifest
 
 
 def _load_source_metadata(dataset_path: str | Path) -> tuple[dict[str, dict[str, str]], str | None]:
@@ -218,13 +468,84 @@ def _source_set_sha256(source_ids: list[str]) -> str:
     return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
 
 
-def _validate_staged_snapshot(files: list[str], corpus_manifest: dict | None) -> list[str]:
+def _musique_corpus_records(dataset_path: str | Path, files: list[str]) -> list[dict[str, str]]:
+    """Read and validate the paragraph/source mapping embedded in MuSiQue files."""
+    records: list[dict[str, str]] = []
+    for filename in files:
+        path = Path(dataset_path) / filename
+        paragraph_id = ""
+        with path.open("r", encoding="utf-8") as stream:
+            for _ in range(3):
+                line = stream.readline()
+                if line.startswith("Paragraph-ID: "):
+                    paragraph_id = line.removeprefix("Paragraph-ID: ").strip()
+                    break
+        source_id = Path(filename).stem
+        if not paragraph_id.startswith("musique:") or source_id != f"musique_{paragraph_id.removeprefix('musique:')}":
+            raise ValueError(f"Invalid MuSiQue paragraph/source mapping in {path}")
+        records.append(
+            {
+                "paragraph_id": paragraph_id,
+                "source_id": source_id,
+                "filename": filename,
+                "content_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    records.sort(key=lambda record: record["paragraph_id"])
+    if len({record["paragraph_id"] for record in records}) != len(records):
+        raise ValueError("MuSiQue corpus has duplicate paragraph identities")
+    return records
+
+
+def _validate_staged_snapshot(
+    files: list[str], corpus_manifest: dict | None, dataset_path: str | Path | None = None
+) -> list[str]:
     source_ids = _source_ids_from_filenames(files)
     if corpus_manifest is not None and corpus_manifest["paragraph_count"] != len(source_ids):
         raise ValueError(
             "Corpus manifest paragraph_count does not match staged .txt/.md files: "
             f"{corpus_manifest['paragraph_count']} != {len(source_ids)}"
         )
+    if corpus_manifest is not None and corpus_manifest.get("source_ids_sha256"):
+        actual_ids_digest = _source_set_sha256(source_ids)
+        if actual_ids_digest != corpus_manifest["source_ids_sha256"]:
+            raise ValueError("Corpus manifest source identity digest does not match staged files")
+    if corpus_manifest is not None and corpus_manifest.get("corpus_files_sha256") and dataset_path is not None:
+        entries = []
+        for filename in sorted(files):
+            path = Path(dataset_path) / filename
+            entries.append(f"{filename}\0{hashlib.sha256(path.read_bytes()).hexdigest()}")
+        actual_files_digest = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+        if actual_files_digest != corpus_manifest["corpus_files_sha256"]:
+            raise ValueError("Corpus manifest content digest does not match staged files")
+    if (
+        corpus_manifest is not None
+        and corpus_manifest.get("corpus_records_sha256")
+        and not corpus_manifest.get("paragraph_ids_sha256")
+        and dataset_path is not None
+    ):
+        records = [
+            {
+                "source_id": Path(filename).stem,
+                "filename": filename,
+                "content_sha256": hashlib.sha256((Path(dataset_path) / filename).read_bytes()).hexdigest(),
+            }
+            for filename in sorted(files)
+        ]
+        serialized = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if hashlib.sha256(serialized.encode("utf-8")).hexdigest() != corpus_manifest["corpus_records_sha256"]:
+            raise ValueError("Corpus manifest record digest does not match staged files")
+    if corpus_manifest is not None and corpus_manifest.get("paragraph_ids_sha256") and dataset_path is not None:
+        records = _musique_corpus_records(dataset_path, files)
+        actual_paragraph_digest = _source_set_sha256([record["paragraph_id"] for record in records])
+        if actual_paragraph_digest != corpus_manifest["paragraph_ids_sha256"]:
+            raise ValueError("Corpus manifest paragraph identity digest does not match staged files")
+        expected_records_digest = corpus_manifest.get("corpus_records_sha256")
+        if expected_records_digest:
+            serialized = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            actual_records_digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+            if actual_records_digest != expected_records_digest:
+                raise ValueError("Corpus manifest record digest does not match staged files")
     return source_ids
 
 
@@ -339,7 +660,7 @@ def _write_runtime_stage_stats(
         {
             "run_id": _artifact_run_id(),
             "index_code_provenance": code_provenance(),
-            "index_policy": _resolved_index_policy(strategy, indexing_model_id),
+            **_index_policy_artifact(strategy, indexing_model_id, corpus_tag),
             "strategy": strategy,
             "corpus_tag": corpus_tag,
             "dataset_path": dataset_path,
@@ -359,18 +680,9 @@ async def _collect_index_capacity(
 ) -> dict[str, object]:
     """Measure strategy storage with the fixed comparison-table definitions."""
     safe_corpus = index_namespace(corpus_tag)
-    if strategy in {"ms_graphrag", "browsenet", "proprag"}:
-        env_key = {
-            "ms_graphrag": "RAG_MS_OUTPUT_ROOT",
-            "browsenet": "RAG_BROWSENET_OUTPUT_ROOT",
-            "proprag": "RAG_PROPRAG_OUTPUT_ROOT",
-        }[strategy]
-        default_root = {
-            "ms_graphrag": "data/ms_graphrag_output",
-            "browsenet": "data/browsenet_output",
-            "proprag": "data/proprag_output",
-        }[strategy]
-        root = Path(os.environ.get(env_key, default_root)) / corpus_tag
+    if strategy in {"ms_graphrag", *EXTERNAL_STRATEGIES}:
+        spec = get_strategy(strategy)
+        root = Path(os.environ.get(spec.output_env, spec.output_default)) / corpus_tag
         if not root.is_dir():
             raise FileNotFoundError(f"{strategy} retrieval artifact directory not found: {root}")
         excluded = (
@@ -964,7 +1276,7 @@ async def _run_indexing_unlocked(
     files = sorted(file for file in os.listdir(dataset_path) if file.endswith((".txt", ".md")))
     if not files:
         raise ValueError(f"Dataset contains no supported .txt/.md files: {dataset_path}")
-    source_ids = _validate_staged_snapshot(files, corpus_manifest)
+    source_ids = _validate_staged_snapshot(files, corpus_manifest, dataset_path)
 
     if strategy == "ms_graphrag":
         # Official MS GraphRAG pipeline (extract_graph + Leiden + community
@@ -1005,11 +1317,22 @@ async def _run_indexing_unlocked(
             )
         return
 
-    if strategy in {"browsenet", "proprag"}:
+    if strategy in EXTERNAL_STRATEGIES:
         if strategy == "browsenet":
             from models.browsenet.official_indexer import run_official_index
-        else:
+        elif strategy == "proprag":
             from models.proprag.official_indexer import run_official_index
+        else:
+            from models.external_research.official_indexer import run_official_index as _run_external_index
+
+            async def run_official_index(dataset_path, corpus_tag, corpus_manifest):
+                return await _run_external_index(
+                    strategy,
+                    dataset_path,
+                    corpus_tag,
+                    corpus_manifest,
+                    index_policy=_resolved_index_policy(strategy, model_id, corpus_tag or "default"),
+                )
 
         official_started = time.perf_counter()
         timing = {}
@@ -1407,7 +1730,7 @@ async def _run_indexing_unlocked(
                 {
                     "run_id": _artifact_run_id(),
                     "index_code_provenance": code_provenance(),
-                    "index_policy": _resolved_index_policy(strategy, model_id),
+                    **_index_policy_artifact(strategy, model_id, corpus_tag or "default"),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
@@ -1439,7 +1762,7 @@ async def _run_indexing_unlocked(
                 {
                     "run_id": _artifact_run_id(),
                     "index_code_provenance": code_provenance(),
-                    "index_policy": _resolved_index_policy(strategy, model_id),
+                    **_index_policy_artifact(strategy, model_id, corpus_tag or "default"),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
@@ -1467,7 +1790,7 @@ async def _run_indexing_unlocked(
                 {
                     "run_id": _artifact_run_id(),
                     "index_code_provenance": code_provenance(),
-                    "index_policy": _resolved_index_policy(strategy, model_id),
+                    **_index_policy_artifact(strategy, model_id, corpus_tag or "default"),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,

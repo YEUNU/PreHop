@@ -32,6 +32,7 @@ from cli.benchmark import reconcile_pending_judges, run_benchmark_multi_seed
 from cli.index import rebuild_hop_edges, run_indexing
 from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
+from core.strategy_registry import ALL_STRATEGIES, PRIMARY_STRATEGIES
 from core.vllm_client import VLLMClient
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -106,14 +107,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--strategy",
-        choices=["naive", "prehop", "hoprag", "ms_graphrag", "browsenet", "proprag"],
+        choices=ALL_STRATEGIES,
         default="prehop",
     )
     parser.add_argument("--model", default="default")
     parser.add_argument("--dataset", default=_DEFAULT_DATASET)
     parser.add_argument("--queries_file", default=_DEFAULT_QUERIES_FILE)
     parser.add_argument(
-        "--clear-graph", action="store_true", help="Clear all Neo4j data before indexing to prevent duplicates"
+        "--clear-graph",
+        action="store_true",
+        help="DESTRUCTIVE: clear all Neo4j data before indexing (not namespace-scoped)",
     )
     parser.add_argument(
         "--corpus-tag", default=None, help="Tag to identify corpus in Neo4j. Different tags prevent data conflicts."
@@ -142,6 +145,11 @@ async def main():
         elif args.mode == "index":
             RAGConfig.validate()
             if args.clear_graph and args.strategy in {"prehop", "naive", "hoprag"}:
+                if os.environ.get("RAG_INDEX_NAMESPACE", "").strip():
+                    raise RuntimeError(
+                        "--clear-graph is global and is forbidden for a namespace-scoped run; "
+                        "use a fresh RAG_INDEX_NAMESPACE instead"
+                    )
                 neo4j = Neo4jService()
                 logger.warning("Clearing all Neo4j data and application schema before indexing...")
                 await _clear_graph_and_schema(neo4j)
@@ -187,7 +195,7 @@ async def main():
             results_dir.mkdir(parents=True, exist_ok=True)
             logger.info("Batch benchmark results will be saved to: %s", results_dir)
             strategy_failures = []
-            for strategy in ["naive", "prehop", "hoprag", "ms_graphrag", "browsenet", "proprag"]:
+            for strategy in PRIMARY_STRATEGIES:
                 print(f"\n>>> Running Benchmark for: {strategy.upper()}")
                 try:
                     await run_benchmark_multi_seed(

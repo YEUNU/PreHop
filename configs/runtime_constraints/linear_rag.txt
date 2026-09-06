@@ -1,0 +1,10 @@
+# Paper-approved direct dependency constraints for the pinned LinearRAG runtime.
+# Transitive resolution is additionally captured by the per-install runtime.freeze.txt.
+numpy==1.21.0
+pandas==1.3.0
+scikit-learn==1.3.2
+scipy==1.10.1
+sentence-transformers==2.2.2
+spacy==3.6.1
+transformers==4.30.2
+huggingface-hub==0.16.4

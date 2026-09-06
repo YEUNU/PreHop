@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import traceback
 import types
 from pathlib import Path
@@ -22,12 +23,15 @@ from typing import Any
 import numpy as np
 
 RESULT_PREFIX = "__PREHOP_OFFICIAL_RESULT__="
+logger = logging.getLogger(__name__)
 
 # Executing this file directly places the repository's ``scripts`` directory
 # first on sys.path. Its local ``datasets`` package would otherwise shadow the
 # Hugging Face dependency imported by upstream model libraries.
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path = [entry for entry in sys.path if Path(entry or ".").resolve() != _SCRIPT_DIR]
+
+from core.strategy_registry import PAPER_TRANSPORT
 
 
 def _proprag_concurrency() -> int:
@@ -155,6 +159,9 @@ class LiteLLMEmbeddingEncoder:
             self.batch_size = int(global_config.embedding_batch_size)
         if self.batch_size < 1:
             raise ValueError("RAG_EMBEDDING_BATCH_SIZE must be at least 1")
+        self._request_semaphore = threading.BoundedSemaphore(
+            max(1, int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "1")))
+        )
         base_url = os.environ.get("VLLM_EMBED_URL")
         if not base_url:
             raise ValueError("VLLM_EMBED_URL is required for official baseline embeddings")
@@ -177,10 +184,18 @@ class LiteLLMEmbeddingEncoder:
 
     def _request_embeddings(self, texts: list[str]) -> list[list[float]]:
         try:
-            response = self.client.embeddings.create(
-                model=self.embedding_model_name,
-                input=texts,
-            )
+            semaphore = getattr(self, "_request_semaphore", None)
+            if semaphore is None:
+                semaphore = threading.BoundedSemaphore(
+                    max(1, int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "1")))
+                )
+                self._request_semaphore = semaphore
+            with semaphore:
+                response = self.client.embeddings.create(
+                    model=self.embedding_model_name,
+                    input=texts,
+                    encoding_format="float",
+                )
         except Exception as exc:
             # LiteLLM can surface an upstream MessagePack decoder failure as a
             # non-retryable HTTP 400.  Bisect only this known transport error;
@@ -188,18 +203,24 @@ class LiteLLMEmbeddingEncoder:
             if len(texts) <= 1 or "MessagePack data is malformed" not in str(exc):
                 raise
             midpoint = len(texts) // 2
-            logging.warning(
+            logger.warning(
                 "Embedding transport rejected batch_size=%d; retrying as %d and %d",
                 len(texts),
                 midpoint,
                 len(texts) - midpoint,
             )
             return self._request_embeddings(texts[:midpoint]) + self._request_embeddings(texts[midpoint:])
-        ordered = sorted(response.data, key=lambda item: item.index)
-        if len(ordered) != len(texts):
+        data = getattr(response, "data", None)
+        if not isinstance(data, (list, tuple)):
+            raise TypeError("LiteLLM embedding response has no data list")
+        indices = [getattr(item, "index", None) for item in data]
+        expected_indices = list(range(len(texts)))
+        if sorted(indices) != expected_indices:
             raise ValueError(
-                f"LiteLLM embedding response count mismatch: expected {len(texts)}, got {len(ordered)}"
+                "LiteLLM embedding response indices must be an exact permutation of "
+                f"0..{len(texts) - 1}: got {indices!r}"
             )
+        ordered = sorted(data, key=lambda item: item.index)
         return [item.embedding for item in ordered]
 
     def _encode(self, texts: list[str]) -> np.ndarray:
@@ -222,14 +243,14 @@ class LiteLLMEmbeddingEncoder:
                 "EMBEDDING_QUERY_INSTRUCTION",
                 "Given a web search query, retrieve relevant passages that answer the query",
             )
-            values = [f"Instruct: {instruction}\nQuery:{text}" for text in values]
+            values = [PAPER_TRANSPORT.query_template.format(instruction=instruction, query=text) for text in values]
         return self._encode(values)
 
     def batch_encode(self, texts: str | list[str], instruction: str = "", **kwargs: Any) -> np.ndarray:
         _ = kwargs
         values = [texts] if isinstance(texts, str) else list(texts)
         if instruction:
-            values = [f"Instruct: {instruction}\nQuery: {text}" for text in values]
+            values = [PAPER_TRANSPORT.query_template.format(instruction=instruction, query=text) for text in values]
         return self._encode(values)
 
 
@@ -258,7 +279,11 @@ def _patch_browsenet_storage(official_root: Path, output_dir: Path) -> None:
     (colbert_runtime / "colbert").mkdir(parents=True, exist_ok=True)
     (colbert_runtime / "exp").mkdir(parents=True, exist_ok=True)
     runtime_checkpoint = colbert_runtime / "exp" / "colbertv2.0"
-    official_checkpoint = official_root / "src" / "indexer" / "exp" / "colbertv2.0"
+    official_checkpoint = official_root.parent / "artifacts" / "colbertv2.0"
+    if not official_checkpoint.is_dir():
+        raise RuntimeError(
+            "BrowseNet external ColBERT checkpoint is missing; run scripts/setup_official_baselines.sh"
+        )
     if not runtime_checkpoint.exists():
         runtime_checkpoint.symlink_to(official_checkpoint, target_is_directory=True)
     colbertv2_knn.FILE_DIR = colbert_runtime
@@ -297,7 +322,12 @@ def browsenet_index(official_root: Path, output_dir: Path, corpus_tag: str) -> d
     )
     engine.index()
     graph = engine.KG
-    return {"documents": len(rows), "nodes": graph.number_of_nodes(), "edges": graph.number_of_edges()}
+    return {
+        "documents": len(rows),
+        "nodes": graph.number_of_nodes(),
+        "edges": graph.number_of_edges(),
+        "adapter_variant": "controlled_remote_embedding_legacy",
+    }
 
 
 class BrowseNetService:
@@ -473,7 +503,12 @@ def proprag_index(official_root: Path, output_dir: Path) -> dict[str, Any]:
     PropRAG, BaseConfig = _patch_proprag_config(official_root)
     engine = PropRAG(global_config=_proprag_config(BaseConfig, output_dir, len(rows)))
     engine.index([f"{row['title']}\n{row['text']}" for row in rows])
-    return {"documents": len(rows), "nodes": engine.graph.vcount(), "edges": engine.graph.ecount()}
+    return {
+        "documents": len(rows),
+        "nodes": engine.graph.vcount(),
+        "edges": engine.graph.ecount(),
+        "adapter_variant": "controlled_schema_transport_legacy",
+    }
 
 
 class PropRAGService:

@@ -1,0 +1,62 @@
+"""Per-query inference accounting without leaking request content or credentials."""
+from __future__ import annotations
+
+import contextvars
+from typing import Any
+
+_CURRENT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "prehop_inference_telemetry", default=None
+)
+
+
+def begin() -> contextvars.Token:
+    return _CURRENT.set({
+        "generation_calls": 0,
+        "embedding_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "reported_cost": 0.0,
+        "token_usage_complete": True,
+        "cost_complete": True,
+    })
+
+
+def record(kind: str, response: Any) -> None:
+    state = _CURRENT.get()
+    if state is None:
+        return
+    state[f"{kind}_calls"] += 1
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        state["token_usage_complete"] = False
+    else:
+        for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = getattr(usage, name, 0)
+            if isinstance(value, int) and not isinstance(value, bool):
+                state[name] += value
+            elif name != "completion_tokens":
+                state["token_usage_complete"] = False
+    hidden = getattr(response, "_hidden_params", None)
+    cost = hidden.get("response_cost") if isinstance(hidden, dict) else getattr(response, "response_cost", None)
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        state["reported_cost"] += float(cost)
+    else:
+        state["cost_complete"] = False
+
+
+def finish(token: contextvars.Token, *, external_complete: bool = True) -> dict[str, Any]:
+    state = dict(_CURRENT.get() or {})
+    _CURRENT.reset(token)
+    if not external_complete:
+        state["token_usage_complete"] = False
+        state["cost_complete"] = False
+        state["external_worker_usage_complete"] = False
+    return state
+
+
+def record_structured_contract(provenance: dict[str, str]) -> None:
+    """Persist dynamic request schema identities without prompt or response text."""
+    state = _CURRENT.get()
+    if state is not None:
+        state.setdefault("structured_output_contracts", []).append(dict(provenance))

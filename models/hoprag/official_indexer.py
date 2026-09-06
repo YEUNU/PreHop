@@ -45,26 +45,17 @@ logger = logging.getLogger("Prehop")
 
 _HOPRAG_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "HopRAG"
 
-_GEN_API_BASES: list[str] = [
-    s.strip()
-    for s in os.environ.get(
-        "RAG_HOP_GEN_API_BASES",
-        os.environ.get("RAG_HOP_GEN_API_BASE", os.environ.get("VLLM_URL", "")),
-    ).split(",")
-    if s.strip()
-]
-_GEN_API_BASE = _GEN_API_BASES[0] if _GEN_API_BASES else ""
-_GEN_MODEL_NAME = os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
-_EMBED_API_BASE = os.environ.get("RAG_HOP_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", ""))
-_EMBED_MODEL_NAME = os.environ.get(
-    "RAG_HOP_EMBED_MODEL_NAME", os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
-)
-_EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")))
+_GEN_API_BASE = os.environ.get("RAG_INFERENCE_BASE_URL", "").strip()
+_GEN_API_BASES: list[str] = [_GEN_API_BASE] if _GEN_API_BASE else []
+_GEN_MODEL_NAME = os.environ.get("RAG_GENERATION_MODEL", "")
+_EMBED_API_BASE = _GEN_API_BASE
+_EMBED_MODEL_NAME = os.environ.get("RAG_EMBEDDING_MODEL", "")
+_EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "4096")))
 _EMBED_BATCH_SIZE = max(1, int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32")))
 _EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
     max(1, int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")))
 )
-_GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
+_GEN_API_KEY = os.environ.get("RAG_INFERENCE_API_KEY", "EMPTY")
 _DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")))
 _INTERNAL_RETRIES = max(1, int(os.environ.get("RAG_HOP_INTERNAL_RETRIES", "2")))
 _QUESTION_RETRIES = max(1, int(os.environ.get("RAG_HOP_QUESTION_RETRIES", "3")))
@@ -391,32 +382,58 @@ class _VLLMEmbedClient:
         out = []
         for i in range(0, len(documents), chunk):
             batch = documents[i : i + chunk]
-            with _EMBED_REQUEST_SEMAPHORE:
-                r = self._sess.post(
-                    f"{self.base_url}/embeddings",
-                    json={
-                        "model": self.model,
-                        "input": batch,
-                        "encoding_format": "float",
-                    },
-                    headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
-                    timeout=180,
-                )
-            r.raise_for_status()
-            data = sorted(r.json()["data"], key=lambda item: int(item.get("index", 0)))
-            if len(data) != len(batch):
-                raise ValueError(f"HopRAG embedding count mismatch: expected {len(batch)}, got {len(data)}")
-            for d in data:
-                vector = d.get("embedding")
-                if not isinstance(vector, list) or len(vector) != self.dim:
-                    raise ValueError(
-                        f"HopRAG embedding dimension mismatch: expected {self.dim}, "
-                        f"got {len(vector) if isinstance(vector, list) else 'missing'}"
-                    )
-                out.append(vector)
+            out.extend(self._request_batch(batch))
 
         arr = np.asarray(out, dtype=np.float32)
         return arr[0] if single else arr
+
+    def _request_batch(self, batch: list[str]) -> list[list[float]]:
+        with _EMBED_REQUEST_SEMAPHORE:
+            response = self._sess.post(
+                f"{self.base_url}/embeddings",
+                json={"model": self.model, "input": batch, "encoding_format": "float"},
+                headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
+                timeout=180,
+            )
+        if not response.ok:
+            message = response.text or ""
+            splittable = response.status_code == 413 or "messagepack data is malformed" in message.lower()
+            if splittable and len(batch) > 1:
+                midpoint = len(batch) // 2
+                logger.warning(
+                    "HopRAG embedding payload rejected (size=%d); bisecting into %d and %d",
+                    len(batch),
+                    midpoint,
+                    len(batch) - midpoint,
+                )
+                return self._request_batch(batch[:midpoint]) + self._request_batch(batch[midpoint:])
+            response.raise_for_status()
+
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            raise TypeError("HopRAG embedding response has no data list")
+        indices = [item.get("index") if isinstance(item, dict) else None for item in data]
+        if sorted(indices) != list(range(len(batch))):
+            raise ValueError(
+                "HopRAG embedding response indices must be an exact permutation of "
+                f"0..{len(batch) - 1}: got {indices!r}"
+            )
+        ordered = sorted(data, key=lambda item: item["index"])
+        vectors: list[list[float]] = []
+        for item in ordered:
+            vector = item.get("embedding")
+            if (
+                not isinstance(vector, list)
+                or len(vector) != self.dim
+                or not np.isfinite(np.asarray(vector, dtype=np.float64)).all()
+            ):
+                raise ValueError(
+                    f"HopRAG embedding dimension/value mismatch: expected {self.dim} finite values, "
+                    f"got {len(vector) if isinstance(vector, list) else 'missing'}"
+                )
+            vectors.append(vector)
+        return vectors
 
 
 def _install_round_robin_patch(config) -> None:

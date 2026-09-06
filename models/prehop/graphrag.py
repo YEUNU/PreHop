@@ -13,8 +13,10 @@ import time
 from typing import Any
 
 from core.config import RAGConfig
+from core.generation_profiles import request_settings
 from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
+from core.structured_outputs import question_contract
 from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
 from models.prehop.llm_json import generate_json_or_raise
@@ -193,8 +195,8 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             "role-aligned query rewrite",
             f"query={query!r}",
             required_fields={"q_minus": list, "q_plus": list},
-            temperature=0.0,
-            max_tokens=512,
+            structured_contract=question_contract("rewrite", limit=RAGConfig.QUESTIONS_PER_DIRECTION),
+            **request_settings("rewrite"),
         )
         return self._validate_role_queries(payload)
 
@@ -216,8 +218,8 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             "evidence-conditioned role rewrite",
             f"query={query!r}",
             required_fields={"q_minus": list, "q_plus": list},
-            temperature=0.0,
-            max_tokens=512,
+            structured_contract=question_contract("refine", limit=RAGConfig.QUESTIONS_PER_DIRECTION),
+            **request_settings("refine"),
         )
         return self._validate_role_queries(payload)
 
@@ -478,8 +480,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         t_synthesis0 = time.perf_counter()
         raw = await self.llm.generate_response(
             messages,
-            temperature=0.0,
-            max_tokens=RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS,
+            **request_settings("answer"),
         )
         synthesis_ms = (time.perf_counter() - t_synthesis0) * 1000
         if not str(raw or "").strip():

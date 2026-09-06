@@ -107,8 +107,10 @@ def _validate_artifact_pair(
 ) -> None:
     """Fail fast unless two result artifacts are scientifically comparable."""
     for label, artifact in (("treatment", treatment), ("baseline", baseline)):
-        if artifact.get("status") != "completed":
-            raise ValueError(f"{label} artifact status must be 'completed', got {artifact.get('status')!r}")
+        if artifact.get("status") != "completed_unadmitted":
+            raise ValueError(
+                f"{label} artifact status must be 'completed_unadmitted', got {artifact.get('status')!r}"
+            )
         scope = artifact.get("evaluation_scope")
         if scope != "full_benchmark" and not allow_exploratory:
             raise ValueError(

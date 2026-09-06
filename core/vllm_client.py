@@ -3,8 +3,10 @@ import copy
 import inspect
 import json
 import logging
+import math
 import os
 import re
+import threading
 from typing import Any, ClassVar
 
 import httpx
@@ -15,6 +17,8 @@ from openai import AsyncOpenAI
 from utils.parsers import clean_and_unwrap_json
 
 from .config import RAGConfig
+from .inference_telemetry import record as record_inference
+from .semantic_config import parse_strict_bool
 
 
 class VLLMClient:
@@ -22,7 +26,11 @@ class VLLMClient:
     # Request budgets belong to an inference endpoint, not to a client
     # wrapper.  Sharing these objects prevents two VLLMClient instances on
     # the same event loop from each consuming the full server budget.
-    _embed_semaphores: ClassVar[dict[tuple[str, int], asyncio.Semaphore]] = {}
+    # Embedding calls can originate from several event loops/worker threads
+    # (notably HopRAG). A thread semaphore is endpoint-global; an
+    # asyncio.Semaphore keyed by loop would multiply the configured cap.
+    _embed_semaphores: ClassVar[dict[str, threading.BoundedSemaphore]] = {}
+    _embed_semaphores_lock: ClassVar[threading.Lock] = threading.Lock()
     _generation_semaphores: ClassVar[dict[tuple[str, int], asyncio.Semaphore]] = {}
     _generation_inflight: ClassVar[dict[tuple[str, int], int]] = {}
     _generation_peak: ClassVar[dict[tuple[str, int], int]] = {}
@@ -38,15 +46,49 @@ class VLLMClient:
         # round trips; document batches are never cached since their content
         # differs per call.
         self._query_embed_cache: dict[str, list[float]] = {}
-        self.vllm_url = RAGConfig.VLLM_URL
-        self.embed_url = RAGConfig.VLLM_EMBED_URL
+        paper_mode = parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
+        if paper_mode:
+            from core.inference_transport import InferenceTransport
 
-        self.model_name = model_name or RAGConfig.DEFAULT_MODEL
-        self.embed_model_name = RAGConfig.EMBEDDING_MODEL
+            transport = InferenceTransport.resolve("core")
+            self.vllm_url = transport.generation_base_url
+            self.embed_url = transport.embedding_base_url
+            if model_name is not None and model_name != transport.generation_model:
+                raise RuntimeError("paper generation model override is not registered in the transport policy")
+            self.model_name = transport.generation_model
+            self.embed_model_name = transport.embedding_model
+            self.api_key = transport.api_key
+            timeout_val = transport.timeout_seconds or 0
+            self._embedding_concurrency = transport.embedding_concurrency
+            self._embedding_batch_size = transport.embedding_batch_size
+            self._generation_concurrency = transport.generation_concurrency
+            self._retry_attempts = transport.retry_attempts
+            self._embedding_query_instruction = transport.embedding_query_instruction
+            self._embedding_query_template = transport.embedding_query_template
+            self._embedding_max_input_tokens = transport.embedding_max_input_tokens
+            self._embedding_dimensions = transport.embedding_dimensions
+            self._embedding_token_reserve = transport.embedding_token_reserve
+            self._generation_max_context_tokens = transport.generation_max_context_tokens
+        else:
+            self.vllm_url = RAGConfig.VLLM_URL
+            self.embed_url = RAGConfig.VLLM_EMBED_URL
+            self.model_name = model_name or RAGConfig.DEFAULT_MODEL
+            self.embed_model_name = RAGConfig.EMBEDDING_MODEL
+            self.api_key = os.environ.get("RAG_INFERENCE_API_KEY", "EMPTY")
+            timeout_val = RAGConfig.LLM_REQUEST_TIMEOUT
+            self._embedding_concurrency = RAGConfig.MAX_CONCURRENT_EMBEDDING_REQUESTS
+            self._embedding_batch_size = RAGConfig.EMBEDDING_BATCH_SIZE
+            self._generation_concurrency = RAGConfig.MAX_CONCURRENT_LLM_CALLS
+            self._retry_attempts = RAGConfig.LLM_MAX_RETRIES
+            self._embedding_query_instruction = RAGConfig.EMBEDDING_QUERY_INSTRUCTION
+            from core.strategy_registry import PAPER_TRANSPORT
 
-        self.api_key = os.environ.get("VLLM_API_KEY", "EMPTY")
+            self._embedding_query_template = PAPER_TRANSPORT.query_template
+            self._embedding_max_input_tokens = RAGConfig.MAX_EMBEDDING_LENGTH
+            self._embedding_dimensions = RAGConfig.EMBEDDING_DIMENSIONS
+            self._embedding_token_reserve = int(os.environ.get("RAG_EMBEDDING_TOKEN_RESERVE", "0"))
+            self._generation_max_context_tokens = RAGConfig.MAX_CONTEXT_LENGTH
         # 0 = infinite timeout (None)
-        timeout_val = RAGConfig.LLM_REQUEST_TIMEOUT
         self._request_timeout = None if timeout_val == 0 else timeout_val
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -81,15 +123,13 @@ class VLLMClient:
         num_tokens += 2  # every reply is primed with <im_start>assistant
         return num_tokens
 
-    def _truncate_messages(
-        self, messages: list[dict[str, Any]], max_tokens: int = RAGConfig.MAX_CONTEXT_LENGTH
-    ) -> list[dict[str, Any]]:
+    def _truncate_messages(self, messages: list[dict[str, Any]], max_tokens: int | None = None) -> list[dict[str, Any]]:
         """
         Truncates messages to fit within max_tokens.
         Strategy: Keep system message and most recent messages.
         """
         # Reserve tokens for completion (e.g., 1024)
-        effective_limit = max_tokens - 1024
+        effective_limit = (max_tokens or self._generation_max_context_tokens) - 1024
 
         if self._count_tokens(messages) <= effective_limit:
             return copy.deepcopy(messages)
@@ -230,8 +270,7 @@ class VLLMClient:
         Return a conservative embedding token limit with safety reserve.
         This avoids off-by-one and tokenizer-mismatch overflows at provider side.
         """
-        reserve = int(os.environ.get("RAG_EMBEDDING_TOKEN_RESERVE", "0"))
-        base = max(256, RAGConfig.MAX_EMBEDDING_LENGTH - max(0, reserve))
+        base = max(256, self._embedding_max_input_tokens - max(0, self._embedding_token_reserve))
         if aggressive:
             return max(128, int(base * 0.75))
         return base
@@ -240,6 +279,89 @@ class VLLMClient:
     def _is_context_length_error(exc: Exception) -> bool:
         msg = str(exc).lower()
         return "maximum context length" in msg or "input tokens" in msg or "too many tokens" in msg
+
+    @classmethod
+    def _is_splittable_embedding_error(cls, exc: Exception) -> bool:
+        """Return true only for failures that a smaller payload can fix.
+
+        A generic HTTP 400 can mean a bad model, credentials, or schema and
+        must not be converted into expensive item-wise retries.  The remote
+        stack's malformed MessagePack error, context overflow, and HTTP 413
+        are the only currently evidenced size-dependent failures.
+        """
+        return (
+            cls._is_context_length_error(exc)
+            or getattr(exc, "status_code", None) == 413
+            or "messagepack data is malformed" in str(exc).lower()
+        )
+
+    def _validated_embedding_response(self, response: Any, expected_count: int) -> list[list[float]]:
+        data = getattr(response, "data", None)
+        if not isinstance(data, (list, tuple)):
+            raise TypeError("Embedding response has no data list")
+        indices = [getattr(item, "index", None) for item in data]
+        expected_indices = list(range(expected_count))
+        if sorted(indices) != expected_indices:
+            raise ValueError(
+                "Embedding response indices must be an exact permutation of "
+                f"0..{expected_count - 1}: got {indices!r}"
+            )
+        ordered = sorted(data, key=lambda item: item.index)
+        vectors = [getattr(item, "embedding", None) for item in ordered]
+        expected_dim = getattr(self, "_embedding_dimensions", RAGConfig.EMBEDDING_DIMENSIONS)
+        for index, vector in enumerate(vectors):
+            if not isinstance(vector, (list, tuple)) or len(vector) != expected_dim:
+                raise ValueError(
+                    f"Embedding response vector {index} has invalid dimension: "
+                    f"expected {expected_dim}, got {len(vector) if isinstance(vector, (list, tuple)) else None}"
+                )
+            if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in vector):
+                raise ValueError(f"Embedding response vector {index} contains non-finite values")
+        return [list(vector) for vector in vectors]
+
+    async def _embed_batch_strict(
+        self,
+        batch: list[str],
+        encoding_type: str,
+        *,
+        allow_truncation: bool,
+    ) -> list[list[float]]:
+        try:
+            response = await self._create_embedding_request(batch)
+            return self._validated_embedding_response(response, len(batch))
+        except Exception as exc:
+            if not self._is_splittable_embedding_error(exc):
+                raise
+            if len(batch) > 1:
+                midpoint = len(batch) // 2
+                self._embedding_bisection_count = getattr(self, "_embedding_bisection_count", 0) + 1
+                self.logger.warning(
+                    "Embedding payload rejected (size=%d, type=%s); bisecting into %d and %d",
+                    len(batch),
+                    encoding_type,
+                    midpoint,
+                    len(batch) - midpoint,
+                )
+                left = await self._embed_batch_strict(
+                    batch[:midpoint], encoding_type, allow_truncation=allow_truncation
+                )
+                right = await self._embed_batch_strict(
+                    batch[midpoint:], encoding_type, allow_truncation=allow_truncation
+                )
+                return left + right
+            if self._is_context_length_error(exc) and allow_truncation:
+                shortened = self._truncate_text(
+                    batch[0], max_tokens=self._embedding_token_limit(aggressive=True)
+                )
+                if shortened and shortened != batch[0]:
+                    response = await self._create_embedding_request([shortened])
+                    return self._validated_embedding_response(response, 1)
+            if self._is_context_length_error(exc) and not allow_truncation:
+                raise ValueError(
+                    "Embedding input exceeds the configured server limit and truncation is forbidden "
+                    f"for encoding_type={encoding_type!r}"
+                ) from exc
+            raise
 
     @staticmethod
     def _is_retryable_inference_error(exc: Exception) -> bool:
@@ -263,28 +385,70 @@ class VLLMClient:
 
     def _format_query_for_embedding(self, query: str) -> str:
         """Apply model-recommended query instruction format for Qwen embedding models."""
-        return f"Instruct: {RAGConfig.EMBEDDING_QUERY_INSTRUCTION}\nQuery:{query}"
+        return self._embedding_query_template.format(
+            instruction=self._embedding_query_instruction,
+            query=query,
+        )
 
     async def _create_embedding_request(self, inputs: list[str]):
-        key = (self.embed_url, self._running_loop_id())
-        semaphore = type(self)._embed_semaphores.setdefault(
-            key,
-            asyncio.Semaphore(RAGConfig.MAX_CONCURRENT_EMBEDDING_REQUESTS),
-        )
-        async with semaphore:
-            return await self._retry_with_backoff(
+        key = self.embed_url.rstrip("/")
+        cls = type(self)
+        concurrency = getattr(self, "_embedding_concurrency", RAGConfig.MAX_CONCURRENT_EMBEDDING_REQUESTS)
+        with cls._embed_semaphores_lock:
+            semaphore = cls._embed_semaphores.setdefault(
+                key,
+                threading.BoundedSemaphore(concurrency),
+            )
+        acquire_task = asyncio.create_task(asyncio.to_thread(semaphore.acquire))
+        try:
+            await asyncio.shield(acquire_task)
+        except asyncio.CancelledError:
+            # Cancelling to_thread() does not stop the worker thread. Return
+            # cancellation immediately, while a callback releases any permit
+            # the background acquire obtains later. Waiting here would make a
+            # cancelled request hang forever behind a wedged holder.
+            def _release_cancelled_acquire(task: asyncio.Task) -> None:
+                try:
+                    acquired = task.result()
+                except asyncio.CancelledError:
+                    return
+                except Exception:  # noqa: BLE001 - done callback must never leak into the event loop
+                    return
+                if acquired:
+                    semaphore.release()
+
+            acquire_task.add_done_callback(_release_cancelled_acquire)
+            raise
+        try:
+            response = await self._retry_with_backoff(
                 self.embed_client.embeddings.create,
                 model=self.embed_model_name,
                 input=inputs,
             )
+            record_inference("embedding", response)
+            return response
+        finally:
+            semaphore.release()
 
     async def _create_generation_request(self, request_client: AsyncOpenAI, params: dict[str, Any]):
+        if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE"):
+            from core.inference_transport import InferenceTransport, _normalized_endpoint
+
+            approved = InferenceTransport.resolve("core")
+            if params.get("model") != approved.generation_model:
+                raise RuntimeError("paper generation request model is not registered in the transport policy")
+            if _normalized_endpoint(str(request_client.base_url)) != approved.generation_base_url:
+                raise RuntimeError("paper generation request endpoint differs from the approved gateway")
+            if params.get("seed", approved.generation_seed) != approved.generation_seed:
+                raise RuntimeError("paper generation request seed differs from the transport policy")
+            if approved.generation_seed is not None:
+                params["seed"] = approved.generation_seed
         endpoint = str(getattr(request_client, "base_url", self.vllm_url)).rstrip("/")
         key = (endpoint, self._running_loop_id())
         cls = type(self)
         semaphore = cls._generation_semaphores.setdefault(
             key,
-            asyncio.Semaphore(RAGConfig.MAX_CONCURRENT_LLM_CALLS),
+            asyncio.Semaphore(self._generation_concurrency),
         )
         async with semaphore:
             inflight = cls._generation_inflight.get(key, 0) + 1
@@ -292,84 +456,40 @@ class VLLMClient:
             previous_peak = cls._generation_peak.get(key, 0)
             if inflight > previous_peak:
                 cls._generation_peak[key] = inflight
-                if inflight == 1 or inflight % 10 == 0 or inflight == RAGConfig.MAX_CONCURRENT_LLM_CALLS:
+                if inflight == 1 or inflight % 10 == 0 or inflight == self._generation_concurrency:
                     self.logger.info(
                         "Generation endpoint load | in_flight=%d peak=%d limit=%d endpoint=%s",
                         inflight,
                         inflight,
-                        RAGConfig.MAX_CONCURRENT_LLM_CALLS,
+                        self._generation_concurrency,
                         endpoint,
                     )
             try:
-                return await self._retry_with_backoff(request_client.chat.completions.create, **params)
+                response = await self._retry_with_backoff(request_client.chat.completions.create, **params)
+                record_inference("generation", response)
+                return response
             finally:
                 cls._generation_inflight[key] -= 1
 
-    async def _embed_batch_itemwise(
-        self,
-        batch: list[str],
-        encoding_type: str,
-        *,
-        allow_truncation: bool = True,
-    ) -> list[list[float]]:
-        embeddings: list[list[float]] = []
-        for idx, text in enumerate(batch):
-            try:
-                response = await self._create_embedding_request([text])
-                if getattr(response, "data", None):
-                    embeddings.append(response.data[0].embedding)
-                else:
-                    self.logger.error("Embedding item response missing data at idx=%d.", idx)
-                    embeddings.append([])
-            except Exception as e:
-                recovered = False
-                if self._is_context_length_error(e) and not allow_truncation:
-                    raise ValueError(
-                        "Embedding input exceeds the configured server limit and truncation is forbidden "
-                        f"for encoding_type={encoding_type!r}, item={idx}"
-                    ) from e
-                if self._is_context_length_error(e):
-                    aggressive_text = self._truncate_text(text, max_tokens=self._embedding_token_limit(aggressive=True))
-                    if aggressive_text and aggressive_text != text:
-                        try:
-                            response = await self._create_embedding_request([aggressive_text])
-                            if getattr(response, "data", None):
-                                self.logger.warning(
-                                    "Embedding item recovered with aggressive truncation at idx=%d.",
-                                    idx,
-                                )
-                                embeddings.append(response.data[0].embedding)
-                                recovered = True
-                        except Exception as e2:  # noqa: BLE001 - same provider boundary as the first request
-                            self.logger.error(
-                                "Embedding item aggressive retry failed at idx=%d: %s",
-                                idx,
-                                e2,
-                            )
-                if not recovered:
-                    preview = text.replace("\n", " ")[:120]
-                    self.logger.error("Embedding item failed at idx=%d text='%s': %s", idx, preview, e)
-                    embeddings.append([])
-        return embeddings
-
     async def _retry_with_backoff(self, coro_func, *args, **kwargs):
         """Exponential backoff retry wrapper for handling GPU load spikes."""
-        if RAGConfig.LLM_MAX_RETRIES < 1:
+        retry_attempts = getattr(self, "_retry_attempts", RAGConfig.LLM_MAX_RETRIES)
+        if retry_attempts < 1:
             raise ValueError("LLM_MAX_RETRIES must be at least 1")
         if RAGConfig.LLM_RETRY_DELAY < 0:
             raise ValueError("LLM_RETRY_DELAY must be non-negative")
-        for attempt in range(RAGConfig.LLM_MAX_RETRIES):
+        for attempt in range(retry_attempts):
             try:
                 return await coro_func(*args, **kwargs)
             except Exception as exc:
-                if not self._is_retryable_inference_error(exc) or attempt == RAGConfig.LLM_MAX_RETRIES - 1:
+                if not self._is_retryable_inference_error(exc) or attempt == retry_attempts - 1:
                     raise
                 delay = RAGConfig.LLM_RETRY_DELAY * (2**attempt)
                 self.logger.warning(
                     "Transient inference error, retrying in %.1fs (%d/%d): %s",
                     delay,
                     attempt + 1,
-                    RAGConfig.LLM_MAX_RETRIES,
+                    retry_attempts,
                     exc,
                 )
                 await asyncio.sleep(delay)
@@ -407,17 +527,12 @@ class VLLMClient:
 
     @property
     def judge_client(self):
-        if self._is_openai_model(RAGConfig.EVAL_MODEL):
-            if not RAGConfig.OPENAI_API_KEY:
-                raise RuntimeError("OPENAI_API_KEY is required for an OpenAI EVAL_MODEL")
-            if "openai_official" not in self._client_cache:
-                self._client_cache["openai_official"] = AsyncOpenAI(api_key=RAGConfig.OPENAI_API_KEY)
-            return self._client_cache["openai_official"]
         return self.client
 
     @staticmethod
     def _is_openai_model(model: str) -> bool:
-        return str(model or "").lower().startswith(("gpt-", "o1", "o3", "o4", "chatgpt-"))
+        _ = model
+        return False
 
     def think_strip(self, message: str | None) -> str:
         if not message:
@@ -469,6 +584,18 @@ class VLLMClient:
                 params.pop("extra_body", None)
             request_client = self.judge_client if is_openai else self.client
             response = await self._create_generation_request(request_client, params)
+            strict_schema = (kwargs.get("response_format") or {}).get("type") == "json_schema"
+            if strict_schema:
+                from core.structured_outputs import StructuredOutputError
+
+                if len(response.choices) != 1 or response.choices[0].finish_reason != "stop":
+                    raise StructuredOutputError("structured response did not finish with one complete answer")
+                message = response.choices[0].message
+                if getattr(message, "refusal", None) or getattr(message, "tool_calls", None):
+                    raise StructuredOutputError("structured response refused or returned tool output")
+                if not isinstance(message.content, str) or not message.content.strip():
+                    raise StructuredOutputError("structured response has no raw content")
+                return message.content
             msg = response.choices[0].message
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 return msg
@@ -487,6 +614,34 @@ class VLLMClient:
     async def generate_json(
         self, messages: list[dict[str, str]], max_retries: int | None = None, **kwargs
     ) -> dict[str, Any]:
+        contract = kwargs.pop("structured_contract", None)
+        if contract is not None:
+            from core.structured_outputs import StructuredContract, StructuredOutputError
+
+            if not isinstance(contract, StructuredContract):
+                raise TypeError("structured_contract must be a registered contract")
+            if any(name in kwargs for name in ("response_format", "extra_body", "structured_outputs", "tools", "tool_choice")) or any(name.startswith("guided_") for name in kwargs):
+                raise StructuredOutputError("conflicting structured-output request configuration")
+            kwargs.pop("json_debug_label", None)
+            from core.inference_telemetry import record_structured_contract
+            record_structured_contract(contract.provenance())
+            raw = await self.generate_response(messages, response_format=contract.response_format(), **kwargs)
+            def object_pairs(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate JSON property")
+                    result[key] = value
+                return result
+            def invalid_constant(value):
+                raise ValueError(f"non-finite JSON constant: {value}")
+            try:
+                parsed = json.loads(raw, object_pairs_hook=object_pairs, parse_constant=invalid_constant)
+            except (ValueError, TypeError) as exc:
+                raise StructuredOutputError("structured response is not one raw JSON document") from exc
+            validated = contract.validate(parsed)
+            self.logger.debug("Structured output validated | %s", contract.provenance())
+            return validated
         last_error_hint = ""
         last_parse_error: Exception | None = None
         last_response_preview = ""
@@ -646,32 +801,23 @@ class VLLMClient:
                 self._truncate_text(candidate, max_tokens=embed_max_tokens) if allow_truncation else candidate
             )
 
-        if RAGConfig.EMBEDDING_BATCH_SIZE < 1:
+        if self._embedding_batch_size < 1:
             raise ValueError("RAG_EMBEDDING_BATCH_SIZE must be at least 1")
-        all_embeddings = []
-        for i in range(0, len(truncated_texts), RAGConfig.EMBEDDING_BATCH_SIZE):
-            batch = truncated_texts[i : i + RAGConfig.EMBEDDING_BATCH_SIZE]
-            try:
-                response = await self._create_embedding_request(batch)
-                all_embeddings.extend([item.embedding for item in response.data])
-            except Exception as e:
-                status = getattr(e, "status_code", None)
-                can_split_batch = self._is_context_length_error(e) or status in {400, 413}
-                if not can_split_batch:
-                    raise
-                self.logger.error(
-                    "Embedding batch rejected (size=%d, type=%s): %s. Retrying item-wise to isolate the bad input.",
-                    len(batch),
+        all_embeddings: list[list[float]] = []
+        for i in range(0, len(truncated_texts), self._embedding_batch_size):
+            batch = truncated_texts[i : i + self._embedding_batch_size]
+            all_embeddings.extend(
+                await self._embed_batch_strict(
+                    batch,
                     encoding_type,
-                    e,
+                    allow_truncation=allow_truncation,
                 )
-                all_embeddings.extend(
-                    await self._embed_batch_itemwise(
-                        batch,
-                        encoding_type=encoding_type,
-                        allow_truncation=allow_truncation,
-                    )
-                )
+            )
+
+        if len(all_embeddings) != len(texts):
+            raise ValueError(
+                f"Embedding result count mismatch: expected {len(texts)}, got {len(all_embeddings)}"
+            )
 
         if single_query and all_embeddings and all_embeddings[0]:
             if len(self._query_embed_cache) >= self._QUERY_EMBED_CACHE_LIMIT:

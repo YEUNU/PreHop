@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from models.ms_graphrag import official_indexer
@@ -9,18 +10,30 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _fake_python(tmp_path: Path) -> Path:
     executable = tmp_path / "python"
-    executable.write_text('#!/bin/sh\nprintf "<%s>\\n" "$@"\n', encoding="utf-8")
+    executable.write_text('#!/bin/sh\nif [ "$1" = -c ]; then exec '+sys.executable+' "$@"; fi\nprintf "<%s>\\n" "$@"\n', encoding="utf-8")
     executable.chmod(0o755)
     return executable
 
 
 def _entrypoint_env(tmp_path: Path) -> dict[str, str]:
     env = os.environ.copy()
+    for name in tuple(env):
+        if name.startswith(("VLLM_", "AZURE_OPENAI")) or name in {
+            "OPENAI_API_BASE",
+            "OPENAI_BASE_URL",
+            "OPENAI_PROVIDER",
+        }:
+            env.pop(name, None)
     env.update(
         {
             "PYTHON_BIN": str(_fake_python(tmp_path)),
             "RAG_LOG_ROOT": str(tmp_path / "logs"),
             "RAG_RUN_ID": "shared-run",
+            "RAG_SKIP_PROJECT_ENV": "true",
+            "RAG_INFERENCE_BASE_URL": "http://litellm.test/v1",
+            "RAG_INFERENCE_API_KEY": "test-key",
+            "RAG_GENERATION_MODEL": "gemma-4-31b-it",
+            "RAG_EMBEDDING_MODEL": "qwen3-embedding-8b",
         }
     )
     return env
@@ -188,6 +201,21 @@ def test_ms_graphrag_internal_log_is_dataset_scoped(tmp_path, monkeypatch):
     monkeypatch.setattr(official_indexer, "_register_external_models_with_litellm", lambda: None)
     monkeypatch.setattr(official_indexer, "_install_litellm_router_for_gen", lambda: None)
     monkeypatch.delenv("RAG_INDEX_LOG_DIR", raising=False)
+    monkeypatch.setenv("VLLM_API_BASE", "http://generation/v1")
+    monkeypatch.setenv("VLLM_EMBED_API_BASE", "http://embedding/v1")
+    monkeypatch.setenv("VLLM_SERVED_MODEL_NAME", "generation")
+    monkeypatch.setenv("VLLM_SERVED_EMBED_MODEL_NAME", "embedding")
+    monkeypatch.setenv("VLLM_API_KEY", "test-key")
+    monkeypatch.setenv("RAG_INFERENCE_BASE_URL", "http://litellm/v1")
+    monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
+    monkeypatch.setenv("RAG_GENERATION_MODEL", "generation")
+    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding")
+    monkeypatch.setattr(official_indexer, "_GEN_API_BASE", "http://generation/v1")
+    monkeypatch.setattr(official_indexer, "_GEN_API_BASES", ["http://generation/v1"])
+    monkeypatch.setattr(official_indexer, "_GEN_MODEL_NAME", "generation")
+    monkeypatch.setattr(official_indexer, "_EMBED_API_BASE", "http://embedding/v1")
+    monkeypatch.setattr(official_indexer, "_EMBED_MODEL_NAME", "embedding")
+    monkeypatch.setattr(official_indexer, "_GEN_API_KEY", "test-key")
 
     config = official_indexer.build_config("musique", tmp_path / "input")
 
@@ -242,6 +270,9 @@ def test_paper_runner_uses_run_scoped_neo4j_namespace():
 def test_paper_runner_uses_shared_conservative_embedding_load():
     paper_runner = (ROOT / "scripts/run_paper_target.sh").read_text(encoding="utf-8")
 
-    assert 'export RAG_EMBEDDING_BATCH_SIZE="${RAG_PAPER_EMBEDDING_BATCH_SIZE:-16}"' in paper_runner
-    assert 'export RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS="${RAG_PAPER_MAX_CONCURRENT_EMBEDDING_REQUESTS:-1}"' in paper_runner
+    from core.strategy_registry import paper_environment_defaults
+
+    assert "canonicalize_inference_transport" in paper_runner
+    assert paper_environment_defaults()["RAG_EMBEDDING_BATCH_SIZE"] == "16"
+    assert paper_environment_defaults()["RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS"] == "1"
     assert 'if [ "$strategy" = browsenet ]' not in paper_runner

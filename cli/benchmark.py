@@ -8,8 +8,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.admission import current_post_query_inventory
 from core.config import RAGConfig
 from core.index_namespace import index_namespace
+from core.paper_compatibility import method_identity
+from core.paper_policy import structured_query_identity
+from core.semantic_config import parse_strict_bool
+from core.strategy_registry import EXTERNAL_STRATEGIES, RESEARCH_EXTERNAL_STRATEGIES
 from core.vllm_client import get_llm_client
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
@@ -52,34 +57,63 @@ def _load_benchmark_corpus_manifest(dataset: str, queries_file: str | Path) -> d
     paragraph_count = manifest.get("paragraph_count") if isinstance(manifest, dict) else None
     query_digest = manifest.get("query_ids_sha256") if isinstance(manifest, dict) else None
     query_records_digest = manifest.get("query_records_sha256") if isinstance(manifest, dict) else None
+    if (
+        parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
+        and manifest.get("schema_version") != 2
+    ):
+        raise ValueError(f"Paper mode requires a content-bound corpus manifest schema_version=2: {manifest_path}")
     if not isinstance(fingerprint, str) or not fingerprint.strip():
         raise ValueError(f"Corpus manifest has no fingerprint: {manifest_path}")
     if not isinstance(paragraph_count, int) or paragraph_count < 0:
         raise ValueError(f"Corpus manifest has invalid paragraph_count: {manifest_path}")
-    return {
+    loaded = {
         "path": str(manifest_path),
         "fingerprint": fingerprint,
         "paragraph_count": paragraph_count,
         "query_ids_sha256": query_digest,
         "query_records_sha256": query_records_digest,
     }
+    if manifest.get("schema_version") == 2:
+        # A v2 manifest is content-bound. Verify its persisted bytes and the
+        # current files before trusting it for an evaluation/index comparison.
+        from cli.index import _load_corpus_manifest, _validate_staged_snapshot
+
+        corpus_dir = manifest_path.parent
+        validated = _load_corpus_manifest(corpus_dir)
+        files = sorted(path.name for path in corpus_dir.iterdir() if path.is_file() and path.suffix in (".txt", ".md"))
+        _validate_staged_snapshot(files, validated, corpus_dir)
+        loaded.update(
+            {
+                "schema_version": 2,
+                "paragraph_ids_sha256": validated.get("paragraph_ids_sha256"),
+                "source_ids_sha256": validated.get("source_ids_sha256"),
+                "corpus_records_sha256": validated.get("corpus_records_sha256"),
+                "corpus_files_sha256": validated.get("corpus_files_sha256"),
+            }
+        )
+    return loaded
 
 
 def _latest_index_manifest_metadata(strategy: str, corpus_tag: str, stats_dir: Path = INDEX_STATS_DIR) -> dict | None:
-    """Read the newest artifact, including failed/incomplete status.
-
-    Never skip a newer failed attempt in favor of an older completed index;
-    doing so would make provenance depend on convenient artifact selection.
-    """
-    candidates = sorted(
-        stats_dir.glob(f"{strategy}_{corpus_tag}_*.json"),
-        key=lambda path: path.stat().st_mtime_ns,
-        reverse=True,
-    )
+    """Resolve one exact index artifact; never infer identity from mtime."""
+    requested_run_id = os.environ.get("RAG_RUN_ID", "").strip()
+    explicit_path = os.environ.get("RAG_INDEX_STATS_PATH", "").strip()
+    if explicit_path:
+        candidate = Path(explicit_path)
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidates = [candidate]
+        if not candidate.is_file():
+            return None
+    elif requested_run_id:
+        candidates = [stats_dir / f"{strategy}_{corpus_tag}_{requested_run_id}.json"]
+        if not candidates[0].is_file():
+            return None
+    else:
+        candidates = sorted(stats_dir.glob(f"{strategy}_{corpus_tag}_*.json"))
     if not candidates:
         return None
-    path: Path | None = None
-    payload: dict[str, Any] | None = None
+    matches: list[tuple[Path, dict[str, Any]]] = []
     for candidate in candidates:
         try:
             candidate_payload = _read_json_file(candidate)
@@ -106,21 +140,26 @@ def _latest_index_manifest_metadata(strategy: str, corpus_tag: str, stats_dir: P
             continue
         if payload_corpus is not None and str(payload_corpus) != corpus_tag:
             continue
-        path = candidate
-        payload = candidate_payload
-        break
-    if path is None or payload is None:
+        if requested_run_id and candidate_payload.get("run_id") != requested_run_id:
+            return {"path": str(candidate), "status": "invalid", "fingerprint": None, "paragraph_count": None}
+        matches.append((candidate, candidate_payload))
+    if not matches:
         return None
+    if len(matches) != 1:
+        return {"path": None, "status": "ambiguous", "fingerprint": None, "paragraph_count": None}
+    path, payload = matches[0]
     run_id = payload.get("run_id") or path.stem.removeprefix(f"{strategy}_{corpus_tag}_")
     index_code = payload.get("index_code_provenance")
     return {
         "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "run_id": run_id,
         "status": payload.get("status"),
         "fingerprint": payload.get("corpus_manifest_fingerprint"),
         "paragraph_count": payload.get("corpus_manifest_paragraph_count"),
         "code_provenance": index_code if isinstance(index_code, dict) else None,
         "index_policy": payload.get("index_policy") if isinstance(payload.get("index_policy"), dict) else None,
+        "index_policy_sha256": payload.get("index_policy_sha256"),
     }
 
 
@@ -158,6 +197,21 @@ def _validate_corpus_index_fingerprint(
         if evaluation_scope == "full_benchmark":
             raise RuntimeError("Corpus manifest fingerprint does not match completed index artifact")
         return "mismatch_exploratory"
+    if evaluation_scope == "full_benchmark" and dataset in {"multihoprag", "musique"}:
+        from core.paper_policy import validate_canonical_index_policy
+
+        stored_policy = index_manifest.get("index_policy")
+        if not isinstance(stored_policy, dict):
+            raise RuntimeError("completed paper index artifact is missing its index policy")
+        strategy = str(stored_policy.get("strategy") or "")
+        if not isinstance(index_manifest.get("index_policy_sha256"), str):
+            raise RuntimeError("completed paper index artifact is missing index_policy_sha256")
+        validate_canonical_index_policy(
+            strategy,
+            dataset,
+            stored_policy,
+            index_manifest.get("index_policy_sha256"),
+        )
     return "matched"
 
 
@@ -306,13 +360,17 @@ async def _verify_active_index_snapshot(
     if source_ids is None:
         return {"status": "manifest_absent"}
     try:
-        if strategy in {"ms_graphrag", "browsenet", "proprag"}:
+        if strategy == "ms_graphrag" or strategy in EXTERNAL_STRATEGIES:
             metadata = await asyncio.to_thread(engine.verify_active_snapshot, source_ids, corpus_manifest)
             return {
                 "status": "matched",
                 "source_count": metadata.get("source_count"),
                 "source_set_sha256": metadata.get("source_set_sha256"),
                 "snapshot_version": metadata.get("snapshot_version"),
+                "semantic_config_id": metadata.get("semantic_config_id"),
+                "semantic_config_sha256": metadata.get("semantic_config_sha256"),
+                "artifact_inventory": metadata.get("artifact_inventory"),
+                "official_stats": metadata.get("official_stats"),
             }
         return await _verify_active_neo4j_snapshot(engine, strategy, corpus_tag, source_ids, corpus_manifest)
     except Exception as exc:
@@ -388,6 +446,8 @@ def _extract_stage_timing(trace: Any) -> dict[str, float]:
                     timing[key] = float(step.get(key) or 0.0)
         elif step.get("step") == "synthesis" and "synthesis_ms" in step:
             timing["synthesis_ms"] = float(step.get("synthesis_ms") or 0.0)
+        elif str(step.get("step", "")).endswith("_official_retrieval") and "worker_queue_seconds" in step:
+            timing["worker_queue_seconds"] = float(step["worker_queue_seconds"])
     return timing
 
 
@@ -523,16 +583,12 @@ def _update_summary_status(summary: dict[str, Any]) -> None:
     elif any(
         (row.get("_deferred_judge") or row.get("judge_custom_id")) and _safe_float(row.get("llm_judge_score"), -1.0) < 0
         for row in rows
-    ):
-        summary["status"] = "pending_judge"
-    elif any(row.get("error") for row in rows):
-        summary["status"] = "completed_with_errors"
-    elif summary.get("judge_enabled") and (
+    ) or any(row.get("error") for row in rows) or summary.get("judge_enabled") and (
         _unjudged_count(rows) or _unjudged_count(rows, "hallucination") or _unjudged_groundedness_count(rows)
     ):
-        summary["status"] = "completed_with_unjudged"
+        summary["status"] = "failed"
     else:
-        summary["status"] = "completed"
+        summary["status"] = "completed_unadmitted"
 
 
 def _assert_benchmark_complete(summary: dict[str, Any], result_file: Path) -> None:
@@ -729,6 +785,7 @@ def _resume_benchmark_rows(
             )
 
     manifest_by_id = {str(item["_id"]): item for item in benchmark_data}
+    manifest_position = {str(item["_id"]): idx for idx, item in enumerate(benchmark_data, start=1)}
     prior_rows = prior.get("details")
     if not isinstance(prior_rows, list):
         raise TypeError(f"Resume artifact details must be a list: {result_file}")
@@ -758,12 +815,23 @@ def _resume_benchmark_rows(
         expected_query = str(manifest_item["query"])
         if raw_row.get("query") != expected_query or trace_row.get("query") != expected_query:
             raise RuntimeError(f"Resume query text mismatch for query_id {query_id!r}")
-        if trace_row.get("idx") != position:
+        expected_idx = manifest_position[query_id]
+        raw_idx = raw_row.get("idx")
+        trace_idx = trace_row.get("idx")
+        if raw_idx is not None and raw_idx != expected_idx:
+            raise RuntimeError(f"Resume detail input index mismatch for query_id {query_id!r}")
+        if raw_idx is not None and trace_idx != expected_idx:
+            raise RuntimeError(f"Resume trace input index mismatch for query_id {query_id!r}")
+        if raw_idx is None and trace_idx not in {position, expected_idx}:
             raise RuntimeError(f"Resume trace ordering mismatch at row {position}")
+        if trace_row.get("query_id") not in {None, "", query_id}:
+            raise RuntimeError(f"Resume trace query_id mismatch for query_id {query_id!r}")
         if raw_row.get("error"):
             rerun_error_count += 1
             continue
-        retained.append({**raw_row, "interaction_trace": trace_row.get("interaction_trace", [])})
+        retained.append({**raw_row, "idx": expected_idx, "interaction_trace": trace_row.get("interaction_trace", [])})
+
+    retained.sort(key=lambda row: int(row["idx"]))
 
     retained_ids = sorted(str(row["query_id"]) for row in retained)
     resume_metadata = {
@@ -784,6 +852,15 @@ def _benchmark_checkpoint_due(completed: int, total: int, every: int) -> bool:
     if every < 1:
         raise ValueError("Benchmark checkpoint interval must be at least 1")
     return completed == total or completed % every == 0
+
+
+def _order_benchmark_rows(rows: list[dict[str, Any]]) -> None:
+    """Normalize completed rows to immutable input-manifest order in place."""
+    if any(not isinstance(row.get("idx"), int) for row in rows):
+        raise ValueError("Benchmark result row is missing its input index")
+    if len({int(row["idx"]) for row in rows}) != len(rows):
+        raise ValueError("Benchmark result rows contain duplicate input indices")
+    rows.sort(key=lambda row: int(row["idx"]))
 
 
 def _result_json_in_seed_dir(seed_dir: Path) -> Path:
@@ -816,8 +893,8 @@ def _refresh_seed_aggregate(seeds_root: Path) -> None:
     for seed in seeds:
         result_file = _result_json_in_seed_dir(seeds_root / f"seed_{int(seed)}")
         summary = _read_json_file(result_file)
-        if summary.get("status") != "completed":
-            prior["status"] = "pending_judge" if summary.get("status") == "pending_judge" else "completed_with_errors"
+        if summary.get("status") != "completed_unadmitted":
+            prior["status"] = "failed"
             prior["aggregate"] = {}
             _write_json(aggregate_file, prior)
             return
@@ -828,7 +905,7 @@ def _refresh_seed_aggregate(seeds_root: Path) -> None:
         {
             "n_seeds": len(summaries),
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "status": "completed",
+            "status": "completed_unadmitted",
             "aggregate": _aggregate_seed_summaries(summaries),
         }
     )
@@ -842,6 +919,9 @@ async def reconcile_pending_judges(run_dir: Path) -> int:
     failed or partial batch therefore leaves its manifest and unjudged result
     intact for inspection or retry instead of publishing a partial metric.
     """
+    _ = run_dir
+    raise RuntimeError("Public OpenAI Batch judge jobs are disabled; use the declared LiteLLM gateway synchronously")
+
     from utils.batch_judge import resolve_batches
     from utils.metrics import _resolve_judge_fields
 
@@ -966,10 +1046,11 @@ async def run_benchmark(
     limit: int | None = None,
     seed: int | None = None,
 ):
-    """Run benchmark once. When `seed` is provided, RAGConfig.LLM_SEED is set
-    so all external chat.completions calls in this run use that seed, and
-    the output directory gets a `seed_<S>` subdir to avoid clobbering other
-    seeds' results. Multi-seed orchestration lives in run_benchmark_multi_seed.
+    """Run one benchmark seed in its own output directory.
+
+    Paper generation seeds follow the method registry; native unseeded APIs
+    remain unseeded. Non-paper generation uses the supplied benchmark seed.
+    Multi-seed orchestration lives in run_benchmark_multi_seed.
     """
     if not os.path.isfile(queries_file):
         raise FileNotFoundError(f"Queries file not found: {queries_file}")
@@ -982,7 +1063,6 @@ async def run_benchmark(
         queries_file,
     )
     manifest_queries_count = len(benchmark_data)
-    manifest_query_records_sha256 = _query_records_sha256(benchmark_data)
     judge_enabled = bool(RAGConfig.JUDGE_ENABLED)
     judge_independent: bool | None = None
     judge_self_override = False
@@ -995,13 +1075,24 @@ async def run_benchmark(
         )
 
     if seed is not None:
-        RAGConfig.LLM_SEED = int(seed)
+        from core.strategy_registry import get_strategy
+
+        generation_seed = get_strategy(strategy).paper_generation_seed if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") else int(seed)
+        RAGConfig.LLM_SEED = generation_seed
+        if generation_seed is None:
+            os.environ["RAG_LLM_SEED"] = ""
+        else:
+            os.environ["RAG_LLM_SEED"] = str(generation_seed)
+        os.environ["RAG_SEED"] = str(int(seed))
 
     if limit is not None:
         benchmark_data = benchmark_data[: max(0, int(limit))]
         logger.info("--limit %d: evaluating %d queries", limit, len(benchmark_data))
     if not benchmark_data:
         raise ValueError("Benchmark query selection is empty after filtering/limit")
+    # This is the evaluated-record identity, not the source-file identity.
+    # For exploratory --limit runs it must describe only the admitted subset.
+    manifest_query_records_sha256 = _query_records_sha256(benchmark_data)
 
     # Dataset dispatch via the per-query `dataset` marker. MultiHop-RAG and
     # MuSiQue share one query schema, but their evidence
@@ -1060,10 +1151,14 @@ async def run_benchmark(
             from models.proprag.proprag_adapter import PropRAGAdapter
 
             engine = PropRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
+        elif strategy in RESEARCH_EXTERNAL_STRATEGIES:
+            from models.external_research.adapter import ExternalResearchAdapter
+
+            engine = ExternalResearchAdapter(strategy, model_id=model_id, corpus_tag=corpus_tag)
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
 
-        vllm = get_llm_client(model_id)
+        vllm = get_llm_client(model_id) if judge_enabled else None
     except Exception as exc:
         raise RuntimeError(f"Failed to initialize engine for {strategy}: {exc}") from exc
     # Stats artifacts are only a report of what indexing intended to build.
@@ -1110,22 +1205,7 @@ async def run_benchmark(
 
     batch_collector = None
     if judge_enabled and RAGConfig.JUDGE_BATCH:
-        eval_model = str(RAGConfig.EVAL_MODEL or "").strip()
-        if not eval_model:
-            raise RuntimeError(
-                "RAG_JUDGE_ENABLED=true requires EVAL_MODEL. Configure an OpenAI Batch-compatible judge model "
-                "or set RAG_JUDGE_BATCH=false for an explicit synchronous judge run."
-            )
-        if not RAGConfig.OPENAI_API_KEY:
-            raise RuntimeError("RAG_JUDGE_ENABLED=true with RAG_JUDGE_BATCH=true requires OPENAI_API_KEY.")
-        from utils.batch_judge import OpenAIBatchJudge
-
-        batch_collector = OpenAIBatchJudge(
-            eval_model,
-            RAGConfig.OPENAI_API_KEY,
-            poll_seconds=RAGConfig.JUDGE_BATCH_POLL_SECONDS,
-        )
-        logger.info("Supplemental judge: OpenAI Batch API, collecting %d requests", len(benchmark_data))
+        raise RuntimeError("RAG_JUDGE_BATCH is disabled; supplemental judging must use the LiteLLM gateway")
     elif judge_enabled:
         if not str(RAGConfig.EVAL_MODEL or "").strip():
             raise RuntimeError("RAG_JUDGE_ENABLED=true requires EVAL_MODEL")
@@ -1136,11 +1216,14 @@ async def run_benchmark(
     benchmark_concurrency = max(1, int(os.environ.get("RAG_BENCHMARK_CONCURRENCY", "4")))
     benchmark_checkpoint_every = max(1, int(os.environ.get("RAG_BENCHMARK_CHECKPOINT_EVERY", "10")))
     query_sem = asyncio.Semaphore(benchmark_concurrency)
+    query_inflight = 0
+    observed_query_peak = 0
     write_lock = asyncio.Lock()
     total_queries = len(benchmark_data)
     resume_metadata: dict[str, Any] | None = None
     retained_query_ids: set[str] = set()
-    if os.environ.get("RAG_BENCHMARK_RESUME", "").strip().lower() in {"1", "true", "yes", "on"}:
+    resume_requested_raw = os.environ.get("RAG_BENCHMARK_RESUME", "").strip()
+    if resume_requested_raw and parse_strict_bool(resume_requested_raw, name="RAG_BENCHMARK_RESUME"):
         results, resume_metadata = _resume_benchmark_rows(
             result_file,
             benchmark_data,
@@ -1153,6 +1236,7 @@ async def run_benchmark(
                 "manifest_queries_count": manifest_queries_count,
                 "evaluated_queries_count": total_queries,
                 "evaluated_query_ids_sha256": evaluated_query_ids_sha256,
+                "evaluated_query_records_sha256": manifest_query_records_sha256,
                 "limit": limit,
                 "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
                 "index_manifest_fingerprint": (index_manifest or {}).get("fingerprint"),
@@ -1164,8 +1248,10 @@ async def run_benchmark(
                     "default": RAGConfig.DEFAULT_MODEL,
                     "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
                     "llm_seed": RAGConfig.LLM_SEED,
-                    "embedding": RAGConfig.EMBEDDING_MODEL,
-                    "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
+                    "embedding": (index_manifest or {})
+                    .get("index_policy", {})
+                    .get("embedding_model", RAGConfig.EMBEDDING_MODEL),
+                    "embedding_revision": (index_manifest or {}).get("index_policy", {}).get("embedding_revision"),
                     "eval": RAGConfig.EVAL_MODEL,
                 },
                 "ablation": {
@@ -1195,6 +1281,8 @@ async def run_benchmark(
                     "candidate_order_input_order": RAGConfig.CANDIDATE_ORDER_INPUT_ORDER,
                     "candidate_order_shuffle_seed": RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,
                     "final_rank_variant": RAGConfig.FINAL_RANK_VARIANT,
+                    **structured_query_identity(strategy),
+                    **method_identity(strategy),
                 },
             },
             judge_enabled=judge_enabled,
@@ -1213,6 +1301,7 @@ async def run_benchmark(
     def _recompute_and_persist() -> dict[str, Any]:
         """Rebuild the summary from `results` and write the result file +
         report artifacts after each completed query."""
+        _order_benchmark_rows(results)
         s: dict[str, Any] = {
             "strategy": strategy,
             "corpus_tag": corpus_tag,
@@ -1222,15 +1311,18 @@ async def run_benchmark(
             "manifest_queries_count": manifest_queries_count,
             "evaluated_queries_count": total_queries,
             "evaluated_query_ids_sha256": evaluated_query_ids_sha256,
+            "evaluated_query_records_sha256": manifest_query_records_sha256,
             "limit": limit,
             "corpus_manifest_path": (corpus_manifest or {}).get("path"),
             "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
             "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
             "index_manifest_stats_path": (index_manifest or {}).get("path"),
+            "index_manifest_stats_sha256": (index_manifest or {}).get("sha256"),
             "index_provenance": {
                 "run_id": (index_manifest or {}).get("run_id"),
                 "code": (index_manifest or {}).get("code_provenance"),
                 "policy": (index_manifest or {}).get("index_policy"),
+                "policy_sha256": (index_manifest or {}).get("index_policy_sha256"),
             },
             "query_provenance": dict(benchmark_code),
             "evaluation_provenance": dict(benchmark_code),
@@ -1247,6 +1339,7 @@ async def run_benchmark(
             "judge_independent": judge_independent,
             "judge_self_override": judge_self_override,
             "benchmark_concurrency": benchmark_concurrency,
+            "observed_query_peak_concurrency": observed_query_peak,
             "benchmark_checkpoint_every": benchmark_checkpoint_every,
             "queries_count": len(results),
             "total_queries": total_queries,
@@ -1256,8 +1349,10 @@ async def run_benchmark(
                 "default": RAGConfig.DEFAULT_MODEL,
                 "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
                 "llm_seed": RAGConfig.LLM_SEED,
-                "embedding": RAGConfig.EMBEDDING_MODEL,
-                "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None,
+                "embedding": (index_manifest or {})
+                .get("index_policy", {})
+                .get("embedding_model", RAGConfig.EMBEDDING_MODEL),
+                "embedding_revision": (index_manifest or {}).get("index_policy", {}).get("embedding_revision"),
                 "eval": RAGConfig.EVAL_MODEL,
             },
             "ablation": {
@@ -1287,6 +1382,8 @@ async def run_benchmark(
                 "candidate_order_input_order": RAGConfig.CANDIDATE_ORDER_INPUT_ORDER,
                 "candidate_order_shuffle_seed": RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,
                 "final_rank_variant": RAGConfig.FINAL_RANK_VARIANT,
+                    **structured_query_identity(strategy),
+                    **method_identity(strategy),
             },
         }
         if resume_metadata is not None:
@@ -1313,6 +1410,8 @@ async def run_benchmark(
                 },
             ]
         s["details"] = results
+        if len(results) == total_queries:
+            s["post_query_artifact_inventory"] = current_post_query_inventory(strategy, corpus_tag)
         _recompute_aggregates(s)
         _update_summary_status(s)
         # Report artifacts first (writes full traces), then a slim main JSON.
@@ -1324,8 +1423,16 @@ async def run_benchmark(
         return s
 
     async def _process_query(idx: int, item: dict[str, Any]):
-        nonlocal summary
+        nonlocal summary, query_inflight, observed_query_peak
+        submitted_at = time.perf_counter()
         async with query_sem:
+            queue_wait_seconds = time.perf_counter() - submitted_at
+            query_inflight += 1
+            observed_query_peak = max(observed_query_peak, query_inflight)
+            from core.inference_telemetry import begin as begin_inference
+            from core.inference_telemetry import finish as finish_inference
+
+            telemetry_token = begin_inference()
             started = time.time()
             stage_timing: dict[str, float] = {}
             original_query = str(item.get("query", ""))
@@ -1360,6 +1467,7 @@ async def run_benchmark(
                     "paragraph_ids": item.get("evidence_paragraph_ids", []),
                 }
                 result_item = {
+                    "idx": idx + 1,
                     "query_id": str(item.get("_id", "")),
                     "query": original_query,
                     "category": category,
@@ -1420,6 +1528,7 @@ async def run_benchmark(
                     "paragraph_ids": item.get("evidence_paragraph_ids", []),
                 }
                 result_item = {
+                    "idx": idx + 1,
                     "query_id": str(item.get("_id", "")),
                     "query": original_query,
                     "category": category,
@@ -1435,6 +1544,21 @@ async def run_benchmark(
                     **metrics,
                 }
 
+            finally:
+                inference_usage = finish_inference(
+                    telemetry_token, external_complete=strategy not in RESEARCH_EXTERNAL_STRATEGIES
+                )
+                query_inflight -= 1
+
+            result_item["queue_wait_seconds"] = queue_wait_seconds
+            result_item["wall_latency"] = time.perf_counter() - submitted_at
+            worker_queue_seconds = float(result_item.get("worker_queue_seconds", 0.0))
+            result_item["execution_latency_including_worker_queue"] = float(result_item["latency"])
+            result_item["service_latency"] = max(0.0, float(result_item["latency"]) - worker_queue_seconds)
+            # Keep the published avg_latency comparable as active service time;
+            # queueing is reported independently rather than hidden in it.
+            result_item["latency"] = result_item["service_latency"]
+            result_item["inference_usage"] = inference_usage
             if query != original_query:
                 result_item["benchmark_query"] = query
 
@@ -1444,6 +1568,7 @@ async def run_benchmark(
 
             async with write_lock:
                 results.append(result_item)
+                _order_benchmark_rows(results)
                 if category not in category_results:
                     category_results[category] = []
                 category_results[category].append(result_item)
@@ -1458,6 +1583,8 @@ async def run_benchmark(
 
                 if _benchmark_checkpoint_due(len(results), total_queries, benchmark_checkpoint_every):
                     summary = _recompute_and_persist()
+                    from scripts.recovery_checkpoint import checkpoint_barrier
+                    await checkpoint_barrier(result_file, summary)
 
     pending_items = [(i, item) for i, item in enumerate(benchmark_data) if str(item["_id"]) not in retained_query_ids]
     await asyncio.gather(
@@ -1506,7 +1633,7 @@ async def run_benchmark(
     _write_slim_main(summary, result_file)
 
     print(f"\n{'=' * 50}")
-    completion_label = "Judge Batch Submitted" if summary.get("status") == "pending_judge" else "Benchmark Complete"
+    completion_label = "Benchmark Complete (unadmitted)"
     print(f"[{strategy.upper()}] {completion_label} - {dataset_name}")
     print(f"{'=' * 50}")
     for key, value in summary.items():
@@ -1524,7 +1651,7 @@ async def run_benchmark(
     print(f"{'=' * 50}\n")
     if hasattr(engine, "close"):
         await asyncio.to_thread(engine.close)
-    if summary.get("status") != "pending_judge":
+    if summary.get("status") == "completed_unadmitted":
         _assert_benchmark_complete(summary, result_file)
     return summary
 
@@ -1664,15 +1791,15 @@ async def run_benchmark_multi_seed(
     parent_root = output_dir or (Path("data/results") / timestamp)
     seeds_root = parent_root / strategy / corpus_tag
 
-    has_pending = any(summary.get("status") == "pending_judge" for summary in summaries)
-    aggregate = {} if has_pending else _aggregate_seed_summaries(summaries)
+    has_failed = any(summary.get("status") != "completed_unadmitted" for summary in summaries)
+    aggregate = {} if has_failed else _aggregate_seed_summaries(summaries)
     payload = {
         "strategy": strategy,
         "corpus_tag": corpus_tag,
         "seeds": seeds,
         "n_seeds": len(summaries),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "status": "pending_judge" if has_pending else "completed",
+        "status": "failed" if has_failed else "completed_unadmitted",
         "aggregate": aggregate,
     }
     seeds_root.mkdir(parents=True, exist_ok=True)

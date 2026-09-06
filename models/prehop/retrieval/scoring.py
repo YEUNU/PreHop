@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from core.config import RAGConfig
+from core.generation_profiles import request_settings
+from core.structured_outputs import ranking_contract
 from models.prehop.llm_json import generate_json_or_raise
 from utils.prompts.query_rewrite import build_evidence_ranking_prompt
 from utils.similarity import cosine_similarity
@@ -209,31 +211,25 @@ class SimilarityScoringMixin:
             ],
             top_k,
         )
+        contract = ranking_contract(candidate_ids, top_k)
         payload = await generate_json_or_raise(
             self.llm,
             [{"role": "user", "content": prompt}],
             "evidence ranking",
             f"query={query_text!r}",
             required_fields={"ranking": list},
-            temperature=0.0,
-            max_tokens=1024,
+            structured_contract=contract,
+            **request_settings("ranking"),
         )
 
-        model_ranking: list[str] = []
-        for value in payload["ranking"]:
-            candidate_id = str(value)
-            if candidate_id not in node_by_candidate_id:
-                continue
-            if candidate_id not in model_ranking:
-                model_ranking.append(candidate_id)
+        model_ranking = payload["ranking"]
         ranking = list(model_ranking)
-        ranking.extend(candidate_id for candidate_id in candidate_ids if candidate_id not in ranking)
-
-        selected = [node_by_candidate_id[candidate_id] for candidate_id in ranking[:top_k]]
+        selected = [node_by_candidate_id[candidate_id] for candidate_id in ranking]
         trace_path = os.environ.get("RAG_CANDIDATE_ORDER_TRACE_PATH", "").strip()
         if trace_path:
             record = {
                 "query": query_text,
+                "structured_output": contract.provenance(),
                 "top_k": top_k,
                 "input_order": RAGConfig.CANDIDATE_ORDER_INPUT_ORDER,
                 "shuffle_seed": RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,

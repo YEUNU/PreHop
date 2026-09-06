@@ -1,42 +1,41 @@
 import os
 
+from core.semantic_config import parse_strict_bool
+
 
 class RAGConfig:
     # --- Infrastructure (Actual ports identified) ---
     # Required external OpenAI-compatible endpoints. There is intentionally no
     # localhost fallback: missing configuration must fail before inference.
-    VLLM_URL = os.environ.get("VLLM_URL", "").strip()
-    VLLM_EMBED_URL = os.environ.get("VLLM_EMBED_URL", "").strip()
+    VLLM_URL = os.environ.get("RAG_INFERENCE_BASE_URL", "").strip()
+    VLLM_EMBED_URL = VLLM_URL
 
     # --- LLM Settings ---
-    DEFAULT_MODEL = os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
-    EMBEDDING_MODEL = os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
+    DEFAULT_MODEL = os.environ.get("RAG_GENERATION_MODEL", "generation-model")
+    EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "embedding-model")
 
     # --- Evaluation (LLM-as-a-judge) ---
-    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+    OPENAI_API_KEY = os.environ.get("RAG_INFERENCE_API_KEY", "").strip()
     EVAL_MODEL = os.environ.get("EVAL_MODEL", "").strip()
     # LLM-as-a-judge is optional, supplemental analysis.  Deterministic and
     # official benchmark metrics must be runnable without an evaluator API.
     # Enable it explicitly for a separately labelled judge analysis.
-    JUDGE_ENABLED = os.environ.get("RAG_JUDGE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    JUDGE_ENABLED = parse_strict_bool(os.environ.get("RAG_JUDGE_ENABLED", "false"), name="RAG_JUDGE_ENABLED")
     # Debug-only escape hatch. Paper artifacts must use an evaluator distinct
     # from both the requested generation model and DEFAULT_MODEL.
-    JUDGE_ALLOW_SELF = os.environ.get("RAG_JUDGE_ALLOW_SELF", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    JUDGE_ALLOW_SELF = parse_strict_bool(
+        os.environ.get("RAG_JUDGE_ALLOW_SELF", "false"), name="RAG_JUDGE_ALLOW_SELF"
+    )
     # When the optional judge is enabled, Batch is preferred unless an
     # explicit synchronous debugging run requests otherwise.
-    JUDGE_BATCH = os.environ.get("RAG_JUDGE_BATCH", "true").strip().lower() in {"1", "true", "yes", "on"}
+    JUDGE_BATCH = parse_strict_bool(os.environ.get("RAG_JUDGE_BATCH", "true"), name="RAG_JUDGE_BATCH")
     JUDGE_BATCH_POLL_SECONDS = max(2, int(os.environ.get("RAG_JUDGE_BATCH_POLL_SECONDS", "15")))
 
     # --- Common Service Settings ---
     RETRY_COUNT = int(os.environ.get("RAG_RETRY_COUNT", "3"))
     RETRY_DELAY = float(os.environ.get("RAG_RETRY_DELAY", "2.0"))
     LLM_REQUEST_TIMEOUT = float(os.environ.get("LLM_REQUEST_TIMEOUT", "300"))
-    LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "5"))
+    LLM_MAX_RETRIES = int(os.environ.get("RAG_INFERENCE_RETRY_ATTEMPTS", "5"))
     LLM_RETRY_DELAY = float(os.environ.get("LLM_RETRY_DELAY", "2.0"))
     # Per-call sampling seed forwarded to external chat.completions when set
     # (multi-seed benchmarking). Empty/missing => no seed (engine default).
@@ -58,12 +57,12 @@ class RAGConfig:
     ).strip()
 
     # --- RAG & Indexing Settings ---
-    MAX_CONCURRENT_LLM_CALLS = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
+    MAX_CONCURRENT_LLM_CALLS = int(os.environ.get("RAG_GENERATION_CONCURRENCY", "30"))
     MAX_CONCURRENT_EMBEDDING_REQUESTS = int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "1"))
-    EMBEDDING_BATCH_SIZE = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "512"))
-    VLLM_MAX_NUM_SEQS = int(os.environ.get("VLLM_MAX_NUM_SEQS", "120"))
-    EMBEDDING_MAX_NUM_SEQS = int(os.environ.get("EMBEDDING_MAX_NUM_SEQS", "512"))
-    EMBEDDING_DIMENSIONS = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024"))
+    EMBEDDING_BATCH_SIZE = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "16"))
+    VLLM_MAX_NUM_SEQS = int(os.environ.get("RAG_GENERATION_MAX_NUM_SEQS", "120"))
+    EMBEDDING_MAX_NUM_SEQS = int(os.environ.get("RAG_EMBEDDING_MAX_NUM_SEQS", "512"))
+    EMBEDDING_DIMENSIONS = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "4096"))
     NEO4J_BATCH_SIZE = int(os.environ.get("NEO4J_BATCH_SIZE", "25"))
 
     # --- Search & Ranking ---
@@ -99,12 +98,9 @@ class RAGConfig:
     # Query-time ablation over the separately indexed linked_v2 continuation
     # relations. Indexing always materializes them for that schema so on/off
     # comparisons share the exact same question and graph snapshot.
-    CONTINUATION_EDGES_ENABLED = os.environ.get("RAG_CONTINUATION_EDGES_ENABLED", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    CONTINUATION_EDGES_ENABLED = parse_strict_bool(
+        os.environ.get("RAG_CONTINUATION_EDGES_ENABLED", "false"), name="RAG_CONTINUATION_EDGES_ENABLED"
+    )
     # Index-time structural policy for linked_v2 answer anchors. ``named_only``
     # uses the generation contract's optional specific-entity marker;
     # ``all_grounded`` uses every complete source-verifiable Q- answer.
@@ -120,12 +116,9 @@ class RAGConfig:
     )
     # Optional index-time materialization avoids reverse vector ANN on every
     # reciprocal-filtered query while preserving the same nearest-neighbour rule.
-    PRECOMPUTE_RECIPROCAL_HOPS = os.environ.get("RAG_PRECOMPUTE_RECIPROCAL_HOPS", "true").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    PRECOMPUTE_RECIPROCAL_HOPS = parse_strict_bool(
+        os.environ.get("RAG_PRECOMPUTE_RECIPROCAL_HOPS", "true"), name="RAG_PRECOMPUTE_RECIPROCAL_HOPS"
+    )
     QUERY_REWRITE_VARIANT = (
         os.environ.get("RAG_QUERY_REWRITE_VARIANT", "role_aligned_evidence_iterative").strip().lower()
         or "role_aligned_evidence_iterative"
@@ -144,18 +137,19 @@ class RAGConfig:
     # participate in indexing (embedding storage) and retrieval (channel use).
     # Disabling Q+ also disables offline HOP edge construction, since HOP
     # selection is anchored on Q+ embeddings.
-    ABLATION_Q_MINUS = os.environ.get("RAG_ABLATION_Q_MINUS", "True").lower() == "true"
-    ABLATION_Q_PLUS = os.environ.get("RAG_ABLATION_Q_PLUS", "True").lower() == "true"
+    ABLATION_Q_MINUS = parse_strict_bool(
+        os.environ.get("RAG_ABLATION_Q_MINUS", "true"), name="RAG_ABLATION_Q_MINUS"
+    )
+    ABLATION_Q_PLUS = parse_strict_bool(
+        os.environ.get("RAG_ABLATION_Q_PLUS", "true"), name="RAG_ABLATION_Q_PLUS"
+    )
     # Optional fine-grained retrieval representation. Sentence nodes are
     # deterministic children of the fixed output chunks and always collapse
     # back to those owners before ranking, so enabling this changes candidate
     # generation without changing the evidence unit or final top-k.
-    SENTENCE_CHANNEL_ENABLED = os.environ.get("RAG_SENTENCE_CHANNEL_ENABLED", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    SENTENCE_CHANNEL_ENABLED = parse_strict_bool(
+        os.environ.get("RAG_SENTENCE_CHANNEL_ENABLED", "false"), name="RAG_SENTENCE_CHANNEL_ENABLED"
+    )
 
     # Select which Q-/Q+ representation channels retrieve.py queries.
     # Values:

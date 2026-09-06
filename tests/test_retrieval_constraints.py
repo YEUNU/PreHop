@@ -476,7 +476,7 @@ async def test_role_body_rank_variants_retain_all_auxiliary_body_ranks(
 
 
 @pytest.mark.asyncio
-async def test_role_body_list_ranking_completes_known_omissions(monkeypatch):
+async def test_role_body_list_ranking_rejects_unknown_duplicate_and_missing_ids(monkeypatch):
     monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "role_body_list_ranking")
     rag = GraphRAG(strategy="prehop")
     rag.llm.generate_json = AsyncMock(return_value={"ranking": ["C999", "C001", "C001"]})
@@ -500,13 +500,12 @@ async def test_role_body_list_ranking_completes_known_omissions(monkeypatch):
         {"id": "global", "title": "Global", "text": "other", "embedding": [0.8, 0.2]},
     ]
 
-    selected, _ = await rag._score_and_select(
-        [1.0, 0.0],
-        candidates,
-        top_k=2,
-        query_text="Which evidence is needed?",
-    )
+    from core.structured_outputs import StructuredOutputError
 
+    with pytest.raises(StructuredOutputError):
+        await rag._score_and_select([1.0, 0.0], candidates, top_k=2, query_text="Which evidence is needed?")
+    rag.llm.generate_json.return_value = {"ranking": ["C001", "C000"]}
+    selected, _ = await rag._score_and_select([1.0, 0.0], candidates, top_k=2, query_text="Which evidence is needed?")
     assert [node["id"] for node in selected] == ["body-second", "body-first"]
     prompt = rag.llm.generate_json.await_args.args[0][0]["content"]
     assert "Which evidence is needed?" in prompt

@@ -42,7 +42,7 @@ def _make_semantic_chunk_id(source, title, sent_id):
 # Embeddings use a separate cache keyed by model, revision, encoding role,
 # dimensions, instruction, endpoint, and normalized text.
 
-_CHUNK_CACHE_VERSION = "v3"  # v3 preserves grounded questions when optional linked anchors are invalid
+_CHUNK_CACHE_VERSION = "v4"  # Registered structured generation invalidates legacy output caches.
 
 
 def _chunk_cache_root() -> str:
@@ -60,18 +60,24 @@ def _prompt_sig() -> str:
     untouched on disk under their old key (nothing is deleted) while a fresh
     run writes new entries under the new key."""
     if RAGConfig.QUESTION_SCHEMA == "linked_v2":
-        combined = LINKED_HOPRAG_PROMPT + LINKED_HOPRAG_FORMAT_INSTRUCTION
+        combined = LINKED_HOPRAG_PROMPT + LINKED_HOPRAG_FORMAT_INSTRUCTION.format()
     elif RAGConfig.QUESTION_SCHEMA == "grounded_v1":
-        combined = GROUNDED_HOPRAG_PROMPT + GROUNDED_HOPRAG_FORMAT_INSTRUCTION
+        combined = GROUNDED_HOPRAG_PROMPT + GROUNDED_HOPRAG_FORMAT_INSTRUCTION.format()
     else:
-        combined = HOPRAG_PROMPT + HOPRAG_FORMAT_INSTRUCTION
+        combined = HOPRAG_PROMPT + HOPRAG_FORMAT_INSTRUCTION.format()
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:8]
 
 
 def _generation_signature(generation_model_id: str) -> str:
+    from core.paper_compatibility import method_identity
+    from core.structured_outputs import PREHOP_STRUCTURED_PROFILE, structured_bundle_sha256
+
     payload = "|".join(
         (
             str(generation_model_id or ""),
+            PREHOP_STRUCTURED_PROFILE,
+            structured_bundle_sha256(),
+            json.dumps(method_identity("prehop"), sort_keys=True),
             os.environ.get("RAG_GENERATION_REVISION", "").strip(),
             os.environ.get("RAG_LLM_SEED", "").strip(),
         )

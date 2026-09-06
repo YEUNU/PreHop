@@ -12,10 +12,10 @@ cd "$SCRIPT_DIR"
 
 . "$SCRIPT_DIR/scripts/lib.sh"
 load_project_env "$SCRIPT_DIR/.env"
+canonicalize_inference_transport || exit 1
 
 # Environment (.env values override defaults; exported values override .env).
-export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
-export NEO4J_VECTOR_DIMENSIONS="${NEO4J_VECTOR_DIMENSIONS:-1024}"
+export NEO4J_VECTOR_DIMENSIONS="${NEO4J_VECTOR_DIMENSIONS:-4096}"
 export MAX_EMBEDDING_LENGTH="${MAX_EMBEDDING_LENGTH:-32768}"
 export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
@@ -68,15 +68,17 @@ if [ "$MODEL" = "all" ]; then
     echo "Run each strategy in a separate run_index.sh invocation." >&2
     exit 1
 fi
-if [ ! -d "models/$MODEL" ]; then
-    echo "❌ Arch model '$MODEL' not found in models/ folder."
+if ! python3 core/strategy_registry.py --is-valid "$MODEL"; then
+    echo "❌ Unknown registered model '$MODEL'."
     exit 1
 fi
+IS_EXTERNAL=false
+if python3 core/strategy_registry.py --is-external "$MODEL"; then IS_EXTERNAL=true; fi
 
 if [ "$SKIP_SERVER" != true ]; then
     echo "Step 1: Checking indexing services..."
 
-    if [ "$MODEL" != "ms_graphrag" ] && [ "$MODEL" != "browsenet" ] && [ "$MODEL" != "proprag" ]; then
+    if [ "$MODEL" != "ms_graphrag" ] && [ "$IS_EXTERNAL" != true ]; then
         ./run_servers.sh neo4j
         if ! wait_for_server "http://localhost:7474" "Neo4j"; then
             echo "Fatal: Neo4j failed." >&2
@@ -86,13 +88,13 @@ if [ "$SKIP_SERVER" != true ]; then
 
     # Start Generation Server
     ./run_servers.sh gen
-    if ! wait_for_server "${VLLM_URL%/}/models" "Generation Model" "200"; then
+    if ! wait_for_server "${RAG_INFERENCE_BASE_URL%/}/models" "Generation Model" "200"; then
         echo "Fatal: Generation model failed." >&2
         exit 1
     fi
 
     ./run_servers.sh embed
-    if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then
+    if ! wait_for_server "${RAG_INFERENCE_BASE_URL%/}/models" "Embedding Model" "200"; then
         echo "Fatal: Embedding service failed." >&2
         exit 1
     fi

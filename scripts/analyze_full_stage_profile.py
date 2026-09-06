@@ -65,7 +65,7 @@ def main() -> None:
         parser.error("--expected-queries and --declared-concurrency must be positive")
 
     artifact, rows, traces = _load(args.artifact)
-    if artifact.get("status") != "completed" or artifact.get("evaluation_scope") != "full_benchmark":
+    if artifact.get("status") != "completed_unadmitted" or artifact.get("evaluation_scope") != "full_benchmark":
         raise ValueError("Stage profile requires a completed full_benchmark artifact")
     query_ids = sorted(rows)
     if len(query_ids) != args.expected_queries:

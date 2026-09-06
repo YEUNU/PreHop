@@ -1,0 +1,208 @@
+"""Single fail-closed OpenAI-compatible inference transport contract."""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+from core.embedding_policy import EmbeddingOperationalConfig
+from core.semantic_config import parse_strict_bool
+from core.strategy_registry import PAPER_TRANSPORT, get_strategy
+
+_FORBIDDEN_AMBIENT_PROVIDER_KEYS = (
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "OPENAI_API_BASE",
+    "OPENAI_BASE_URL",
+    "OPENAI_PROVIDER",
+    "VLLM_API_BASE",
+    "VLLM_EMBED_API_BASE",
+    "VLLM_URL",
+    "VLLM_EMBED_URL",
+    "VLLM_API_KEY",
+    "VLLM_SERVED_MODEL_NAME",
+    "VLLM_SERVED_EMBED_MODEL_NAME",
+)
+
+
+def _required(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    raise RuntimeError(f"required inference setting is missing: {' or '.join(names)}")
+
+
+def _normalized_endpoint(value: str) -> str:
+    parsed = urlsplit(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.query or parsed.fragment or parsed.username is not None or parsed.password is not None:
+        raise RuntimeError("RAG_INFERENCE_BASE_URL must be one absolute HTTP(S) gateway URL")
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), "", ""))
+
+
+def _approved_gateway_identity() -> str:
+    path = Path(__file__).resolve().parents[1] / "configs/paper_gateway.json"
+    try:
+        approval = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("paper inference requires an approved configs/paper_gateway.json identity") from exc
+    if not isinstance(approval, dict) or approval.get("schema_version") != 1:
+        raise RuntimeError("paper gateway approval schema is invalid")
+    return str(approval.get("approved_gateway_sha256", "")).lower()
+
+
+@dataclass(frozen=True)
+class InferenceTransport:
+    strategy: str
+    generation_model: str
+    generation_base_url: str
+    embedding_model: str
+    embedding_base_url: str
+    api_key: str
+    timeout_seconds: float | None
+    retry_attempts: int
+    embedding_batch_size: int
+    embedding_concurrency: int
+    generation_concurrency: int
+    generation_seed: int | None
+    embedding_query_instruction: str
+    embedding_max_input_tokens: int
+    embedding_dimensions: int
+    embedding_token_reserve: int
+    generation_max_context_tokens: int
+    embedding_query_template: str
+    gateway_identity_sha256: str
+
+    def policy_dict(self) -> dict[str, object]:
+        """Return the non-secret effective contract persisted with an index."""
+        return {
+            "gateway_identity_sha256": self.gateway_identity_sha256,
+            "generation_model": self.generation_model,
+            "gateway_embedding_model": self.embedding_model,
+            "timeout_seconds": self.timeout_seconds,
+            "inference_retry_attempts": self.retry_attempts,
+            "embedding_batch_size": self.embedding_batch_size,
+            "embedding_concurrency": self.embedding_concurrency,
+            "generation_concurrency": self.generation_concurrency,
+            "generation_seed": self.generation_seed,
+            "embedding_query_instruction": self.embedding_query_instruction,
+            "embedding_query_template": self.embedding_query_template,
+            "embedding_max_input_tokens": self.embedding_max_input_tokens,
+            "gateway_embedding_dimensions": self.embedding_dimensions,
+            "embedding_token_reserve": self.embedding_token_reserve,
+            "generation_max_context_tokens": self.generation_max_context_tokens,
+            "transport_profile": (
+                "openai_compatible_litellm"
+                if self.strategy == "core"
+                else get_strategy(self.strategy).transport_profile
+            ),
+        }
+
+    @classmethod
+    def resolve(cls, strategy: str) -> InferenceTransport:
+        embedding = EmbeddingOperationalConfig.resolve(strategy)
+        timeout = float(os.environ.get("RAG_INFERENCE_TIMEOUT", str(PAPER_TRANSPORT.timeout_seconds)))
+        generation_concurrency = int(
+            os.environ.get("RAG_GENERATION_CONCURRENCY", str(PAPER_TRANSPORT.generation_concurrency))
+        )
+        seed_raw = os.environ.get("RAG_LLM_SEED", "").strip()
+        if seed_raw and not seed_raw.lstrip("-").isdigit():
+            raise ValueError("generation seed must be an integer")
+        if not math.isfinite(timeout) or timeout < 0:
+            raise ValueError("inference timeout must be finite and non-negative")
+        if generation_concurrency < 1:
+            raise ValueError("generation concurrency must be positive")
+        method_policy = {} if strategy == "core" else dict(get_strategy(strategy).paper_index_policy)
+        expected_instruction = method_policy.get("embedding_query_instruction", PAPER_TRANSPORT.query_instruction)
+        query_template = method_policy.get("embedding_query_template", PAPER_TRANSPORT.query_template)
+        query_instruction = os.environ.get("EMBEDDING_QUERY_INSTRUCTION", expected_instruction).strip()
+        embedding_max_input_tokens = int(
+            os.environ.get("MAX_EMBEDDING_LENGTH", str(PAPER_TRANSPORT.embedding_max_input_tokens))
+        )
+        embedding_dimensions = int(
+            os.environ.get("NEO4J_VECTOR_DIMENSIONS", str(PAPER_TRANSPORT.embedding_dimensions))
+        )
+        embedding_token_reserve = int(
+            os.environ.get("RAG_EMBEDDING_TOKEN_RESERVE", str(PAPER_TRANSPORT.embedding_token_reserve))
+        )
+        generation_max_context_tokens = int(
+            os.environ.get("RAG_MAX_CONTEXT_LENGTH", str(PAPER_TRANSPORT.generation_context_tokens))
+        )
+        paper_mode = parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
+        endpoint = _normalized_endpoint(_required("RAG_INFERENCE_BASE_URL"))
+        generation_model = _required("RAG_GENERATION_MODEL")
+        embedding_model = _required("RAG_EMBEDDING_MODEL")
+        observed_seed = int(seed_raw) if seed_raw else None
+        if paper_mode:
+            host = (urlsplit(endpoint).hostname or "").rstrip(".")
+            vendor_domains = ("openai.com", "azure.com", "azure.us", "anthropic.com", "googleapis.com")
+            if any(host == domain or host.endswith("." + domain) for domain in vendor_domains):
+                raise RuntimeError("paper inference rejects direct public vendor endpoints")
+            approved_identity = _approved_gateway_identity()
+            if (
+                len(approved_identity) != 64
+                or any(char not in "0123456789abcdef" for char in approved_identity)
+                or hashlib.sha256(endpoint.encode("utf-8")).hexdigest() != approved_identity
+            ):
+                raise RuntimeError("paper inference gateway differs from approved configs/paper_gateway.json identity")
+            conflicts = sorted(name for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS if os.environ.get(name))
+            if conflicts:
+                raise RuntimeError(f"paper mode rejects ambient provider/legacy aliases: {conflicts}")
+            expected_seed = (
+                PAPER_TRANSPORT.benchmark_seed
+                if strategy == "core"
+                else get_strategy(strategy).paper_generation_seed
+            )
+            expected = {
+                "RAG_GENERATION_MODEL": (generation_model, PAPER_TRANSPORT.generation_model),
+                "RAG_EMBEDDING_MODEL": (embedding_model, PAPER_TRANSPORT.embedding_model),
+                "RAG_INFERENCE_TIMEOUT": (timeout, PAPER_TRANSPORT.timeout_seconds),
+                "RAG_GENERATION_CONCURRENCY": (generation_concurrency, PAPER_TRANSPORT.generation_concurrency),
+                "RAG_INFERENCE_RETRY_ATTEMPTS": (embedding.retry_attempts, PAPER_TRANSPORT.retry_attempts),
+                "RAG_EMBEDDING_BATCH_SIZE": (embedding.batch_size, PAPER_TRANSPORT.embedding_batch_size),
+                "RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS": (
+                    embedding.concurrency,
+                    PAPER_TRANSPORT.embedding_concurrency,
+                ),
+                "RAG_LLM_SEED": (observed_seed, expected_seed),
+                "EMBEDDING_QUERY_INSTRUCTION": (query_instruction, expected_instruction),
+                "MAX_EMBEDDING_LENGTH": (embedding_max_input_tokens, PAPER_TRANSPORT.embedding_max_input_tokens),
+                "NEO4J_VECTOR_DIMENSIONS": (embedding_dimensions, PAPER_TRANSPORT.embedding_dimensions),
+                "RAG_EMBEDDING_TOKEN_RESERVE": (
+                    embedding_token_reserve,
+                    PAPER_TRANSPORT.embedding_token_reserve,
+                ),
+                "RAG_MAX_CONTEXT_LENGTH": (
+                    generation_max_context_tokens,
+                    PAPER_TRANSPORT.generation_context_tokens,
+                ),
+            }
+            drift = sorted(name for name, values in expected.items() if values[0] != values[1])
+            if drift:
+                raise RuntimeError(f"paper inference settings differ from the checked-in transport policy: {drift}")
+        result = cls(
+            strategy=strategy,
+            generation_model=generation_model,
+            generation_base_url=endpoint,
+            embedding_model=embedding_model,
+            embedding_base_url=endpoint,
+            api_key=_required("RAG_INFERENCE_API_KEY"),
+            timeout_seconds=timeout,
+            retry_attempts=embedding.retry_attempts,
+            embedding_batch_size=embedding.batch_size,
+            embedding_concurrency=embedding.concurrency,
+            generation_concurrency=generation_concurrency,
+            generation_seed=observed_seed,
+            embedding_query_instruction=query_instruction,
+            embedding_max_input_tokens=embedding_max_input_tokens,
+            embedding_dimensions=embedding_dimensions,
+            embedding_token_reserve=embedding_token_reserve,
+            generation_max_context_tokens=generation_max_context_tokens,
+            embedding_query_template=query_template,
+            gateway_identity_sha256=hashlib.sha256(endpoint.encode("utf-8")).hexdigest(),
+        )
+        return result

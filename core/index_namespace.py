@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 
@@ -18,4 +19,8 @@ def index_namespace(corpus_tag: str) -> str:
     token = re.sub(r"_+", "_", token).strip("_")
     if not token:
         raise ValueError("RAG_INDEX_NAMESPACE must contain at least one letter or digit")
+    # Preserve established simple namespaces, but disambiguate every lossy
+    # encoding (e.g. ``a-b`` versus ``a_b``) with a digest of the raw value.
+    if token != raw:
+        token = f"{token}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:12]}"
     return token

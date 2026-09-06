@@ -263,7 +263,7 @@ def verify_existing_baseline(
         raise ValueError("This verifier accepts non-Prehop baselines only")
     if summary.get("dataset") != "MultiHop-RAG" or summary.get("evaluation_scope") != "full_benchmark":
         raise ValueError("This verifier accepts complete MultiHop-RAG artifacts only")
-    if summary.get("status") != "completed":
+    if summary.get("status") != "completed_unadmitted":
         raise ValueError("Historical benchmark artifact is not completed")
     if summary.get("corpus_index_fingerprint_status") != "manifest_absent":
         raise ValueError("Historical artifact must explicitly predate corpus-manifest binding")

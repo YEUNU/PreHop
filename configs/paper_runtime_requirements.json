@@ -1,0 +1,79 @@
+{
+  "schema_version": 2,
+  "check_command": "uv run python scripts/check_paper_runtime.py --strategy STRATEGY --dataset DATASET",
+  "ms_graphrag": {
+    "python_version": "3.12",
+    "required_imports": ["graphrag", "litellm"],
+    "distribution_versions": {"graphrag": "3.1.2"}
+  },
+  "lightrag": {
+    "python_version": "3.10",
+    "required_imports": ["lightrag", "openai"],
+    "constraints_file": "configs/runtime_constraints/lightrag.txt",
+    "constraints_sha256": "76ee427b5a6d182e9db8347ee6d69969c4940122fc25da2bbbd83899d49a3322"
+  },
+  "hipporag2": {
+    "python_version": "3.10",
+    "required_imports": ["hipporag", "openai"],
+    "constraints_file": "configs/runtime_constraints/hipporag2.txt",
+    "constraints_sha256": "f030517e9aed9a63cab8bbc21ecbbffc16044a621fa032d01979409920ea84c6"
+  },
+  "gfm_rag": {
+    "python_version": "3.12",
+    "required_imports": ["gfmrag", "hydra", "langchain_openai"],
+    "checkpoint_model": "rmanluo/GFM-RAG-8M",
+    "checkpoint_revision": "4da9e4655d126a783ae2b795ab73b7c7a7c3f4ac",
+    "checkpoint_files": ["config.json", "model.pth"],
+    "checkpoint_file_sha256": {
+      "config.json": "e39dedea31165ee048c48c352dc13fd2ccfeee7c47e5b3ac2630466472a5e440",
+      "model.pth": "578b1af29201beda2ef61af7fadbd7261a4964c3fcd1c68a22b90a62f6ff1247"
+    },
+    "entity_linker_model": "colbert-ir/colbertv2.0",
+    "entity_linker_revision": "c1e84128e85ef755c096a95bdb06b47793b13acf",
+    "entity_linker_snapshot_subdir": "entity_linker",
+    "entity_linker_file_sha256": {
+      "model.safetensors": "3f58890b1dfdfec066ef12ba431fa9d56992da9e30a53489242c4156e37e9017"
+    },
+    "checkpoint_snapshot_subdir": "checkpoint",
+    "constraints_file": "configs/runtime_constraints/gfm_rag.txt",
+    "constraints_sha256": "7f300508a17cba98f6194627039b5cae2dd57202c53c93f7f78f3c6708e1afe4"
+  },
+  "linear_rag": {
+    "python_version": "3.9",
+    "required_imports": ["numpy", "sentence_transformers", "spacy"],
+    "spacy_model": "en_core_web_trf",
+    "spacy_distribution": "en_core_web_trf-3.6.1",
+    "embedding_model": "sentence-transformers/all-mpnet-base-v2",
+    "embedding_revision": "e8c3b32edf5434bc2275fc9bab85f82640a19130",
+    "embedding_snapshot_subdir": "embedding",
+    "embedding_file_sha256": {
+      "model.safetensors": "78c0197b6159d92658e319bc1d72e4c73a9a03dd03815e70e555c5ef05615658"
+    },
+    "constraints_file": "configs/runtime_constraints/linear_rag.txt",
+    "constraints_sha256": "bc9d18b3e10142d88a8c211710b4ea40bb068913accd776d8288f755e8856ecf"
+  },
+  "youtu_graphrag": {
+    "python_version": "3.10",
+    "required_imports": ["sentence_transformers", "spacy"],
+    "spacy_model": "en_core_web_lg",
+    "spacy_distribution": "en_core_web_lg-3.7.1",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "embedding_snapshot_subdir": "embedding",
+    "embedding_file_sha256": {
+      "model.safetensors": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db"
+    },
+    "constraints_file": "configs/runtime_constraints/youtu_graphrag.txt",
+    "constraints_sha256": "7f25e6602d99719617b56a0e121039cb31102ab3ef9c8063761594c40844d4de",
+    "approved_schemas": {
+      "hotpot": {
+        "path": "schemas/hotpot.json",
+        "sha256": "d07538f5f0009227032d61ef778208079a21e4385111ee6e86986b28b2b6e3d4"
+      },
+      "musique": {
+        "path": "schemas/musique.json",
+        "sha256": "e61216337d2198c01a6e453bc128c4d92e47e5c438e1693367dc36f7f9251260"
+      }
+    }
+  }
+}

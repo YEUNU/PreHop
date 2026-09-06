@@ -48,7 +48,7 @@ def _write_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "manifest_queries_count": 1,
         "evaluated_queries_count": 1,
         "evaluated_query_ids_sha256": query_digest,
-        "status": "completed",
+        "status": "completed_unadmitted",
     }
     raw_path = tmp_path / "baseline.json"
     raw_path.write_text(json.dumps({**common, "details": [detail]}), encoding="utf-8")
@@ -111,7 +111,7 @@ def test_combine_frozen_synthesis_recomputes_both_metric_groups(tmp_path, monkey
     assert combined["avg_official_answer_em"] == 1.0
     assert combined["avg_paragraph_support_f1"] == 1.0
     assert combined["combined_result_provenance"]["checks"]["answer_metrics_recomputed"] is True
-    assert json.loads(output_path.read_text())["status"] == "completed"
+    assert json.loads(output_path.read_text())["status"] == "completed_unadmitted"
 
 
 def test_combine_frozen_synthesis_rejects_answer_metric_mismatch(tmp_path, monkeypatch):

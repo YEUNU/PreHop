@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""Plan, launch and inspect a configuration-bound, session-independent paper campaign."""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+
+def atomic_json(path: Path, payload: dict) -> None:
+    temporary = path.with_name(path.name + f'.{os.getpid()}.{time.time_ns()}.pending')
+    with temporary.open('x') as stream:
+        json.dump(payload, stream, sort_keys=True)
+        stream.write('\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def identity(pid: int) -> dict:
+    from scripts.recovery_checkpoint import process_start
+    return {'pid': pid, 'start': process_start(pid), 'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+
+
+def alive(value: dict | None) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get('pid'), int):
+        return False
+    try:
+        return identity(value['pid']) == value
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def resource_lock_path() -> Path:
+    # Shared across execution worktrees for this OS user, not just one campaign.
+    return Path(f'/run/user/{os.getuid()}/prehop-paper-resource.lock')
+
+
+def lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open('a+')
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        raise RuntimeError('Another paper campaign or its owned child still holds the resource lock') from exc
+    return handle
+
+
+def build_steps(campaign: str, attempt: str, python: str) -> list[dict]:
+    from core.strategy_registry import PRIMARY_STRATEGIES
+    ledger = f'data/results/{campaign}/gate_ledger.json'
+    stage = [python, 'scripts/paper_stage_runner.py']
+    steps = [{'id': 'runtime_setup', 'argv': [*stage, 'reattest', campaign, '--attempt', attempt]}]
+    for name in ('preflight_16', 'chat_probe', 'embedding_probe', 'bisection_probe'):
+        steps.append({'id': name, 'argv': [python, 'scripts/paper_gate_ledger.py', 'execute', '--ledger', ledger,
+                                          '--campaign', campaign, '--stage', name]})
+    for method in PRIMARY_STRATEGIES:
+        for dataset in ('multihoprag', 'musique'):
+            steps.append({'id': f'cold/{dataset}/{method}', 'argv': [python, 'scripts/paper_cold_canary.py', campaign,
+                          method, dataset, '--attempt', attempt]})
+    steps.extend([{'id': 'cold_canary_16', 'argv': [*stage, 'cold-aggregate', campaign, '--attempt', attempt]},
+                  {'id': 'resume_stale_rejection', 'argv': [*stage, 'recovery', campaign, '--attempt', attempt]}])
+    for method in PRIMARY_STRATEGIES:
+        for dataset in ('multihoprag', 'musique'):
+            steps.append({'id': f'one-query/{dataset}/{method}', 'argv': [*stage, 'one-query', campaign,
+                          '--strategy', method, '--dataset', dataset, '--attempt', attempt]})
+    steps.extend([{'id': 'one_query_matrix_16', 'argv': [*stage, 'one-query-aggregate', campaign, '--attempt', attempt]},
+        {'id': 'full_target_admitted', 'argv': [*stage, 'full-target', campaign, '--strategy', 'naive',
+                                              '--dataset', 'multihoprag', '--attempt', attempt]},
+        {'id': 'full_matrix', 'argv': ['bash', 'scripts/run_paper_matrix.sh', campaign]}])
+    return steps
+
+
+def check_plan(plan: dict) -> None:
+    from scripts.paper_gate_ledger import _context
+    from scripts.paper_stage_runner import selected_python_environment, validate_name
+    validate_name(plan['campaign'])
+    validate_name(plan['attempt'])
+    selected = selected_python_environment()
+    if plan.get('python') != selected['PYTHON_BIN'] or plan.get('python_prefix') != selected['UV_PROJECT_ENVIRONMENT']:
+        raise RuntimeError('Campaign selected main runtime changed')
+    context = _context()
+    if context != plan.get('context'):
+        raise RuntimeError('Campaign effective model configuration or runtime content changed')
+    if plan.get('steps') != build_steps(plan['campaign'], plan['attempt'], plan['python']):
+        raise RuntimeError('Campaign execution plan differs from the registered ordered protocol')
+
+
+def create_plan(campaign: str, commit: str, attempt: str) -> Path:
+    from scripts.paper_cold_canary import save
+    from scripts.paper_gate_ledger import _context, ready
+    from scripts.paper_stage_runner import selected_python_environment, validate_name
+    from utils.provenance import code_provenance
+    validate_name(campaign)
+    validate_name(attempt)
+    selected = selected_python_environment()
+    root = ROOT / 'data/results' / campaign
+    ready(root / 'gate_ledger.json', 'runtime_setup')
+    plan = {'schema_version': 1, 'campaign': campaign, 'commit': commit, 'attempt': attempt,
+        'python': selected['PYTHON_BIN'], 'python_prefix': selected['UV_PROJECT_ENVIRONMENT'],
+        'provenance': code_provenance(),
+        'context': _context(), 'steps': build_steps(campaign, attempt, selected['PYTHON_BIN'])}
+    check_plan(plan)
+    target = root / 'supervisor/plan.json'
+    save(target, plan)
+    return target
+
+
+def safe_environment() -> dict[str, str]:
+    """Only approved runtime selectors and canonical connection fields enter the unit."""
+    from scripts.paper_stage_runner import selected_python_environment
+    current = selected_python_environment()
+    allowed = {'PYTHON_BIN', 'UV_PROJECT_ENVIRONMENT', 'RAG_OFFICIAL_BASELINE_HOME',
+        'RAG_INFERENCE_BASE_URL', 'RAG_INFERENCE_API_KEY', 'RAG_GENERATION_MODEL', 'RAG_EMBEDDING_MODEL',
+        'RAG_GENERATION_REVISION', 'RAG_EMBEDDING_REVISION', 'NEO4J_URI', 'NEO4J_URL', 'NEO4J_USERNAME', 'NEO4J_USER',
+        'NEO4J_PASSWORD', 'NEO4J_DATABASE', 'HF_HOME', 'HF_HUB_CACHE', 'TRANSFORMERS_CACHE', 'PATH', 'HOME'}
+    env = {key: current[key] for key in allowed if key in current}
+    env.update(PYTHONDONTWRITEBYTECODE='1', RAG_SKIP_PROJECT_ENV='true', RAG_PAPER_MODE='true')
+    return env
+
+
+def require_logout_persistence() -> None:
+    completed = subprocess.run(['loginctl', 'show-user', str(os.getuid()), '-p', 'Linger', '--value'],
+                               check=True, text=True, capture_output=True)
+    if completed.stdout.strip() != 'yes':
+        raise RuntimeError('Own-user linger is not enabled; logout-persistent launch is not verified')
+    subprocess.run(['systemctl', '--user', 'show-environment'], check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+
+
+def unit_processes(unit: str) -> list[dict]:
+    output = subprocess.run(['systemctl', '--user', 'show', unit, '--property=ControlGroup', '--value'],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    if not output:
+        return []
+    path = Path('/sys/fs/cgroup') / output.lstrip('/')
+    if Path('/sys/fs/cgroup') not in path.resolve().parents:
+        raise RuntimeError('Unit cgroup path escaped the system hierarchy')
+    processes = {}
+    for file in path.rglob('cgroup.procs'):
+        for raw in file.read_text().splitlines():
+            try:
+                value = identity(int(raw))
+                processes[value['pid']] = value
+            except (OSError, ProcessLookupError):
+                continue
+    return list(processes.values())
+
+
+def ensure_no_other_campaigns(own_unit: str = '') -> None:
+    output = subprocess.run(['systemctl', '--user', 'list-units', 'prehop-paper-*', '--all', '--plain', '--no-legend'],
+                            check=True, capture_output=True, text=True).stdout
+    own = own_unit.removesuffix('.service') + '.service' if own_unit else ''
+    if own and not any(row['pid'] == os.getpid() for row in unit_processes(own)):
+        raise RuntimeError('Supervisor process is not owned by its declared systemd unit')
+    for line in output.splitlines():
+        name = line.split()[0] if line.split() else ''
+        if name.startswith('prehop-paper-') and name != own and unit_processes(name):
+            raise RuntimeError('Another paper unit still owns supervisor or native descendant processes')
+
+
+def launch(plan_path: Path, *, resume: bool = False) -> dict:
+    from scripts.paper_stage_runner import reference
+    plan = json.loads(plan_path.read_text())
+    check_plan(plan)
+    require_logout_persistence()
+    ensure_no_other_campaigns()
+    root = plan_path.parent
+    current = root / 'status.json'
+    if current.exists():
+        previous = json.loads(current.read_text())
+        if not resume or alive(previous.get('supervisor')) or alive(previous.get('child')):
+            raise RuntimeError('Campaign already launched or has a live owned process; no duplicate launch')
+    elif resume:
+        raise RuntimeError('Cannot resume a campaign that has never launched')
+    resource_lock = lock(resource_lock_path())
+    resource_lock.close()  # Supervisor acquires and passes the same lock into its child.
+    launch_id = str(time.time_ns())
+    unit = f'prehop-paper-{plan["campaign"]}-{launch_id}'
+    env_path = root / f'environment-{launch_id}.private'
+    descriptor = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'w') as stream:
+        for key, value in sorted(safe_environment().items()):
+            if '\n' in value or '\r' in value or '\x00' in value:
+                raise ValueError('Unit environment values must be single-line')
+            quoted = value.replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')
+            stream.write(f'{key}="{quoted}"\n')
+    command = ['systemd-run', '--user', '--unit', unit,
+        '--property', f'WorkingDirectory={ROOT}', '--property', f'EnvironmentFile={env_path}',
+        '--property', 'Restart=no', '--property', 'UMask=0077', '--property', 'KillMode=process',
+        '--property', 'StandardOutput=null', '--property', 'StandardError=null',
+        plan['python'], str(Path(__file__).resolve()), 'supervise', str(plan_path), '--unit', unit]
+    if resume:
+        command.append('--resume')
+    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    observed = None
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        probe = subprocess.run(['systemctl', '--user', 'show', unit, '--property=MainPID', '--property=ActiveState', '--property=Result'],
+                               check=True, capture_output=True, text=True)
+        fields = dict(line.split('=', 1) for line in probe.stdout.splitlines() if '=' in line)
+        if fields.get('ActiveState') == 'failed':
+            raise RuntimeError(f'Supervisor unit failed to start: {fields.get("Result", "unknown")}')
+        if current.exists():
+            running = json.loads(current.read_text())
+            if running.get('unit') == unit and running.get('state') == 'failed':
+                raise RuntimeError('Supervisor rejected execution; inspect its persisted status')
+            pid = int(fields.get('MainPID', '0'))
+            if pid and fields.get('ActiveState') == 'active' and running.get('unit') == unit and alive(running.get('supervisor')) and running['supervisor']['pid'] == pid:
+                observed = running['supervisor']
+                break
+        time.sleep(.1)
+    if observed is None:
+        raise RuntimeError('Unit launch was not verified within 15 seconds; inspect status before any retry')
+    receipt = {'unit': unit, 'plan': reference(plan_path), 'status_path': str(current), 'supervisor': observed,
+               'logout_persistence': 'verified_own_user_linger', 'launched_at': time.time()}
+    atomic_json(root / f'launch-{launch_id}.json', receipt)
+    return receipt
+
+
+def validate_step(plan: dict, step: dict) -> list[dict]:
+    from core.admission import sha256_file
+    from scripts.paper_gate_ledger import _bound_json, _validate_canary_artifacts, _validate_evidence
+    from scripts.paper_stage_runner import reference
+    campaign = plan['campaign']
+    if step['id'] == 'full_matrix':
+        return final_admissions(campaign)
+    if '/' in step['id']:
+        branch, dataset, method = step['id'].split('/')
+        folder = 'cold_v2' if branch == 'cold' else 'one_query'
+        stage = 'cold_canary_16' if branch == 'cold' else 'one_query_matrix_16'
+        path = ROOT / 'data/results' / campaign / folder / plan['attempt'] / dataset / method / 'evidence.json'
+        value = json.loads(path.read_text())
+        index_path, index = _bound_json(value.get('index'))
+        query_path, query = _bound_json(value.get('query'))
+        _, admission = _bound_json(value.get('admission'))
+        if value.get('status') != 'canary_passed' or value.get('stage') != stage or admission.get('status') != 'canary_passed' or admission.get('errors') != []:
+            raise RuntimeError('Target step lacks real canary admission')
+        if admission.get('index_sha256') != sha256_file(index_path) or admission.get('query_sha256') != sha256_file(query_path):
+            raise RuntimeError('Target step admission binding changed')
+        _validate_canary_artifacts(stage, method, dataset, index_path, query, index)
+        return [reference(path)]
+    ledger = json.loads((ROOT / 'data/results' / campaign / 'gate_ledger.json').read_text())
+    row = ledger['stages'].get(step['id'], {})
+    if row.get('status') != 'canary_passed':
+        raise RuntimeError('Step returned without a recorded gate')
+    path = ROOT / row['evidence_path']
+    if sha256_file(path) != row.get('evidence_sha256'):
+        raise RuntimeError('Step gate evidence changed')
+    _validate_evidence(step['id'], path, json.loads(path.read_text()))
+    return [reference(path)]
+
+
+def admission_statuses(campaign: str) -> list[dict]:
+    from core.strategy_registry import PRIMARY_STRATEGIES
+    from scripts.paper_gate_ledger import _validate_full_admission
+    from scripts.paper_stage_runner import reference
+    statuses = []
+    for method in PRIMARY_STRATEGIES:
+        for dataset in ('multihoprag', 'musique'):
+            path = ROOT / 'data/results' / f'{campaign}-{dataset}-{method}' / 'admission.json'
+            row = {'target': f'{dataset}/{method}', 'status': 'missing'}
+            if path.is_file():
+                try:
+                    _validate_full_admission(path, json.loads(path.read_text()))
+                    row.update(status='admitted', **reference(path))
+                except (OSError, ValueError, TypeError, RuntimeError, KeyError) as exc:
+                    row.update(status='invalid', error_category=type(exc).__name__)
+            statuses.append(row)
+    return statuses
+
+
+def final_admissions(campaign: str) -> list[dict]:
+    statuses = admission_statuses(campaign)
+    if any(row['status'] != 'admitted' for row in statuses):
+        raise RuntimeError('Full matrix lacks sixteen current actual admissions')
+    return statuses
+
+
+def checkpoint_progress(campaign: str) -> list[dict]:
+    """Read only actual benchmark checkpoints; indexing progress remains in logs."""
+    from core.strategy_registry import PRIMARY_STRATEGIES
+    names = {f'{method}_{dataset}.json' for method in PRIMARY_STRATEGIES for dataset in ('multihoprag', 'musique')}
+    rows = []
+    for folder in (ROOT / 'data/results').glob(campaign + '-*'):
+        for path in folder.rglob('*.json'):
+            if path.name not in names:
+                continue
+            try:
+                payload = json.loads(path.read_text())
+                if isinstance(payload.get('total_queries'), int):
+                    rows.append({'path': str(path), 'completed': payload.get('queries_count'),
+                                 'total': payload['total_queries'], 'status': payload.get('status')})
+            except (OSError, ValueError, TypeError):
+                continue
+    return rows
+
+
+def redact(text: str, environment: dict[str, str]) -> str:
+    from urllib.parse import urlsplit
+    values = set()
+    for key, value in environment.items():
+        if not value:
+            continue
+        if any(word in key for word in ('PASSWORD', 'API_KEY', 'TOKEN')):
+            values.add(value)
+        if key.endswith(('_BASE_URL', '_URI', '_URL')):
+            parsed = urlsplit(value)
+            values.update(part for part in (value, parsed.netloc, parsed.hostname,
+                          f'{parsed.scheme}://{parsed.netloc}') if part)
+    for value in sorted(values, key=len, reverse=True):
+        text = text.replace(value, '[REDACTED]')
+    return text
+
+
+def run_child(argv: list[str], env: dict[str, str], log_base: Path, handle, update) -> int:
+    """Retain the resource lock in the exact owned child and redact both log streams."""
+    child = subprocess.Popen(argv, cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1, pass_fds=(handle.fileno(),))
+    update({'child': identity(child.pid), 'child_argv': argv})
+    def drain(pipe, path):
+        with path.open('x') as stream:
+            for line in pipe:
+                stream.write(redact(line, env))
+                stream.flush()
+        pipe.close()
+    threads = [threading.Thread(target=drain, args=(child.stdout, log_base.with_suffix('.stdout.log'))),
+               threading.Thread(target=drain, args=(child.stderr, log_base.with_suffix('.stderr.log')))]
+    for thread in threads:
+        thread.start()
+    last_update = time.monotonic()
+    while child.poll() is None:
+        if time.monotonic() - last_update >= 10:
+            update({"heartbeat_at": time.time()})
+            last_update = time.monotonic()
+        time.sleep(.2)
+    exit_code = child.wait()
+    for thread in threads:
+        thread.join()
+    return exit_code
+
+
+def supervise(plan_path: Path, *, resume: bool = False, unit: str = '') -> int:
+    if not unit:
+        raise RuntimeError('Campaign supervision requires its actual systemd unit')
+    plan = json.loads(plan_path.read_text())
+    root = plan_path.parent
+    status_path = root / 'status.json'
+    handle = lock(resource_lock_path())
+    try:
+        ensure_no_other_campaigns(unit)
+        previous = json.loads(status_path.read_text()) if status_path.exists() else {}
+    except Exception:
+        handle.close()
+        raise
+    if previous and (not resume or alive(previous.get('supervisor')) or alive(previous.get('child')) or any(alive(row) for row in previous.get('remaining_owned_processes', []))):
+        handle.close()
+        raise RuntimeError('Existing campaign owner or child prevents this supervisor launch')
+    from utils.provenance import code_provenance
+    status = {'campaign': plan['campaign'], 'commit': plan['commit'], 'unit': unit, 'state': 'planned',
+              'supervisor': identity(os.getpid()), 'child': None, 'started_at': time.time(),
+              'completed_steps': previous.get('completed_steps', []) if resume else []}
+    def update(fields):
+        if 'heartbeat_at' in fields:
+            fields['checkpoints'] = checkpoint_progress(plan['campaign'])
+        status.update(fields)
+        status['updated_at'] = time.time()
+        atomic_json(status_path, status)
+        with (root / 'events.jsonl').open('a') as events:
+            events.write(json.dumps({'time': status['updated_at'], **fields}, sort_keys=True) + '\n')
+    try:
+        check_plan(plan)
+        update({'state': 'running'})
+        env = safe_environment()
+        for index, step in enumerate(plan['steps']):
+            check_plan(plan)
+            if step['id'] in status['completed_steps']:
+                validate_step(plan, step)
+                continue
+            stamp = time.time_ns()
+            log_base = root / f'{index:02d}-{stamp}'
+            update({'stage': step['id'], 'child': None, 'exit_code': None,
+                    'segment_provenance': code_provenance(),
+                    'stdout_log': str(log_base.with_suffix('.stdout.log')), 'stderr_log': str(log_base.with_suffix('.stderr.log'))})
+            exit_code = run_child(step['argv'], env, log_base, handle, update)
+            update({'child': None, 'exit_code': exit_code})
+            remaining = [row for row in unit_processes(unit) if row['pid'] != os.getpid()]
+            if remaining:
+                update({'remaining_owned_processes': remaining})
+                raise RuntimeError('Stage left native descendants running; preserve them and block restart')
+            if exit_code:
+                raise RuntimeError(f'Owned stage {step["id"]} exited with status {exit_code}; dependent stages stopped')
+            evidence = validate_step(plan, step)
+            status['completed_steps'].append(step['id'])
+            update({'last_evidence': evidence, 'completed_steps': status['completed_steps']})
+        admissions = final_admissions(plan['campaign'])
+        update({'state': 'completed', 'exit_code': 0, 'finished_at': time.time(), 'admissions': admissions})
+        return 0
+    except Exception as exc:  # noqa: BLE001 - persist terminal status for every stage failure
+        if status.get('stage') == 'full_matrix':
+            update({'admissions': admission_statuses(plan['campaign'])})
+        update({'state': 'failed', 'exit_code': status.get('exit_code') or 1,
+                'failure_category': type(exc).__name__, 'failure': redact(str(exc), os.environ), 'finished_at': time.time()})
+        return 1
+    finally:
+        if handle is not None:
+            handle.close()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['plan', 'launch', 'supervise', 'status'])
+    parser.add_argument('target', help='Campaign ID for plan; exact plan.json path otherwise')
+    parser.add_argument('--commit')
+    parser.add_argument('--attempt', default='a1')
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--unit', default='')
+    args = parser.parse_args()
+    if args.action == 'status':
+        path = Path(args.target).resolve().parent / 'status.json'
+        print(path.read_text())
+        return 0
+    from scripts.check_paper_runtime import _load_runner_environment
+    _load_runner_environment()
+    if Path.cwd().resolve() != ROOT:
+        raise RuntimeError('Run campaign commands from the repository root')
+    if args.action == 'plan':
+        print(create_plan(args.target, args.commit, args.attempt))
+        return 0
+    plan_path = Path(args.target).resolve()
+    if ROOT / 'data/results' not in plan_path.parents or plan_path.name != 'plan.json':
+        raise RuntimeError('Campaign requires its repository-owned plan.json')
+    if args.action == 'launch':
+        print(json.dumps(launch(plan_path, resume=args.resume), sort_keys=True))
+        return 0
+    if not args.unit:
+        parser.error('supervise requires its actual systemd --unit; use launch')
+    return supervise(plan_path, resume=args.resume, unit=args.unit)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

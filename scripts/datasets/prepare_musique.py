@@ -136,7 +136,74 @@ def _all_paragraph_ids(rows: list[dict]) -> set[str]:
     return identities
 
 
-def build_corpus_integrity(rows: list[dict], identity_to_file: dict[str, str], corpus_dir: Path) -> dict:
+def _prepared_query_records_sha256(queries: list[dict]) -> str:
+    records = [
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        for row in sorted(queries, key=lambda item: str(item.get("_id") or ""))
+    ]
+    return hashlib.sha256("\n".join(records).encode("utf-8")).hexdigest()
+
+
+def _sha256_lines(values: list[str]) -> str:
+    return hashlib.sha256("\n".join(values).encode("utf-8")).hexdigest()
+
+
+def _corpus_manifest_payload(
+    rows: list[dict],
+    identity_to_file: dict[str, str],
+    corpus_dir: Path,
+    prepared_queries: list[dict],
+) -> dict:
+    """Return the canonical v2 payload after validating its ID mapping."""
+    paragraph_ids = sorted(identity_to_file)
+    source_ids = sorted(identity_to_file.values())
+    records: list[dict[str, str]] = []
+    file_records: list[str] = []
+    for paragraph_id in paragraph_ids:
+        source_id = identity_to_file[paragraph_id]
+        expected_source_id = f"musique_{paragraph_id.removeprefix('musique:')}"
+        if not paragraph_id.startswith("musique:") or source_id != expected_source_id:
+            raise ValueError(
+                f"MuSiQue paragraph/source identity mapping is invalid: {paragraph_id!r} -> {source_id!r}"
+            )
+        filename = f"{source_id}.txt"
+        path = corpus_dir / filename
+        if not path.is_file():
+            raise ValueError(f"Generated MuSiQue corpus is missing paragraph file: {filename}")
+        content_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        records.append(
+            {
+                "paragraph_id": paragraph_id,
+                "source_id": source_id,
+                "filename": filename,
+                "content_sha256": content_sha256,
+            }
+        )
+        file_records.append(f"{filename}\0{content_sha256}")
+
+    corpus_records = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "schema_version": 2,
+        "paragraph_count": len(paragraph_ids),
+        "gold_supporting_paragraph_count": len(_gold_supporting_paragraph_ids(rows)),
+        "gold_supporting_paragraph_coverage": 1.0,
+        # Query/evidence annotations use the colon-form paragraph identity.
+        "paragraph_ids_sha256": _sha256_lines(paragraph_ids),
+        # Index snapshots use the underscore-form filename stem.
+        "source_ids_sha256": _sha256_lines(source_ids),
+        "corpus_records_sha256": hashlib.sha256(corpus_records.encode("utf-8")).hexdigest(),
+        "corpus_files_sha256": _sha256_lines(sorted(file_records)),
+        "query_ids_sha256": query_ids_sha256(rows),
+        "query_records_sha256": _prepared_query_records_sha256(prepared_queries),
+    }
+
+
+def build_corpus_integrity(
+    rows: list[dict],
+    identity_to_file: dict[str, str],
+    corpus_dir: Path,
+    prepared_queries: list[dict] | None = None,
+) -> dict:
     """Validate generated corpus coverage and return a reproducible manifest.
 
     No expected document count is hard-coded: every invariant is derived from
@@ -162,14 +229,9 @@ def build_corpus_integrity(rows: list[dict], identity_to_file: dict[str, str], c
     if missing_gold:
         raise ValueError(f"Generated MuSiQue corpus misses {len(missing_gold)} gold supporting paragraph(s)")
 
-    payload = {
-        "schema_version": 1,
-        "paragraph_count": len(corpus_ids),
-        "gold_supporting_paragraph_count": len(gold_ids),
-        "gold_supporting_paragraph_coverage": 1.0,
-        "paragraph_ids_sha256": hashlib.sha256("\n".join(sorted(corpus_ids)).encode()).hexdigest(),
-        "query_ids_sha256": query_ids_sha256(rows),
-    }
+    if prepared_queries is None:
+        prepared_queries = _build_query_records(rows)
+    payload = _corpus_manifest_payload(rows, identity_to_file, corpus_dir, prepared_queries)
     fingerprint = hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -202,7 +264,7 @@ def _replace_corpus_safely(temp_dir: Path, target: Path) -> None:
             shutil.rmtree(backup)
 
 
-def build_corpus(rows: list[dict]) -> dict[str, str]:
+def build_corpus(rows: list[dict], prepared_queries: list[dict] | None = None) -> dict[str, str]:
     """Build and validate corpus in a temporary sibling before safe publish.
 
     Returns the established ``{stable_paragraph_id: filename}`` mapping.  A
@@ -214,11 +276,17 @@ def build_corpus(rows: list[dict]) -> dict[str, str]:
     identity_to_file: dict[str, str] = {}
     try:
         _build_corpus_files(rows, temp_dir, identity_to_file)
-        integrity = build_corpus_integrity(rows, identity_to_file, temp_dir)
-        (temp_dir / CORPUS_MANIFEST_FILENAME).write_text(
+        integrity = build_corpus_integrity(rows, identity_to_file, temp_dir, prepared_queries)
+        manifest_path = temp_dir / CORPUS_MANIFEST_FILENAME
+        manifest_path.write_text(
             json.dumps(integrity, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        # Verify the bytes that will be published while the complete corpus is
+        # still isolated in its temporary sibling directory.
+        persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if persisted != build_corpus_integrity(rows, identity_to_file, temp_dir, prepared_queries):
+            raise ValueError("Persisted MuSiQue corpus manifest failed transactional verification")
         _replace_corpus_safely(temp_dir, target)
     except Exception:
         if temp_dir.exists():
@@ -255,8 +323,8 @@ def _hop_category(row_id: str) -> str:
     return match.group(1) if match else (prefix or "unknown")
 
 
-def build_queries(rows: list[dict]) -> list[dict]:
-    """Convert MuSiQue rows to the shared benchmark query schema."""
+def _build_query_records(rows: list[dict]) -> list[dict]:
+    """Convert MuSiQue rows without publishing the query artifact."""
     out = []
     for row in rows:
         if row.get("answerable") is False:
@@ -307,6 +375,12 @@ def build_queries(rows: list[dict]) -> list[dict]:
             }
         )
 
+    return out
+
+
+def build_queries(rows: list[dict]) -> list[dict]:
+    """Convert MuSiQue rows to the shared benchmark query schema."""
+    out = _build_query_records(rows)
     with open(QUERIES_PATH, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2, ensure_ascii=False)
     print(f"Created {len(out)} queries in {QUERIES_PATH}")
@@ -339,12 +413,11 @@ def main():
     rows = _download_jsonl(QUERIES_URL, RAW_QUERIES_PATH, args.limit)
     print(f"Loaded {len(rows)} rows (limit={args.limit or 'all'})")
 
+    queries = build_queries(rows)
     if not args.skip_corpus:
-        build_corpus(rows)
+        build_corpus(rows, queries)
     else:
         print("Corpus generation skipped (--skip-corpus).")
-
-    queries = build_queries(rows)
     print_stats(queries)
     print("\nMuSiQue data preparation complete!")
 

@@ -78,8 +78,8 @@ def _validate_artifacts(
     }
     for artifact in [prehop, *baselines]:
         path = artifact.get("_path", "<artifact>")
-        if artifact.get("status") != "completed":
-            raise ValueError(f"{path}: status must be 'completed'")
+        if artifact.get("status") != "completed_unadmitted":
+            raise ValueError(f"{path}: status must be 'completed_unadmitted'")
         if artifact.get("corpus_index_fingerprint_status") != "matched":
             raise ValueError(f"{path}: corpus/index fingerprint status must be 'matched'")
         if artifact.get("evaluation_scope") != "full_benchmark" and not allow_exploratory:

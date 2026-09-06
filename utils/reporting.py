@@ -213,7 +213,8 @@ def _write_model_report_artifacts(
         trace = item.get("interaction_trace", [])
         detail_rows.append(
             {
-                "idx": idx,
+                "idx": item.get("idx", idx),
+                "query_id": item.get("query_id", ""),
                 "query": item.get("query", ""),
                 "category": item.get("category", ""),
                 "answer": item.get("answer", ""),
@@ -257,7 +258,8 @@ def _write_model_report_artifacts(
         )
         trace_rows.append(
             {
-                "idx": idx,
+                "idx": item.get("idx", idx),
+                "query_id": item.get("query_id", ""),
                 "query": item.get("query", ""),
                 "interaction_trace": trace,
             }

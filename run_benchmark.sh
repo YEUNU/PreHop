@@ -12,9 +12,9 @@ cd "$SCRIPT_DIR"
 
 . "$SCRIPT_DIR/scripts/lib.sh"
 load_project_env "$SCRIPT_DIR/.env"
+canonicalize_inference_transport || exit 1
 
 # Environment (.env values override defaults; exported values override .env).
-export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
 export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 export RAG_BENCHMARK_TIMESTAMP="${RAG_BENCHMARK_TIMESTAMP:-$RAG_RUN_ID}"
@@ -62,7 +62,9 @@ else
 fi
 
 echo "Step 0: Python/Dependency preflight..."
-if [ "$MODEL" = "hoprag" ] || [ "$MODEL" = "ms_graphrag" ] || [ "$MODEL" = "browsenet" ] || [ "$MODEL" = "proprag" ] || [ "$RUN_ALL" = true ]; then
+IS_EXTERNAL=false
+if python3 core/strategy_registry.py --is-external "$MODEL"; then IS_EXTERNAL=true; fi
+if [ "$MODEL" = "hoprag" ] || [ "$MODEL" = "ms_graphrag" ] || [ "$IS_EXTERNAL" = true ] || [ "$RUN_ALL" = true ]; then
     if ! PREFLIGHT_MODEL="$MODEL" PREFLIGHT_ALL="$RUN_ALL" "$PYTHON_BIN" - <<'PY'
 import importlib
 import os
@@ -77,7 +79,8 @@ if model == "hoprag" or run_all:
     from models.hoprag.hoprag_adapter import HopRAGAdapter  # noqa: F401
 if model == "ms_graphrag" or run_all:
     from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter  # noqa: F401
-if model in {"browsenet", "proprag"}:
+from core.strategy_registry import EXTERNAL_STRATEGIES
+if model in EXTERNAL_STRATEGIES:
     from models.official_baseline_runtime import validate_runtime
     validate_runtime(model)
 if run_all:
@@ -97,18 +100,18 @@ if [ "$SKIP_SERVER" != true ]; then
 
     # MS GraphRAG's benchmark reads its parquet/LanceDB artifacts directly. The
     # other strategies query Neo4j, as does benchmark_all.
-    if { [ "$MODEL" != "ms_graphrag" ] && [ "$MODEL" != "browsenet" ] && [ "$MODEL" != "proprag" ]; } || [ "$RUN_ALL" = true ]; then
+    if { [ "$MODEL" != "ms_graphrag" ] && [ "$IS_EXTERNAL" != true ]; } || [ "$RUN_ALL" = true ]; then
         ./run_servers.sh neo4j
         if ! wait_for_server "http://localhost:7474" "Neo4j"; then exit 1; fi
     fi
 
     # Start Generation Server
     ./run_servers.sh gen
-    if ! wait_for_server "${VLLM_URL%/}/models" "Generation Model" "200"; then exit 1; fi
+    if ! wait_for_server "${RAG_INFERENCE_BASE_URL%/}/models" "Generation Model" "200"; then exit 1; fi
 
     # Every strategy uses the configured embedding endpoint.
     ./run_servers.sh embed
-    if ! wait_for_server "${VLLM_EMBED_URL%/}/models" "Embedding Model" "200"; then exit 1; fi
+    if ! wait_for_server "${RAG_INFERENCE_BASE_URL%/}/models" "Embedding Model" "200"; then exit 1; fi
 
 else
     echo "Step 1: Skipping server startup (requested by caller)"

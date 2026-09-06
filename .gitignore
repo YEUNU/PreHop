@@ -234,7 +234,13 @@ data/index_cache/
 data/index_locks/
 data/index_stats/
 data/index_failures/
+data/failed_runs/
 data/ms_graphrag_output/
+data/lightrag_output/
+data/hipporag2_output/
+data/gfm_rag_output/
+data/linear_rag_output/
+data/youtu_graphrag_output/
 data/hoprag_output/
 data/browsenet_output/
 data/proprag_output/

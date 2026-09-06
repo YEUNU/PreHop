@@ -224,10 +224,21 @@ def build_corpus_manifest(corpus_dir: Path, queries: list[dict]) -> dict:
     if len(source_ids) != len(set(source_ids)):
         raise ValueError("Prepared MultiHop-RAG corpus has duplicate filename stems")
     file_records = [f"{path.name}\0{hashlib.sha256(path.read_bytes()).hexdigest()}" for path in files]
+    corpus_records = [
+        {
+            "source_id": path.stem,
+            "filename": path.name,
+            "content_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in files
+    ]
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "paragraph_count": len(files),
         "source_ids_sha256": hashlib.sha256("\n".join(source_ids).encode("utf-8")).hexdigest(),
+        "corpus_records_sha256": hashlib.sha256(
+            json.dumps(corpus_records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
         "corpus_files_sha256": hashlib.sha256("\n".join(file_records).encode("utf-8")).hexdigest(),
         "query_ids_sha256": query_ids_sha256(queries),
         "query_records_sha256": query_records_sha256(queries),

@@ -73,7 +73,7 @@ def combine_frozen_synthesis(
         raise ValueError("This command accepts non-Prehop baselines only")
     if baseline.get("dataset") != "MuSiQue" or baseline.get("evaluation_scope") != "full_benchmark":
         raise ValueError("Baseline must be a full MuSiQue artifact")
-    if baseline.get("status") != "completed" or baseline.get("corpus_index_fingerprint_status") != "matched":
+    if baseline.get("status") != "completed_unadmitted" or baseline.get("corpus_index_fingerprint_status") != "matched":
         raise ValueError("Baseline must already have completed, matched corpus/index provenance")
 
     queries_payload = json.loads(queries_path.read_text(encoding="utf-8"))
@@ -230,7 +230,7 @@ def combine_frozen_synthesis(
     combined = {field: baseline.get(field) for field in identity_fields}
     combined.update(
         {
-            "status": "completed",
+            "status": "completed_unadmitted",
             "queries_count": len(queries),
             "total_queries": len(queries),
             "official_metric_note": (

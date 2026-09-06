@@ -7,6 +7,27 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+_GENERATED_PREFIXES = (
+    b"artifacts/",
+    b"fig/",
+    b"logs/",
+    b"data/debug/",
+    b"data/embedding_cache/",
+    b"data/failed_runs/",
+    b"data/index_cache/",
+    b"data/index_failures/",
+    b"data/index_locks/",
+    b"data/index_stats/",
+    b"data/official_baselines/",
+    b"data/results/",
+    b"data/tmp/",
+)
+
+
+def _is_generated_path(raw_path: bytes) -> bool:
+    if raw_path.startswith(_GENERATED_PREFIXES):
+        return True
+    return raw_path.startswith(b"data/") and b"_output/" in raw_path
 
 
 def code_provenance(root: Path = ROOT) -> dict[str, Any]:
@@ -32,6 +53,8 @@ def code_provenance(root: Path = ROOT) -> dict[str, Any]:
     digest = hashlib.sha256()
     count = 0
     for raw_path in sorted(path for path in listed.split(b"\0") if path):
+        if _is_generated_path(raw_path):
+            continue
         path = root / os.fsdecode(raw_path)
         if not path.is_file():
             continue

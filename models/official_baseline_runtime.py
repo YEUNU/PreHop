@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -15,16 +16,12 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from core.embedding_policy import EmbeddingOperationalConfig
+from core.strategy_registry import BY_NAME, EXTERNAL_STRATEGIES, get_strategy
 from utils.io import _write_json
 
-OFFICIAL_REVISIONS = {
-    "browsenet": "ba82eeceb089104de2999d00b744cd02583fe8a4",
-    "proprag": "3ec103488abd5589e569ee0fdd6e0c7067e5b783",
-}
-OFFICIAL_REPOSITORIES = {
-    "browsenet": "https://github.com/bisect-group/BrowseNet.git",
-    "proprag": "https://github.com/ReLink-Inc/PropRAG.git",
-}
+OFFICIAL_REVISIONS = {name: BY_NAME[name].revision for name in EXTERNAL_STRATEGIES}
+OFFICIAL_REPOSITORIES = {name: BY_NAME[name].repository for name in EXTERNAL_STRATEGIES}
 _RESULT_PREFIX = "__PREHOP_OFFICIAL_RESULT__="
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,8 +35,25 @@ def corpus_records_sha256(records: list[dict[str, Any]]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def artifact_inventory(root: Path) -> dict[str, Any]:
+    """Digest actual method artifacts, excluding adapter-owned staged input."""
+    artifacts = root / "artifacts"
+    rows: list[dict[str, Any]] = []
+    if artifacts.is_dir():
+        for path in sorted(candidate for candidate in artifacts.rglob("*") if candidate.is_file()):
+            with path.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            rows.append({"path": path.relative_to(artifacts).as_posix(), "size": path.stat().st_size, "sha256": digest})
+    payload = json.dumps(rows, sort_keys=True, separators=(",", ":"))
+    return {
+        "file_count": len(rows),
+        "total_bytes": sum(row["size"] for row in rows),
+        "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+    }
+
+
 def configured_embedding_model() -> str:
-    return os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
+    return os.environ.get("RAG_EMBEDDING_MODEL", "embedding-model")
 
 
 def configured_embedding_revision() -> str | None:
@@ -48,20 +62,32 @@ def configured_embedding_revision() -> str | None:
 
 def official_root(strategy: str) -> Path:
     key = f"RAG_{strategy.upper()}_ROOT"
-    return Path(os.environ.get(key, f"data/official_baselines/{strategy}/source")).resolve()
+    home = Path(os.environ.get("RAG_OFFICIAL_BASELINE_HOME", "data/official_baselines")).expanduser()
+    return Path(os.environ.get(key, str(home / strategy / "source"))).expanduser().resolve()
 
 
 def official_python(strategy: str) -> Path:
     key = f"RAG_{strategy.upper()}_PYTHON"
-    path = Path(os.environ.get(key, f"data/official_baselines/{strategy}/venv/bin/python")).expanduser()
+    home = Path(os.environ.get("RAG_OFFICIAL_BASELINE_HOME", "data/official_baselines")).expanduser()
+    path = Path(os.environ.get(key, str(home / strategy / "venv/bin/python"))).expanduser()
     # Do not call resolve(): venv Python executables are commonly symlinks to
     # the base interpreter. Resolving that final link bypasses site-packages.
     return path if path.is_absolute() else Path.cwd() / path
 
 
 def output_root(strategy: str) -> Path:
-    key = f"RAG_{strategy.upper()}_OUTPUT_ROOT"
-    return Path(os.environ.get(key, f"data/{strategy}_output")).resolve()
+    spec = get_strategy(strategy)
+    key = spec.output_env or f"RAG_{strategy.upper()}_OUTPUT_ROOT"
+    default = spec.output_default or f"data/{strategy}_output"
+    return Path(os.environ.get(key, default)).resolve()
+
+
+def _acquire_runtime_lock(strategy: str):
+    runtime_dir = official_root(strategy).parent
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    handle = (runtime_dir.parent / ".runtime.lock").open("a+")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+    return handle
 
 
 def corpus_output_dir(strategy: str, corpus_tag: str) -> Path:
@@ -130,12 +156,24 @@ def validate_runtime(strategy: str) -> None:
         raise RuntimeError(
             f"{strategy} source revision mismatch: expected {OFFICIAL_REVISIONS[strategy]}, got {revision}"
         )
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all", "--ignored"],
+        cwd=root,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    if dirty:
+        raise RuntimeError(f"{strategy} official checkout is not clean; reinstall the pinned runtime")
 
 
 def _command(strategy: str, corpus_tag: str, mode: str) -> list[str]:
+    worker = get_strategy(strategy).worker
+    if not worker:
+        raise ValueError(f"{strategy} has no isolated official worker")
     return [
         str(official_python(strategy)),
-        str(_ROOT / "scripts" / "official_baseline_worker.py"),
+        str(_ROOT / "scripts" / worker),
         "--strategy",
         strategy,
         "--mode",
@@ -151,26 +189,101 @@ def _command(strategy: str, corpus_tag: str, mode: str) -> list[str]:
 
 def _runtime_env(strategy: str) -> dict[str, str]:
     env = os.environ.copy()
+    from core.paper_policy import preserve_method_environment
+
+    preserve_method_environment(env)
     runtime_bin = str(official_python(strategy).parent)
     env["PATH"] = runtime_bin + os.pathsep + env.get("PATH", "")
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    seed = os.environ.get("RAG_LLM_SEED", "").strip()
+    env["PYTHONHASHSEED"] = seed or os.environ.get("PYTHONHASHSEED", "0")
+    if seed:
+        env["RAG_LLM_SEED"] = seed
+        env["RAG_SEED"] = seed
+    embedding = EmbeddingOperationalConfig.resolve(strategy)
+    env["RAG_EMBEDDING_BATCH_SIZE"] = str(embedding.batch_size)
+    env["RAG_EMBEDDING_CONCURRENCY"] = str(embedding.concurrency)
+    env["RAG_EMBEDDING_RETRY_ATTEMPTS"] = str(embedding.retry_attempts)
+    env["LLM_MAX_RETRIES"] = str(embedding.retry_attempts)
+    from core.inference_transport import _FORBIDDEN_AMBIENT_PROVIDER_KEYS, InferenceTransport
+
+    transport = InferenceTransport.resolve(strategy)
+    if get_strategy(strategy).transport_profile != "openai_compatible_litellm":
+        raise RuntimeError(f"{strategy} paper runtime has an unsupported inference transport profile")
+    # Ambient provider state is never inherited across the process boundary.
+    # The aliases below are derived only from the validated canonical contract
+    # and exist solely for pinned upstream client constructors.
+    for name in tuple(env):
+        if name.startswith(("AZURE_OPENAI", "OPENAI_", "VLLM_", "LLM_")) or name in {
+            "API_VERSION",
+            "OPENAI_PROVIDER",
+        }:
+            env.pop(name, None)
+    env.update(
+        {
+            "RAG_INFERENCE_BASE_URL": transport.generation_base_url,
+            "RAG_INFERENCE_API_KEY": transport.api_key,
+            "RAG_GENERATION_MODEL": transport.generation_model,
+            "RAG_EMBEDDING_MODEL": transport.embedding_model,
+            "OPENAI_API_KEY": transport.api_key,
+            "RAG_INFERENCE_TIMEOUT": str(transport.timeout_seconds or 0),
+            "RAG_INFERENCE_RETRY_ATTEMPTS": str(transport.retry_attempts),
+            "RAG_GENERATION_CONCURRENCY": str(transport.generation_concurrency),
+            "RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS": str(transport.embedding_concurrency),
+            "RAG_LLM_SEED": "" if transport.generation_seed is None else str(transport.generation_seed),
+            "EMBEDDING_QUERY_INSTRUCTION": transport.embedding_query_instruction,
+            "MAX_EMBEDDING_LENGTH": str(transport.embedding_max_input_tokens),
+            "NEO4J_VECTOR_DIMENSIONS": str(transport.embedding_dimensions),
+            "RAG_EMBEDDING_TOKEN_RESERVE": str(transport.embedding_token_reserve),
+            "RAG_MAX_CONTEXT_LENGTH": str(transport.generation_max_context_tokens),
+        }
+    )
+    if get_strategy(strategy).primary:
+        # Upstream dotenv imports may repopulate absent aliases. Empty exports
+        # block that without carrying a second endpoint or credential contract.
+        env.update({name: "" for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS})
+    else:
+        # Legacy workers still consume these private child aliases. Primary
+        # research drivers resolve the canonical contract again in the child.
+        env.update({
+            "VLLM_URL": transport.generation_base_url,
+            "VLLM_EMBED_URL": transport.embedding_base_url,
+            "VLLM_API_BASE": transport.generation_base_url,
+            "VLLM_EMBED_API_BASE": transport.embedding_base_url,
+            "VLLM_API_KEY": transport.api_key,
+            "VLLM_SERVED_MODEL_NAME": transport.generation_model,
+            "VLLM_SERVED_EMBED_MODEL_NAME": transport.embedding_model,
+            "OPENAI_BASE_URL": transport.generation_base_url,
+        })
+    if strategy == "youtu_graphrag":
+        # Youtu's official client uses LLM_* names. Preserve the caller's
+        # credential in the child environment without logging it.
+        env["LLM_BASE_URL"] = transport.generation_base_url
+        env["LLM_MODEL"] = transport.generation_model
+        env["LLM_API_KEY"] = transport.api_key
     return env
 
 
 def run_index_worker(strategy: str, corpus_tag: str, request: dict[str, Any]) -> dict[str, Any]:
     validate_runtime(strategy)
-    process = subprocess.Popen(
-        _command(strategy, corpus_tag, "index"),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=None,
-        text=True,
-        bufsize=1,
-        cwd=_ROOT,
-        env=_runtime_env(strategy),
-    )
+    runtime_lock = _acquire_runtime_lock(strategy)
+    try:
+        process = subprocess.Popen(
+            _command(strategy, corpus_tag, "index"),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            text=True,
+            bufsize=1,
+            cwd=_ROOT,
+            env=_runtime_env(strategy),
+        )
+    except Exception:
+        runtime_lock.close()
+        raise
     if process.stdin is None or process.stdout is None:
         process.terminate()
+        runtime_lock.close()
         raise RuntimeError(f"{strategy} official index worker pipes were not created")
     process.stdin.write(json.dumps(request) + "\n")
     process.stdin.close()
@@ -186,7 +299,9 @@ def run_index_worker(strategy: str, corpus_tag: str, request: dict[str, Any]) ->
     returncode = process.wait()
     if returncode or not isinstance(payload, dict) or not payload.get("ok"):
         detail = (payload or {}).get("error") or "".join(output_tail)[-4000:] or f"exit status {returncode}"
+        runtime_lock.close()
         raise RuntimeError(f"{strategy} official index worker failed: {detail}")
+    runtime_lock.close()
     return payload
 
 
@@ -195,18 +310,24 @@ class OfficialQueryWorker:
 
     def __init__(self, strategy: str, corpus_tag: str):
         validate_runtime(strategy)
+        self._runtime_lock = _acquire_runtime_lock(strategy)
         self.strategy = strategy
         self._lock = threading.Lock()
-        self._process = subprocess.Popen(
-            _command(strategy, corpus_tag, "serve"),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=None,
-            text=True,
-            bufsize=1,
-            cwd=_ROOT,
-            env=_runtime_env(strategy),
-        )
+        try:
+            self._process = subprocess.Popen(
+                _command(strategy, corpus_tag, "serve"),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=None,
+                text=True,
+                bufsize=1,
+                cwd=_ROOT,
+                env=_runtime_env(strategy),
+            )
+        except Exception:
+            self._runtime_lock.close()
+            self._runtime_lock = None
+            raise
         self._stdout_queue: queue.Queue[str | None] = queue.Queue()
 
         def _read_stdout() -> None:
@@ -222,7 +343,9 @@ class OfficialQueryWorker:
             raise RuntimeError(f"{strategy} official query worker did not become ready")
 
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        queued_at = time.perf_counter()
         with self._lock:
+            worker_queue_seconds = time.perf_counter() - queued_at
             if self._process.poll() is not None or self._process.stdin is None or self._process.stdout is None:
                 raise RuntimeError(f"{self.strategy} official query worker is not running")
             self._process.stdin.write(json.dumps(payload) + "\n")
@@ -242,6 +365,7 @@ class OfficialQueryWorker:
                 response = json.loads(line[len(_RESULT_PREFIX) :])
                 if not response.get("ok"):
                     raise RuntimeError(f"{self.strategy} official query failed: {response.get('error')}")
+                response["worker_queue_seconds"] = worker_queue_seconds
                 return response
 
     def close(self) -> None:
@@ -252,6 +376,9 @@ class OfficialQueryWorker:
                 self._process.wait(timeout=10)
             except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
                 self._process.terminate()
+        if getattr(self, "_runtime_lock", None) is not None:
+            self._runtime_lock.close()
+            self._runtime_lock = None
 
     def __del__(self):  # pragma: no cover - best-effort interpreter cleanup
         with suppress(Exception):
@@ -268,10 +395,25 @@ def verify_snapshot(strategy: str, corpus_tag: str, expected_source_ids: list[st
         raise RuntimeError(f"{strategy} snapshot is not complete")
     if metadata.get("official_revision") != OFFICIAL_REVISIONS[strategy]:
         raise RuntimeError(f"{strategy} snapshot uses a different official revision")
-    if metadata.get("embedding_model") != configured_embedding_model():
+    semantic = metadata.get("semantic_config")
+    research_driver = bool(get_strategy(strategy).driver)
+    expected_embedding_model = semantic.get("embedding_model") if research_driver and isinstance(semantic, dict) else configured_embedding_model()
+    expected_embedding_revision = semantic.get("embedding_revision") if research_driver and isinstance(semantic, dict) else configured_embedding_revision()
+    if metadata.get("embedding_model") != expected_embedding_model:
         raise RuntimeError(f"{strategy} snapshot uses a different embedding model")
-    if metadata.get("embedding_revision") != configured_embedding_revision():
+    if metadata.get("embedding_revision") != expected_embedding_revision:
         raise RuntimeError(f"{strategy} snapshot uses a different embedding revision")
+    if isinstance(semantic, dict) and semantic.get("semantic_config_id") is not None and (
+        metadata.get("semantic_config_id") != semantic["semantic_config_id"]
+    ):
+        raise RuntimeError(f"{strategy} snapshot semantic profile identifier differs from its policy")
+    expected_semantic_hash = hashlib.sha256(
+        json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest() if isinstance(semantic, dict) else None
+    if get_strategy(strategy).driver and (
+        not metadata.get("semantic_config_id") or metadata.get("semantic_config_sha256") != expected_semantic_hash
+    ):
+        raise RuntimeError(f"{strategy} snapshot semantic config fingerprint is missing or corrupt")
     expected = sorted(expected_source_ids)
     if metadata.get("source_count") != len(expected) or metadata.get("source_set_sha256") != source_set_sha256(expected):
         raise RuntimeError(f"{strategy} snapshot source set does not match the prepared corpus")
@@ -283,6 +425,11 @@ def verify_snapshot(strategy: str, corpus_tag: str, expected_source_ids: list[st
         raise RuntimeError(f"{strategy} staged corpus identities do not match the prepared corpus")
     if metadata.get("corpus_records_sha256") != corpus_records_sha256(records):
         raise RuntimeError(f"{strategy} staged corpus content does not match its snapshot")
+    inventory = artifact_inventory(corpus_output_dir(strategy, corpus_tag))
+    if research_driver and (inventory["file_count"] < 1 or metadata.get("artifact_inventory") != inventory):
+        raise RuntimeError(f"{strategy} retrieval artifact inventory is missing or corrupt")
+    if not research_driver and metadata.get("artifact_inventory") is not None and metadata["artifact_inventory"] != inventory:
+        raise RuntimeError(f"{strategy} retrieval artifact inventory is corrupt")
     if corpus_manifest is not None and metadata.get("corpus_manifest_fingerprint") != corpus_manifest.get("fingerprint"):
         raise RuntimeError(f"{strategy} snapshot fingerprint does not match the corpus manifest")
     return metadata

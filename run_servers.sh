@@ -13,12 +13,12 @@ cd "$SCRIPT_DIR"
 
 . "$SCRIPT_DIR/scripts/lib.sh"
 load_project_env "$SCRIPT_DIR/.env"
-# Apply the fallback only after loading project configuration. Setting it
-# earlier makes load_project_env preserve EMPTY as an explicit caller override.
-export VLLM_API_KEY="${VLLM_API_KEY:-EMPTY}"
 : "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}"
 
 SERVICE=$1
+if [ "$SERVICE" = gen ] || [ "$SERVICE" = embed ] || [ "$SERVICE" = all ]; then
+    canonicalize_inference_transport || exit 1
+fi
 
 # Optional Java setup (for local/custom Neo4j distributions)
 if [ -n "${JAVA_HOME:-}" ]; then
@@ -43,8 +43,8 @@ resolve_neo4j_cmd() {
 
 curl_with_auth() {
     local url="$1"
-    if [ -n "$VLLM_API_KEY" ] && [ "$VLLM_API_KEY" != "EMPTY" ]; then
-        curl -fsS --max-time 5 -H "Authorization: Bearer ${VLLM_API_KEY}" "$url"
+    if [ -n "${RAG_INFERENCE_API_KEY:-}" ]; then
+        curl -fsS --max-time 5 -H "Authorization: Bearer ${RAG_INFERENCE_API_KEY}" "$url"
     else
         curl -fsS --max-time 5 "$url"
     fi
@@ -162,10 +162,10 @@ start_neo4j() {
 }
 
 start_gen() {
-    local configured_url="${VLLM_URL:-}"
-    local configured_model="${VLLM_SERVED_MODEL_NAME:-generation-model}"
+    local configured_url="${RAG_INFERENCE_BASE_URL:-}"
+    local configured_model="${RAG_GENERATION_MODEL:-}"
     if [ -z "$configured_url" ]; then
-        echo "❌ VLLM_URL must point to an external inference endpoint." >&2
+        echo "❌ RAG_INFERENCE_BASE_URL must point to the LiteLLM gateway." >&2
         return 1
     fi
     if endpoint_has_model "$configured_url" "$configured_model"; then
@@ -177,10 +177,10 @@ start_gen() {
 }
 
 start_embed() {
-    local configured_url="${VLLM_EMBED_URL:-}"
-    local configured_model="${VLLM_SERVED_EMBED_MODEL_NAME:-embedding-model}"
+    local configured_url="${RAG_INFERENCE_BASE_URL:-}"
+    local configured_model="${RAG_EMBEDDING_MODEL:-}"
     if [ -z "$configured_url" ]; then
-        echo "❌ VLLM_EMBED_URL must point to an external inference endpoint." >&2
+        echo "❌ RAG_INFERENCE_BASE_URL must point to the LiteLLM gateway." >&2
         return 1
     fi
     if endpoint_has_model "$configured_url" "$configured_model"; then

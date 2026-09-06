@@ -14,6 +14,8 @@ import unicodedata
 from typing import Any
 
 from core.config import RAGConfig
+from core.generation_profiles import request_settings
+from core.structured_outputs import question_contract
 from models.prehop.llm_json import generate_json_or_raise
 from utils.prompts import (
     GROUNDED_HOPRAG_FORMAT_INSTRUCTION,
@@ -218,7 +220,7 @@ class KnowledgeMappingMixin:
         text_prompt = prompt.format(chunk=chunk, global_context=f"Document Title: {title}")
         messages = [
             {"role": "user", "content": text_prompt},
-            {"role": "user", "content": format_instruction},
+            {"role": "user", "content": format_instruction.format()},
         ]
         last_error: Exception | None = None
         for attempt in range(1, RAGConfig.RETRY_COUNT + 1):
@@ -229,7 +231,8 @@ class KnowledgeMappingMixin:
                     "Q-/Q+ generation",
                     f"title={title!r}",
                     required_fields={"q_minus": list, "q_plus": list},
-                    temperature=0.0,
+                    structured_contract=question_contract("index", question_schema, RAGConfig.QUESTIONS_PER_DIRECTION),
+                    **request_settings("question_index"),
                 )
                 if grounded:
                     q_minus = self._filter_grounded_items(

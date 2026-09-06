@@ -1,8 +1,7 @@
-"""Official MS GraphRAG indexing wired to external OpenAI-compatible endpoints.
+"""Official MS GraphRAG indexing wired to the shared LiteLLM transport.
 
-Builds a GraphRagConfig that points LiteLLM at VLLM_URL/VLLM_EMBED_URL (the
-LiteLLM proxy by default — see CLAUDE.md "Model / inference infra"; override
-with RAG_MS_GEN_API_BASE(S)/RAG_MS_EMBED_API_BASE for a different endpoint)
+Builds a GraphRagConfig that points at the repository-wide generation and
+embedding routes. Strategy-specific or public-vendor fallbacks are rejected.
 and runs the standard pipeline (extract_graph → Leiden communities →
 community reports → embeddings).
 
@@ -12,45 +11,46 @@ adapter reads these parquet files instead of expecting Neo4j Community nodes.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import tempfile
+import threading
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 logger = logging.getLogger("Prehop")
 
 
-# Defaults to VLLM_URL (the LiteLLM proxy by default). RAG_MS_GEN_API_BASES
-# can still list multiple comma-separated external endpoints for
-# round-robin — the primary base (passed as
-# ModelConfig.api_base) is the first entry, but the LiteLLM Router monkey-
-# patch below intercepts and shuffles across all bases per call.
-_GEN_API_BASES = [
-    s.strip()
-    for s in os.environ.get(
-        "RAG_MS_GEN_API_BASES",
-        os.environ.get("VLLM_URL", ""),
-    ).split(",")
-    if s.strip()
-]
-_GEN_API_BASE = _GEN_API_BASES[0] if _GEN_API_BASES else ""
-_GEN_MODEL_NAME = os.environ.get("VLLM_SERVED_MODEL_NAME", "generation-model")
-_EMBED_API_BASE = os.environ.get("RAG_MS_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", ""))
-_EMBED_MODEL_NAME = os.environ.get(
-    "RAG_MS_EMBED_MODEL_NAME", os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
-)
-_GEN_API_KEY = os.environ.get("VLLM_API_KEY", "EMPTY")
+# Paper runs intentionally admit one repository-wide LiteLLM transport only.
+# Strategy-specific endpoints previously allowed silent vendor/public fallback
+# and made cross-method accounting impossible.
+_GEN_API_BASE = os.environ.get("VLLM_API_BASE", os.environ.get("VLLM_URL", "")).strip()
+_GEN_API_BASES = [_GEN_API_BASE] if _GEN_API_BASE else []
+_GEN_MODEL_NAME = os.environ.get("VLLM_SERVED_MODEL_NAME", "").strip()
+_EMBED_API_BASE = os.environ.get("VLLM_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", "")).strip()
+_EMBED_MODEL_NAME = os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "").strip()
+_GEN_API_KEY = os.environ.get("VLLM_API_KEY", "").strip()
+_GEN_SEED = int(os.environ["RAG_LLM_SEED"]) if os.environ.get("RAG_LLM_SEED", "").lstrip("-").isdigit() else None
+_GEN_CONCURRENCY = 30
+_EMBED_BATCH_SIZE = 16
+_EMBED_CONCURRENCY = 1
+_GEN_MAX_CONTEXT_TOKENS = 262144
+_EMBED_MAX_INPUT_TOKENS = 32768
+_RETRY_ATTEMPTS = 5
+_TIMEOUT_SECONDS: float | None = 600.0
 # Must match the configured embedding model's real output dimension or
 # LanceDB rejects the embedding parquet on a FixedSizeList shape mismatch —
 # same constraint as NEO4J_VECTOR_DIMENSIONS for prehop/naive/hoprag's Neo4j
 # vector indexes (see CLAUDE.md "Model / inference infra"), reused here since
 # it's the same one embedding model across every strategy.
-_EMBED_DIM = int(os.environ.get("RAG_MS_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")))
+_EMBED_DIM = int(os.environ.get("RAG_MS_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "4096")))
 
 # Where parquet artifacts land. corpus_tag-scoped so different runs don't clobber.
 _OUTPUT_ROOT = Path(os.environ.get("RAG_MS_OUTPUT_ROOT", "data/ms_graphrag_output"))
@@ -58,37 +58,166 @@ SNAPSHOT_METADATA_FILENAME = "index_snapshot_metadata.json"
 _SNAPSHOT_VERSION = 2
 _PAGE_MARKER_RE = re.compile(r"^-+\s*Page\s+\d+\s*-+$", re.IGNORECASE)
 _QUERY_EMBEDDING_TYPE = "prehop_query_instruction"
+_BOUNDED_EMBEDDING_TYPE = "prehop_bounded_litellm"
+_EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
+    _EMBED_CONCURRENCY
+)
+
+
+def _with_ms_embedding_slot(call: Callable[[], object]) -> object:
+    with _EMBED_REQUEST_SEMAPHORE:
+        return call()
+
+
+def _apply_shared_transport() -> None:
+    from core.inference_transport import InferenceTransport
+    from core.semantic_config import parse_strict_bool
+
+    transport = InferenceTransport.resolve("ms_graphrag")
+    report_max_tokens = int(os.environ.get("RAG_MS_REPORT_MAX_TOKENS", "4096"))
+    if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") and report_max_tokens != 4096:
+        raise RuntimeError("RAG_MS_REPORT_MAX_TOKENS differs from the checked-in paper policy")
+    global _GEN_API_BASE, _GEN_API_BASES, _GEN_MODEL_NAME
+    global _EMBED_API_BASE, _EMBED_MODEL_NAME, _GEN_API_KEY, _GEN_SEED
+    global _GEN_CONCURRENCY, _EMBED_BATCH_SIZE, _EMBED_CONCURRENCY, _EMBED_DIM, _EMBED_REQUEST_SEMAPHORE
+    global _GEN_MAX_CONTEXT_TOKENS, _EMBED_MAX_INPUT_TOKENS, _RETRY_ATTEMPTS, _TIMEOUT_SECONDS
+    _GEN_API_BASE = transport.generation_base_url
+    _GEN_API_BASES = [_GEN_API_BASE]
+    _GEN_MODEL_NAME = transport.generation_model
+    _EMBED_API_BASE = transport.embedding_base_url
+    _EMBED_MODEL_NAME = transport.embedding_model
+    _GEN_API_KEY = transport.api_key
+    _GEN_SEED = transport.generation_seed
+    _GEN_CONCURRENCY = transport.generation_concurrency
+    _EMBED_BATCH_SIZE = transport.embedding_batch_size
+    _EMBED_CONCURRENCY = transport.embedding_concurrency
+    _GEN_MAX_CONTEXT_TOKENS = transport.generation_max_context_tokens
+    _EMBED_MAX_INPUT_TOKENS = transport.embedding_max_input_tokens
+    _RETRY_ATTEMPTS = transport.retry_attempts
+    _TIMEOUT_SECONDS = transport.timeout_seconds
+    configured_embed_dim = int(os.environ.get("RAG_MS_EMBED_DIM", str(transport.embedding_dimensions)))
+    if configured_embed_dim != transport.embedding_dimensions:
+        raise RuntimeError("RAG_MS_EMBED_DIM differs from the checked-in paper embedding dimensions")
+    _EMBED_DIM = transport.embedding_dimensions
+    _EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(_EMBED_CONCURRENCY)
+
+
+async def _with_ms_embedding_slot_async(call: Callable[[], Awaitable[object]]) -> object:
+    acquire_task = asyncio.create_task(asyncio.to_thread(_EMBED_REQUEST_SEMAPHORE.acquire))
+    try:
+        await asyncio.shield(acquire_task)
+    except asyncio.CancelledError:
+        # ``to_thread`` cannot be cancelled. If acquisition completes after
+        # its waiter is cancelled, return that otherwise-leaked permit.
+        def release_late(task: asyncio.Task) -> None:
+            if not task.cancelled() and task.exception() is None and task.result():
+                _EMBED_REQUEST_SEMAPHORE.release()
+
+        acquire_task.add_done_callback(release_late)
+        raise
+    try:
+        return await call()
+    finally:
+        _EMBED_REQUEST_SEMAPHORE.release()
 
 
 def _ms_concurrent_requests() -> int:
     """Resolve GraphRAG concurrency from the repository-wide endpoint cap."""
-    shared_limit = int(os.environ.get("MAX_CONCURRENT_LLM_CALLS", "30"))
-    requested = int(os.environ.get("RAG_MS_CONCURRENT_REQUESTS", str(shared_limit)))
-    server_limit = int(os.environ.get("VLLM_MAX_NUM_SEQS", str(shared_limit)))
-    if min(requested, shared_limit, server_limit) < 1:
-        raise ValueError("RAG_MS_CONCURRENT_REQUESTS must be at least 1")
-    return min(requested, shared_limit, server_limit)
+    server_limit = int(os.environ.get("VLLM_MAX_NUM_SEQS", str(_GEN_CONCURRENCY)))
+    if min(_GEN_CONCURRENCY, server_limit) < 1:
+        raise ValueError("MS GraphRAG generation concurrency must be at least 1")
+    return min(_GEN_CONCURRENCY, server_limit)
 
 
 def _ms_query_embedding_text(text: str) -> str:
+    from core.strategy_registry import PAPER_TRANSPORT
+
     instruction = os.environ.get(
         "EMBEDDING_QUERY_INSTRUCTION",
-        "Given a web search query, retrieve relevant passages that answer the query",
+        PAPER_TRANSPORT.query_instruction,
     ).strip()
     value = str(text)
-    return f"Instruct: {instruction}\nQuery: {value}" if instruction else value
+    return PAPER_TRANSPORT.query_template.format(instruction=instruction, query=value) if instruction else value
 
 
 def _register_query_embedding_model() -> None:
-    """Register a query-only wrapper while leaving indexed passage text raw."""
+    """Register passage/query wrappers with an embedding-only request cap."""
     from graphrag_llm.embedding.embedding_factory import embedding_factory, register_embedding
-
-    if _QUERY_EMBEDDING_TYPE in embedding_factory:
-        return
-
     from graphrag_llm.embedding.lite_llm_embedding import LiteLLMEmbedding
 
-    class QueryInstructionEmbedding(LiteLLMEmbedding):
+    class BoundedLiteLLMEmbedding(LiteLLMEmbedding):
+        @staticmethod
+        def _splittable(exc: Exception) -> bool:
+            message = str(exc).lower()
+            return (
+                getattr(exc, "status_code", None) == 413
+                or "messagepack data is malformed" in message
+                or "maximum context length" in message
+                or "too many tokens" in message
+                or "input tokens" in message
+            )
+
+        @staticmethod
+        def _validated(response, expected_count: int):
+            data = getattr(response, "data", None)
+            if not isinstance(data, list):
+                raise TypeError("MS GraphRAG embedding response has no data list")
+            indices = [getattr(item, "index", None) for item in data]
+            if sorted(indices) != list(range(expected_count)):
+                raise ValueError(
+                    "MS GraphRAG embedding response indices must be an exact permutation of "
+                    f"0..{expected_count - 1}: got {indices!r}"
+                )
+            data.sort(key=lambda item: item.index)
+            for index, item in enumerate(data):
+                vector = getattr(item, "embedding", None)
+                if (
+                    not isinstance(vector, list)
+                    or len(vector) != _EMBED_DIM
+                    or not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in vector)
+                ):
+                    raise ValueError(f"MS GraphRAG embedding vector {index} is not {_EMBED_DIM}-dimensional and finite")
+            return response
+
+        def embedding(self, /, **kwargs):
+            try:
+                response = _with_ms_embedding_slot(
+                    lambda: super(BoundedLiteLLMEmbedding, self).embedding(**kwargs)
+                )
+                values = kwargs.get("input")
+                return self._validated(response, len(values) if isinstance(values, list) else 1)
+            except Exception as exc:
+                values = kwargs.get("input")
+                if not self._splittable(exc) or not isinstance(values, list) or len(values) <= 1:
+                    raise
+                midpoint = len(values) // 2
+                left = self.embedding(**{**kwargs, "input": values[:midpoint]})
+                right = self.embedding(**{**kwargs, "input": values[midpoint:]})
+                left.data.extend(right.data)
+                for index, item in enumerate(left.data):
+                    item.index = index
+                return self._validated(left, len(values))
+
+        async def embedding_async(self, /, **kwargs):
+            try:
+                response = await _with_ms_embedding_slot_async(
+                    lambda: super(BoundedLiteLLMEmbedding, self).embedding_async(**kwargs)
+                )
+                values = kwargs.get("input")
+                return self._validated(response, len(values) if isinstance(values, list) else 1)
+            except Exception as exc:
+                values = kwargs.get("input")
+                if not self._splittable(exc) or not isinstance(values, list) or len(values) <= 1:
+                    raise
+                midpoint = len(values) // 2
+                left = await self.embedding_async(**{**kwargs, "input": values[:midpoint]})
+                right = await self.embedding_async(**{**kwargs, "input": values[midpoint:]})
+                left.data.extend(right.data)
+                for index, item in enumerate(left.data):
+                    item.index = index
+                return self._validated(left, len(values))
+
+    class QueryInstructionEmbedding(BoundedLiteLLMEmbedding):
         @staticmethod
         def _prepare(kwargs: dict) -> dict:
             prepared = dict(kwargs)
@@ -105,11 +234,18 @@ def _register_query_embedding_model() -> None:
         async def embedding_async(self, /, **kwargs):
             return await super().embedding_async(**self._prepare(kwargs))
 
-    register_embedding(
-        embedding_type=_QUERY_EMBEDDING_TYPE,
-        embedding_initializer=QueryInstructionEmbedding,
-        scope="singleton",
-    )
+    if _BOUNDED_EMBEDDING_TYPE not in embedding_factory:
+        register_embedding(
+            embedding_type=_BOUNDED_EMBEDDING_TYPE,
+            embedding_initializer=BoundedLiteLLMEmbedding,
+            scope="singleton",
+        )
+    if _QUERY_EMBEDDING_TYPE not in embedding_factory:
+        register_embedding(
+            embedding_type=_QUERY_EMBEDDING_TYPE,
+            embedding_initializer=QueryInstructionEmbedding,
+            scope="singleton",
+        )
 
 
 def _configure_litellm_client_lifecycle() -> None:
@@ -357,8 +493,8 @@ def _register_external_models_with_litellm() -> None:
     import litellm
 
     base_meta = {
-        "max_tokens": int(os.environ.get("RAG_MAX_CONTEXT_LENGTH", "16384")),
-        "max_input_tokens": int(os.environ.get("RAG_MAX_CONTEXT_LENGTH", "16384")),
+        "max_tokens": _GEN_MAX_CONTEXT_TOKENS,
+        "max_input_tokens": _GEN_MAX_CONTEXT_TOKENS,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.0,
         "output_cost_per_token": 0.0,
@@ -371,7 +507,7 @@ def _register_external_models_with_litellm() -> None:
             f"openai/{_EMBED_MODEL_NAME}": {
                 **base_meta,
                 "mode": "embedding",
-                "max_input_tokens": int(os.environ.get("MAX_EMBEDDING_LENGTH", "16384")),
+                "max_input_tokens": _EMBED_MAX_INPUT_TOKENS,
                 "output_vector_size": _EMBED_DIM,
             },
         }
@@ -382,23 +518,13 @@ _ROUTER_INSTALLED = False
 
 
 def _install_litellm_router_for_gen() -> None:
-    """Monkey-patch litellm.acompletion to round-robin gen-chat across
-    multiple endpoints when RAG_MS_GEN_API_BASES lists more than one (a no-op
-    with the default single LiteLLM-proxy endpoint). graphrag-llm calls bare
-    `litellm.acompletion(**args)`; we intercept only when model matches our
-    configured generation model and delegate to a Router with simple-shuffle. Embedding +
-    any other model passes through unchanged.
-    """
+    """Health-check the single configured route without runtime patching."""
     global _ROUTER_INSTALLED
     if _ROUTER_INSTALLED:
         return
-    import contextvars
     import json
     import urllib.error
     import urllib.request
-
-    import litellm
-    from litellm import Router
 
     # Validate the OpenAI-compatible model registry rather than a proxy-specific
     # /health route. Busy external servers can legitimately queue a health
@@ -431,69 +557,37 @@ def _install_litellm_router_for_gen() -> None:
         raise ConnectionError(
             f"MS GraphRAG: no configured generation endpoint passed its health check: {_GEN_API_BASES}"
         )
-    logger.info("MS GraphRAG: live gen endpoints for router: %s", live_bases)
-
-    if len(live_bases) <= 1:
-        return
-
-    target = f"openai/{_GEN_MODEL_NAME}"
-    model_list = [
-        {
-            "model_name": target,
-            "litellm_params": {
-                "model": target,
-                "api_base": ab,
-                "api_key": _GEN_API_KEY,
-            },
-        }
-        for ab in live_bases
-    ]
-    router = Router(model_list=model_list, routing_strategy="simple-shuffle")
-
-    # Capture the ORIGINAL acompletion before we replace litellm.acompletion.
-    # Router internally calls `litellm.acompletion(...)`, which would re-enter
-    # our wrapper and recurse forever. We use a contextvar to flag "we are
-    # already inside Router" so the re-entry bypasses Router and uses the
-    # original function — which is what Router actually expects to call.
-    orig_acompletion = litellm.acompletion
-    _in_router: contextvars.ContextVar[bool] = contextvars.ContextVar(
-        "_ms_router_reentry",
-        default=False,
-    )
-
-    async def _routed_acompletion(**kwargs):
-        if _in_router.get():
-            return await orig_acompletion(**kwargs)
-        if kwargs.get("model") == target:
-            kwargs.pop("api_base", None)
-            token = _in_router.set(True)
-            try:
-                return await router.acompletion(**kwargs)
-            finally:
-                _in_router.reset(token)
-        return await orig_acompletion(**kwargs)
-
-    litellm.acompletion = _routed_acompletion
     _ROUTER_INSTALLED = True
-    logger.info(
-        "MS LiteLLM router installed for %s across %d endpoints: %s",
-        target,
-        len(_GEN_API_BASES),
-        _GEN_API_BASES,
-    )
+    logger.info("MS GraphRAG: validated one registered LiteLLM route")
 
 
 def build_config(corpus_tag: str, staged_input_dir: Path):
     """Construct a GraphRagConfig pointing LiteLLM at external inference."""
+    _apply_shared_transport()
+    missing = [
+        name
+        for name, value in (
+            ("VLLM_API_BASE or VLLM_URL", _GEN_API_BASE),
+            ("VLLM_SERVED_MODEL_NAME", _GEN_MODEL_NAME),
+            ("VLLM_EMBED_API_BASE or VLLM_EMBED_URL", _EMBED_API_BASE),
+            ("VLLM_SERVED_EMBED_MODEL_NAME", _EMBED_MODEL_NAME),
+            ("VLLM_API_KEY", _GEN_API_KEY),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError("MS GraphRAG requires the shared LiteLLM transport: " + ", ".join(missing))
     _register_external_models_with_litellm()
     _install_litellm_router_for_gen()
     _register_query_embedding_model()
 
+    from graphrag.config.models.embed_text_config import EmbedTextConfig
     from graphrag.config.models.graph_rag_config import GraphRagConfig
     from graphrag.config.models.reporting_config import ReportingConfig
     from graphrag_cache import CacheConfig
     from graphrag_input import InputConfig
     from graphrag_llm.config.model_config import ModelConfig
+    from graphrag_llm.config.retry_config import RetryConfig
     from graphrag_storage import StorageConfig, StorageType
     from graphrag_vectors import IndexSchema, VectorStoreConfig
 
@@ -507,10 +601,12 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     # - encoding_format="float" required (LiteLLM 1.83 sends None which vLLM 0.15 rejects).
     # - max_tokens: keep modest so a runaway entity-extraction doesn't blow chunk context.
     # - extra_body.guided_json supported by vLLM but not configured here; rely on json_repair fallback.
-    completion_call_args = {
-        "temperature": 0.0,
-        "max_tokens": 1500,
-    }
+    from core.generation_profiles import request_settings
+    completion_call_args = request_settings("ms_completion")
+    if _TIMEOUT_SECONDS is not None:
+        completion_call_args["timeout"] = _TIMEOUT_SECONDS
+    if _GEN_SEED is not None:
+        completion_call_args["seed"] = _GEN_SEED
     # Community reports need a higher output cap. The default 1500 truncates the
     # report JSON mid-string (Unterminated string -> JSONDecodeError -> empty
     # report; ~14% of communities failed at 1500 on the 4B model). max_length is
@@ -518,10 +614,15 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     # id keeps extract_graph on max_tokens=1500 so its (expensive) per-call LLM
     # cache stays valid — the cache key includes max_tokens, so bumping the
     # shared model would force a full re-extraction.
-    report_call_args = {
-        "temperature": 0.0,
-        "max_tokens": int(os.environ.get("RAG_MS_REPORT_MAX_TOKENS", "4096")),
-    }
+    report_call_args = request_settings("ms_report")
+    if _TIMEOUT_SECONDS is not None:
+        report_call_args["timeout"] = _TIMEOUT_SECONDS
+    if _GEN_SEED is not None:
+        report_call_args["seed"] = _GEN_SEED
+    embedding_call_args: dict[str, object] = {"encoding_format": "float"}
+    if _TIMEOUT_SECONDS is not None:
+        embedding_call_args["timeout"] = _TIMEOUT_SECONDS
+    retry_config = RetryConfig(max_retries=_RETRY_ATTEMPTS)
 
     cfg = GraphRagConfig(
         completion_models={
@@ -532,6 +633,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
                 api_base=_GEN_API_BASE,
                 api_key=_GEN_API_KEY,
                 call_args=completion_call_args,
+                retry=retry_config,
             ),
             "report_completion_model": ModelConfig(
                 type="litellm",
@@ -540,16 +642,18 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
                 api_base=_GEN_API_BASE,
                 api_key=_GEN_API_KEY,
                 call_args=report_call_args,
+                retry=retry_config,
             ),
         },
         embedding_models={
             "default_embedding_model": ModelConfig(
-                type="litellm",
+                type=_BOUNDED_EMBEDDING_TYPE,
                 model_provider="openai",
                 model=_EMBED_MODEL_NAME,
                 api_base=_EMBED_API_BASE,
                 api_key=_GEN_API_KEY,
-                call_args={"encoding_format": "float"},
+                call_args=embedding_call_args,
+                retry=retry_config,
             ),
             "query_embedding_model": ModelConfig(
                 type=_QUERY_EMBEDDING_TYPE,
@@ -557,7 +661,8 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
                 model=_EMBED_MODEL_NAME,
                 api_base=_EMBED_API_BASE,
                 api_key=_GEN_API_KEY,
-                call_args={"encoding_format": "float"},
+                call_args=embedding_call_args,
+                retry=retry_config,
             ),
         },
         input=InputConfig(file_pattern=r".*\.(txt|md)$"),
@@ -573,6 +678,10 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
             storage=StorageConfig(type=StorageType.File, base_dir=str(cache_dir)),
         ),
         reporting=ReportingConfig(base_dir=str(internal_log_dir)),
+        embed_text=EmbedTextConfig(
+            embedding_model_id="default_embedding_model",
+            batch_size=_EMBED_BATCH_SIZE,
+        ),
         # Must match the configured embedding model's real dim (_EMBED_DIM
         # above); default IndexSchema assumes 3072 (text-embedding-3-large).
         # Without the override, lancedb rejects the embedding parquet on a

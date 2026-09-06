@@ -101,7 +101,7 @@ def _write_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
         "official_split_expected_queries": 1,
         "evaluated_queries_count": 1,
         "evaluated_query_ids_sha256": manifest["query_ids_sha256"],
-        "status": "completed",
+        "status": "completed_unadmitted",
     }
     raw_path = tmp_path / "baseline.json"
     raw_path.write_text(json.dumps({**common, "details": [detail]}), encoding="utf-8")

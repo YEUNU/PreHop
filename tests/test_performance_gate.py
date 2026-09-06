@@ -8,7 +8,7 @@ def _artifact(strategy: str, dataset: str, scope: str = "full_benchmark") -> dic
         "strategy": strategy,
         "dataset": dataset,
         "corpus_tag": dataset.casefold(),
-        "status": "completed",
+        "status": "completed_unadmitted",
         "evaluation_scope": scope,
         "corpus_manifest_fingerprint": "corpus",
         "corpus_index_fingerprint_status": "matched",

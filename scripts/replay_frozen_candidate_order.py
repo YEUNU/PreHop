@@ -304,7 +304,7 @@ async def main_async(args: argparse.Namespace) -> None:
     await asyncio.gather(
         *(process(index, trace) for index, trace in enumerate(traces) if index not in completed_indices)
     )
-    _write_report(args.out, _summarize(args, traces, completed, status="completed"))
+    _write_report(args.out, _summarize(args, traces, completed, status="completed_unadmitted"))
 
 
 def _summarize(
@@ -425,7 +425,7 @@ def _summarize(
                     for record in category_records
                 ]
     uncertainty: dict[str, Any] = {}
-    if status == "completed":
+    if status == "completed_unadmitted":
         uncertainty = {
             "bootstrap_iterations": args.bootstrap_iterations,
             "bootstrap_seed": args.seed,

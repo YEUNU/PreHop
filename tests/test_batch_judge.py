@@ -102,7 +102,7 @@ async def test_reconcile_requires_complete_batch_before_patch(tmp_path, monkeypa
         lambda *_args: {"batch-1": {"0": {"score": 1, "groundedness": 1, "hallucination": 0, "reason": "ok"}}},
     )
 
-    with pytest.raises(RuntimeError, match="missing 1/2"):
+    with pytest.raises(RuntimeError, match="Public OpenAI Batch judge jobs are disabled"):
         await benchmark.reconcile_pending_judges(run_dir)
 
     assert result_file.read_text(encoding="utf-8") == before
@@ -125,7 +125,7 @@ async def test_reconcile_preserves_manifest_when_hallucination_field_is_missing(
         },
     )
 
-    with pytest.raises(RuntimeError, match="missing valid score or groundedness"):
+    with pytest.raises(RuntimeError, match="Public OpenAI Batch judge jobs are disabled"):
         await benchmark.reconcile_pending_judges(run_dir)
 
     assert result_file.read_text(encoding="utf-8") == before
@@ -135,6 +135,7 @@ async def test_reconcile_preserves_manifest_when_hallucination_field_is_missing(
 @pytest.mark.asyncio
 async def test_reconcile_patches_complete_batch_and_removes_manifest(tmp_path, monkeypatch):
     run_dir, result_file, manifest = _write_pending_run(tmp_path)
+    before = result_file.read_text(encoding="utf-8")
     monkeypatch.setattr(RAGConfig, "OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(
         batch_judge,
@@ -147,13 +148,7 @@ async def test_reconcile_patches_complete_batch_and_removes_manifest(tmp_path, m
         },
     )
 
-    assert await benchmark.reconcile_pending_judges(run_dir) == 1
-    output = json.loads(result_file.read_text(encoding="utf-8"))
-    assert output["status"] == "completed"
-    assert output["avg_llm_judge_score"] == pytest.approx(0.5)
-    detail_rows = [
-        json.loads(line)
-        for line in result_file.with_name("naive_corpus.details.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    assert [row["llm_judge_score"] for row in detail_rows] == [1.0, 0.0]
-    assert not manifest.exists()
+    with pytest.raises(RuntimeError, match="Public OpenAI Batch judge jobs are disabled"):
+        await benchmark.reconcile_pending_judges(run_dir)
+    assert result_file.read_text(encoding="utf-8") == before
+    assert manifest.exists()

@@ -40,7 +40,7 @@ def test_duplicate_query_text_is_aligned_through_generated_query_views(tmp_path)
     benchmark_path.write_text(
         json.dumps(
             {
-                "status": "completed",
+                "status": "completed_unadmitted",
                 "evaluation_scope": "full_benchmark",
                 "details": [
                     {"query_id": "q1", "query": "Who is A?"},

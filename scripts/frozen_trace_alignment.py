@@ -58,7 +58,7 @@ def align_frozen_traces_to_gold(
 ) -> list[dict[str, Any]]:
     """Return gold rows in candidate-trace order with duplicate-text guards."""
     benchmark = json.loads(benchmark_path.read_text())
-    if benchmark.get("status") != "completed" or benchmark.get("evaluation_scope") != "full_benchmark":
+    if benchmark.get("status") != "completed_unadmitted" or benchmark.get("evaluation_scope") != "full_benchmark":
         raise ValueError("Frozen analysis requires a completed full_benchmark artifact")
     details = benchmark.get("details") or []
     benchmark_trace_path = benchmark_path.with_name(f"{benchmark_path.stem}.traces.jsonl")

@@ -61,10 +61,7 @@ if { [ "$STAGE" = "benchmark" ] || [ "$STAGE" = "bench" ] || [ "$STAGE" = "all" 
     exit 1
 fi
 
-case "$MODEL" in
-    prehop|naive|hoprag|ms_graphrag|browsenet|proprag) ;;
-    *) echo "Unknown --model '$MODEL'" >&2; exit 1 ;;
-esac
+python3 core/strategy_registry.py --is-valid "$MODEL" || { echo "Unknown --model '$MODEL'" >&2; exit 1; }
 
 do_index() {
     echo ">>> [$DATASET index] $MODEL  (dataset $CORPUS_DIR, corpus-tag $CORPUS_TAG)"
