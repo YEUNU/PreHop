@@ -65,7 +65,9 @@ from pathlib import Path
 sys.path[:0] = [{str(import_root)!r}, {str(ROOT)!r}]
 {native_import}
 assert Path(sys.modules[{module_name!r}].__file__).is_relative_to(Path({str(staged)!r}))
-assert os.environ.get('PREHOP_TEST_DOTENV_MARKER')=='loaded'
+# Hippo's LiteLLM dotenv is disabled by supported PRODUCTION mode; GFM
+# still runs its own dotenv loader, whose aliases must remain shielded.
+assert os.environ.get('PREHOP_TEST_DOTENV_MARKER')=={('loaded' if strategy == 'gfm_rag' else None)!r}
 import core.inference_transport as transport
 transport._approved_gateway_identity=lambda: hashlib.sha256(b"http://litellm.test/v1").hexdigest()
 assert all(os.environ.get(name)=="" for name in transport._FORBIDDEN_AMBIENT_PROVIDER_KEYS)

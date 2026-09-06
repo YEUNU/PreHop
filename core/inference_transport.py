@@ -29,6 +29,21 @@ _FORBIDDEN_AMBIENT_PROVIDER_KEYS = (
 )
 
 
+def preserve_provider_environment(environment=None) -> None:
+    """Freeze the already-canonical paper environment before native imports."""
+    environment = os.environ if environment is None else environment
+    conflicts = sorted(name for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS if environment.get(name))
+    if conflicts:
+        raise RuntimeError(f'paper environment rejects populated provider aliases: {conflicts}')
+    if environment.get('LITELLM_MODE', '') not in {'', 'PRODUCTION'}:
+        raise RuntimeError('paper environment requires LITELLM_MODE=PRODUCTION')
+    for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS:
+        environment.setdefault(name, '')
+    # Public LiteLLM configuration prevents DEV-mode load_dotenv from reading
+    # the installed package's ancestor .env, outside the execution worktree.
+    environment['LITELLM_MODE'] = 'PRODUCTION'
+
+
 def _required(*names: str) -> str:
     for name in names:
         value = os.environ.get(name, "").strip()

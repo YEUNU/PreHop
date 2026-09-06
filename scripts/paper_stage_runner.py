@@ -52,15 +52,18 @@ def stage_base(campaign: str, name: str, attempt: str) -> Path:
     return path
 
 
-def aggregate(campaign: str, stage: str, attempt: str) -> None:
+def aggregate(campaign: str, stage: str, attempt: str, target_attempts: dict | None = None) -> None:
     from core.strategy_registry import PRIMARY_STRATEGIES
     from scripts.paper_cold_canary import save
     from scripts.paper_gate_ledger import ready, record
     ledger = ROOT / 'data/results' / campaign / 'gate_ledger.json'
     ready(ledger, stage)
+    from scripts.campaign_attempts import selected_attempt, validated_attempts
+    target_attempts = validated_attempts(target_attempts)
+    phase = 'cold' if stage == 'cold_canary_16' else 'one-query'
     branch = 'cold_v2' if stage == 'cold_canary_16' else 'one_query'
     base = ROOT / 'data/results' / campaign / branch / validate_name(attempt)
-    targets = {f'{dataset}/{strategy}': reference(base / dataset / strategy / 'evidence.json')
+    targets = {f'{dataset}/{strategy}': reference(ROOT / 'data/results' / campaign / branch / selected_attempt(attempt, target_attempts, f'{phase}/{dataset}/{strategy}') / dataset / strategy / 'evidence.json')
                for dataset in ('multihoprag', 'musique') for strategy in PRIMARY_STRATEGIES}
     path = base / 'matrix_evidence.json'
     save(path, {'schema_version': 1, 'stage': stage, 'status': 'canary_passed', 'targets': targets})
@@ -266,6 +269,7 @@ def main() -> None:
     parser.add_argument('action', choices=['reattest', 'cold-aggregate', 'one-query', 'one-query-aggregate', 'recovery', 'full-target', '_recovery_child'])
     parser.add_argument('campaign')
     parser.add_argument('--attempt', default='a1')
+    parser.add_argument('--target-attempts-json', default='{}')
     parser.add_argument('--strategy', default='naive')
     parser.add_argument('--dataset', choices=['multihoprag', 'musique'], default='multihoprag')
     parser.add_argument('--mode', choices=['interrupt', 'resume'])
@@ -291,7 +295,7 @@ def main() -> None:
         from scripts.paper_cold_canary import workflow
         asyncio.run(workflow(args.campaign, args.strategy, args.dataset, args.attempt, full_corpus=True))
     else:
-        aggregate(args.campaign, 'cold_canary_16' if args.action == 'cold-aggregate' else 'one_query_matrix_16', args.attempt)
+        aggregate(args.campaign, 'cold_canary_16' if args.action == 'cold-aggregate' else 'one_query_matrix_16', args.attempt, json.loads(args.target_attempts_json))
 
 
 if __name__ == '__main__':

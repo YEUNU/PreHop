@@ -27,6 +27,7 @@ VERIFIER_SOURCES = (
     ROOT / "scripts/paper_cold_canary.py",
     ROOT / "scripts/paper_stage_runner.py",
     ROOT / "scripts/paper_campaign.py",
+    ROOT / "scripts/campaign_attempts.py",
     ROOT / "scripts/recovery_checkpoint.py",
     ROOT / "scripts/cold_canary_fixture.py",
     ROOT / "configs/cold_canary/museum_rich_entities_v2.json",

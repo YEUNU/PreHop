@@ -56,8 +56,11 @@ def lock(path: Path):
     return handle
 
 
-def build_steps(campaign: str, attempt: str, python: str) -> list[dict]:
+def build_steps(campaign: str, attempt: str, python: str, target_attempts: dict | None = None) -> list[dict]:
     from core.strategy_registry import PRIMARY_STRATEGIES
+    from scripts.campaign_attempts import selected_attempt, validated_attempts
+    target_attempts = validated_attempts(target_attempts)
+    matrix_args = ["--target-attempts-json", json.dumps(target_attempts, sort_keys=True)] if target_attempts else []
     ledger = f'data/results/{campaign}/gate_ledger.json'
     stage = [python, 'scripts/paper_stage_runner.py']
     steps = [{'id': 'runtime_setup', 'argv': [*stage, 'reattest', campaign, '--attempt', attempt]}]
@@ -67,14 +70,14 @@ def build_steps(campaign: str, attempt: str, python: str) -> list[dict]:
     for method in PRIMARY_STRATEGIES:
         for dataset in ('multihoprag', 'musique'):
             steps.append({'id': f'cold/{dataset}/{method}', 'argv': [python, 'scripts/paper_cold_canary.py', campaign,
-                          method, dataset, '--attempt', attempt]})
-    steps.extend([{'id': 'cold_canary_16', 'argv': [*stage, 'cold-aggregate', campaign, '--attempt', attempt]},
+                          method, dataset, '--attempt', selected_attempt(attempt, target_attempts, f'cold/{dataset}/{method}')]})
+    steps.extend([{'id': 'cold_canary_16', 'argv': [*stage, 'cold-aggregate', campaign, '--attempt', attempt, *matrix_args]},
                   {'id': 'resume_stale_rejection', 'argv': [*stage, 'recovery', campaign, '--attempt', attempt]}])
     for method in PRIMARY_STRATEGIES:
         for dataset in ('multihoprag', 'musique'):
             steps.append({'id': f'one-query/{dataset}/{method}', 'argv': [*stage, 'one-query', campaign,
-                          '--strategy', method, '--dataset', dataset, '--attempt', attempt]})
-    steps.extend([{'id': 'one_query_matrix_16', 'argv': [*stage, 'one-query-aggregate', campaign, '--attempt', attempt]},
+                          '--strategy', method, '--dataset', dataset, '--attempt', selected_attempt(attempt, target_attempts, f'one-query/{dataset}/{method}')]})
+    steps.extend([{'id': 'one_query_matrix_16', 'argv': [*stage, 'one-query-aggregate', campaign, '--attempt', attempt, *matrix_args]},
         {'id': 'full_target_admitted', 'argv': [*stage, 'full-target', campaign, '--strategy', 'naive',
                                               '--dataset', 'multihoprag', '--attempt', attempt]},
         {'id': 'full_matrix', 'argv': ['bash', 'scripts/run_paper_matrix.sh', campaign]}])
@@ -92,8 +95,12 @@ def check_plan(plan: dict) -> None:
     context = _context()
     if context != plan.get('context'):
         raise RuntimeError('Campaign effective model configuration or runtime content changed')
-    if plan.get('steps') != build_steps(plan['campaign'], plan['attempt'], plan['python']):
+    if plan.get('steps') != build_steps(plan['campaign'], plan['attempt'], plan['python'], plan.get('target_attempts')):
         raise RuntimeError('Campaign execution plan differs from the registered ordered protocol')
+    if 'predecessor_plan' in plan:
+        validate_successor_plan(plan)
+    elif plan.get('target_attempts') or plan.get('inherited_completed_steps'):
+        raise RuntimeError('Target retries require an immutable predecessor plan and terminal receipt')
 
 
 def create_plan(campaign: str, commit: str, attempt: str) -> Path:
@@ -116,14 +123,90 @@ def create_plan(campaign: str, commit: str, attempt: str) -> Path:
     return target
 
 
+def validate_successor_plan(plan: dict) -> None:
+    from scripts.campaign_attempts import selected_attempt, validated_attempts
+    from scripts.paper_gate_ledger import _bound_json
+    previous_path, previous = _bound_json(plan['predecessor_plan'])
+    status_path, status = _bound_json(plan.get('predecessor_status'))
+    if previous_path.name != 'plan.json' or status_path != previous_path.parent / 'status.json':
+        raise RuntimeError('Retry predecessor paths are not the exact plan and terminal status')
+    if previous.get('steps') != build_steps(previous['campaign'], previous['attempt'], previous['python'], previous.get('target_attempts')):
+        raise RuntimeError('Retry predecessor ordered protocol differs')
+    if plan.get('schema_version') != 2:
+        raise RuntimeError('Retry requires the versioned successor plan contract')
+    for field in ('campaign', 'attempt', 'context', 'python', 'python_prefix'):
+        if previous.get(field) != plan.get(field):
+            raise RuntimeError(f'Retry predecessor {field} differs')
+    step = plan.get('retry_step')
+    attempts = validated_attempts(plan.get('target_attempts'))
+    prior_attempts = validated_attempts(previous.get('target_attempts'))
+    completed = status.get('completed_steps', [])
+    if status.get('state') != 'failed' or status.get('stage') != step or step in completed:
+        raise RuntimeError('Retry must select exactly the predecessor failed target')
+    if step not in attempts or attempts[step] == selected_attempt(plan['attempt'], prior_attempts, step):
+        raise RuntimeError('Retry must allocate a different target attempt')
+    if attempts != {**prior_attempts, step: attempts[step]}:
+        raise RuntimeError('Retry may change only the failed target attempt')
+    if plan.get('inherited_completed_steps') != completed:
+        raise RuntimeError('Retry completed-step inheritance differs from the terminal receipt')
+    expected_ids = [row['id'] for row in previous['steps']]
+    if completed != expected_ids[:expected_ids.index(step)]:
+        raise RuntimeError('Retry predecessor completion order is invalid')
+
+
+def create_successor_plan(previous_path: Path, failed_step: str, attempt: str, segment: str) -> Path:
+    from scripts.campaign_attempts import validated_attempts
+    from scripts.paper_cold_canary import save
+    from scripts.paper_stage_runner import reference, validate_name
+    from utils.provenance import code_provenance
+    validate_name(segment)
+    validated_attempts({failed_step: attempt})
+    handle = lock(resource_lock_path())
+    try:
+        ensure_no_other_campaigns()
+        previous = json.loads(previous_path.read_text())
+        check_plan(previous)
+        status_path = previous_path.parent / 'status.json'
+        status = json.loads(status_path.read_text())
+        if alive(status.get('supervisor')) or alive(status.get('child')) or any(alive(row) for row in status.get('remaining_owned_processes', [])):
+            raise RuntimeError('Retry predecessor still owns a live process')
+        attempts = {**previous.get('target_attempts', {}), failed_step: attempt}
+        successor = {**previous, 'schema_version': 2, 'target_attempts': attempts,
+                     'predecessor_plan': reference(previous_path), 'predecessor_status': reference(status_path),
+                     'retry_step': failed_step, 'inherited_completed_steps': list(status.get('completed_steps', [])),
+                     'provenance': code_provenance(),
+                     'steps': build_steps(previous['campaign'], previous['attempt'], previous['python'], attempts)}
+        check_plan(successor)
+        branch, dataset, method = failed_step.split('/')
+        folder = 'cold_v2' if branch == 'cold' else 'one_query'
+        if (ROOT / 'data/results' / previous['campaign'] / folder / attempt / dataset / method).exists():
+            raise RuntimeError('Retry target attempt already exists; preserve it')
+        for step in successor['steps']:
+            if step['id'] in successor['inherited_completed_steps']:
+                validate_step(successor, step)
+        target = ROOT / 'data/results' / previous['campaign'] / 'supervisor/segments' / segment / 'plan.json'
+        save(target, successor)
+        return target
+    finally:
+        handle.close()
+
+
 def safe_environment() -> dict[str, str]:
     """Only approved runtime selectors and canonical connection fields enter the unit."""
+    from core.inference_transport import _FORBIDDEN_AMBIENT_PROVIDER_KEYS, preserve_provider_environment
+    from core.paper_policy import method_environment_defaults, preserve_method_environment
+    from core.strategy_registry import paper_environment_defaults
     from scripts.paper_stage_runner import selected_python_environment
     current = selected_python_environment()
+    preserve_provider_environment(current)
+    preserve_method_environment(current)
     allowed = {'PYTHON_BIN', 'UV_PROJECT_ENVIRONMENT', 'RAG_OFFICIAL_BASELINE_HOME',
         'RAG_INFERENCE_BASE_URL', 'RAG_INFERENCE_API_KEY', 'RAG_GENERATION_MODEL', 'RAG_EMBEDDING_MODEL',
         'RAG_GENERATION_REVISION', 'RAG_EMBEDDING_REVISION', 'NEO4J_URI', 'NEO4J_URL', 'NEO4J_USERNAME', 'NEO4J_USER',
-        'NEO4J_PASSWORD', 'NEO4J_DATABASE', 'HF_HOME', 'HF_HUB_CACHE', 'TRANSFORMERS_CACHE', 'PATH', 'HOME'}
+        'NEO4J_PASSWORD', 'NEO4J_DATABASE', 'HF_HOME', 'HF_HUB_CACHE', 'TRANSFORMERS_CACHE', 'PATH', 'HOME', 'LITELLM_MODE'}
+    allowed.update(_FORBIDDEN_AMBIENT_PROVIDER_KEYS)
+    allowed.update(method_environment_defaults())
+    allowed.update(paper_environment_defaults())
     env = {key: current[key] for key in allowed if key in current}
     env.update(PYTHONDONTWRITEBYTECODE='1', RAG_SKIP_PROJECT_ENV='true', RAG_PAPER_MODE='true')
     return env
@@ -230,6 +313,7 @@ def launch(plan_path: Path, *, resume: bool = False) -> dict:
 
 def validate_step(plan: dict, step: dict) -> list[dict]:
     from core.admission import sha256_file
+    from scripts.campaign_attempts import selected_attempt
     from scripts.paper_gate_ledger import _bound_json, _validate_canary_artifacts, _validate_evidence
     from scripts.paper_stage_runner import reference
     campaign = plan['campaign']
@@ -239,7 +323,7 @@ def validate_step(plan: dict, step: dict) -> list[dict]:
         branch, dataset, method = step['id'].split('/')
         folder = 'cold_v2' if branch == 'cold' else 'one_query'
         stage = 'cold_canary_16' if branch == 'cold' else 'one_query_matrix_16'
-        path = ROOT / 'data/results' / campaign / folder / plan['attempt'] / dataset / method / 'evidence.json'
+        path = ROOT / 'data/results' / campaign / folder / selected_attempt(plan['attempt'], plan.get('target_attempts'), step['id']) / dataset / method / 'evidence.json'
         value = json.loads(path.read_text())
         index_path, index = _bound_json(value.get('index'))
         query_path, query = _bound_json(value.get('query'))
@@ -369,7 +453,7 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '') -> int:
     from utils.provenance import code_provenance
     status = {'campaign': plan['campaign'], 'commit': plan['commit'], 'unit': unit, 'state': 'planned',
               'supervisor': identity(os.getpid()), 'child': None, 'started_at': time.time(),
-              'completed_steps': previous.get('completed_steps', []) if resume else []}
+              'completed_steps': list(previous.get('completed_steps', []) if resume else plan.get('inherited_completed_steps', []))}
     def update(fields):
         if 'heartbeat_at' in fields:
             fields['checkpoints'] = checkpoint_progress(plan['campaign'])
@@ -419,12 +503,14 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '') -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['plan', 'launch', 'supervise', 'status'])
+    parser.add_argument('action', choices=['plan', 'retry-plan', 'launch', 'supervise', 'status'])
     parser.add_argument('target', help='Campaign ID for plan; exact plan.json path otherwise')
     parser.add_argument('--commit')
     parser.add_argument('--attempt', default='a1')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--unit', default='')
+    parser.add_argument('--retry-step')
+    parser.add_argument('--segment')
     args = parser.parse_args()
     if args.action == 'status':
         path = Path(args.target).resolve().parent / 'status.json'
@@ -440,6 +526,11 @@ def main() -> int:
     plan_path = Path(args.target).resolve()
     if ROOT / 'data/results' not in plan_path.parents or plan_path.name != 'plan.json':
         raise RuntimeError('Campaign requires its repository-owned plan.json')
+    if args.action == 'retry-plan':
+        if not args.retry_step or not args.segment:
+            parser.error('retry-plan requires --retry-step and --segment')
+        print(create_successor_plan(plan_path, args.retry_step, args.attempt, args.segment))
+        return 0
     if args.action == 'launch':
         print(json.dumps(launch(plan_path, resume=args.resume), sort_keys=True))
         return 0

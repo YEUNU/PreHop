@@ -274,6 +274,10 @@ external environments by absolute paths. A new ignored `.env` placeholder may
 satisfy shell entrypoints while canonical connection settings are supplied by
 a private mode-0600 service environment file. Do not copy the original `.env`
 or place credential values in command arguments.
+The service environment retains empty legacy-provider sentinels and selects
+LiteLLM's supported `LITELLM_MODE=PRODUCTION` before native imports. Explicit
+conflicting provider values or `DEV` mode fail validation rather than being
+silently overwritten.
 
 After recording a static GO whose `reviewed_configuration_sha256` equals the
 central configuration projection (excluding dependencies not yet installed):
@@ -298,7 +302,19 @@ success.
 frozen context and completed evidence before proceeding. Existing incomplete
 fresh-index/cold attempts remain preserved and are not silently replaced;
 strict matrix checkpoint recovery is handled by the existing target runner.
+For a failed cold or one-query target, create an immutable successor segment:
+
+```bash
+"$PYTHON_BIN" scripts/paper_campaign.py retry-plan data/results/CAMPAIGN/supervisor/plan.json --retry-step cold/multihoprag/ms_graphrag --attempt a2 --segment ms-retry
+"$PYTHON_BIN" scripts/paper_campaign.py launch data/results/CAMPAIGN/supervisor/segments/ms-retry/plan.json
+```
+
+The successor binds the original plan and terminal status bytes, changes only
+the failed target's attempt, and revalidates every inherited completed step.
+The producer, target validator and matrix assembly use the same attempt map.
+Original plans, status files and failed outputs remain in place. A changed
+configuration or invalid prior evidence blocks continuation.
 Automatic service restart is disabled. Any failed prerequisite stops dependent
 stages. The final summary requires sixteen actual full-target admissions,
-reports missing/invalid cells and exits nonzero otherwise. Worktree drift stops
-execution; keep all source and documentation edits outside the execution tree.
+reports missing/invalid cells and exits nonzero otherwise. Effective configuration
+or runtime drift stops execution; Git and documentation changes remain provenance.

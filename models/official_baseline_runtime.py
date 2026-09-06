@@ -205,7 +205,7 @@ def _runtime_env(strategy: str) -> dict[str, str]:
     env["RAG_EMBEDDING_CONCURRENCY"] = str(embedding.concurrency)
     env["RAG_EMBEDDING_RETRY_ATTEMPTS"] = str(embedding.retry_attempts)
     env["LLM_MAX_RETRIES"] = str(embedding.retry_attempts)
-    from core.inference_transport import _FORBIDDEN_AMBIENT_PROVIDER_KEYS, InferenceTransport
+    from core.inference_transport import InferenceTransport
 
     transport = InferenceTransport.resolve(strategy)
     if get_strategy(strategy).transport_profile != "openai_compatible_litellm":
@@ -241,7 +241,8 @@ def _runtime_env(strategy: str) -> dict[str, str]:
     if get_strategy(strategy).primary:
         # Upstream dotenv imports may repopulate absent aliases. Empty exports
         # block that without carrying a second endpoint or credential contract.
-        env.update({name: "" for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS})
+        from core.inference_transport import preserve_provider_environment
+        preserve_provider_environment(env)
     else:
         # Legacy workers still consume these private child aliases. Primary
         # research drivers resolve the canonical contract again in the child.

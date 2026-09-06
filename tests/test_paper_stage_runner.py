@@ -120,9 +120,13 @@ def test_shell_handoff_uses_selected_main_prefix_and_rejects_drift(monkeypatch):
 
 
 def test_configured_fresh_runs_cannot_reuse_an_old_chunk_cache(tmp_path, monkeypatch):
+    from core.inference_transport import _FORBIDDEN_AMBIENT_PROVIDER_KEYS
     from core.paper_policy import configure_target_environment
     from scripts.paper_cold_canary import ensure_fresh_namespace
 
+    for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS:
+        monkeypatch.setenv(name, '')
+    monkeypatch.setenv('LITELLM_MODE', 'PRODUCTION')
     configure_target_environment('prehop', 'multihoprag', 'fresh-one')
     first = os.environ['RAG_CHUNK_CACHE_DIR']
     configure_target_environment('prehop', 'multihoprag', 'fresh-two')

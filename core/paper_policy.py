@@ -117,9 +117,10 @@ def validate_paper_semantic_environment(strategy: str, dataset: str) -> None:
 
 def configure_target_environment(strategy: str, dataset: str, run_id: str) -> None:
     """Resolve target identity before standalone admission reads live policy."""
+    from core.inference_transport import preserve_provider_environment
     from core.strategy_registry import paper_environment_defaults
-
     spec = get_strategy(strategy)
+    preserve_provider_environment()
     preserve_method_environment()
     for name, value in paper_environment_defaults().items():
         os.environ.setdefault(name, value)
