@@ -7,6 +7,7 @@ import math
 import os
 import re
 import threading
+import time
 from typing import Any, ClassVar
 
 import httpx
@@ -465,7 +466,14 @@ class VLLMClient:
                         endpoint,
                     )
             try:
-                response = await self._retry_with_backoff(request_client.chat.completions.create, **params)
+                from core.structured_diagnostics import current_request_budget
+                if current_request_budget() is not None:
+                    from core.structured_diagnostics import json_sha256
+                    current_request_budget()['request_sha256'] = json_sha256(params)
+                    request_client = request_client.with_options(max_retries=0)
+                response = await self._retry_with_backoff(
+                    request_client.chat.completions.create, _request_budget=current_request_budget(), **params
+                )
                 record_inference("generation", response)
                 return response
             finally:
@@ -473,16 +481,31 @@ class VLLMClient:
 
     async def _retry_with_backoff(self, coro_func, *args, **kwargs):
         """Exponential backoff retry wrapper for handling GPU load spikes."""
+        request_budget = kwargs.pop('_request_budget', None)
         retry_attempts = getattr(self, "_retry_attempts", RAGConfig.LLM_MAX_RETRIES)
         if retry_attempts < 1:
             raise ValueError("LLM_MAX_RETRIES must be at least 1")
         if RAGConfig.LLM_RETRY_DELAY < 0:
             raise ValueError("LLM_RETRY_DELAY must be non-negative")
         for attempt in range(retry_attempts):
+            if request_budget is not None:
+                if request_budget['used'] >= request_budget['limit']:
+                    raise RuntimeError('Structured request exhausted its shared attempt budget')
+                request_budget['used'] += 1
             try:
+                request_started = time.perf_counter()
                 return await coro_func(*args, **kwargs)
             except Exception as exc:
-                if not self._is_retryable_inference_error(exc) or attempt == retry_attempts - 1:
+                if request_budget is not None:
+                    from core.inference_telemetry import record_generation_transport_failure
+                    metadata = {'category': 'transport_error', 'attempt': request_budget['used'],
+                                'request_sha256': request_budget.get('request_sha256'),
+                                'elapsed_seconds': time.perf_counter() - request_started,
+                                'usage': None, 'reported_cost': None}
+                    record_generation_transport_failure(metadata)
+                    self.logger.warning('Structured transport failure; metadata=%s', json.dumps(metadata, sort_keys=True))
+                if (not self._is_retryable_inference_error(exc) or attempt == retry_attempts - 1
+                        or (request_budget is not None and request_budget['used'] >= request_budget['limit'])):
                     raise
                 delay = RAGConfig.LLM_RETRY_DELAY * (2**attempt)
                 self.logger.warning(
@@ -573,11 +596,15 @@ class VLLMClient:
         known_names = {'prehop_index_legacy_v1', 'prehop_index_grounded_v1_v1', 'prehop_index_linked_v2_v1',
                        'prehop_rewrite_legacy_v1', 'prehop_refine_legacy_v1', 'prehop_ranking_v1'}
         schema_name = schema.get('name')
+        hidden = getattr(response, '_hidden_params', None)
+        cost = hidden.get('response_cost') if isinstance(hidden, dict) else getattr(response, 'response_cost', None)
+        cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) else None
         return json.dumps({'choice_count': len(choices), 'finish_reasons': reasons, 'choices': choice_metadata,
                            'schema_name': schema_name if schema_name in known_names else 'unknown',
                            'schema_sha256': hashlib.sha256(json.dumps(schema.get('schema'), sort_keys=True,
                                                                       separators=(',', ':')).encode()).hexdigest(),
                            'finish_reasons_truncated': len(choices) > 8, 'usage': counters,
+                           'reported_cost': cost, 'cost_complete': cost is not None,
                            'requested_max_tokens': token_count(requested_max_tokens),
                            'effective_max_tokens': token_count(params.get('max_tokens'))},
                           sort_keys=True, separators=(',', ':'))
@@ -591,6 +618,8 @@ class VLLMClient:
         **kwargs,
     ) -> Any:
         try:
+            failure_metadata = kwargs.pop("_structured_failure_metadata", None)
+            expected_request = kwargs.pop('_structured_expected_request', None)
             apply_default_sampling = bool(kwargs.pop("apply_default_sampling", True))
             # Truncate messages to fit context window
             truncated_messages = self._truncate_messages(messages)
@@ -624,12 +653,26 @@ class VLLMClient:
             if is_openai:
                 params.pop("extra_body", None)
             request_client = self.judge_client if is_openai else self.client
+            if expected_request is not None:
+                from core.structured_diagnostics import json_sha256
+                from core.structured_outputs import StructuredOutputError
+                if json_sha256(params) != expected_request:
+                    raise StructuredOutputError('Structured retry changed its assembled request identity')
+            started = time.perf_counter()
             response = await self._create_generation_request(request_client, params)
             strict_schema = (kwargs.get("response_format") or {}).get("type") == "json_schema"
             if strict_schema:
+                from core.structured_diagnostics import json_sha256
                 from core.structured_outputs import StructuredOutputError
 
-                diagnostics = self._structured_response_diagnostics(response, params, requested_max_tokens)
+                metadata = json.loads(self._structured_response_diagnostics(response, params, requested_max_tokens))
+                metadata.update({'prompt_sha256': json_sha256(params['messages']),
+                                 'caller_prompt_sha256': json_sha256(messages),
+                                 'request_sha256': json_sha256(params),
+                                 'elapsed_seconds': time.perf_counter() - started})
+                if isinstance(failure_metadata, dict):
+                    failure_metadata.update(metadata)
+                diagnostics = json.dumps(metadata, sort_keys=True, separators=(',', ':'))
                 if len(response.choices) != 1:
                     raise StructuredOutputError(f"structured response choice-count mismatch; metadata={diagnostics}")
                 if response.choices[0].finish_reason != "stop":
@@ -655,6 +698,89 @@ class VLLMClient:
             self.logger.error(f"Error calling vLLM: {e}")
             raise
 
+    async def _generate_structured_json(self, messages, contract, **kwargs):
+        from core.generation_profiles import structured_retry_profile
+        from core.inference_telemetry import record_structured_attempt, record_structured_contract
+        from core.structured_diagnostics import (
+            DuplicateJSONPropertyError,
+            NonfiniteJSONConstantError,
+            caller_metadata,
+            parse_failure_metadata,
+            structured_request_budget,
+            text_sha256,
+        )
+        from core.structured_outputs import StructuredOutputError
+
+        profile = structured_retry_profile()
+        attempts = getattr(self, '_retry_attempts', profile['max_total_attempts'])
+        if type(attempts) is not int or attempts < 1 or attempts != profile['max_total_attempts']:
+            raise StructuredOutputError('Structured retry budget differs from its recorded generation profile')
+        stage = kwargs.pop('json_debug_label', '')
+        response_format = contract.response_format()
+        record_structured_contract(contract.provenance())
+        expected_request = None
+
+        def object_pairs(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise DuplicateJSONPropertyError('duplicate JSON property')
+                result[key] = value
+            return result
+
+        def invalid_constant(value):
+            raise NonfiniteJSONConstantError('non-finite JSON constant')
+
+        with structured_request_budget(attempts) as budget:
+            for attempt in range(1, attempts + 1):
+                metadata = {'diagnostic_version': 'structured-format-attempt-v1', 'caller': caller_metadata(),
+                            'stage_sha256': text_sha256(stage) if isinstance(stage, str) else None,
+                            'format_retry_profile': profile['profile'], 'attempt': attempt,
+                            'max_total_attempts': attempts}
+                started = time.perf_counter()
+                # Guards for choice count, finish reason, refusal, tools and empty content
+                # deliberately remain outside the format-retry exception boundary.
+                try:
+                    raw = await self.generate_response(messages, response_format=response_format,
+                                                       _structured_failure_metadata=metadata,
+                                                       _structured_expected_request=expected_request, **kwargs)
+                except StructuredOutputError:
+                    metadata['elapsed_seconds'] = time.perf_counter() - started
+                    metadata['parse_failure'] = {'category': 'response_guard'}
+                    metadata['wire_attempts_used'] = budget['used']
+                    record_structured_attempt(metadata, valid=False)
+                    raise
+                metadata['elapsed_seconds'] = time.perf_counter() - started
+                metadata['wire_attempts_used'] = budget['used']
+                request_hash = metadata.get('request_sha256')
+                if expected_request is not None and request_hash != expected_request:
+                    raise StructuredOutputError('Structured retry changed its assembled request identity')
+                expected_request = request_hash
+                try:
+                    parsed = json.loads(raw, object_pairs_hook=object_pairs, parse_constant=invalid_constant)
+                except (ValueError, TypeError) as exc:
+                    metadata['parse_failure'] = parse_failure_metadata(exc, raw)
+                    eligible = isinstance(exc, (json.JSONDecodeError, DuplicateJSONPropertyError, NonfiniteJSONConstantError))
+                else:
+                    try:
+                        validated = contract.validate(parsed)
+                    except StructuredOutputError:
+                        # Pydantic errors may contain input values/property names. Do not retain them.
+                        metadata['parse_failure'] = parse_failure_metadata(ValueError(), raw)
+                        metadata['parse_failure']['category'] = 'registered_schema'
+                        eligible = True
+                    else:
+                        record_structured_attempt(metadata, valid=True)
+                        return validated
+                record_structured_attempt(metadata, valid=False)
+                diagnostics = json.dumps(metadata, sort_keys=True, separators=(',', ':'))
+                self.logger.warning('Discarded invalid structured response; metadata=%s', diagnostics)
+                if not eligible or attempt == attempts or budget['used'] >= attempts:
+                    raise StructuredOutputError(
+                        f'structured response failed raw JSON or registered schema validation; metadata={diagnostics}'
+                    ) from None
+        raise AssertionError('Structured retry loop exited without a result')
+
     async def generate_json(
         self, messages: list[dict[str, str]], max_retries: int | None = None, **kwargs
     ) -> dict[str, Any]:
@@ -666,26 +792,7 @@ class VLLMClient:
                 raise TypeError("structured_contract must be a registered contract")
             if any(name in kwargs for name in ("response_format", "extra_body", "structured_outputs", "tools", "tool_choice")) or any(name.startswith("guided_") for name in kwargs):
                 raise StructuredOutputError("conflicting structured-output request configuration")
-            kwargs.pop("json_debug_label", None)
-            from core.inference_telemetry import record_structured_contract
-            record_structured_contract(contract.provenance())
-            raw = await self.generate_response(messages, response_format=contract.response_format(), **kwargs)
-            def object_pairs(pairs):
-                result = {}
-                for key, value in pairs:
-                    if key in result:
-                        raise ValueError("duplicate JSON property")
-                    result[key] = value
-                return result
-            def invalid_constant(value):
-                raise ValueError(f"non-finite JSON constant: {value}")
-            try:
-                parsed = json.loads(raw, object_pairs_hook=object_pairs, parse_constant=invalid_constant)
-            except (ValueError, TypeError) as exc:
-                raise StructuredOutputError("structured response is not one raw JSON document") from exc
-            validated = contract.validate(parsed)
-            self.logger.debug("Structured output validated | %s", contract.provenance())
-            return validated
+            return await self._generate_structured_json(messages, contract, **kwargs)
         last_error_hint = ""
         last_parse_error: Exception | None = None
         last_response_preview = ""

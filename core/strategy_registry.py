@@ -23,7 +23,7 @@ class PaperTransportSpec:
     retry_attempts: int = 5
     timeout_seconds: float = 600.0
     benchmark_seed: int = 42
-    benchmark_concurrency: int = 4
+    benchmark_concurrency: int = 1
     benchmark_checkpoint_every: int = 10
     query_instruction: str = "Given a web search query, retrieve relevant passages that answer the query"
     query_template: str = "Instruct: {instruction}\nQuery:{query}"

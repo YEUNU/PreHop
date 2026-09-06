@@ -1052,6 +1052,8 @@ async def run_benchmark(
     remain unseeded. Non-paper generation uses the supplied benchmark seed.
     Multi-seed orchestration lives in run_benchmark_multi_seed.
     """
+    from core.phase_timing import BenchmarkTiming
+    phase_timing = BenchmarkTiming()
     if not os.path.isfile(queries_file):
         raise FileNotFoundError(f"Queries file not found: {queries_file}")
 
@@ -1063,6 +1065,13 @@ async def run_benchmark(
         queries_file,
     )
     manifest_queries_count = len(benchmark_data)
+    reuse_reference = None
+    reuse_link = None
+    if os.environ.get("RAG_INDEX_REUSE_LINK"):
+        from core.index_reuse import ref, validate
+        link_path = Path(os.environ["RAG_INDEX_REUSE_LINK"])
+        reuse_link = validate(link_path, os.environ.get("RAG_BENCHMARK_TIMESTAMP", ""), strategy, corpus_tag)
+        reuse_reference = ref(link_path)
     judge_enabled = bool(RAGConfig.JUDGE_ENABLED)
     judge_independent: bool | None = None
     judge_self_override = False
@@ -1213,7 +1222,12 @@ async def run_benchmark(
     else:
         logger.info("Supplemental judge: disabled (deterministic/official metrics only)")
 
-    benchmark_concurrency = max(1, int(os.environ.get("RAG_BENCHMARK_CONCURRENCY", "4")))
+    from core.strategy_registry import PAPER_TRANSPORT
+    benchmark_concurrency = int(os.environ.get("RAG_BENCHMARK_CONCURRENCY", str(PAPER_TRANSPORT.benchmark_concurrency)))
+    if benchmark_concurrency < 1:
+        raise ValueError("Benchmark concurrency must be positive")
+    if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") and benchmark_concurrency != PAPER_TRANSPORT.benchmark_concurrency:
+        raise RuntimeError("Paper benchmark concurrency differs from the canonical registry")
     benchmark_checkpoint_every = max(1, int(os.environ.get("RAG_BENCHMARK_CHECKPOINT_EVERY", "10")))
     query_sem = asyncio.Semaphore(benchmark_concurrency)
     query_inflight = 0
@@ -1224,6 +1238,7 @@ async def run_benchmark(
     retained_query_ids: set[str] = set()
     resume_requested_raw = os.environ.get("RAG_BENCHMARK_RESUME", "").strip()
     if resume_requested_raw and parse_strict_bool(resume_requested_raw, name="RAG_BENCHMARK_RESUME"):
+        phase_timing.restore(_read_json_file(result_file).get("benchmark_timing"))
         results, resume_metadata = _resume_benchmark_rows(
             result_file,
             benchmark_data,
@@ -1243,6 +1258,7 @@ async def run_benchmark(
                 "index_manifest_status": (index_manifest or {}).get("status"),
                 "corpus_index_fingerprint_status": corpus_index_fingerprint_status,
                 "active_index_snapshot": active_index_snapshot,
+                **({"index_reuse": reuse_reference} if reuse_reference is not None else {}),
                 "judge_enabled": judge_enabled,
                 "models": {
                     "default": RAGConfig.DEFAULT_MODEL,
@@ -1409,6 +1425,17 @@ async def run_benchmark(
                     "code": dict(benchmark_code),
                 },
             ]
+        s["benchmark_timing"] = phase_timing.snapshot()
+        if reuse_reference is not None:
+            s["index_reuse"] = reuse_reference
+            s["phase_costs"] = {
+                "index_source_timing_seconds": reuse_link["index_timing_seconds"],
+                "reuse_preparation_seconds": reuse_link["preparation_elapsed_seconds"],
+                "benchmark_wall_seconds": s["benchmark_timing"]["total_wall_seconds"],
+                "index_plus_benchmark_wall_seconds": reuse_link["index_timing_seconds"]["total_elapsed_seconds"] + s["benchmark_timing"]["total_wall_seconds"],
+                "query_latency_sum_seconds": sum(float(row.get("latency", 0)) for row in results),
+                "scope": "successful_index_plus_checkpointed_benchmark_segments; failed_attempts_preserved_separately",
+            }
         s["details"] = results
         if len(results) == total_queries:
             s["post_query_artifact_inventory"] = current_post_query_inventory(strategy, corpus_tag)

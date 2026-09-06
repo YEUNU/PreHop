@@ -55,8 +55,35 @@ def finish(token: contextvars.Token, *, external_complete: bool = True) -> dict[
     return state
 
 
+def snapshot() -> dict[str, Any]:
+    """Read phase totals before persisting an index artifact; keep the scope alive."""
+    from copy import deepcopy
+    return deepcopy(_CURRENT.get() or {})
+
+
+def record_generation_transport_failure(metadata: dict) -> None:
+    state = _CURRENT.get()
+    if state is not None:
+        state['generation_calls'] += 1
+        state['generation_transport_failures'] = state.get('generation_transport_failures', 0) + 1
+        state.setdefault('generation_transport_failure_attempts', []).append(metadata)
+        state['token_usage_complete'] = False
+        state['cost_complete'] = False
+
+
 def record_structured_contract(provenance: dict[str, str]) -> None:
     """Persist dynamic request schema identities without prompt or response text."""
     state = _CURRENT.get()
     if state is not None:
         state.setdefault("structured_output_contracts", []).append(dict(provenance))
+
+
+def record_structured_attempt(metadata: dict, *, valid: bool) -> None:
+    """Count all format attempts, retaining safe detail only for discarded outputs."""
+    state = _CURRENT.get()
+    if state is None:
+        return
+    state['structured_attempt_count'] = state.get('structured_attempt_count', 0) + 1
+    state['structured_elapsed_seconds'] = state.get('structured_elapsed_seconds', 0.0) + metadata['elapsed_seconds']
+    if not valid:
+        state.setdefault('structured_invalid_attempts', []).append(dict(metadata))

@@ -139,6 +139,57 @@ def full_target(campaign: str, strategy: str, dataset: str, attempt: str) -> Non
     record(ledger, 'full_target_admitted', ROOT / 'data/results' / run_id / 'admission.json')
 
 
+def reuse_target(campaign: str, strategy: str, dataset: str) -> None:
+    from core.index_reuse import prepare, validate
+    run_id = f'{campaign}-{dataset}-{strategy}'
+    base = ROOT / 'data/results' / run_id
+    path = base / 'index_link.json'
+    verifier = [sys.executable, 'scripts/verify_paper_target.py', run_id, dataset, strategy,
+                '--exact-run-id', '--output', str(base / 'admission.json')]
+    if (base / 'admission.json').exists():
+        subprocess.run(verifier, cwd=ROOT, env=selected_python_environment(), check=True)
+        return
+    environment = selected_python_environment()
+    if base.exists():
+        validate(path, run_id, strategy, dataset)
+        result = base / strategy / dataset / 'seed_42' / f'{strategy}_{dataset}.json'
+        payload = json.loads(result.read_text())
+        if payload.get('status') == 'completed_unadmitted':
+            subprocess.run(verifier, cwd=ROOT, env=selected_python_environment(), check=True)
+            return
+        if payload.get('status') != 'in_progress' or payload.get('evaluation_scope') != 'full_benchmark':
+            raise RuntimeError('Preserved reuse result is not safely resumable')
+        environment['RAG_BENCHMARK_RESUME'] = 'true'
+    else:
+        path = prepare(campaign, strategy, dataset)
+    # Re-enter after configuring the link before importing static RAGConfig.
+    subprocess.run([sys.executable, str(Path(__file__).resolve()), '_reuse_benchmark', campaign,
+                    '--strategy', strategy, '--dataset', dataset], cwd=ROOT,
+                   env=environment, check=True)
+    validate(path, run_id, strategy, dataset)
+    subprocess.run(verifier, cwd=ROOT, env=selected_python_environment(), check=True)
+
+
+def reuse_benchmark(campaign: str, strategy: str, dataset: str) -> None:
+    from core.index_reuse import bootstrap_benchmark, validate
+    run_id = f'{campaign}-{dataset}-{strategy}'
+    path = ROOT / 'data/results' / run_id / 'index_link.json'
+    bootstrap_benchmark(path, run_id, strategy, dataset)
+    from core.semantic_config import parse_strict_bool
+    resumed = parse_strict_bool(os.environ.get('RAG_BENCHMARK_RESUME', 'false'), name='RAG_BENCHMARK_RESUME')
+    validate(path, run_id, strategy, dataset, pristine_clone=not resumed)
+    from cli.benchmark import run_benchmark
+    async def run():
+        try:
+            await run_benchmark(str(ROOT / 'data' / f'{dataset}_queries.json'), strategy, 'default',
+                                corpus_tag=dataset, output_dir=path.parent, seed=42)
+        finally:
+            if strategy in {'prehop', 'naive'}:
+                from core.neo4j_service import Neo4jService
+                await Neo4jService.global_close()
+    asyncio.run(run())
+
+
 def recovery_child(run_id: str, mode: str) -> None:
     from scripts.recovery_checkpoint import process_start
     if mode not in {'interrupt', 'resume'}:
@@ -266,7 +317,7 @@ def recovery(campaign: str, attempt: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['reattest', 'cold-aggregate', 'one-query', 'one-query-aggregate', 'recovery', 'full-target', '_recovery_child'])
+    parser.add_argument('action', choices=['reattest', 'cold-aggregate', 'one-query', 'one-query-aggregate', 'recovery', 'full-target', 'reuse-target', '_reuse_benchmark', '_recovery_child'])
     parser.add_argument('campaign')
     parser.add_argument('--attempt', default='a1')
     parser.add_argument('--target-attempts-json', default='{}')
@@ -289,6 +340,10 @@ def main() -> None:
         recovery(args.campaign, args.attempt)
     elif args.action == '_recovery_child':
         recovery_child(args.campaign, args.mode)
+    elif args.action == 'reuse-target':
+        reuse_target(args.campaign, args.strategy, args.dataset)
+    elif args.action == '_reuse_benchmark':
+        reuse_benchmark(args.campaign, args.strategy, args.dataset)
     elif args.action == 'full-target':
         full_target(args.campaign, args.strategy, args.dataset, args.attempt)
     elif args.action == 'one-query':

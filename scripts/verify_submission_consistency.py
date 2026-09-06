@@ -182,6 +182,8 @@ def _validate_artifact(
 ) -> list[str]:
     errors: list[str] = []
 
+    from core.strategy_registry import PAPER_TRANSPORT
+
     expected = {
         "strategy": strategy,
         "corpus_tag": dataset,
@@ -190,7 +192,7 @@ def _validate_artifact(
         "queries_count": expected_count,
         "total_queries": expected_count,
         "status": "completed_unadmitted",
-        "benchmark_concurrency": 4,
+        "benchmark_concurrency": PAPER_TRANSPORT.benchmark_concurrency,
         "judge_enabled": False,
     }
     for field, value in expected.items():
@@ -216,6 +218,17 @@ def _validate_artifact(
     except (OSError, TypeError, ValueError, RuntimeError) as exc:
         errors.append(f"{path}: current corpus validation failed: {exc}")
     expected_run_id = path.parts[2] if len(path.parts) > 2 else ""
+    if payload.get("index_reuse") is not None:
+        try:
+            from core.index_reuse import bound, validate, validate_costs
+            link_path, _ = bound(payload["index_reuse"])
+            link = validate(link_path, expected_run_id, strategy, dataset)
+            validate_costs(link, payload)
+            expected_run_id = link["source_run_id"]
+        except (OSError, ValueError, TypeError, RuntimeError, KeyError) as exc:
+            errors.append(f"{path}: index reuse validation failed: {exc}")
+    elif (ROOT / "data/results" / expected_run_id / "index_link.json").exists():
+        errors.append(f"{path}: result omits its required index reuse binding")
 
     models = payload.get("models", {})
     strategy_spec = get_strategy(strategy)

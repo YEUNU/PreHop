@@ -1242,14 +1242,21 @@ async def run_indexing(
     save_intermediate: bool = False,
 ):
     """Serialize duplicate strategy/corpus runs while allowing all distinct targets in parallel."""
+    from core.inference_telemetry import begin, finish
+
     async with _index_run_lock(strategy, corpus_tag or "default"):
-        return await _run_indexing_unlocked(
-            dataset_path,
-            strategy,
-            model_id,
-            corpus_tag,
-            save_intermediate,
-        )
+        token = begin() if strategy == 'prehop' else None
+        try:
+            return await _run_indexing_unlocked(
+                dataset_path,
+                strategy,
+                model_id,
+                corpus_tag,
+                save_intermediate,
+            )
+        finally:
+            if token is not None:
+                finish(token)
 
 
 async def _run_indexing_unlocked(
@@ -1260,6 +1267,8 @@ async def _run_indexing_unlocked(
     save_intermediate: bool = False,
 ):
     """Index files using selected strategy with parallel processing."""
+    from core.inference_telemetry import snapshot as inference_snapshot
+
     started_at = time.perf_counter()
     stage_timing: dict[str, float] = {}
     logger.info(
@@ -1779,6 +1788,7 @@ async def _run_indexing_unlocked(
                     "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
                     "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
                     "source_metadata_sha256": source_metadata_sha256,
+                    "inference_usage": inference_snapshot(),
                     "active_snapshot": snapshot_metadata,
                     "index_capacity": index_capacity,
                     **graph_stats,

@@ -2,6 +2,16 @@
 from __future__ import annotations
 
 
+def structured_retry_profile() -> dict:
+    from core.config import RAGConfig
+    return {'profile': 'prehop-controlled-format-retry-v1',
+            'max_total_attempts': RAGConfig.LLM_MAX_RETRIES,
+            'budget_scope': 'transport-and-format-shared',
+            'sdk_automatic_retries': 0,
+            'eligible': ['raw_json_syntax', 'duplicate_property', 'nonfinite_constant', 'registered_schema'],
+            'request_identity': 'unchanged', 'response_repair': False}
+
+
 def request_settings(consumer: str) -> dict:
     import os
 
@@ -29,6 +39,8 @@ def generation_profiles(strategy: str) -> dict:
     profiles = {}
     if strategy in {'prehop', 'naive'}:
         profiles = {key: request_settings(key) for key in ('question_index', 'rewrite', 'refine', 'ranking', 'answer')}
+        if strategy == 'prehop':
+            profiles['structured_format_retry'] = structured_retry_profile()
     elif strategy == 'ms_graphrag':
         profiles = {'default_completion_and_native_query': request_settings('ms_completion'),
                     'community_report': request_settings('ms_report'),

@@ -97,7 +97,7 @@ async def test_real_sdk_strict_raw_response_has_no_repair_or_downgrade(monkeypat
                 assert metadata['usage'] == {'prompt_tokens': 123, 'completion_tokens': 512,
                                              'total_tokens': 635, 'reasoning_tokens': 7}
                 assert 'reasoning_content' not in str(caught.value)
-        assert len(requests) == 1
+        assert len(requests) == (1 if valid or finish_reason != 'stop' or refusal or content is None else 5)
         assert requests[0]['response_format'] == contract.response_format()
         assert finish(token)['structured_output_contracts'] == [contract.provenance()]
     finally:
@@ -270,7 +270,7 @@ def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity
     from core import structured_outputs
     from models.prehop.indexing.chunking import _generation_signature
     assert structured_outputs.PREHOP_STRUCTURED_PROFILE == 'prehop-json-schema-v3'
-    assert canonical_semantic_index_policy('prehop', 'musique')['method_contract'] == 'paper-method-v3'
+    assert canonical_semantic_index_policy('prehop', 'musique')['method_contract'] == 'paper-method-v4'
     current = structured_bundle_sha256()
     cache = _generation_signature('gemma-4-31b-it')
     monkeypatch.setattr(structured_outputs, 'PREHOP_STRUCTURED_PROFILE', 'prehop-json-schema-v1')
@@ -326,10 +326,10 @@ async def test_sdk_ranking_duplicate_is_rejected_locally_without_wire_unique_ite
         return await sdk.chat.completions.create(**params)
     monkeypatch.setattr(client, '_create_generation_request', create)
     try:
-        with pytest.raises(StructuredOutputError, match='duplicate candidate IDs'):
+        with pytest.raises(StructuredOutputError, match='registered_schema'):
             await client.generate_json([{'role': 'user', 'content': 'Rank the candidates'}],
                                        structured_contract=ranking_contract(['A', 'B'], 2))
-        assert len(requests) == 1
+        assert len(requests) == 5
         array = requests[0]['response_format']['json_schema']['schema']['properties']['ranking']
         assert 'uniqueItems' not in array
         assert array['minItems'] == array['maxItems'] == 2

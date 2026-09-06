@@ -47,7 +47,12 @@ for strategy in "${strategies[@]}"; do
     for dataset in "${datasets[@]}"; do
         run_id="${campaign_id}-${dataset}-${strategy}"
         echo ">>> paper target: dataset=$dataset strategy=$strategy run_id=$run_id"
-        if "$runner" "$dataset" "$strategy" "$run_id" "${check_arg[@]}"; then
+        if [ "${#check_arg[@]}" -gt 0 ]; then
+            target_command=("$runner" "$dataset" "$strategy" "$run_id" "${check_arg[@]}")
+        else
+            target_command=("$PYTHON_BIN" "$repo_root/scripts/paper_stage_runner.py" reuse-target "$campaign_id" --strategy "$strategy" --dataset "$dataset")
+        fi
+        if "${target_command[@]}"; then
             # run_paper_target.sh returns success only after exact-target
             # verify_paper_target.py admission in its effective environment.
             :

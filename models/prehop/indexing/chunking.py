@@ -319,8 +319,11 @@ class ChunkingMixin:
             # unbounded second layer of generation tasks. The endpoint-wide
             # limiter remains the final request-capacity guard.
             q_results = []
-            for chunk_text in chunk_texts:
-                q_results.append(await self.extract_hoprag_queries(chunk_text, title))
+            from core.structured_diagnostics import indexing_failure_scope
+
+            for chunk_index, chunk_text in enumerate(chunk_texts):
+                with indexing_failure_scope(source, content, title, chunk_text, page_num, chunk_index):
+                    q_results.append(await self.extract_hoprag_queries(chunk_text, title))
 
             return [
                 {

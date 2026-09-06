@@ -13,6 +13,8 @@ VERIFIER_SOURCES = (
     ROOT / "scripts/verify_paper_target.py",
     ROOT / "scripts/verify_submission_consistency.py",
     ROOT / "core/paper_policy.py",
+    ROOT / "core/index_reuse.py",
+    ROOT / "core/phase_timing.py",
     ROOT / "core/paper_compatibility.py",
     ROOT / "core/generation_profiles.py",
     ROOT / "core/semantic_config.py",
@@ -145,6 +147,7 @@ def admission_bindings(result_path: Path, payload: dict | None) -> dict[str, str
         "index_policy_sha256": (
             payload.get("index_provenance", {}).get("policy_sha256") if isinstance(payload, dict) else None
         ),
+        **({"index_reuse_sha256": payload["index_reuse"].get("sha256")} if isinstance(payload, dict) and isinstance(payload.get("index_reuse"), dict) else {}),
         "index_stats_path": stats_path,
         "index_stats_sha256": stats_digest,
         "runtime_identity_sha256": identity_sha256(runtime_compatibility(current_runtime) if current_runtime else None),
