@@ -101,7 +101,7 @@ a fresh runtime home when an existing attempt is dirty.
   actual vector length. Startup probes validate the configured model ids and
   dimensions.
 - The current cold-run configuration uses `gemma-4-31b-it` for generation and
-  `qwen3-embedding-4b` for 2,560-dimensional embeddings. The declared model
+  `qwen3-embedding-0.6b` for 1,024-dimensional embeddings. The declared model
   revisions must match those served identities. Changing a model, revision,
   or vector dimension requires a new run ID and a cold index; never relabel an
   existing result with the new configuration.

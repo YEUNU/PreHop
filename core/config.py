@@ -62,7 +62,7 @@ class RAGConfig:
     EMBEDDING_BATCH_SIZE = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "16"))
     VLLM_MAX_NUM_SEQS = int(os.environ.get("RAG_GENERATION_MAX_NUM_SEQS", "120"))
     EMBEDDING_MAX_NUM_SEQS = int(os.environ.get("RAG_EMBEDDING_MAX_NUM_SEQS", "512"))
-    EMBEDDING_DIMENSIONS = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "2560"))
+    EMBEDDING_DIMENSIONS = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024"))
     NEO4J_BATCH_SIZE = int(os.environ.get("NEO4J_BATCH_SIZE", "25"))
 
     # --- Search & Ranking ---

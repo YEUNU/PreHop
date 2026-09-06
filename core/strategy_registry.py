@@ -12,8 +12,8 @@ class PaperTransportSpec:
     """Canonical public inference contract for every primary paper target."""
 
     generation_model: str = "gemma-4-31b-it"
-    embedding_model: str = "qwen3-embedding-4b"
-    embedding_dimensions: int = 2560
+    embedding_model: str = "qwen3-embedding-0.6b"
+    embedding_dimensions: int = 1024
     generation_context_tokens: int = 262144
     embedding_max_input_tokens: int = 32768
     embedding_token_reserve: int = 0
@@ -189,7 +189,7 @@ STRATEGIES = (
         ),
         paper_index_environment=(
             ("report_max_tokens", "RAG_MS_REPORT_MAX_TOKENS", 4096),
-            ("embedding_dimensions", "RAG_MS_EMBED_DIM", 2560),
+            ("embedding_dimensions", "RAG_MS_EMBED_DIM", 1024),
         ),
     ),
     _external(

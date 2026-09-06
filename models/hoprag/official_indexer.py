@@ -50,7 +50,7 @@ _GEN_API_BASES: list[str] = [_GEN_API_BASE] if _GEN_API_BASE else []
 _GEN_MODEL_NAME = os.environ.get("RAG_GENERATION_MODEL", "")
 _EMBED_API_BASE = _GEN_API_BASE
 _EMBED_MODEL_NAME = os.environ.get("RAG_EMBEDDING_MODEL", "")
-_EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "2560")))
+_EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024")))
 _EMBED_BATCH_SIZE = max(1, int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32")))
 _EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
     max(1, int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")))

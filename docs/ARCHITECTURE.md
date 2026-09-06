@@ -655,7 +655,7 @@ context formatting, node identity/dedup, and RRF helpers.
 #### Component evaluation contract
 
 All component analyses use the 2,417-question MuSiQue split and the current
-2,560-dimensional `qwen3-embedding-4b` index. Paired query-stage conditions
+1,024-dimensional `qwen3-embedding-0.6b` index. Paired query-stage conditions
 reuse one completed index and hold query IDs, model revisions, seed, top-k,
 prompts, and judge state fixed. Results are joined by immutable query ID and
 paired effects use 10,000 bootstrap resamples with seed 42. Latency is compared

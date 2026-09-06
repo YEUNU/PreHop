@@ -4,6 +4,16 @@ This file records implementation and experiment-protocol changes.
 Entries are listed in reverse chronological order. `ARCHITECTURE.md` defines
 current behavior, and result values belong in `RESULTS.md`.
 
+## 2026-09-07 — Verified Qwen3-Embedding-0.6B gateway contract
+
+Replaced the unexecuted 4B/2,560 migration contract with the alias actually
+verified through the approved gateway: `qwen3-embedding-0.6b`, batch size 16,
+concurrency 1, and 1,024-dimensional finite vectors. Canonical policy,
+adapters, vector schemas, preflight, admission, cache identity, examples, and
+tests now reject both historical 8B/4,096 and superseded 4B/2,560 artifacts.
+Method-defining local encoders and unrelated 4,096-token generation limits are
+unchanged.
+
 ## 2026-09-07 — Qwen3-Embedding-4B paper contract
 
 Changed the controlled remote embedding contract from

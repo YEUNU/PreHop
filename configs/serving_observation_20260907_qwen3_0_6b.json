@@ -1,0 +1,61 @@
+{
+  "observed_at_utc": "2026-09-06T23:24:40Z",
+  "kind": "read_only_remote_serving_observation",
+  "service_changes": false,
+  "approved_gateway_sha256": "7e3df11cee3c6bfd5487edf010ef2493140cf1d2c16518c385a0a61824105fd4",
+  "observed_gateway_sha256": "7e3df11cee3c6bfd5487edf010ef2493140cf1d2c16518c385a0a61824105fd4",
+  "gateway_match": true,
+  "advertised_model_ids": [
+    "gemma-4-31b-it",
+    "qwen3-embedding-0.6b"
+  ],
+  "generation": {
+    "served_model": "gemma-4-31b-it",
+    "checkpoint_repo": "nvidia/Gemma-4-31B-IT-NVFP4",
+    "cached_snapshot_revision": "4135a98a9b728a548947683219633b25682223ac",
+    "explicit_command_revision": null,
+    "quantization": "modelopt",
+    "quant_algo": "NVFP4",
+    "replicas": 2,
+    "tensor_parallel_size": 1,
+    "max_model_len": 262144,
+    "max_num_seqs": 32,
+    "kv_cache_memory_bytes": 25500000000,
+    "chat_probe": {
+      "http_status": 200,
+      "response_model": "gemma-4-31b-it",
+      "nonempty": true
+    }
+  },
+  "embedding": {
+    "served_model": "qwen3-embedding-0.6b",
+    "checkpoint_repo": "Qwen/Qwen3-Embedding-0.6B",
+    "cached_snapshot_revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+    "explicit_command_revision": null,
+    "replicas": 2,
+    "tensor_parallel_size": 1,
+    "max_model_len": 32768,
+    "max_num_seqs": 512,
+    "kv_cache_memory_bytes": 4000000000,
+    "batch_probe": {
+      "http_status": 200,
+      "batch_size": 16,
+      "concurrency": 1,
+      "response_model": "qwen3-embedding-0.6b",
+      "count": 16,
+      "indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      "dimension": 1024,
+      "finite": true
+    }
+  },
+  "router": {
+    "routing_strategy": "least-busy",
+    "generation_deployments": 2,
+    "embedding_deployments": 2
+  },
+  "limitations": [
+    "Cached snapshot revisions were observed through refs/main and the only visible snapshot; serving commands did not explicitly pin --revision.",
+    "Model weights were not fully hashed.",
+    "The remote service was not established as exclusive to this experiment."
+  ]
+}

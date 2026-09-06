@@ -91,7 +91,7 @@ and do not reserve the eventual successful admission ledger.
 | Setting | Value |
 |---|---|
 | Remote generation model | `gemma-4-31b-it` |
-| Controlled remote embedding model | `qwen3-embedding-4b`, 2,560 dimensions |
+| Controlled remote embedding model | `qwen3-embedding-0.6b`, 1,024 dimensions |
 | Remote embedding batch/concurrency | 16 / 1 |
 | Query concurrency | 1 |
 | Seed | 42 |
