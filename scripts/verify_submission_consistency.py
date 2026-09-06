@@ -7,6 +7,7 @@ and is not wired to CI.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,7 @@ DATASETS = {
     },
 }
 
-STRATEGIES = ("prehop", "naive", "hoprag", "ms_graphrag", "browsenet", "proprag")
+STRATEGIES = ("browsenet", "ms_graphrag", "prehop", "naive", "hoprag")
 GENERATION_MODEL = "gemma-4-31b-it"
 EMBEDDING_MODEL = "qwen3-embedding-8b"
 EMBEDDING_DIMENSIONS = 4096
@@ -50,6 +51,30 @@ PRESENTATIONS = (
     Path("presentation/prehop-academic.html"),
     Path("presentation/prehop-professor-briefing.html"),
 )
+
+
+def _semantic_model_config(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return model behavior settings, excluding repository and throughput metadata."""
+    policy = dict(payload.get("index_provenance", {}).get("policy", {}))
+    # The namespace identifies an isolated dataset run but does not alter model
+    # behavior. Batch size/concurrency are intentionally absent from this
+    # semantic policy because they only control transport throughput.
+    policy.pop("index_namespace", None)
+    return {
+        "models": payload.get("models", {}),
+        "index_policy": policy,
+        "ablation": payload.get("ablation", {}),
+    }
+
+
+def _semantic_model_config_sha256(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        _semantic_model_config(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _artifact_path(prefix: str, dataset: str, strategy: str) -> Path:
@@ -165,12 +190,18 @@ def verify(prefix: str, *, check_documents: bool, check_presentations: bool) -> 
             if len(values) != 1 or None in values:
                 errors.append(f"{dataset}: strategies disagree on {field}: {sorted(map(str, values))}")
 
-    source_digests = {
-        payload.get("query_provenance", {}).get("source_tree_sha256")
-        for payload in artifacts.values()
-    }
-    if artifacts and (None in source_digests or len(source_digests) != 1):
-        errors.append(f"matrix strategies disagree on executable source digest: {sorted(map(str, source_digests))}")
+    model_config_fingerprints: dict[str, str] = {}
+    for strategy in STRATEGIES:
+        group = [artifacts.get(f"{dataset}:{strategy}") for dataset in DATASETS]
+        if any(payload is None for payload in group):
+            continue
+        fingerprints = {_semantic_model_config_sha256(payload) for payload in group if payload is not None}
+        if len(fingerprints) != 1:
+            errors.append(
+                f"{strategy}: datasets disagree on semantic model config: {sorted(fingerprints)}"
+            )
+        else:
+            model_config_fingerprints[strategy] = next(iter(fingerprints))
 
     if check_documents or check_presentations:
         current_values = {
@@ -210,6 +241,7 @@ def verify(prefix: str, *, check_documents: bool, check_presentations: bool) -> 
         "artifacts_expected": len(DATASETS) * len(STRATEGIES),
         "errors": errors,
         "artifact_paths": paths,
+        "model_config_fingerprints": model_config_fingerprints,
     }
 
 

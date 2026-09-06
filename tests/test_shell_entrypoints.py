@@ -237,3 +237,11 @@ def test_paper_runner_uses_run_scoped_neo4j_namespace():
     paper_runner = (ROOT / "scripts/run_paper_target.sh").read_text(encoding="utf-8")
 
     assert 'export RAG_INDEX_NAMESPACE="${dataset}_${run_id}"' in paper_runner
+
+
+def test_paper_runner_uses_shared_conservative_embedding_load():
+    paper_runner = (ROOT / "scripts/run_paper_target.sh").read_text(encoding="utf-8")
+
+    assert 'export RAG_EMBEDDING_BATCH_SIZE="${RAG_PAPER_EMBEDDING_BATCH_SIZE:-16}"' in paper_runner
+    assert 'export RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS="${RAG_PAPER_MAX_CONCURRENT_EMBEDDING_REQUESTS:-1}"' in paper_runner
+    assert 'if [ "$strategy" = browsenet ]' not in paper_runner

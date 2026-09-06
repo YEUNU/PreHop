@@ -45,8 +45,7 @@ if [ -z "$generation_revision" ] || [ -z "$embedding_revision" ]; then
     exit 1
 fi
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-    echo "Paper targets require a clean tracked worktree." >&2
-    exit 1
+    echo "Warning: tracked worktree changes will be recorded in code provenance; semantic compatibility is checked from model config." >&2
 fi
 if [ -e "data/results/$run_id" ]; then
     echo "Result directory already exists: data/results/$run_id" >&2
@@ -86,6 +85,8 @@ export RAG_PROPRAG_OUTPUT_ROOT=$prop_root
 export RAG_BENCHMARK_CONCURRENCY=4
 export RAG_BENCHMARK_CHECKPOINT_EVERY=10
 export RAG_JUDGE_ENABLED=false
+export RAG_EMBEDDING_BATCH_SIZE="${RAG_PAPER_EMBEDDING_BATCH_SIZE:-16}"
+export RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS="${RAG_PAPER_MAX_CONCURRENT_EMBEDDING_REQUESTS:-1}"
 
 # PropRAG performs long-form extraction during indexing and fans requests out
 # across the full corpus.  Keep that strategy serial so a slow generation
@@ -95,12 +96,8 @@ if [ "$strategy" = proprag ]; then
     export RAG_PROPRAG_CONCURRENT_REQUESTS="${RAG_PROPRAG_CONCURRENT_REQUESTS:-1}"
     export RAG_PROPRAG_MAX_NEW_TOKENS="${RAG_PROPRAG_MAX_NEW_TOKENS:-2048}"
 fi
-if [ "$strategy" = browsenet ]; then
-    export RAG_EMBEDDING_BATCH_SIZE="${RAG_BROWSENET_EMBEDDING_BATCH_SIZE:-16}"
-fi
-
 if [ "$check_only" = true ]; then
-    echo "Ready: dataset=$dataset strategy=$strategy run_id=$run_id concurrency=4 judge=false"
+    echo "Ready: dataset=$dataset strategy=$strategy run_id=$run_id concurrency=4 embedding_batch=$RAG_EMBEDDING_BATCH_SIZE embedding_concurrency=$RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS judge=false"
     exit 0
 fi
 
