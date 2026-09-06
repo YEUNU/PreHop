@@ -20,11 +20,11 @@ def memory_error():
 def documents():
     return [
         {"doc_id": f"{i}.txt", "doc_title": "문서", "data": [
-            {"id": f"{i}-0", "embedding": [0.25] * 4096,
-             "q_minus": [{"id": f"{i}-q", "text": "Full question?", "embedding": [0.5] * 4096}],
-             "q_plus": [{"id": f"{i}-p", "embedding": [0.75] * 4096, "query_embedding": [1.0] * 4096}],
+            {"id": f"{i}-0", "embedding": [0.25] * 2560,
+             "q_minus": [{"id": f"{i}-q", "text": "Full question?", "embedding": [0.5] * 2560}],
+             "q_plus": [{"id": f"{i}-p", "embedding": [0.75] * 2560, "query_embedding": [1.0] * 2560}],
              "sentences": []},
-            {"id": f"{i}-1", "embedding": [0.125] * 4096, "q_minus": [], "q_plus": [], "sentences": []},
+            {"id": f"{i}-1", "embedding": [0.125] * 2560, "q_minus": [], "q_plus": [], "sentences": []},
         ]} for i in range(4)
     ]
 

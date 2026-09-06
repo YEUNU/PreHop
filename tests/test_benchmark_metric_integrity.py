@@ -313,7 +313,7 @@ def test_corpus_manifest_is_optional_but_full_benchmark_requires_matching_index(
     monkeypatch.setenv("RAG_INFERENCE_BASE_URL", "http://litellm.test/v1")
     monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
     monkeypatch.setenv("RAG_GENERATION_MODEL", "gemma-4-31b-it")
-    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-8b")
+    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-4b")
     monkeypatch.setenv("RAG_LLM_SEED", "42")
     policy = {
         **canonical_semantic_index_policy("prehop", "musique"),

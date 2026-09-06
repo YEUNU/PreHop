@@ -59,7 +59,7 @@ shell entrypoint with:
 - `RAG_INFERENCE_BASE_URL`
 - `RAG_INFERENCE_API_KEY`
 - `RAG_GENERATION_MODEL=gemma-4-31b-it`
-- `RAG_EMBEDDING_MODEL=qwen3-embedding-8b`
+- `RAG_EMBEDDING_MODEL=qwen3-embedding-4b`
 
 Legacy `VLLM_*`, ambient provider, and direct-vendor variables are rejected as
 public inputs. A validated parent may inject compatibility names only into an
@@ -72,11 +72,14 @@ The historical read-only observation in `configs/serving_observation.json`
 records the server at 2026-09-06 22:28:51 UTC. The generation alias was associated
 with `nvidia/Gemma-4-31B-IT-NVFP4`, ModelOpt NVFP4 quantization and cached snapshot
 `4135a98a9b728a548947683219633b25682223ac`; the runtime dtype was `bfloat16`.
-The observed embedding repository was `Qwen/Qwen3-Embedding-8B`, with cached
-snapshot `1d8ad4ca9b3dd8059ad90a75d4983776a23d44af`. Neither serving command
+That historical observation associated the embedding alias with
+`Qwen/Qwen3-Embedding-8B` and cached snapshot
+`1d8ad4ca9b3dd8059ad90a75d4983776a23d44af`. It does not satisfy the current
+`Qwen/Qwen3-Embedding-4B`/2,560 contract; record the actual newly loaded
+revision in a new serving observation and campaign artifacts. Neither serving command
 explicitly pinned `--revision`, and the model weights were not fully hashed.
-These observations do not establish complete weight reproducibility or a new
-model substitution. The recorded single-deployment, tensor-parallel-size-one
+These observations do not establish complete weight reproducibility. The
+recorded single-deployment, tensor-parallel-size-one
 layout is historical provenance, not the specification or evidence of a later
 server redistribution. No service change or inference probe produced this file.
 
@@ -85,11 +88,11 @@ is separate. Timeout, retry, batch, and concurrency are operational settings
 and are recorded apart from the semantic method configuration.
 
 Paper preflight also fixes the shared semantic service boundary: remote
-embedding width `NEO4J_VECTOR_DIMENSIONS=4096`, embedding input limit
+embedding width `NEO4J_VECTOR_DIMENSIONS=2560`, embedding input limit
 `MAX_EMBEDDING_LENGTH=32768`, `RAG_EMBEDDING_TOKEN_RESERVE=0`, generation
 context `RAG_MAX_CONTEXT_LENGTH=262144`, query instruction exactly as recorded
 in the canonical policy, and `NEO4J_FULLTEXT_ANALYZER=english`. MS GraphRAG's
-`RAG_MS_EMBED_DIM` is the same 4096 and its report output cap is 4096. PreHop
+`RAG_MS_EMBED_DIM` is the same 2560 and its report output cap is 4096. PreHop
 and Naive additionally admit only the registry's legacy question schema,
 enabled Q−/Q+ flags, disabled sentence channel, and reciprocal-hop
 precomputation. Explicit conflicting values fail before indexing, including in
@@ -195,7 +198,7 @@ than an alternative execution path.
 
 Static review must be GO before live preparation. The live sequence is clean
 primary setup; all 16 target preflights; one chat probe; embedding batch 16 at
-concurrency 1 with count/index/4,096-dimension/finite checks; selective
+concurrency 1 with count/index/2,560-dimension/finite checks; selective
 oversize bisection; 16 cold two-document/one-query canaries; interruption,
 resume, and stale-policy rejection; a 16-target one-query matrix; and one fresh
 full target ending in content-bound admission. `scripts/paper_gate_ledger.py`

@@ -15,7 +15,7 @@ load_project_env "$SCRIPT_DIR/.env"
 canonicalize_inference_transport || exit 1
 
 # Environment (.env values override defaults; exported values override .env).
-export NEO4J_VECTOR_DIMENSIONS="${NEO4J_VECTOR_DIMENSIONS:-4096}"
+export NEO4J_VECTOR_DIMENSIONS="${NEO4J_VECTOR_DIMENSIONS:-2560}"
 export MAX_EMBEDDING_LENGTH="${MAX_EMBEDDING_LENGTH:-32768}"
 export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"

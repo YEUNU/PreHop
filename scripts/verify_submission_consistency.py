@@ -574,7 +574,7 @@ def verify(prefix: str, *, check_documents: bool, check_presentations: bool) -> 
             for required in (
                 get_strategy("prehop").paper_generation_model,
                 get_strategy("prehop").paper_embedding_model,
-                "4,096",
+                f"{get_strategy('prehop').paper_embedding_dimensions:,}",
             ):
                 if required not in text:
                     errors.append(f"{path}: missing current configuration value {required}")

@@ -103,7 +103,7 @@ Youtu-GraphRAG. BrowseNet, HopRAG, and PropRAG remain supported legacy
 adapters but are not primary matrix targets. Each target uses the full prepared
 MultiHop-RAG or MuSiQue split. Generation and answer synthesis use
 `gemma-4-31b-it` where the upstream method permits an OpenAI-compatible
-endpoint. Remote embeddings use the configured `qwen3-embedding-8b`;
+endpoint. Remote embeddings use the configured `qwen3-embedding-4b`;
 LinearRAG retains its official pinned MPNet, and the declared controlled Youtu
 no-agent adapter retains pinned MiniLM. GFM-RAG retains its
 checkpoint-defined local components. Local method components and adapter
@@ -204,7 +204,7 @@ registered names; local ancillary revisions come from the strategy registry.
 | Role | Served model | Required setting |
 |---|---|---|
 | Generation and synthesis | `gemma-4-31b-it` | `RAG_GENERATION_MODEL` |
-| Remote embeddings | `qwen3-embedding-8b`, 4,096 dimensions | `RAG_EMBEDDING_MODEL` |
+| Remote embeddings | `qwen3-embedding-4b`, 2,560 dimensions | `RAG_EMBEDDING_MODEL` |
 
 Result tables retain the model identity stored in their cited artifacts. A
 runtime configuration change does not relabel an earlier result.

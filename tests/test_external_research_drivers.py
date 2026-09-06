@@ -284,13 +284,13 @@ def test_lightrag_uses_pinned_async_contract_and_exact_file_path(monkeypatch, tm
     monkeypatch.setenv("RAG_EMBEDDING_CONCURRENCY", "1")
     monkeypatch.setenv("RAG_INFERENCE_RETRY_ATTEMPTS", "7")
     monkeypatch.setenv("RAG_INFERENCE_TIMEOUT", "23")
-    monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "4096")
+    monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "2560")
     from core.vllm_client import VLLMClient
     from models.external_research.drivers.lightrag import LightRAGDriver
 
     async def fake_embeddings(self, texts, encoding_type=None):
         import numpy as np
-        return np.ones((len(texts), 4096), dtype=np.float32).tolist()
+        return np.ones((len(texts), 2560), dtype=np.float32).tolist()
 
     monkeypatch.setattr(VLLMClient, "get_embeddings", fake_embeddings)
 
@@ -300,13 +300,13 @@ def test_lightrag_uses_pinned_async_contract_and_exact_file_path(monkeypatch, tm
     assert calls["initialized"]
     assert calls["config"]["embedding_batch_num"] == 16
     assert calls["config"]["embedding_func_max_async"] == 1
-    assert calls["embedding"]["embedding_dim"] == 4096
+    assert calls["embedding"]["embedding_dim"] == 2560
     assert calls["embedding"]["supports_asymmetric"] is True
     assert calls["retry_stop"].max_attempt_number == 7
     assert driver.loop.run_until_complete(calls["config"]["llm_model_func"]("prompt")) == "x"
     assert calls["llm"]["timeout"] == 23.0
     embedded = driver.loop.run_until_complete(calls["embedding"]["func"](["x", "y"]))
-    assert embedded.shape == (2, 4096)
+    assert embedded.shape == (2, 2560)
     assert embedded.__class__.__module__ == "numpy"
     driver.close()
     assert calls["finalized"]

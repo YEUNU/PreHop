@@ -26,7 +26,7 @@ def _canonical_transport(monkeypatch, strategy="prehop"):
     for name, value in paper_environment_defaults().items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "" if strategy == "hipporag2" else PAPER_TRANSPORT.query_instruction)
-    monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "4096")
+    monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "2560")
     monkeypatch.setenv("MAX_EMBEDDING_LENGTH", "32768")
     for name in tuple(os.environ):
         if name.startswith(("VLLM_", "AZURE_OPENAI")) or name in {
@@ -40,7 +40,7 @@ def _canonical_transport(monkeypatch, strategy="prehop"):
     monkeypatch.setattr("core.inference_transport._approved_gateway_identity", lambda: hashlib.sha256(b"http://litellm.test/v1").hexdigest())
     monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
     monkeypatch.setenv("RAG_GENERATION_MODEL", "gemma-4-31b-it")
-    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-8b")
+    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-4b")
     if strategy == "youtu_graphrag":
         monkeypatch.delenv("RAG_LLM_SEED", raising=False)
     else:
@@ -90,7 +90,7 @@ def test_paper_common_semantic_overrides_fail_closed(monkeypatch):
     monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "1024")
     with pytest.raises(RuntimeError, match="NEO4J_VECTOR_DIMENSIONS"):
         validate_paper_semantic_environment("lightrag", "musique")
-    monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "4096")
+    monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "2560")
     monkeypatch.setenv("RAG_MAX_CONTEXT_LENGTH", "16384")
     with pytest.raises(RuntimeError, match="RAG_MAX_CONTEXT_LENGTH"):
         validate_paper_semantic_environment("prehop", "musique")
@@ -196,7 +196,7 @@ def test_preflight_rejects_transport_model_drift(monkeypatch):
     with pytest.raises(RuntimeError, match="generation model"):
         check_paper_runtime._check_transport("prehop")
     monkeypatch.setenv("RAG_GENERATION_MODEL", "gemma-4-31b-it")
-    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-8b")
+    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-4b")
     check_paper_runtime._check_transport("prehop")
 
 
@@ -236,7 +236,7 @@ def test_canonical_youtu_policy_uses_no_chunk_for_both_upstream_aliases():
 
 def test_canonical_policy_records_shared_dimensions_context_and_reserve():
     policy = canonical_semantic_index_policy("prehop", "musique")
-    assert policy["embedding_dimensions"] == 4096
+    assert policy["embedding_dimensions"] == 2560
     assert policy["embedding_max_input_tokens"] == 32768
     assert policy["embedding_token_reserve"] == 0
     assert policy["generation_max_context_tokens"] == 262144

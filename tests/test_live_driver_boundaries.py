@@ -33,7 +33,7 @@ def _canonical_child(monkeypatch, strategy):
             monkeypatch.setenv(name, '')
     for name, value in {'RAG_INFERENCE_BASE_URL': 'http://litellm.test/v1',
                        'RAG_INFERENCE_API_KEY': 'synthetic', 'RAG_GENERATION_MODEL': 'gemma-4-31b-it',
-                       'RAG_EMBEDDING_MODEL': 'qwen3-embedding-8b', 'RAG_PAPER_MODE': 'true',
+                       'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b', 'RAG_PAPER_MODE': 'true',
                        'RAG_LLM_SEED': '' if strategy == 'youtu_graphrag' else '42',
                        'EMBEDDING_QUERY_INSTRUCTION': '',
                        }.items():

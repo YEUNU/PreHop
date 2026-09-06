@@ -4,6 +4,17 @@ This file records implementation and experiment-protocol changes.
 Entries are listed in reverse chronological order. `ARCHITECTURE.md` defines
 current behavior, and result values belong in `RESULTS.md`.
 
+## 2026-09-07 — Qwen3-Embedding-4B paper contract
+
+Changed the controlled remote embedding contract from
+`qwen3-embedding-8b`/4,096 to `qwen3-embedding-4b`/2,560 across canonical
+policy, adapters, vector schemas, preflight, admission, cache identity,
+examples, and tests. Existing 8B indexes, caches, observations, and admissions
+remain historical artifacts and are not compatible with the new campaign.
+Method-defining local encoders and unrelated 4,096-token generation limits are
+unchanged. A live gateway probe must establish the registered alias, backend,
+count, ordering, finite values, and 2,560 output width before experiments run.
+
 ## 2026-09-07 — Verified index reuse and phase timing
 
 Added explicit complete-index reuse from the one-query matrix into fresh full

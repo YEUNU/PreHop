@@ -163,7 +163,7 @@ async def test_actual_four_paths_through_typed_transport_and_sdk(monkeypatch, in
     for key, value in paper_environment_defaults().items():
         monkeypatch.setenv(key, value)
     for key, value in {'RAG_INFERENCE_BASE_URL': 'http://litellm.test/v1', 'RAG_INFERENCE_API_KEY': 'synthetic',
-                       'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-8b',
+                       'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b',
                        'RAG_PAPER_MODE': 'true', 'RAG_SKIP_PROJECT_ENV': 'true', 'RAG_LLM_SEED': '42'}.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr('core.inference_transport._approved_gateway_identity',

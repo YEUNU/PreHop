@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.admission import identity_sha256, sha256_file, verifier_sources
 from core.runtime_requirements import runtime_identity
-from core.strategy_registry import PRIMARY_STRATEGIES
+from core.strategy_registry import PAPER_TRANSPORT, PRIMARY_STRATEGIES
 from utils.provenance import code_provenance
 
 STAGES = (
@@ -264,7 +264,8 @@ def _validate_evidence(stage: str, evidence_path: Path, value: dict) -> None:
             raise RuntimeError("embedding probe batch/count/concurrency differs")
         if [row.get("index") for row in vectors] != list(range(16)):
             raise RuntimeError("embedding probe indices differ")
-        if any(not isinstance(row.get("embedding"), list) or len(row["embedding"]) != 4096
+        if any(not isinstance(row.get("embedding"), list)
+               or len(row["embedding"]) != PAPER_TRANSPORT.embedding_dimensions
                or any(isinstance(x, bool) or not isinstance(x, (int, float)) or not isfinite(x) for x in row["embedding"])
                for row in vectors):
             raise RuntimeError("embedding probe dimension/finite values differ")

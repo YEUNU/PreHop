@@ -50,7 +50,7 @@ _TIMEOUT_SECONDS: float | None = 600.0
 # same constraint as NEO4J_VECTOR_DIMENSIONS for prehop/naive/hoprag's Neo4j
 # vector indexes (see CLAUDE.md "Model / inference infra"), reused here since
 # it's the same one embedding model across every strategy.
-_EMBED_DIM = int(os.environ.get("RAG_MS_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "4096")))
+_EMBED_DIM = int(os.environ.get("RAG_MS_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "2560")))
 
 # Where parquet artifacts land. corpus_tag-scoped so different runs don't clobber.
 _OUTPUT_ROOT = Path(os.environ.get("RAG_MS_OUTPUT_ROOT", "data/ms_graphrag_output"))

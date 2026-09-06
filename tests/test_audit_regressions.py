@@ -33,7 +33,7 @@ def _transport(monkeypatch, strategy):
     for key, value in paper_environment_defaults().items():
         monkeypatch.setenv(key, value)
     for key, value in {'RAG_INFERENCE_BASE_URL': 'http://litellm.test/v1', 'RAG_INFERENCE_API_KEY': 'synthetic',
-                       'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-8b',
+                       'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b',
                        'RAG_PAPER_MODE': 'true', 'RAG_SKIP_PROJECT_ENV': 'true'}.items():
         monkeypatch.setenv(key, value)
     seed = get_strategy(strategy).paper_generation_seed
@@ -128,7 +128,7 @@ def test_target_verifier_observes_run_environment_before_reuse(tmp_path, strateg
     env = {'PATH': str(tmp_path / 'bin') + os.pathsep + os.defpath,
            'PYTHON_BIN': str(uv), 'TRACE': str(tmp_path / 'trace.jsonl'), 'RAG_SKIP_PROJECT_ENV': 'true',
            'RAG_INFERENCE_BASE_URL': 'http://litellm.test/v1', 'RAG_INFERENCE_API_KEY': 'synthetic',
-           'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-8b'}
+           'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b'}
     result = subprocess.run(['bash', 'scripts/run_paper_target.sh', 'musique', strategy, run_id, '--check'],
                             cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
