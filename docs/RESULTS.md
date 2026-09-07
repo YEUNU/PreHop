@@ -45,8 +45,8 @@ above records that ledger; it does not mirror indexing-only smoke completion:
 - `failed`: the target or its admission check failed.
 
 A canary is not target completion, and target completion is not admission.
-Only `admitted` artifacts may supply numbers to this register, the manuscript,
-or presentation material. A successful benchmark artifact has execution
+Only `admitted` artifacts may supply numbers to this register or presentation
+material. A successful benchmark artifact has execution
 status `completed_unadmitted` until `scripts/verify_paper_target.py` writes a passing
 `data/results/<run-id>/admission.json` record with status `admitted`. That
 record binds the result JSON, complete detail JSONL, exact index-stats path and
@@ -77,7 +77,7 @@ compatible evidence.
 | Setting | Value |
 |---|---|
 | Remote generation model | `gemma-4-31b-it` |
-| Controlled remote embedding model | `qwen3-embedding-0.6b`, 1,024 dimensions |
+| Controlled remote embedding model | `qwen3-embedding-4b`, 2,560 dimensions |
 | Remote embedding batch/concurrency | Serial default 16 / 1; explicit profile for throughput campaigns |
 | Query concurrency | Serial default 1; explicit content-bound throughput profile for new campaigns |
 | Seed | 42 |
@@ -134,14 +134,14 @@ before a cell becomes `admitted`:
 ## Artifact retention
 
 Keep the complete evidence chain for every admitted result and active run.
-The [maintainer guide](../CLAUDE.md#generated-files-and-repository-hygiene) governs
+The [maintainer policy](../CLAUDE.md#execution-and-repository-hygiene) governs
 generated artifacts and explicit cleanup. Legacy adapter results cannot supply
 primary matrix cells.
 
 ## Publication synchronization
 
-- `README.md`, this register, `docs/prehop_paper.md`, and presentation sources
-  may copy numbers only from `admitted` rows in this file.
+- Public summaries and presentation sources may copy numbers only from
+  `admitted` rows in this file.
 - Relative changes, uncertainty intervals, chart dimensions, and latency
   summaries must be recomputed from the admitted detail artifacts.
 - A dirty tracked worktree is recorded in provenance; it is not silently

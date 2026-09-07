@@ -29,7 +29,13 @@ For module ownership and producer behavior, see
 ## Profiles and pilot
 
 `RAG_EXECUTION_PROFILE` must be an absolute JSON path exported before Python
-starts. Version 1 declares four transport settings. Version 2 additionally
+starts. Version 3 uses one `inference_concurrency` limit shared by generation
+and embedding requests. It retains embedding batch size, query workers and
+document producer settings; it has no per-kind request quotas. Client ceilings
+resolve to the shared limit so an old embedding ceiling of two cannot prevent
+use of the pool. Native dependencies and producer counts still bound demand.
+
+Legacy version 1 declares four transport settings. Version 2 additionally
 binds active document workers, document prefetch, LightRAG insertion workers
 and Youtu construction workers, with optional bounded Prehop chunk lookahead
 (`prehop_chunk_concurrency`, default 1). Adapter producer settings supersede ambient
@@ -41,7 +47,26 @@ Without a profile, the registry's existing defaults remain available. See
 [Adapter producer parallelism](ARCHITECTURE.md#adapter-producer-parallelism)
 for per-method behavior.
 
-### Selected indexing profile
+### Shared indexing profile
+
+`configs/execution_profiles/index-shared-120.json` sets a combined limit of
+120 active inference requests. Generation and embedding compete for the same
+semaphore, with no reserved slots for either kind. For example, 90 generation
+requests leave room for 30 embedding requests; either kind alone can use all
+120 slots. Requests above the active limit wait within the bounded handler
+capacity. This does not promise FIFO ordering or 120 GPU sequences.
+
+Embedding batches remain at 16 inputs and producer settings retain the values
+below. Queue snapshots expose `limits.shared` and aggregate `metrics.shared`,
+alongside per-kind observational metrics. The aggregate peak is measured
+directly; do not add the two per-kind peaks or add aggregate counts to their
+components. Protocol-level concurrency tests do not establish the best remote
+throughput. Gateway and client probes verify the selected embedding response
+contract, and matrix preflight verifies runtime/configuration readiness. Neither
+check builds full indexes or establishes sustained throughput for every method.
+Validate sustained load separately before treating an execution profile as optimal.
+
+### Previous indexing profile
 
 `configs/execution_profiles/index-throughput-tested.json` contains the tested
 indexing configuration:
@@ -179,7 +204,7 @@ environment and launch with a fresh campaign ID from the repository root:
 ```bash
 export PYTHON_BIN=/absolute/path/to/prepared/main-venv/bin/python
 export UV_PROJECT_ENVIRONMENT=/absolute/path/to/prepared/main-venv
-export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/index-throughput-tested.json"
+export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/index-shared-120.json"
 "$PYTHON_BIN" scripts/index_matrix.py launch indexing-01
 ```
 

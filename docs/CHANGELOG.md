@@ -2,6 +2,17 @@
 
 ## 2026-09-07
 
+- Updated the remote embedding contract to Qwen3-Embedding-4B with 2,560
+  dimensions after a successful gateway probe. Updated local settings, adapter
+  defaults, documentation and contract tests. Superseded 0.6B results and their
+  Neo4j indexes were removed; current traces and migration evidence were retained.
+  Historical serving observations remain separate from current run evidence.
+  All 16 method/dataset runtime and configuration checks passed; full index
+  construction is a separate validation step.
+- Added execution profile v3 with a single 120-request pool shared by generation
+  and embedding. Client ceilings follow the shared bound; aggregate queue
+  metrics retain the combined peak alongside per-kind observations. Previous
+  profile formats remain readable without changing retained run identities.
 - Documented stalled-child diagnosis separately from supervisor liveness and
   clarified local artifact retention. Explicitly excluded prepared runtime
   environments from Git alongside trace payloads and generated results.

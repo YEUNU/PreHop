@@ -50,7 +50,7 @@ shell entrypoint with:
 - `RAG_INFERENCE_BASE_URL`
 - `RAG_INFERENCE_API_KEY`
 - `RAG_GENERATION_MODEL=gemma-4-31b-it`
-- `RAG_EMBEDDING_MODEL=qwen3-embedding-0.6b`
+- `RAG_EMBEDDING_MODEL=qwen3-embedding-4b`
 
 Legacy `VLLM_*`, ambient provider, and direct-vendor variables are rejected as
 public inputs. A validated parent may inject compatibility names only into an
@@ -59,31 +59,42 @@ aliases. An empty base, different generation and
 embedding bases, an unregistered model, or a public-vendor fallback fails
 closed in paper mode. Do not print the API key or include it in artifacts.
 
-The historical read-only observation in `configs/serving_observation.json`
+### Current serving contract
+
+The current embedding contract uses `Qwen/Qwen3-Embedding-4B` at 2,560
+dimensions. `configs/serving_observation_20260907_qwen3_4b.json` records a
+successful gateway probe of the `qwen3-embedding-4b` alias and its returned
+vector dimensions. This probe does not identify the loaded checkpoint commit;
+the configured revision is the served alias until a backend revision is observed.
+
+Execution profile v3 uses one combined request pool for generation and
+embedding. Its current settings are defined in
+[Throughput execution](THROUGHPUT_EXECUTION.md#shared-indexing-profile).
+
+### Historical observations and profiles
+
+The read-only observation in `configs/serving_observation.json`
 records the server at 2026-09-06 22:28:51 UTC. The generation alias was associated
 with `nvidia/Gemma-4-31B-IT-NVFP4`, ModelOpt NVFP4 quantization and cached snapshot
 `4135a98a9b728a548947683219633b25682223ac`; the runtime dtype was `bfloat16`.
-The embedding identity for the current contract is recorded in
-`configs/serving_observation_20260907_qwen3_0_6b.json`:
-`Qwen/Qwen3-Embedding-0.6B`/1,024 with cached snapshot
-`97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`. Neither serving command
-explicitly pinned `--revision`, and the model weights were not fully hashed.
+The 0.6B observation remains historical evidence only. The historical
+serving commands did not explicitly pin `--revision`, and weights were not fully hashed.
 These observations do not establish complete weight reproducibility. The
 recorded single-deployment, tensor-parallel-size-one
 layout is historical provenance, not the specification or evidence of a later
 server redistribution. The observation files do not independently verify a later deployment.
 
-Serial defaults use embedding batch size 16 and concurrency 1; explicit
-throughput profiles supply the recorded operational limits. Generation concurrency
-is separate. Timeout, retry, batch, and concurrency are operational settings
-and are recorded apart from the semantic method configuration.
+Legacy profile versions 1 and 2 bound generation and embedding separately and
+remain readable only for retained-run reproducibility. They do not describe the
+current v3 queue. Timeout, retry, batch, and concurrency are operational
+settings recorded apart from semantic method configuration.
 
 Paper preflight also fixes the shared semantic service boundary: remote
-embedding width `NEO4J_VECTOR_DIMENSIONS=1024`, embedding input limit
+embedding width `NEO4J_VECTOR_DIMENSIONS=2560`, embedding input limit
 `MAX_EMBEDDING_LENGTH=32768`, `RAG_EMBEDDING_TOKEN_RESERVE=0`, generation
 context `RAG_MAX_CONTEXT_LENGTH=262144`, query instruction exactly as recorded
 in the canonical policy, and `NEO4J_FULLTEXT_ANALYZER=english`. MS GraphRAG's
-`RAG_MS_EMBED_DIM` is the same 1024 and its report output cap is 4096. Prehop
+`RAG_MS_EMBED_DIM` is the same 2560 and its report output cap is 4096. Prehop
 and Naive additionally admit only the registry's legacy question schema,
 enabled Q−/Q+ flags, disabled sentence channel, and reciprocal-hop
 precomputation. Explicit conflicting values fail before indexing, including in
@@ -189,7 +200,7 @@ than an alternative execution path.
 
 Static review must be GO before live preparation. The live sequence is clean
 primary setup; all 16 target preflights; one chat probe; embedding at the selected profile batch/concurrency
-with count/index/1,024-dimension/finite checks; selective
+with count/index/2,560-dimension/finite checks; selective
 oversize bisection; 16 cold two-document/one-query canaries; interruption,
 resume, and stale-policy rejection; a 16-target one-query matrix; and one fresh
 full target ending in content-bound admission. `scripts/paper_gate_ledger.py`
@@ -351,8 +362,8 @@ operator report, not a measured utilization or loaded-weight attestation.
 Sequence capacity is not HTTP request concurrency: an embedding request can
 contain several inputs, and KV cache and input length can limit actual work.
 
-The selected profile and its validation limits are listed in
-[Throughput execution](THROUGHPUT_EXECUTION.md#selected-indexing-profile).
+The shared profile and its validation limits are listed in
+[Throughput execution](THROUGHPUT_EXECUTION.md#shared-indexing-profile).
 Measure useful completed work under fixed resources before increasing limits;
 a larger client queue alone does not add serving capacity.
 
@@ -370,8 +381,9 @@ Prehop writes full stage and inference traces under ignored `data/traces` and
 intermediate document output under `data/debug`. Its defaults apply to both
 indexing and benchmark entrypoints; campaign environments preserve
 `RAG_PREHOP_TRACE` and `RAG_PREHOP_TRACE_DIR`. Storage must be writable for the
-selected main Python process. See [Prehop tracing](ARCHITECTURE.md#prehop-tracing)
-for the event format and [the inspection commands](../README.md#inspect-prehop-traces).
+selected main Python process. See
+[Prehop tracing](ARCHITECTURE.md#prehop-tracing) for the event format and
+inspection commands.
 
 ### Local files and Git
 

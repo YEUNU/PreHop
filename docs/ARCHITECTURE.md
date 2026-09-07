@@ -4,8 +4,8 @@ This document defines the current indexing and query paths at module level.
 Remote generation and remote embeddings use one configured, fail-closed
 OpenAI-compatible LiteLLM gateway; the repository does not start a local
 generation model. Pinned local ancillary models remain part of methods that
-define them. Historical changes belong in `CHANGELOG.md`, and research claims
-belong in the local `prehop_paper.md`.
+define them. Historical changes belong in `CHANGELOG.md`; research
+interpretation and manuscript prose are outside this implementation contract.
 
 ## External package installation
 
@@ -501,7 +501,7 @@ RAG_GRAPH_HOP_DEPTH == 1 (default)
 
 RAG_SOURCE_SELECTION_VARIANT == role_body_list_ranking
   -> select from the complete candidate union by numbered paragraph IDs
-  -> return the first top_k known IDs, deterministically completing omissions
+  -> require exactly top_k distinct IDs from that candidate union
 
 empty context
   -> fixed "Insufficient evidence" result, no synthesis call
@@ -573,9 +573,10 @@ of the default `body_bridge_min`. These query-time switches are written to
 benchmark ablation metadata. The default uses rank fusion rather than
 calibrated raw-score interpolation. Role rewriting changes channel queries
 before retrieval. The default selection passes the complete fused candidate
-union to one paragraph-number candidate-selection prompt
-and returns its first `top_k` known IDs. Unknown IDs are ignored, duplicates
-collapse, and omitted known IDs retain the deterministic input order. Publisher, publication time,
+union to one paragraph-number candidate-selection prompt. The structured-output
+validator requires exactly `top_k` distinct IDs from that union; unknown,
+duplicate, or omitted IDs invalidate the response instead of being repaired or
+supplemented. Publisher, publication time,
 author, and category are included only when present in the source-manifest
 sidecar; no dataset identity, gold label, retrieval path, score, or rank is
 exposed. `global`, `round_robin`, and the body-round policies remain explicit
@@ -659,7 +660,7 @@ context formatting, node identity/dedup, and RRF helpers.
 #### Component evaluation contract
 
 All component analyses use the 2,417-question MuSiQue split and the current
-1,024-dimensional `qwen3-embedding-0.6b` index. Paired query-stage conditions
+2,560-dimensional `qwen3-embedding-4b` index. Paired query-stage conditions
 reuse one completed index and hold query IDs, model revisions, seed, top-k,
 prompts, and judge state fixed. Results are joined by immutable query ID and
 paired effects use 10,000 bootstrap resamples with seed 42. Latency is compared
@@ -858,10 +859,9 @@ separately for every metric and requires the declared relative gain on all of
 them. It rejects incomplete, fingerprint-mismatched, query-mismatched, and
 non-full artifacts unless an explicitly non-paper exploratory override is
 used.
-The exact metric definitions, official evaluator references, paper-eligibility
-rules, and reporting decisions are maintained in the local, intentionally
-untracked `docs/prehop_paper.md`. This architecture document summarizes the
-implemented evaluation contract but does not replace that paper specification.
+Metric definitions, evaluator references, and artifact eligibility are
+maintained in [RESULTS](RESULTS.md). This document owns only the implemented
+evaluation behavior and data contract.
 
 The runner checkpoints its result and report artifacts every ten completed
 queries by default and always writes once more at completion. This bounds lost
@@ -885,8 +885,9 @@ The run records wall time, service latency, worker-queue delay, end-to-end
 latency, phase timings exposed by the adapter, effective concurrency,
 structural integrity, and failures. Serial defaults use embedding batch 16 and
 concurrency 1; explicit throughput profiles select their recorded limits.
-Generation has its own semaphore. Cancellation cannot leak a
-global embedding permit. Official adapters report only timing and token/cost
+Current profile v3 uses one shared generation/embedding semaphore; legacy
+v1/v2 profiles retain separate limits only for reproducibility. Cancellation
+cannot leak a queue permit. Official adapters report only timing and token/cost
 fields their upstream implementations expose; unavailable telemetry is marked
 incomplete and never estimated.
 
@@ -1141,6 +1142,13 @@ continuous-run query throughput. The original benchmark segment timer and
 request latency fields retain their existing meanings. Interleaved evaluation
 or checkpoint work delaying answers is included in the query batch timer.
 
+
+Execution profile v3 admits generation and embedding through one shared
+semaphore in `core/inference_queue.py`. Its `inference_concurrency` is the
+combined active-request bound; per-kind metrics are observational, not separate
+quotas. Legacy profiles retain their original per-kind limits for reproducibility.
+`core/execution_profile.py` resolves both client ceilings to the shared bound
+and verifies the queue's combined limit before execution.
 
 ## Prehop tracing
 
