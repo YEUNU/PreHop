@@ -13,9 +13,11 @@ from collections import defaultdict
 from typing import Any
 
 from core.config import RAGConfig
+from models.prehop.tracing import traced
 
 
 class TraversalMixin:
+    @traced
     async def graph_search(
         self,
         entities: list[str],

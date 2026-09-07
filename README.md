@@ -4,10 +4,10 @@
 
 Prehop is a GraphRAG retrieval system that constructs inspectable,
 question-level chunk links during indexing. At query time, it refines the
-question by evidence role, expands stored neighbors, selects twelve candidate
+question by evidence role, expands stored neighbors, selects up to twelve candidate
 paragraphs with the configured generation model, and synthesizes the answer.
 
-Each document has one role:
+Use the guide that matches your task:
 
 | Document | Role |
 |---|---|
@@ -16,7 +16,8 @@ Each document has one role:
 | [RESULTS](docs/RESULTS.md) | Canonical complete-result and artifact register |
 | [RUNTIME REQUIREMENTS](docs/RUNTIME_REQUIREMENTS.md) | Pinned external setup and fail-closed preflight |
 | [CHANGELOG](docs/CHANGELOG.md) | Chronological engineering record |
-| `CLAUDE.md` | Maintainer and experiment-operation policy |
+| [Throughput execution](docs/THROUGHPUT_EXECUTION.md) | Queue profiles, launch procedures, and cost definitions |
+| [Maintainer guide](CLAUDE.md) | Contribution, experiment, and documentation policy |
 
 The gitignored `docs/prehop_paper.md` is the research manuscript, and the
 gitignored `SUBMISSION_TARGET.md` contains private submission logistics.
@@ -25,13 +26,8 @@ gitignored `SUBMISSION_TARGET.md` contains private submission logistics.
 
 ## What this repository is
 
-Paper runs require a gateway matching `configs/paper_gateway.json`, clean
-pinned external runtimes, and ordered live-gate evidence. The target runner
-accepts an exact run ID and verifies admission in that target's resolved
-environment before returning success. See [runtime requirements](docs/RUNTIME_REQUIREMENTS.md)
-for current setup limitations. Package builds use separate artifact-local
-revision exports. A fresh `RAG_OFFICIAL_BASELINE_HOME` preserves an existing
-dirty setup attempt while selecting a new runtime layout.
+Prehop builds the graph offline and uses it to retrieve evidence at query time.
+The implementation and branch details are in [ARCHITECTURE](docs/ARCHITECTURE.md).
 
 Core indexing-time design, currently evaluated on MultiHop-RAG and MuSiQue:
 
@@ -45,25 +41,12 @@ Core indexing-time design, currently evaluated on MultiHop-RAG and MuSiQue:
 Chunking is fixed-size (page-scoped sentence windows) — see
 [ARCHITECTURE](docs/ARCHITECTURE.md#shared-input-contract) for details.
 
-For questions of at most 32 words, the query path first produces bounded Q⁻
-and Q⁺ retrieval views; longer questions retain their original explicit
-constraints. Retrieved evidence can produce additional non-duplicate role
-views. Refinement stops when no new role view or selected chunk appears. The
-body channel always uses the original question. Retrieval searches Q⁻/body
-direct evidence and Q⁺ dependency seeds in parallel, applies reciprocal-rank
-fusion of representation and semantic orders, and performs deterministic
-batched 1-hop traversal over bidirectional `NEXT` and outgoing `HOP_ANSWER`
-edges. One complete-list call ranks the resulting candidate union, and the
-first 12 paragraphs feed one synthesis call. Rank evidence propagated over a
-graph edge is attenuated by reciprocal path length, so indirect evidence
-receives less weight than evidence from a directly retrieved owner.
-Q+ retrieval retains the exact matched question-node IDs when results collapse
-to owner chunks. The default activates every stored HOP provenance item on a
-matched Q+ owner; reciprocal filtering and exact-ID activation remain
-ablations.
-Within each vector or full-text modality, backend scores establish only that
-modality's deterministic rank with a stable node-ID tie break; raw scores are
-never mixed across modalities.
+For questions of at most 32 words, Prehop creates Q−/Q+ retrieval views and
+refines them using retrieved evidence. It combines body and question searches,
+expands stored neighbors by one hop, and selects up to 12 paragraphs for answer
+synthesis. Longer questions keep their original wording. See the
+[query path](docs/ARCHITECTURE.md#prehop-query-path-and-branches) for ranking,
+refinement stopping rules, and graph controls.
 
 ---
 
@@ -81,19 +64,9 @@ The optional LLM judge is disabled by default and is not a primary metric.
 Only admitted complete prepared-split runs are eligible for submission
 results.
 
-Each adapter preserves its declared native answer path and exposes an explicit
-answer boundary to the evaluator. The evaluator scores the complete marked
-span; an unmarked response remains the complete prediction and is never
-replaced by a fixed-length suffix.
-
-Pinned upstream checkouts are immutable at runtime. An official-faithful
-adapter may normalize staged inputs, route supported calls through the declared
-LiteLLM gateway, prepare run-local configuration or schema files, record
-observational sidecars, and validate outputs after the native call returns. It
-must not replace retrieval, deduplication, graph serialization, or answer-path
-methods. Any change to a method-defining operation is a controlled deviation
-with a separate semantic configuration and cannot silently populate an
-official-faithful primary cell.
+Adapters preserve their declared native retrieval and answer paths. Pinned
+upstream source is immutable; controlled deviations have separate semantic
+identities. See the [adapter boundary](docs/ARCHITECTURE.md#upstream-immutability-boundary).
 
 ### Result admission
 
@@ -115,17 +88,10 @@ and publication checks are defined in [RESULTS](docs/RESULTS.md).
 
 ---
 
-Prehop's four JSON-producing operations now use registered strict JSON Schema
-requests; final answers remain text. Hippo OpenIE and Youtu construction use
-separately versioned controlled extraction formats. See the
-[structured-generation contract](docs/ARCHITECTURE.md#structured-generation-contracts)
-and [frozen stage commands](docs/RUNTIME_REQUIREMENTS.md#frozen-stage-executors)
-for schema/cache identity, the fixed synthetic cold fixture, actual recovery
-testing, complete-corpus one-query checks, and fresh full-target admission.
-Use the [durable campaign supervisor](docs/RUNTIME_REQUIREMENTS.md#durable-campaign-ownership)
-for indexing and benchmarking after independent configuration-contract attestation. Its disk status
-and admission references remain available after the initiating task ends.
-These integration checks do not establish paper effectiveness results.
+Prehop uses strict structured output for indexing questions and query control.
+See the [schema contracts](docs/ARCHITECTURE.md#structured-generation-contracts)
+and [runtime validation](docs/RUNTIME_REQUIREMENTS.md#live-gates) before running
+the full paper workflow.
 
 ## Repository layout
 
@@ -215,7 +181,8 @@ different generation/embedding bases, or a direct vendor fallback fails
 closed in paper mode. Shell entrypoints reject legacy `VLLM_*`, ambient
 provider, and direct-vendor variables. Isolated child processes receive any
 upstream compatibility names only from the validated typed transport. External server
-hardware and launch options are not part of the reported method configuration.
+hardware and launch options are recorded as the execution resource budget,
+separately from semantic method settings.
 
 ### Isolated official baseline runtimes
 
@@ -365,135 +332,27 @@ Each target is independent. The matrix records a failure, continues with the
 remaining targets, reports every failed target, and exits nonzero if any target
 failed. It never launches a fallback model implicitly.
 
-For the dataset files used by this revision, preparation must print the
-following identities. A different fingerprint is a different prepared corpus
-and must not be mixed with these runs.
+The target wrapper allocates a fresh run namespace, disables shared index
+caches, checks runtime and input identities, and records failures. It never
+clears the whole Neo4j database. A complete compatible index can be reused only
+through the verified index-link workflow; checkpoint recovery preserves the
+original run identity.
 
-| Dataset | Sources | Full queries | Corpus fingerprint |
-|---|---:|---:|---|
-| MultiHop-RAG | 609 | 2,556 | `c11b84f626c08d06d6dbc938512275824567aaffdc77a0f0b5424ad94f13a8ee` |
-| MuSiQue answerable dev | 21,099 | 2,417 | `63562ceaf17343507b305b152af93245959f458412be321662cfbc8fde9f2a34` |
+Corpus identities, query denominators and admission checks belong in
+[RESULTS](docs/RESULTS.md). Indexing and query throughput use separate measured
+wall-time boundaries defined in [Throughput execution](docs/THROUGHPUT_EXECUTION.md).
+For gate order, recovery and background ownership, use
+[Runtime requirements](docs/RUNTIME_REQUIREMENTS.md#durable-campaign-ownership).
 
-The wrapper records a dirty tracked worktree warning in provenance, disables
-Prehop chunk and embedding caches, assigns run-specific output roots to file-backed baselines,
-and assigns a run-specific Neo4j label/index namespace while retaining the
-canonical dataset tag in result paths. The wrapper never passes
-`--clear-graph`: that maintenance option deletes the whole configured Neo4j
-database and is not namespace-scoped. It fixes benchmark concurrency at 1, remote embedding batch/concurrency
-at 16/1, disables the optional judge, and uses the full prepared query file. A
-strictly verified admitted target is skipped. A complete compatible index may
-resume at benchmarking, and a deterministic benchmark may resume from valid
-checkpoints only when the runner verifies identical queries, models,
-configuration, and index identity. Corrupt, incompatible, or unsafe existing
-artifacts fail closed. Retained and resumed code provenance remain separate in
-the result. Run artifacts record phase timings, graph integrity,
-provenance coverage, index-storage size, and failures. Index-storage
-size means the persisted index used during retrieval: a logical-payload
-estimate for the Neo4j-backed Prehop, Naive RAG, and HopRAG indexes, and the
-physical local retrieval-artifact size for MS GraphRAG. Inputs, caches, logs,
-debug output, and temporary files are excluded. Detailed measurement fields,
-storage-method limitations, and adapter-specific timing boundaries are defined
-in [ARCHITECTURE](docs/ARCHITECTURE.md#run-measurements).
+### Component analysis
 
-Use `--check` as the fourth argument for a read-only readiness check. It warns
-about (rather than rejects) tracked worktree changes and validates the typed
-gateway/model identity plus the pinned external runtime, approved reviewed direct
-constraints where declared, and the locally captured dependency freeze. The
-target wrapper also checks its prepared inputs, run ID, and isolated output
-boundary before execution. `--check` does not start indexing or benchmarking,
-and passing it is neither a canary nor admission.
-
-LLM judging is disabled for paper targets. Paper mode prohibits the public
-OpenAI Batch path and direct vendor fallback; an explicitly enabled
-supplemental judge must use the declared LiteLLM transport or fail closed.
-
-An interrupted deterministic benchmark uses its original run ID and timestamp:
-
-```bash
-RAG_RUN_ID=<original-run-id> \
-RAG_BENCHMARK_TIMESTAMP=<original-run-id> \
-RAG_BENCHMARK_RESUME=true \
-./run_benchmark.sh --model <strategy> --queries <queries.json> --corpus-tag <tag>
-```
-
-Batch payloads must contain valid explicit `score` and `groundedness` fields;
-`hallucination` is derived locally from groundedness.
-Partial or malformed output keeps its reconciliation manifest and is never
-converted into a paper metric. Query-level `paired_bootstrap.py` produces
-uncertainty intervals for paired strategy differences over the same evaluated
-questions. A query-only ablation should also pass
-`--expected-ablation-difference <metadata-key>`; the comparison then fails if
-any unlisted ablation setting changed. It also requires identical active-index
-snapshot, model identities and seed, code provenance, benchmark concurrency,
-and judge state. Comparisons between intentionally different index tags require
-the explicit `--allow-index-variant` flag and still require identical dataset,
-corpus fingerprint, evaluation scope, and query IDs.
-
-The predeclared relative-improvement requirement is checked from
-`completed_unadmitted` analysis artifacts rather than copied into a
-hand-edited table. It may be published only after its underlying targets are
-admitted:
-
-```bash
-.venv/bin/python scripts/performance_gate.py \
-  --prehop <prehop-summary.json> \
-  --baselines <naive-summary.json> <hoprag-summary.json> <ms-summary.json> \
-              <browsenet-summary.json> <proprag-summary.json> \
-  --margin 0.10 --output data/results/<run-id>/official_metric_gate.json
-```
-
-For each dataset-specific official metric, the gate independently selects the
-strongest supplied non-Prehop baseline and requires a 10% relative gain. Only
-admitted full-split artifacts are paper-eligible.
-
-### Complete-split presentation diagnostics
-
-These utilities require the complete MuSiQue split for reported presentation
-results and preserve the distinction between structural diagnostics and human
-annotation:
-
-```bash
-# Capture every MuSiQue candidate pool during a complete benchmark, then
-# replay only the ordering call in the deterministic fused order and a fixed shuffle.
-RAG_CANDIDATE_ORDER_TRACE_PATH=data/results/diagnostics/frozen_candidate_pools_2417.jsonl \
-  ./run_benchmark.sh --model prehop --queries data/musique_queries.json \
-  --corpus-tag musique
-.venv/bin/python -m scripts.replay_frozen_candidate_order \
-  --trace data/results/diagnostics/frozen_candidate_pools_2417.jsonl \
-  --queries data/musique_queries.json --benchmark <complete-result.json> \
-  --orders search hash_shuffle \
-  --out data/results/diagnostics/frozen_candidate_order_replay_2417.json \
-  --expected-traces 2417 --resume
-
-# Re-evaluate deterministic rank variants on all frozen candidate pools.
-.venv/bin/python -m scripts.analyze_full_frozen_rank_variants \
-  --trace data/results/diagnostics/frozen_candidate_pools_2417.jsonl \
-  --queries data/musique_queries.json --benchmark <complete-result.json> \
-  --out data/results/diagnostics/frozen_rank_variants_2417.json \
-  --expected-queries 2417
-
-# Summarize non-overlapping stage timers from that fixed-concurrency full run.
-.venv/bin/python -m scripts.analyze_full_stage_profile \
-  --artifact <complete-result.json> \
-  --out data/results/diagnostics/full_stage_profile_2417.json \
-  --expected-queries 2417 --declared-concurrency 1
-
-# After a same-query full graph-on/off pair, test effects separately where
-# stored HOP edges do and do not connect gold paragraphs.
-.venv/bin/python -m scripts.analyze_graph_shortcut_effect \
-  --graph-on <graph-on-result.json> --graph-off <graph-off-result.json> \
-  --coverage data/results/diagnostics/gold_hop_coverage.json \
-  --out data/results/diagnostics/graph_shortcut_effect.json \
-  --expected-queries 2417
-```
-
-The fixed-candidate order replay reports selection stability and
-supporting-paragraph metrics. The rank-variant analysis reports
-supporting-paragraph metrics on the same candidate pools. See
-[ARCHITECTURE](docs/ARCHITECTURE.md#diagnostic-controls-and-timing) for the
-measurement boundaries.
-The stored-connection subgroup analysis compares graph expansion effects by
-whether gold paragraphs share a stored connection.
+The component analyses use the complete MuSiQue split and verified index or
+candidate-pool identities. They cover graph expansion, query refinement,
+candidate selection, fixed-candidate ordering, rank variants and stage timing.
+Use the [component contract](docs/ARCHITECTURE.md#component-evaluation-contract)
+for required controls and the [diagnostic tools](docs/ARCHITECTURE.md#diagnostic-controls-and-timing)
+for implementation details. Their outcomes remain separate from the primary
+full-system comparison.
 
 ---
 
@@ -579,11 +438,9 @@ candidate pool before final answer synthesis.
 
 ---
 
-## License
+## Background execution
 
-MIT — see [LICENSE](LICENSE).
-
-### Detached paper campaign
+### Full paper campaign
 
 From the prepared execution worktree, launch a validated campaign plan with
 `"$PYTHON_BIN" scripts/paper_campaign.py launch <exact-plan.json>` after setting
@@ -603,3 +460,48 @@ After the complete-corpus one-query matrix and the separate fresh full-target
 gate pass, the final matrix reuses verified indexes with fresh result files and
 separate native query workspaces. Each result's `index_link.json` preserves the
 source configuration, data, index identity and original indexing cost.
+
+### Throughput profiles and amortized paper costs
+
+The optional owned inference queue bounds generation and embedding requests
+across native worker processes while targets run sequentially. Explicit JSON
+profiles bind operational settings to gate and admission evidence. New artifacts
+record indexing s/source-document and query s/query as wall-time normalization,
+separate from request latency. See [the execution protocol](docs/THROUGHPUT_EXECUTION.md)
+for the pilot tool, foreground wrapper, persistent campaigns, and measurement
+limitations. `index-throughput-tested.json` records the tested indexing settings;
+`throughput-pilot.json` is an unvalidated tuning example. Neither establishes
+a global throughput optimum or validated query concurrency.
+[Adapter producer parallelism](docs/ARCHITECTURE.md#adapter-producer-parallelism) documents native
+producer controls, bounded Prehop chunk lookahead and synchronized Youtu schema
+updates. Pinned upstream source files are not modified.
+
+For indexing only, follow the [detached index batch procedure](docs/THROUGHPUT_EXECUTION.md#index-only-batch).
+It queues all 16 targets and records indexing outcomes without running full
+query benchmarks or starting the paper campaign monitor.
+
+### Inspect Prehop traces
+
+Prehop saves stage inputs/outputs and LLM request/response bodies by default,
+including failed and retried responses. Index stats and benchmark rows contain
+`prehop_trace.events_path`; document intermediates remain under `data/debug`.
+
+```bash
+# Show failed attempts and their full payloads.
+.venv/bin/python scripts/inspect_prehop_trace.py /path/to/events.jsonl --errors --payloads
+
+# Follow one source document or benchmark query.
+.venv/bin/python scripts/inspect_prehop_trace.py /path/to/events.jsonl --source source.txt --payloads
+.venv/bin/python scripts/inspect_prehop_trace.py /path/to/events.jsonl --query-id query-id --payloads
+```
+
+The inspector verifies event order and payload hashes. See
+[Prehop tracing](docs/ARCHITECTURE.md#prehop-tracing) for scope, retention and
+measurement boundaries. Trace payloads contain source and model text and remain
+local; they are not publication-ready exports.
+For repository exclusions and custom trace paths, see
+[Local files and Git](docs/RUNTIME_REQUIREMENTS.md#local-files-and-git).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

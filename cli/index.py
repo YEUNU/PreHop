@@ -14,6 +14,7 @@ from pathlib import Path
 
 from core.config import RAGConfig
 from core.embedding_policy import EmbeddingOperationalConfig
+from core.execution_profile import exclusive_measurement
 from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
 from core.semantic_config import parse_strict_bool
@@ -21,7 +22,7 @@ from core.strategy_registry import EXTERNAL_STRATEGIES, RESEARCH_EXTERNAL_STRATE
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing.chunking import parse_pages_offline
-from utils.io import _write_json
+from utils.io import _write_json as _persist_json
 from utils.provenance import code_provenance
 
 # Spawn-based context for the parsing worker pool. Using the default `fork`
@@ -29,6 +30,16 @@ from utils.provenance import code_provenance
 # requests stop being dispatched after the pool shuts down), which manifests
 # as 100% CPU on the main thread but 0 reqs at the vLLM serve endpoint.
 _PARSE_MP_CTX = _mp.get_context("spawn")
+
+
+def _write_json(path, payload):
+    # Every index backend uses this writer; failure artifacts remain unnormalized.
+    if isinstance(payload, dict) and "timing_seconds" in payload and "corpus_manifest_paragraph_count" in payload:
+        from core.amortized_cost import indexing_cost
+        from core.execution_profile import execution_profile
+        payload = {**payload, "amortized_indexing_cost": indexing_cost(payload),
+                   "execution_profile": execution_profile()}
+    return _persist_json(path, payload)
 
 
 logger = logging.getLogger("Prehop")
@@ -1234,6 +1245,7 @@ async def _index_run_lock(strategy: str, corpus_tag: str):
             handle.close()
 
 
+@exclusive_measurement
 async def run_indexing(
     dataset_path: str,
     strategy: str,
@@ -1241,7 +1253,9 @@ async def run_indexing(
     corpus_tag: str | None = None,
     save_intermediate: bool = False,
 ):
-    """Serialize duplicate strategy/corpus runs while allowing all distinct targets in parallel."""
+    """Serialize duplicate runs; throughput profiles also exclude overlapping targets."""
+    from core.execution_profile import require_queue
+    await asyncio.to_thread(require_queue, strategy)
     from core.inference_telemetry import begin, finish
 
     async with _index_run_lock(strategy, corpus_tag or "default"):
@@ -1415,7 +1429,12 @@ async def _run_indexing_unlocked(
         return
 
     if strategy == "prehop":
-        engine = GraphRAG(
+        from core.execution_profile import execution_profile
+        graph_class = GraphRAG
+        if execution_profile()['settings'].get('prehop_chunk_concurrency', 1) > 1:
+            from models.prehop.parallel_adapter import ParallelChunkGraphRAG
+            graph_class = ParallelChunkGraphRAG
+        engine = graph_class(
             strategy=strategy,
             indexing_model_id=model_id,
             corpus_tag=corpus_tag,
@@ -1766,6 +1785,13 @@ async def _run_indexing_unlocked(
     # graph so it's always consistent with what actually landed in Neo4j.
     # Measurement failures make the run incomplete; result tables must not
     # silently report an index whose structural statistics were never read.
+    recorder = getattr(engine, "trace_recorder", None)
+    if recorder is not None:
+        recorder.emit("index.outcome", {"corpus_manifest": corpus_manifest,
+                      "failed_files": failed_files, "succeeded": finalized_successes,
+                      "graph_stats": graph_stats, "timing_seconds": stage_timing})
+        if graph_stats is not None:
+            graph_stats["prehop_trace"] = recorder.reference
     if graph_stats is not None:
         graph_stats["timing_seconds"] = dict(stage_timing)
         if hasattr(engine, "graph_write_observation"):

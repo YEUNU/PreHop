@@ -15,8 +15,8 @@ strategy-local `artifacts/builds/` directory and passes that export to package
 installation. It records the archive digest and rejects tracked, untracked,
 or ignored changes in the original source before and after the build.
 `RAG_OFFICIAL_BASELINE_HOME` selects the same runtime layout for setup and
-worker source, interpreter, snapshot, and freeze resolution. Existing failed
-attempts remain in place when a new runtime home is selected.
+worker source, interpreter, snapshot, and freeze resolution. Setup leaves existing attempts in place when a new runtime home is selected;
+explicit cleanup is a separate operation.
 
 ## Admission and transport identity
 
@@ -55,10 +55,10 @@ keeps its text response contract.
 `core/structured_outputs.py` owns these schemas.
 Nonblank strings use `[\s\S]*\S[\s\S]*`, preserving the intended
 non-whitespace requirement under both JSON Schema search and constrained-decoder
-full-match semantics, including multiline text. The previous bare `\S`
-constraint produced one-character questions in a failed cold attempt; those
-artifacts remain preserved. Completion failures record only allowlisted schema,
-choice, finish-reason and token-count metadata, never response text.
+full-match semantics, including multiline text. Console diagnostics retain allowlisted schema, choice, finish-reason and
+token-count metadata. Prehop additionally stores raw request/response bodies
+in its private trace artifacts before response validation; see
+[Prehop tracing](#prehop-tracing).
 
 The v3 wire schema omits `uniqueItems`; exact ranking count and candidate IDs
 remain constrained, and the local validator rejects duplicate IDs without
@@ -66,10 +66,9 @@ repair or filling. Redundant `minLength` on patterned strings is also omitted.
 A reviewed keyword subset is checked recursively before transmission, keeping
 property names and enum/const values separate from schema keywords. This follows
 [vLLM's documented XGrammar feature checks](https://docs.vllm.ai/en/latest/api/vllm/v1/structured_output/backend_xgrammar/).
-Local compiler acceptance alone does not establish serving support: one local
-compiler accepted `uniqueItems` that the actual gateway rejected. All seven
-current schema variants were therefore also checked through the production
-request helper and gateway; this is integration evidence, not full admission.
+Local compiler acceptance alone does not establish serving support. Validate
+the schema variants through the production request helper and gateway before
+full execution; such integration checks do not establish benchmark admission.
 
 `prehop-json-schema-v3` and the materialized-schema bundle digest enter index policy,
 query metadata, and the v4 chunk-generation cache signature. Per-request
@@ -271,8 +270,9 @@ Remote embedding responses must contain exactly one finite, dimensionally
 consistent vector per input with unique, gap-free response indices. Only
 MessagePack/context-size errors and HTTP 413 trigger order-preserving
 bisection; an unrelated HTTP 400 or a failing singleton is raised. The paper
-operational configuration caps remote embedding batches at 16 and effective
-concurrency at 1 without reducing the independent generation concurrency.
+serial operational configuration uses embedding batches of 16 and concurrency
+1. An explicit content-bound throughput profile selects different operational
+limits through the owned queue; see THROUGHPUT_EXECUTION.md.
 
 ### Prehop modules
 
@@ -282,7 +282,7 @@ concurrency at 1 without reducing the independent generation concurrency.
   cache, and run-namespaced debug output.
 - `RAG_CHUNK_CACHE=off` disables reuse. A measured cold run sets it explicitly
   and clears prior artifacts.
-- `--save-intermediate` writes only to
+- Prehop tracing enables intermediate output by default. `--save-intermediate` writes to
   `data/debug/<run-id>/<strategy>/<corpus>/<source>/`; normal logs and paper
   artifacts live elsewhere, so parallel debugging cannot overwrite them.
 
@@ -394,12 +394,16 @@ change its generated questions.
 ### Primary external driver contracts
 
 The common external worker owns lifecycle, structured requests, telemetry,
-semantic provenance, and artifact inventory. Thin strategy drivers own only
-method-specific staging and upstream calls:
+semantic provenance, and artifact inventory. Thin strategy drivers own
+method-specific staging, declared producer scheduling, and upstream calls:
 
 - LightRAG supplies a NumPy-array embedding callback with exact count,
   dimension, and finite-value validation; storage initialization, insertion,
   insertion status, mix-mode retrieval, and finalization errors propagate.
+  The adapter sets native insertion concurrency separately from request
+  concurrency. On close, it finalizes storage, snapshots the remaining tasks
+  in its private event loop, and joins cancelled workers before closing the
+  loop. Timeout supervision is excluded from that snapshot on Python 3.10.
 - HippoRAG2 maps the canonical gateway into the upstream OpenAI-compatible
   fields, checks embedding width, calls native `rag_qa`, and retains both its
   answer and source-bearing evidence.
@@ -785,7 +789,7 @@ legacy/reserve adapters and do not supply primary cells.
 ### Upstream immutability boundary
 
 Pinned external source trees remain clean and immutable. Strategy adapters are
-limited to input normalization, the declared LiteLLM transport, run-local
+limited to input normalization, declared producer scheduling, the LiteLLM transport, run-local
 configuration or schema preparation, observational sidecars, and validation
 after a native API call. They do not override upstream retrieval, graph
 deduplication, serialization, or answer orchestration. A method-defining
@@ -879,8 +883,9 @@ execution recovery, not indexing recovery or an orchestration-level retry.
 Every paper run invokes one dataset/strategy target with a unique `RAG_RUN_ID`.
 The run records wall time, service latency, worker-queue delay, end-to-end
 latency, phase timings exposed by the adapter, effective concurrency,
-structural integrity, and failures. Remote embeddings use batch 16 and
-concurrency 1; generation has its own semaphore. Cancellation cannot leak a
+structural integrity, and failures. Serial defaults use embedding batch 16 and
+concurrency 1; explicit throughput profiles select their recorded limits.
+Generation has its own semaphore. Cancellation cannot leak a
 global embedding permit. Official adapters report only timing and token/cost
 fields their upstream implementations expose; unavailable telemetry is marked
 incomplete and never estimated.
@@ -912,7 +917,7 @@ pipeline and measurement timing only.
 state: it disables the in-repo chunk and embedding caches, gives every
 file-backed official baseline a new run-specific output root, allocates a
 run-specific Neo4j namespace without invoking the global clear operation, and runs the complete prepared split at
-query concurrency 1. A dirty tracked worktree is warned and recorded in code
+the selected profile concurrency (serial default 1). A dirty tracked worktree is warned and recorded in code
 provenance. A strictly verified completed target is skipped; a compatible
 complete index or deterministic partial benchmark may resume; corrupt or
 incompatible existing artifacts fail closed. The matrix continues after
@@ -1002,7 +1007,7 @@ require current revalidation; matching configuration never replaces corpus,
 query, native artifact, result/detail or dependency checks. Historical query,
 index and evaluation provenance is preserved unchanged.
 
-Structured JSON parse failures retain a metadata-only replay manifest in the
+Console structured JSON diagnostics retain a metadata-only replay manifest in the
 existing failure record: distinct syntax/duplicate-property/nonfinite categories,
 syntax offsets, content size and character-class counts, stopped-choice/usage
 metadata, schema hash, original and transmitted prompt hashes, and the assembled
@@ -1012,7 +1017,8 @@ read the preserved source, run the recorded parser/chunker, match these hashes,
 and rebuild the unchanged native messages/settings; verify both prompt hashes
 and the request-parameter hash before issuing a request. The manifest stores no
 response text, property names, prompt text, credentials or endpoint address.
-Diagnostics do not repair outputs or change schemas or token limits.
+Prehop trace payloads separately retain the original request and response for
+new traced executions, including discarded attempts. Diagnostics do not repair outputs or change schemas or token limits.
 
 Prehop's `prehop-controlled-format-retry-v1` profile discards raw JSON syntax,
 duplicate-property, nonfinite and registered-schema failures, then resubmits the
@@ -1085,3 +1091,96 @@ unique query rows' service latency and is not interpreted as parallel wall time.
 Retries within an admitted benchmark remain part of its actual measured phase;
 separate failed runs remain preserved and do not populate successful indexing
 costs or primary effectiveness results.
+
+### Adapter producer parallelism
+
+Prehop contains observation hooks; pinned external source remains unchanged.
+Adapter scheduling controls how much independent native indexing
+work can reach the shared inference queue:
+
+| Method | Native indexing work | Adapter behavior |
+|---|---|---|
+| Prehop | Chunk extraction followed by document and graph writes | Bounds active documents, prefetch and chunk lookahead; retains native assembly order. |
+| Naive RAG | Embedding and document replacement | Applies remote embedding batch and request limits; indexing uses no generation. |
+| MS GraphRAG | Concurrent extraction and community stages | Connects native request concurrency to the shared cap and retains dependency barriers. |
+| LightRAG | Document insertion with a separate LLM gate | Sets native `max_parallel_insert` independently from `llm_model_max_async`. |
+| HippoRAG2 | Parallel OpenIE, then embedding and graph construction | Sets `openie_max_workers` to the generation cap; retains the native encoder and graph stages. |
+| GFM-RAG | Parallel OpenIE, then local entity linking and checkpoint work | Sets constructor `num_processes` to the cap; the native implementation uses threads. |
+| LinearRAG | Local spaCy NER and MPNet batches | Retains the local pipeline. Native `max_workers` does not parallelize `spacy.pipe`. |
+| Youtu-GraphRAG | Parallel document extraction with an adaptive shared schema | Uses a bounded I/O executor, synchronized schema updates and a declared extraction retry policy. |
+
+Prehop uses `models/prehop/parallel_adapter.py` for bounded per-document chunk
+lookahead while retaining original assembly order and the native extractor.
+LightRAG configures its native insertion gate separately from request limits.
+Youtu's bounded I/O executor calls native `process_document` without the native
+scheduler's CPU+4 clamp and joins all documents before native deduplication and
+community stages. A lock protects adaptive schema updates and prompt snapshots;
+LLM calls run outside the lock. Native graph locking, merging and Tree-Comm
+remain in place.
+
+Youtu worker count, `locked-native-v1` schema synchronization and the
+`adapter-bounded-io-v1` scheduler enter semantic identity because parallel
+schema visibility and completion order can change outputs. Its extraction
+retry facade shares five total attempts across format and transport errors,
+disables SDK retries and returns an unchanged valid response to the native
+parser. Retry policy and attempt counters are recorded. Native generation
+remains unseeded; parallel builds are not assumed equivalent to serial builds.
+
+### Amortized throughput cost (evidence v3)
+
+The content-bound execution profile and measured cost boundaries are specified
+in [THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md). Each profile campaign owns
+a bounded transparent inference queue. Target executions remain sequential;
+adapter producer settings increase native document parallelism within one target.
+Producer behavior is defined in [Adapter producer parallelism](#adapter-producer-parallelism).
+
+`amortized_indexing_cost` divides original index wall time by manifest source
+count. `amortized_query_cost` uses a separate batch-dispatch-to-last-answer wall
+timer and full query count. Failed, partial or resumed query runs do not supply
+continuous-run query throughput. The original benchmark segment timer and
+request latency fields retain their existing meanings. Interleaved evaluation
+or checkpoint work delaying answers is included in the query batch timer.
+
+
+## Prehop tracing
+
+`models/prehop/tracing.py` records Prehop stage inputs and outputs, embedding
+inputs/vectors, Neo4j Cypher calls and returned rows, retrieval
+candidates, graph expansion, scoring, query refinement and final answers.
+`GraphRAG` enables tracing and document intermediate files by default.
+`RAG_PREHOP_TRACE=false` disables it for isolated diagnostics/tests;
+`RAG_PREHOP_TRACE_DIR` overrides the default `data/traces` root.
+
+Each engine reserves a fresh session directory under
+`data/traces/<run-id>/prehop/<namespace>/<session-id>/`. `events.jsonl` contains
+ordered sequence numbers, timestamps, span/parent IDs and document or benchmark
+query identity. SHA-256-addressed `payloads/*.json.gz` files hold full payloads.
+Concurrent asyncio tasks retain their own parent and query/document contexts.
+The benchmark adds stable query IDs and indices; indexing includes source names
+and chunk/page hashes and ordinals. Unmatched starts indicate interrupted work;
+a trace file's existence does not establish successful execution.
+
+Prehop clients observe HTTP request and response bodies before SDK and schema
+validation, including SDK-internal HTTP retries. Logical calls and explicit
+transport attempts have separate spans. A context-local telemetry observer
+records native structured validation outcomes and discarded-attempt reasons.
+It does not alter parsing, retry budgets, output limits, prompts or decoding.
+Other strategies sharing HTTP connections have no active Prehop trace context.
+
+HTTP headers and endpoint credentials are not recorded. Known credential values
+and credential fields are redacted while numeric telemetry is retained. Trace
+payloads otherwise retain inputs and model output, so they remain local and
+ignored, with session directories mode 0700 and files mode 0600. Every event is
+written and the file closed immediately; storage failures propagate. This
+provides process-crash diagnostics, not a guarantee against power loss.
+HTTP hooks persist events inline, as stage spans do. They must not await the
+default thread executor: embedding semaphore waiters can saturate that executor,
+preventing permit holders from recording responses and releasing their permits.
+
+Index statistics and benchmark detail rows contain `prehop_trace` references.
+The index outcome records failures and graph checks; benchmark query outcomes
+include evaluation inputs and results. Traces complement the stored index and
+result artifacts; they do not replace final admission. Inference and stage trace
+I/O during a measured phase contributes to its wall time; post-phase outcome
+reporting remains outside that phase timer. Trace files are excluded from
+retrieval index storage size. Older untraced responses cannot be reconstructed.

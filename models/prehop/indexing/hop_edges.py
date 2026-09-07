@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from core.config import RAGConfig
+from models.prehop.tracing import traced
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +407,7 @@ class HopEdgeMixin:
         )
         return reciprocal_pairs
 
+    @traced
     async def build_all_hop_edges(self) -> None:
         """Build Q+-to-answer-owner HOP edges after the complete corpus is visible."""
         if not RAGConfig.ABLATION_Q_PLUS:

@@ -182,7 +182,25 @@ def _validate_artifact(
 ) -> list[str]:
     errors: list[str] = []
 
+    from core.amortized_cost import query_cost, validate_cost
+    from core.execution_profile import execution_profile
     from core.strategy_registry import PAPER_TRANSPORT
+    if payload.get("execution_profile") != execution_profile():
+        errors.append(f"{path}: execution profile differs from the selected profile")
+    try:
+        batch = payload.get("query_batch_timing", {})
+        if batch.get("version") != 1 or batch.get("resumed") != (payload.get("resume") is not None):
+            raise ValueError("query batch timing/resume identity mismatch")
+        expected_query_cost = query_cost(
+            batch.get("wall_seconds"), expected_count,
+            complete=payload.get("queries_count") == expected_count and not any(
+                row.get("error") for row in payload.get("details", [])),
+            resumed=payload.get("resume") is not None)
+        validate_cost(payload.get("amortized_query_cost"), expected_query_cost)
+        if payload.get("resume") is None and not expected_query_cost["continuous_run_eligible"]:
+            raise ValueError("Complete continuous benchmark requires a positive measured wall time")
+    except (ValueError, TypeError) as exc:
+        errors.append(f"{path}: {exc}")
 
     expected = {
         "strategy": strategy,
@@ -266,6 +284,16 @@ def _validate_artifact(
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             errors.append(f"{path}: exact index stats are unreadable: {exc}")
         else:
+            from core.amortized_cost import indexing_cost
+            try:
+                expected_index_cost = indexing_cost(stats_payload)
+                validate_cost(stats_payload.get("amortized_indexing_cost"), expected_index_cost)
+                if not expected_index_cost["continuous_run_eligible"]:
+                    raise ValueError("Complete index requires positive source count and measured wall time")
+                if stats_payload.get("execution_profile") != execution_profile():
+                    raise ValueError("index execution profile differs from selected profile")
+            except (ValueError, TypeError) as exc:
+                errors.append(f"{path}: {exc}")
             if payload.get("index_manifest_stats_sha256") != stats_bytes_digest:
                 errors.append(f"{path}: exact index stats byte digest is stale")
             stats_expected = {

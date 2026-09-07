@@ -227,6 +227,8 @@ data/enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2
 data/multihoprag_corpus/
 data/musique_corpus/
 data/debug/
+# Full request/response and graph payloads may contain private source text.
+data/traces/
 data/results/
 data/tmp/
 tmp/
@@ -246,6 +248,8 @@ data/hoprag_output/
 data/browsenet_output/
 data/proprag_output/
 data/official_baselines/
+# Prepared interpreter environments, including files outside their own ignores.
+data/runtime_envs/
 
 # graphrag library writes its default file_storage here when reporting_config
 # isn't overridden (separate from our explicit output_storage).

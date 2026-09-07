@@ -22,6 +22,7 @@ esac
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 . "$repo_root/scripts/lib.sh"
+load_project_env "$repo_root/.env"
 PYTHON_BIN=$(resolve_python "$repo_root") || exit 1
 export PYTHON_BIN
 runner="$repo_root/scripts/run_paper_target.sh"

@@ -13,6 +13,7 @@ from core.config import RAGConfig
 from core.generation_profiles import request_settings
 from core.structured_outputs import ranking_contract
 from models.prehop.llm_json import generate_json_or_raise
+from models.prehop.tracing import traced
 from utils.prompts.query_rewrite import build_evidence_ranking_prompt
 from utils.similarity import cosine_similarity
 
@@ -46,6 +47,7 @@ class SimilarityScoringMixin:
             raise ValueError("Query and indexed candidate embedding dimensions do not match")
         return cosine_similarity(query_embedding, document_embedding)
 
+    @traced
     async def _score_and_select(
         self,
         query_embedding: list[float],
@@ -154,6 +156,7 @@ class SimilarityScoringMixin:
             timing_sink["candidate_order_ms"] = (time.perf_counter() - ordering_started) * 1000
         return selected, ordered
 
+    @traced
     async def _role_body_list_ranking(
         self,
         query_text: str,

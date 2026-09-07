@@ -17,6 +17,7 @@ from core.config import RAGConfig
 from core.generation_profiles import request_settings
 from core.structured_outputs import question_contract
 from models.prehop.llm_json import generate_json_or_raise
+from models.prehop.tracing import traced
 from utils.prompts import (
     GROUNDED_HOPRAG_FORMAT_INSTRUCTION,
     GROUNDED_HOPRAG_PROMPT,
@@ -196,6 +197,7 @@ class KnowledgeMappingMixin:
                 records.append(record)
         return records
 
+    @traced
     async def extract_hoprag_queries(self, chunk: str, title: str = "") -> dict[str, Any]:
         """Generate Q-/Q+ for a chunk without rolling context.
 

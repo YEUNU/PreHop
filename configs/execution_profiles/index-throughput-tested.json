@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "name": "index-producers-g60-d60-c8-l32-y60-v2",
+  "settings": {
+    "generation_concurrency": 60,
+    "embedding_batch_size": 16,
+    "embedding_concurrency": 2,
+    "benchmark_concurrency": 8,
+    "index_document_concurrency": 60,
+    "index_prefetch_documents": 120,
+    "lightrag_document_concurrency": 32,
+    "youtu_document_concurrency": 60,
+    "prehop_chunk_concurrency": 8
+  }
+}

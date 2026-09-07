@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -29,7 +29,16 @@ class PaperTransportSpec:
     query_template: str = "Instruct: {instruction}\nQuery:{query}"
 
 
-PAPER_TRANSPORT = PaperTransportSpec()
+# Also support the dependency-free `python core/strategy_registry.py` CLI.
+if __package__ in {None, ""}:
+    from execution_profile import execution_profile
+else:
+    from core.execution_profile import execution_profile
+
+PAPER_TRANSPORT = replace(PaperTransportSpec(), **{
+    key: value for key, value in execution_profile()["settings"].items()
+    if key in PaperTransportSpec.__dataclass_fields__
+})
 
 
 @dataclass(frozen=True)
@@ -397,6 +406,23 @@ STRATEGIES = (
         dataset_aliases=(("multihoprag", "hotpot"), ("musique", "musique")),
     ),
 )
+
+if execution_profile()['version'] == 2:
+    # Adaptive schema evolution makes producer concurrency a semantic as well
+    # as an operational input. Never label the parallel index serial-equivalent.
+    _workers = execution_profile()['settings']['youtu_document_concurrency']
+    STRATEGIES = tuple(replace(spec,
+        paper_index_policy=tuple((key, _workers if key == 'construction_concurrency' else value)
+                                 for key, value in spec.paper_index_policy)
+                           + (('schema_update_policy', 'locked-native-v1'),
+                              ('construction_scheduler', 'adapter-bounded-io-v1'),
+                              ('construction_format_retry_profile', 'youtu-controlled-format-retry-v1'),
+                              ('construction_max_total_attempts', PAPER_TRANSPORT.retry_attempts),
+                              ('construction_sdk_retries', 0),
+                              ('construction_retry_budget_scope', 'transport-and-format-shared')),
+        paper_index_environment=tuple((key, env, _workers if key == 'construction_concurrency' else value)
+                                      for key, env, value in spec.paper_index_environment))
+        if spec.name == 'youtu_graphrag' else spec for spec in STRATEGIES)
 
 BY_NAME = {spec.name: spec for spec in STRATEGIES}
 ALL_STRATEGIES = tuple(BY_NAME)

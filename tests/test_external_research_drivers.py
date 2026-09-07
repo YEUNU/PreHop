@@ -1,5 +1,6 @@
 import ast
 import json
+import os
 import subprocess
 import sys
 import types
@@ -151,7 +152,7 @@ def test_youtu_query_calls_public_top_level_api_and_preserves_native_order():
 
 
 def test_youtu_exact_pinned_checkout_declares_the_structured_top_level_api():
-    root = Path("data/official_baselines/youtu_graphrag/source")
+    root = Path(os.environ.get("RAG_TEST_PINNED_RUNTIME_HOME", "data/official_baselines")) / "youtu_graphrag/source"
     if not root.is_dir():
         pytest.skip("pinned Youtu checkout is prepared only after static GO")
     revision = subprocess.run(
@@ -223,6 +224,7 @@ def test_lightrag_uses_pinned_async_contract_and_exact_file_path(monkeypatch, tm
     class LightRAG:
         def __init__(self, **kwargs):
             calls["config"] = kwargs
+            self.max_parallel_insert = kwargs.get("max_parallel_insert", 2)
 
         async def initialize_storages(self):
             calls["initialized"] = True

@@ -210,7 +210,8 @@ def recovery_child(run_id: str, mode: str) -> None:
             raise RuntimeError('Resume child requires its owned interrupted checkpoint')
     from core.paper_policy import configure_target_environment
     configure_target_environment('naive', 'multihoprag', run_id)
-    os.environ['RAG_BENCHMARK_CONCURRENCY'] = '1'
+    from core.strategy_registry import PAPER_TRANSPORT
+    os.environ['RAG_BENCHMARK_CONCURRENCY'] = str(PAPER_TRANSPORT.benchmark_concurrency)
     os.environ['RAG_BENCHMARK_CHECKPOINT_EVERY'] = '1'
     if mode == 'resume':
         os.environ['RAG_BENCHMARK_RESUME'] = 'true'

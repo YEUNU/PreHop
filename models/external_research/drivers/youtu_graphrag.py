@@ -360,13 +360,24 @@ class YoutuGraphRAGDriver:
     def index(self) -> dict[str, Any]:
         from models.constructor.kt_gen import KTBuilder
 
+        from core.execution_profile import execution_profile
+
+        from .youtu_concurrency import BoundedYoutuDocuments, SynchronizedYoutuSchema
+
+        if execution_profile()['version'] == 2:
+            class ParallelKTBuilder(BoundedYoutuDocuments, SynchronizedYoutuSchema, KTBuilder):
+                pass
+            builder_base = ParallelKTBuilder
+        else:
+            builder_base = KTBuilder
+
         # KTBuilder ignores extra dict fields when forming semantic text. A
         # thin subclass captures the source_id before delegating chunking, so
         # provenance is exact without adding markers to embeddings/prompts.
         corpus = [{"source_id": r["source_id"], "title": r["title"], "text": r["text"]} for r in self.rows]
         self.corpus_path.write_text(json.dumps(corpus, ensure_ascii=False), encoding="utf-8")
 
-        class ObservedKTBuilder(KTBuilder):
+        class ObservedKTBuilder(builder_base):
             def __init__(inner, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 inner.chunk_sources: dict[str, str] = {}
@@ -445,7 +456,12 @@ class YoutuGraphRAGDriver:
         )
         from core.native_structured_profile import YoutuConstructionClient
 
-        builder.llm_client.client = YoutuConstructionClient(builder.llm_client.client)
+        if execution_profile()['version'] == 2:
+            from .youtu_format_retry import RetryingYoutuConstructionClient
+            builder.llm_client.client = RetryingYoutuConstructionClient(
+                builder.llm_client.client, self.transport.retry_attempts)
+        else:
+            builder.llm_client.client = YoutuConstructionClient(builder.llm_client.client)
         builder.build_knowledge_graph(str(self.corpus_path))
         chunk_sources = builder.chunk_sources
         staged_complete = (
@@ -555,6 +571,12 @@ class YoutuGraphRAGDriver:
 
         return {
             "extraction_generation_profile": YOUTU_STRUCTURED_PROFILE,
+            "construction_workers_requested": self.config.construction.max_workers,
+            "construction_workers_effective": (self.config.construction.max_workers if execution_profile()['version'] == 2
+                else min(self.config.construction.max_workers, (os.cpu_count() or 1) + 4)),
+            "schema_update_policy": ("locked-native-v1" if execution_profile()['version'] == 2 else "native-serial"),
+            "construction_retry_stats": (builder.llm_client.client.retry_stats()
+                if execution_profile()['version'] == 2 else None),
             "extraction_schema_sha256": youtu_profile_sha256(),
             "source_count": len(self.rows),
             "coverage_complete": True,

@@ -23,6 +23,8 @@ Keep repository facts in one authoritative place and link to them elsewhere:
   required before values are copied into the manuscript or presentation.
 - `docs/RUNTIME_REQUIREMENTS.md` explains pinned external checkouts, local
   ancillary models, licenses, and the machine-readable preflight contract.
+- `docs/THROUGHPUT_EXECUTION.md` owns profile fields, throughput launch
+  procedures, resource interpretation, and amortized cost definitions.
 - `docs/CHANGELOG.md` is the chronological engineering record. It records what
   changed and may summarize explicitly labelled exploratory validation, but it
   is not the current architecture specification or a paper-results source.
@@ -30,8 +32,8 @@ Keep repository facts in one authoritative place and link to them elsewhere:
   confirmatory evaluation specification. It contains the fixed method, claim
   scope, final reportable results, their analysis, and limitations.
   Development history, rejected variants, intermediate checkpoints, and
-  negative exploratory results belong in `docs/CHANGELOG.md`, not in the
-  manuscript.
+  exploratory validation belong in ignored evidence artifacts, with material
+  engineering changes summarized in `docs/CHANGELOG.md`.
 - `SUBMISSION_TARGET.md` is the local, gitignored venue, deadline, and run
   logistics note. It is not a method or result source.
 - `third_party/HopRAG/README.md` is vendored upstream documentation. Preserve
@@ -45,6 +47,10 @@ changes. Update `docs/RESULTS.md` when a final artifact or accepted numerical
 claim changes. Component-boundary changes belong in `docs/ARCHITECTURE.md`.
 Update this file when the supported state, workflow rules, or these document
 responsibilities change. Do not copy full sections between files.
+Implementation plans are temporary: after implementation, move lasting design
+constraints into `ARCHITECTURE.md` and execution checks into the appropriate
+guide, update links, and delete the plan. Do not retain a second specification
+that must change alongside the authoritative document.
 
 Every result and component control must use the current recorded model
 configuration. Do not carry results, artifact paths, or derived claims across
@@ -52,6 +58,12 @@ a model or vector-dimension change.
 
 ### Documentation style
 
+- Choose editing guidance by document role. When available, use
+  `technical-writing` for setup, runtime, architecture, and execution guides;
+  use `paper-writing` for the manuscript and scientific claims, measurement
+  definitions, and limitations in the result register. Mixed documents need
+  section-specific review. Keep this file prescriptive and the changelog
+  chronological; neither should read like a paper or a tutorial.
 - Preserve each document's audience and tone: `README.md` is concise and
   user-facing; `CLAUDE.md` is an operational policy; `ARCHITECTURE.md` is a
   neutral implementation specification; `CHANGELOG.md` is a factual history;
@@ -106,7 +118,8 @@ a fresh runtime home when an existing attempt is dirty.
   or vector dimension requires a new run ID and a cold index; never relabel an
   existing result with the new configuration.
 - Paper remote embeddings use batches of at most 16 with effective concurrency
-  1. Generation concurrency remains independently bounded. Strategy-specific
+  1 by default; a selected content-bound profile overrides these limits.
+  Generation concurrency remains independently bounded. Strategy-specific
   operational overrides must be recorded separately from semantic settings.
 - Paper runs execute one dataset/strategy target at a time with an explicit
   run ID. `RAG_GENERATION_MAX_NUM_SEQS` records endpoint capacity; each adapter's worker
@@ -138,7 +151,8 @@ a fresh runtime home when an existing attempt is dirty.
   separate semantic configurations, never silent fallbacks.
 - Treat every pinned upstream checkout as immutable. Thin adapters may stage
   normalized input, configure the declared LiteLLM route, prepare run-local
-  schemas, collect observational sidecars, and post-validate native outputs.
+  schemas, schedule declared parallel producer work, collect observational
+  sidecars, and post-validate native outputs.
   They must not monkeypatch upstream retrieval, graph deduplication,
   serialization, or answer-path methods. A method-level change is a controlled
   deviation with its own semantic identity and is not official-faithful.
@@ -234,7 +248,8 @@ implicit matrix. This makes the run ID, log, resource use, failure state, and
 graph mutation attributable to one target.
 
 Naive batches source documents for each embedding/write transaction. Paper
-remote embeddings are capped at batch 16 and concurrency 1; generation uses a
+remote embeddings default to batch 16 and concurrency 1; an explicit content-bound
+throughput profile selects operational limits through the owned queue. Generation uses a
 separate limit. External methods run at exact upstream revisions in isolated
 environments created by `scripts/setup_official_baselines.sh`. Their source and
 model artifacts remain under ignored `data/official_baselines/`; the main
@@ -247,7 +262,9 @@ A measured cold run must:
 1. check for conflicting indexing processes and postpone a new run when they conflict;
 2. allocate a run-specific namespace; never globally clear a shared graph;
 3. allocate fresh run-scoped output and stats paths; never delete or rewrite
-   an existing run's result, log, database, index, or failure artifact;
+   an existing run's result, log, database, index, or failure artifact during
+   execution. Explicit cleanup may retire superseded artifacts once their owner
+   has stopped; retain the evidence needed to interpret the active run;
 4. set `RAG_CHUNK_CACHE=off` and disable baseline cache reuse;
 5. use a new `RAG_RUN_ID`;
 6. run endpoint/model/dimension preflight before launching the target.
@@ -281,7 +298,7 @@ For Prehop targets, inspect real intermediate files and the live graph rather
 than relying only on progress logs:
 
 - sample `data/debug/<run-id>/prehop/<corpus>/<source>/final_chunks.json` when
-  `--save-intermediate` is enabled;
+  tracing is enabled (the default for Prehop);
 - verify raw chunk text, title/page/sent_id ordering, answerable Q-, outward Q+,
   generated questions and absence of fabricated or converted text;
 - query total Documents/Chunks and Q-/Q+ coverage;
@@ -324,8 +341,9 @@ specification. It records the fixed method, dataset-specific metrics, and
 reporting decisions; development numbers are not paper results. Only the fixed
 methodology and final results may appear in its main text. Do
 not narrate the development sequence or retain rejected/intermediate
-experiments merely to justify the final design; preserve those records in
-`docs/CHANGELOG.md`.
+experiments merely to justify the final design. Summarize material engineering
+changes in `docs/CHANGELOG.md`; retain detailed validation in ignored evidence
+artifacts according to the cleanup policy.
 When editing it:
 
 - Separate confirmed implementation facts, measured results, and hypotheses.
@@ -362,7 +380,7 @@ When editing it:
 
 ## Generated files and repository hygiene
 
-Generated logs, caches, debug output, graphs, results, and index outputs
+Generated logs, caches, debug output, graphs, results, and index output
 artifacts are not source files and must remain ignored. Do not commit virtual
 environments, `__pycache__`, model weights, server logs, or partial indexes.
 Root-level PDF, presentation, archive, and CSV handoff exports remain local;
@@ -372,6 +390,9 @@ remain ignored because they are presentation-production material, not project
 source.
 Temporary scripts under `scripts/` use the `_tmp.py` suffix and remain ignored.
 Obsolete scripts should be removed instead of kept as compatibility wrappers.
+An explicit cleanup request may retire superseded outputs after their owning
+process has stopped. Preserve active indexes, original source and datasets,
+and the evidence chain needed for retained validation or admitted results.
 
 ## Structured profiles and durable execution
 
@@ -382,7 +403,8 @@ formats through public configuration/client interfaces. Schema/profile changes
 must update semantic and generation-cache identity, observed native settings,
 and admission tests. Native retrieval and parser source remain immutable.
 
-Finalize all eight owned documents and tests before logical release commits.
+Update the applicable documents listed above and complete relevant tests
+before release commits.
 The manuscript and submission note remain local-only; do not force-add them.
 Generate the final independent attestation in the actual execution worktree
 with the reviewed effective configuration. Git revision, dirty state and source
@@ -401,6 +423,29 @@ Systemd and own-user linger are required only for the optional systemd backend.
 The supervisor may send TERM to its individually verified native descendants on
 owned failure or termination; it never escalates to KILL. Preserve other runs,
 services and databases. Surviving owned descendants block subsequent campaigns.
-A separate nohup monitor appends read-only observations every three hours and
+For `paper_campaign.py`, a separate nohup monitor appends read-only observations every three hours and
 writes a terminal receipt after cleanup or owner exit. It does not send chat
 messages. The explicit recovery-test child retains its planned interruption.
+The indexing-only `index_matrix.py` supervisor has its own status/log files;
+it does not start this monitor or run full-query admission. Keep its process
+states separate from the publication ledger vocabulary.
+
+### Throughput execution and cost contract
+
+See `docs/THROUGHPUT_EXECUTION.md`. A selected `RAG_EXECUTION_PROFILE` is
+content-bound, supersedes ambient throughput defaults, and requires fresh gates.
+Targets remain sequential while their internal requests share bounded generation
+and embedding queues. Report indexing s/source-document and query s/query from
+measured phase wall times; neither is mean request latency. Resumed queries retain
+effectiveness evidence but cannot supply continuous-run throughput. Native method
+dependencies and unavailable telemetry remain unchanged.
+
+
+### Prehop trace retention
+
+Prehop indexing and benchmarking enable full tracing by default. Preserve the
+referenced event logs and compressed payloads alongside active indexes and
+benchmark artifacts, including invalid and retried responses. Cleanup of stale
+runs must not remove traces referenced by retained runs. Keep raw traces local
+and out of publication exports. Use the architecture's tracing contract as the
+single specification; do not add a separate implementation-plan document.

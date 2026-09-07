@@ -10,6 +10,7 @@ from typing import Any
 
 from core.admission import current_post_query_inventory
 from core.config import RAGConfig
+from core.execution_profile import exclusive_measurement
 from core.index_namespace import index_namespace
 from core.paper_compatibility import method_identity
 from core.paper_policy import structured_query_identity
@@ -1036,6 +1037,7 @@ async def reconcile_pending_judges(run_dir: Path) -> int:
     return patched_files
 
 
+@exclusive_measurement
 async def run_benchmark(
     queries_file: str,
     strategy: str,
@@ -1052,6 +1054,8 @@ async def run_benchmark(
     remain unseeded. Non-paper generation uses the supplied benchmark seed.
     Multi-seed orchestration lives in run_benchmark_multi_seed.
     """
+    from core.execution_profile import execution_profile, require_queue
+    await asyncio.to_thread(require_queue, strategy)
     from core.phase_timing import BenchmarkTiming
     phase_timing = BenchmarkTiming()
     if not os.path.isfile(queries_file):
@@ -1243,6 +1247,7 @@ async def run_benchmark(
             result_file,
             benchmark_data,
             {
+                "execution_profile": execution_profile(),
                 "strategy": strategy,
                 "corpus_tag": corpus_tag,
                 "dataset": dataset_name,
@@ -1313,6 +1318,9 @@ async def run_benchmark(
         )
     if benchmark_concurrency > 1:
         logger.info("Benchmark concurrency: %d queries in flight", benchmark_concurrency)
+
+    query_batch_started = None
+    last_answer_finished = None
 
     def _recompute_and_persist() -> dict[str, Any]:
         """Rebuild the summary from `results` and write the result file +
@@ -1425,6 +1433,17 @@ async def run_benchmark(
                     "code": dict(benchmark_code),
                 },
             ]
+        from core.amortized_cost import query_cost
+        from core.execution_profile import execution_profile
+        s["execution_profile"] = execution_profile()
+        query_wall = (last_answer_finished - query_batch_started
+                      if last_answer_finished is not None and query_batch_started is not None else None)
+        s["query_batch_timing"] = {"version": 1, "wall_seconds": query_wall,
+                                  "resumed": resume_metadata is not None}
+        s["amortized_query_cost"] = query_cost(
+            query_wall, total_queries,
+            complete=len(results) == total_queries and not any(row.get("error") for row in results),
+            resumed=resume_metadata is not None)
         s["benchmark_timing"] = phase_timing.snapshot()
         if reuse_reference is not None:
             s["index_reuse"] = reuse_reference
@@ -1450,7 +1469,7 @@ async def run_benchmark(
         return s
 
     async def _process_query(idx: int, item: dict[str, Any]):
-        nonlocal summary, query_inflight, observed_query_peak
+        nonlocal summary, query_inflight, observed_query_peak, last_answer_finished
         submitted_at = time.perf_counter()
         async with query_sem:
             queue_wait_seconds = time.perf_counter() - submitted_at
@@ -1468,7 +1487,13 @@ async def run_benchmark(
             category = item.get("category", "Uncategorized")
             try:
                 query = _build_benchmark_query(original_query, item)
-                response, retrieved_sources, trace = await engine.run_workflow(query, [])
+                from contextlib import nullcontext
+
+                from models.prehop.tracing import trace_identity
+                with (trace_identity(query_id=str(item["_id"]), query_index=idx, phase="benchmark")
+                      if strategy == "prehop" else nullcontext()):
+                    response, retrieved_sources, trace = await engine.run_workflow(query, [])
+                last_answer_finished = time.perf_counter()
                 latency = time.time() - started
                 stage_timing = _extract_stage_timing(trace)
 
@@ -1589,6 +1614,12 @@ async def run_benchmark(
             if query != original_query:
                 result_item["benchmark_query"] = query
 
+            recorder = getattr(engine, "trace_recorder", None) if strategy == "prehop" else None
+            if recorder is not None:
+                result_item["prehop_trace"] = {**recorder.reference, "query_id": str(item["_id"])}
+                recorder.emit("benchmark.query", {"input": item, "result": result_item},
+                              identity={"query_id": str(item["_id"]), "query_index": idx})
+
             # Primary labels/rates are deterministic; judge labels remain
             # separately named supplemental analysis.
             _apply_judge_label(result_item)
@@ -1614,6 +1645,7 @@ async def run_benchmark(
                     await checkpoint_barrier(result_file, summary)
 
     pending_items = [(i, item) for i, item in enumerate(benchmark_data) if str(item["_id"]) not in retained_query_ids]
+    query_batch_started = time.perf_counter()
     await asyncio.gather(
         *[_process_query(i, item) for i, item in pending_items],
         return_exceptions=False,

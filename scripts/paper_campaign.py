@@ -200,7 +200,7 @@ def safe_environment() -> dict[str, str]:
     current = selected_python_environment()
     preserve_provider_environment(current)
     preserve_method_environment(current)
-    allowed = {'PYTHON_BIN', 'UV_PROJECT_ENVIRONMENT', 'RAG_OFFICIAL_BASELINE_HOME',
+    allowed = {'RAG_PREHOP_TRACE', 'RAG_PREHOP_TRACE_DIR', 'RAG_EXECUTION_PROFILE', 'RAG_QUEUE_PROXY_URL', 'RAG_QUEUE_TOKEN', 'PYTHON_BIN', 'UV_PROJECT_ENVIRONMENT', 'RAG_OFFICIAL_BASELINE_HOME',
         'RAG_INFERENCE_BASE_URL', 'RAG_INFERENCE_API_KEY', 'RAG_GENERATION_MODEL', 'RAG_EMBEDDING_MODEL',
         'RAG_GENERATION_REVISION', 'RAG_EMBEDDING_REVISION', 'NEO4J_URI', 'NEO4J_URL', 'NEO4J_USERNAME', 'NEO4J_USER',
         'NEO4J_PASSWORD', 'NEO4J_DATABASE', 'HF_HOME', 'HF_HUB_CACHE', 'TRANSFORMERS_CACHE', 'PATH', 'HOME', 'LITELLM_MODE'}
@@ -518,8 +518,11 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '', detached
             raise RuntimeError('Owned detached supervisor received termination signal')
         signal.signal(signal.SIGTERM, interrupted)
         signal.signal(signal.SIGINT, interrupted)
+    from core.inference_queue import OwnedQueue
+    queue = OwnedQueue(root / f'inference-queue-{time.time_ns()}.json')
     try:
         check_plan(plan)
+        queue.start()
         update({'state': 'running'})
         env = safe_environment()
         for index, step in enumerate(plan['steps']):
@@ -533,6 +536,8 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '', detached
                     'segment_provenance': code_provenance(),
                     'stdout_log': str(log_base.with_suffix('.stdout.log')), 'stderr_log': str(log_base.with_suffix('.stderr.log'))})
             exit_code = run_child(step['argv'], env, log_base, handle, update)
+            queue.drain()
+            queue.persist()
             update({'child': None, 'exit_code': exit_code})
             remaining = [row for row in (session_processes(owner) if detached else unit_processes(unit))
                          if row['pid'] != os.getpid()]
@@ -563,6 +568,7 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '', detached
             remaining = terminate_owned(owner)
             update({'remaining_owned_processes': remaining, 'owned_cleanup': 'TERM_only',
                     'owned_cleanup_complete': not remaining})
+        queue.close()
         if handle is not None:
             handle.close()
 
@@ -586,6 +592,8 @@ def main() -> int:
         return 0
     from scripts.check_paper_runtime import _load_runner_environment
     _load_runner_environment()
+    from core.execution_profile import apply_execution_profile
+    apply_execution_profile()
     if Path.cwd().resolve() != ROOT:
         raise RuntimeError('Run campaign commands from the repository root')
     if args.action == 'plan':

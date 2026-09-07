@@ -89,6 +89,13 @@ class VLLMClient:
             self._embedding_dimensions = RAGConfig.EMBEDDING_DIMENSIONS
             self._embedding_token_reserve = int(os.environ.get("RAG_EMBEDDING_TOKEN_RESERVE", "0"))
             self._generation_max_context_tokens = RAGConfig.MAX_CONTEXT_LENGTH
+        if not paper_mode and os.environ.get("RAG_QUEUE_PROXY_URL"):
+            # Pilot/development calls must not silently bypass the same queue.
+            from core.inference_transport import InferenceTransport
+            transport = InferenceTransport.resolve("core")
+            self.vllm_url = transport.generation_base_url
+            self.embed_url = transport.embedding_base_url
+            self.api_key = transport.api_key
         # 0 = infinite timeout (None)
         self._request_timeout = None if timeout_val == 0 else timeout_val
         try:

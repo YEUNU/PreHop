@@ -4,33 +4,24 @@ This document explains the machine-readable external-method requirements in
 `configs/paper_runtime_requirements.json`. It does not replace that file or
 `core/strategy_registry.py`, which owns strategy identity and primary order.
 
-## Preserved setup attempts
+## Source and setup isolation
 
-The initial 2026-09-06 audit found no installed primary external source
-checkouts. The first subsequent setup installed five primary research runtimes,
-but packaging generated ignored build files in LightRAG's source and untracked
-build files in HippoRAG's source. The attempt did not pass the live gate.
-These directories, the legacy BrowseNet source-local checkpoint, and PropRAG's
-pre-existing tracked modification are preserved. Setup now rejects tracked,
-untracked, and ignored source changes; it does not clean or migrate them.
+Setup treats pinned upstream checkouts as immutable, including tracked,
+untracked and ignored files. It exports the approved revision into a new
+`artifacts/builds/<revision>-<unique>/source` directory before package installation
+and records the revision and archive digest. Source checks run before and after
+packaging and before the runtime freeze.
 
-Local package installation exports the exact approved git revision into a new
-`artifacts/builds/<revision>-<unique>/source` directory and builds there. A build
-manifest records the revision and archive digest. The original source is
-checked before and after packaging, including ignored files, and again before
-the runtime freeze. Choose a new `RAG_OFFICIAL_BASELINE_HOME` for a fresh retry;
-setup, worker source/Python resolution, snapshots, and freeze checks use the
-same `<home>/<strategy>/{source,artifacts,venv}` layout. Explicit per-strategy
-source/Python overrides still take precedence and must point to that same
-validated runtime. Never remove or relocate an existing attempt to make room.
+`RAG_OFFICIAL_BASELINE_HOME` selects the shared
+`<home>/<strategy>/{source,artifacts,venv}` layout. Per-strategy source and Python
+overrides must resolve to the same validated runtime. If setup fails or the
+checkout is dirty, select a fresh runtime home. Setup does not clean or migrate
+existing attempts. Explicit cleanup can retire superseded generated artifacts
+without changing original source or an active runtime.
 
-The approved gateway identity is stored without its address or credentials in
-`configs/paper_gateway.json`. It was derived from the user's authorized local
-configuration. The existing local configuration still uses legacy provider
-field names; paper entrypoints require explicit canonical exports and reject
-legacy aliases. A one-time authorized launch translation must export canonical values, keep
-forbidden aliases empty, and skip reloading the legacy file; the repository does not support
-two public transport contracts.
+Gateway approval uses the non-secret digest in `configs/paper_gateway.json`.
+Configure the canonical variables below in `.env`; historical provider aliases
+are not a second supported public configuration interface.
 
 ## Main Python environment
 
@@ -72,22 +63,18 @@ The historical read-only observation in `configs/serving_observation.json`
 records the server at 2026-09-06 22:28:51 UTC. The generation alias was associated
 with `nvidia/Gemma-4-31B-IT-NVFP4`, ModelOpt NVFP4 quantization and cached snapshot
 `4135a98a9b728a548947683219633b25682223ac`; the runtime dtype was `bfloat16`.
-That historical observation associated the embedding alias with
-`Qwen/Qwen3-Embedding-8B` and cached snapshot
-`1d8ad4ca9b3dd8059ad90a75d4983776a23d44af`; it does not satisfy the current
-contract. The later unexecuted 4B migration targeted
-`Qwen/Qwen3-Embedding-4B`/2,560, but that is also not the current contract.
-The approved gateway observation in
-`configs/serving_observation_20260907_qwen3_0_6b.json` instead establishes
+The embedding identity for the current contract is recorded in
+`configs/serving_observation_20260907_qwen3_0_6b.json`:
 `Qwen/Qwen3-Embedding-0.6B`/1,024 with cached snapshot
 `97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`. Neither serving command
 explicitly pinned `--revision`, and the model weights were not fully hashed.
 These observations do not establish complete weight reproducibility. The
 recorded single-deployment, tensor-parallel-size-one
 layout is historical provenance, not the specification or evidence of a later
-server redistribution. No service change or inference probe produced this file.
+server redistribution. The observation files do not independently verify a later deployment.
 
-Remote embeddings use batch size 16 and concurrency 1. Generation concurrency
+Serial defaults use embedding batch size 16 and concurrency 1; explicit
+throughput profiles supply the recorded operational limits. Generation concurrency
 is separate. Timeout, retry, batch, and concurrency are operational settings
 and are recorded apart from the semantic method configuration.
 
@@ -96,7 +83,7 @@ embedding width `NEO4J_VECTOR_DIMENSIONS=1024`, embedding input limit
 `MAX_EMBEDDING_LENGTH=32768`, `RAG_EMBEDDING_TOKEN_RESERVE=0`, generation
 context `RAG_MAX_CONTEXT_LENGTH=262144`, query instruction exactly as recorded
 in the canonical policy, and `NEO4J_FULLTEXT_ANALYZER=english`. MS GraphRAG's
-`RAG_MS_EMBED_DIM` is the same 1024 and its report output cap is 4096. PreHop
+`RAG_MS_EMBED_DIM` is the same 1024 and its report output cap is 4096. Prehop
 and Naive additionally admit only the registry's legacy question schema,
 enabled Q−/Q+ flags, disabled sentence channel, and reciprocal-hop
 precomputation. Explicit conflicting values fail before indexing, including in
@@ -201,8 +188,8 @@ than an alternative execution path.
 ## Live gates
 
 Static review must be GO before live preparation. The live sequence is clean
-primary setup; all 16 target preflights; one chat probe; embedding batch 16 at
-concurrency 1 with count/index/1,024-dimension/finite checks; selective
+primary setup; all 16 target preflights; one chat probe; embedding at the selected profile batch/concurrency
+with count/index/1,024-dimension/finite checks; selective
 oversize bisection; 16 cold two-document/one-query canaries; interruption,
 resume, and stale-policy rejection; a 16-target one-query matrix; and one fresh
 full target ending in content-bound admission. `scripts/paper_gate_ledger.py`
@@ -341,7 +328,58 @@ stages. The final summary requires sixteen actual full-target admissions,
 reports missing/invalid cells and exits nonzero otherwise. Effective configuration
 or runtime drift stops execution; Git and documentation changes remain provenance.
 
-All primary benchmarks use registry concurrency one. Prehop structured format
+Primary benchmarks use the selected content-bound profile concurrency (serial default one). Prehop structured format
 retry shares the typed maximum of five wire attempts with transport retry and
 disables the SDK's nested automatic retries. Response schemas, caps and prompts
 remain fixed; the controlled retry profile is part of Prehop's method identity.
+
+## Throughput execution
+
+Select an absolute `RAG_EXECUTION_PROFILE` before starting Python. New campaign
+supervisors own the bounded queue and preserve the profile in child environments.
+Use the foreground queue wrapper for individual targets. Profiles change gate
+context; rerun gates rather than transferring serial evidence. See
+[THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md) for commands and cost definitions.
+
+
+### Serving capacity
+
+On 2026-09-07 the operator reported two serving GPUs with generation
+`MAX_NUM_SEQS=32` per GPU (64 aggregate sequences) and embedding
+`EMBEDDING_MAX_NUM_SEQS=512` per GPU (1,024 aggregate sequences). This is an
+operator report, not a measured utilization or loaded-weight attestation.
+Sequence capacity is not HTTP request concurrency: an embedding request can
+contain several inputs, and KV cache and input length can limit actual work.
+
+The selected profile and its validation limits are listed in
+[Throughput execution](THROUGHPUT_EXECUTION.md#selected-indexing-profile).
+Measure useful completed work under fixed resources before increasing limits;
+a larger client queue alone does not add serving capacity.
+
+### Indexing-only supervisor
+
+`index_matrix.py` uses nohup and an independent process session for smoke builds
+and full indexes. Its status file records each target; it has no separate
+three-hour monitor, automatic chat notification, full-query evaluation or
+benchmark admission stage. See the [index batch procedure](THROUGHPUT_EXECUTION.md#index-only-batch).
+
+
+### Prehop trace storage
+
+Prehop writes full stage and inference traces under ignored `data/traces` and
+intermediate document output under `data/debug`. Its defaults apply to both
+indexing and benchmark entrypoints; campaign environments preserve
+`RAG_PREHOP_TRACE` and `RAG_PREHOP_TRACE_DIR`. Storage must be writable for the
+selected main Python process. See [Prehop tracing](ARCHITECTURE.md#prehop-tracing)
+for the event format and [the inspection commands](../README.md#inspect-prehop-traces).
+
+### Local files and Git
+
+The repository ignores prepared runtimes (`data/runtime_envs`), native runtime
+homes (`data/official_baselines`), generated corpora, indexes, results, debug
+files, and traces. Keep these files on disk when retained runs reference them;
+Git exclusion is not a cleanup policy. `.env` and local overrides stay private,
+while `.env.example`, execution-profile templates, and `uv.lock` are tracked.
+The working manuscript and submission logistics also remain local. A custom
+trace directory must be outside tracked paths or explicitly ignored before
+staging files.

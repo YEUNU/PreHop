@@ -2,11 +2,25 @@
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 from typing import Any
 
 _CURRENT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "prehop_inference_telemetry", default=None
 )
+
+
+_STRUCTURED_OBSERVER = contextvars.ContextVar('structured_attempt_observer', default=None)
+
+
+@contextmanager
+def observe_structured_attempts(observer):
+    """Optional context-local diagnostics; unset for all uninstrumented clients."""
+    token = _STRUCTURED_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _STRUCTURED_OBSERVER.reset(token)
 
 
 def begin() -> contextvars.Token:
@@ -80,6 +94,9 @@ def record_structured_contract(provenance: dict[str, str]) -> None:
 
 def record_structured_attempt(metadata: dict, *, valid: bool) -> None:
     """Count all format attempts, retaining safe detail only for discarded outputs."""
+    observer = _STRUCTURED_OBSERVER.get()
+    if observer is not None:
+        observer(metadata, valid=valid)
     state = _CURRENT.get()
     if state is None:
         return

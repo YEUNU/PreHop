@@ -11,6 +11,7 @@ campaign=$1
 action=$2
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 . "$repo_root/scripts/lib.sh"
+load_project_env "$repo_root/.env"
 PYTHON_BIN=$(resolve_python "$repo_root") || exit 1
 export PYTHON_BIN
 ledger="data/results/$campaign/gate_ledger.json"

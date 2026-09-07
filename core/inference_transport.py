@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from core.embedding_policy import EmbeddingOperationalConfig
+from core.execution_profile import execution_profile
 from core.semantic_config import parse_strict_bool
 from core.strategy_registry import PAPER_TRANSPORT, get_strategy
 
@@ -96,6 +97,7 @@ class InferenceTransport:
         """Return the non-secret effective contract persisted with an index."""
         return {
             "gateway_identity_sha256": self.gateway_identity_sha256,
+            "execution_profile": execution_profile(),
             "generation_model": self.generation_model,
             "gateway_embedding_model": self.embedding_model,
             "timeout_seconds": self.timeout_seconds,
@@ -199,13 +201,18 @@ class InferenceTransport:
             drift = sorted(name for name, values in expected.items() if values[0] != values[1])
             if drift:
                 raise RuntimeError(f"paper inference settings differ from the checked-in transport policy: {drift}")
+        proxy = os.environ.get("RAG_QUEUE_PROXY_URL", "").strip()
+        if proxy:
+            proxy = _normalized_endpoint(proxy)
+            if urlsplit(proxy).hostname != "127.0.0.1" or not os.environ.get("RAG_QUEUE_TOKEN"):
+                raise RuntimeError("Queue proxy must be an owned loopback service")
         result = cls(
             strategy=strategy,
             generation_model=generation_model,
-            generation_base_url=endpoint,
+            generation_base_url=proxy or endpoint,
             embedding_model=embedding_model,
-            embedding_base_url=endpoint,
-            api_key=_required("RAG_INFERENCE_API_KEY"),
+            embedding_base_url=proxy or endpoint,
+            api_key=os.environ["RAG_QUEUE_TOKEN"] if proxy else _required("RAG_INFERENCE_API_KEY"),
             timeout_seconds=timeout,
             retry_attempts=embedding.retry_attempts,
             embedding_batch_size=embedding.batch_size,

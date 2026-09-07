@@ -21,6 +21,7 @@ from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
 from models.prehop.llm_json import generate_json_or_raise
 from models.prehop.retrieval import RetrievalPipeline
+from models.prehop.tracing import TracedNeo4j, TraceRecorder, attach_client, traced
 from utils.prompts.query_rewrite import (
     build_evidence_conditioned_query_prompt,
     build_role_aligned_query_prompt,
@@ -85,6 +86,31 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_run_id).strip("._-") or f"run_{os.getpid()}"
         self.debug_output_dir = os.path.join("data", "debug", safe_run_id, self.strategy, self._safe_corpus)
         self.save_intermediate = save_intermediate
+        from pathlib import Path
+
+        from core.semantic_config import parse_strict_bool
+        self.trace_recorder = None
+        if self.strategy == "prehop" and parse_strict_bool(
+            os.environ.get("RAG_PREHOP_TRACE", "true"), name="RAG_PREHOP_TRACE"
+        ):
+            import uuid
+
+            from core.execution_profile import execution_profile
+            from utils.provenance import code_provenance
+            trace_root = Path(os.environ.get("RAG_PREHOP_TRACE_DIR", "data/traces"))
+            self.trace_recorder = TraceRecorder(
+                trace_root / safe_run_id / "prehop" / self._safe_corpus / uuid.uuid4().hex,
+                metadata={"run_id": raw_run_id, "corpus_tag": self.corpus_tag,
+                          "namespace": self._safe_corpus, "execution_profile": execution_profile(),
+                          "code_provenance": code_provenance()},
+                secrets=(os.environ.get("RAG_INFERENCE_API_KEY", ""),
+                         os.environ.get("NEO4J_PASSWORD", "")),
+            )
+            self.llm = attach_client(self.llm, self.trace_recorder)
+            self.indexing_llm = attach_client(self.indexing_llm, self.trace_recorder)
+            self.neo4j = TracedNeo4j(self.neo4j, self.trace_recorder)
+            self.save_intermediate = True
+
 
     # ---------- helpers ----------
     @classmethod
@@ -181,6 +207,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             validated[role] = questions
         return validated
 
+    @traced
     async def _rewrite_query_roles(self, query: str) -> dict[str, list[str]] | None:
         if RAGConfig.QUERY_REWRITE_VARIANT == "none":
             return None
@@ -200,6 +227,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         )
         return self._validate_role_queries(payload)
 
+    @traced
     async def _refine_query_roles(
         self,
         query: str,
@@ -224,6 +252,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         return self._validate_role_queries(payload)
 
     # ---------- main entry ----------
+    @traced
     async def run_workflow(
         self,
         user_query: str,

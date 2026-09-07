@@ -16,6 +16,7 @@ import threading
 from typing import Any
 
 from core.config import RAGConfig
+from models.prehop.tracing import traced
 from utils.prompts import (
     GROUNDED_HOPRAG_FORMAT_INSTRUCTION,
     GROUNDED_HOPRAG_PROMPT,
@@ -268,6 +269,7 @@ class ChunkingMixin:
         os.replace(tmp_path, filepath)
         logger.info("[DEBUG] Saved %s to %s", step, filepath)
 
+    @traced
     async def extract_knowledge(
         self,
         content: str,

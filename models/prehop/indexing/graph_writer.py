@@ -19,6 +19,7 @@ from typing import Any
 from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
 
 from core.config import RAGConfig
+from models.prehop.tracing import traced
 
 from .chunking import _make_semantic_chunk_id, split_fixed_sentence_windows
 
@@ -242,6 +243,7 @@ class GraphWriterMixin:
             logger.info("Removed %d stale Prehop document(s) before indexing.", removed)
         return removed
 
+    @traced
     async def build_graph(self, knowledge: dict[str, Any], source: str, document_filename: str):
         self._check_graph_write_state()
         chunks = knowledge.get("chunks", [])
@@ -416,6 +418,7 @@ class GraphWriterMixin:
                     or _logical_payload_bytes(self._pending_batch) >= GRAPH_WRITE_PAYLOAD_BYTES):
                 await self._flush_graph_batch_unlocked()
 
+    @traced
     async def flush_graph_batch(self):
         async with self._batch_lock:
             await self._flush_graph_batch_unlocked()

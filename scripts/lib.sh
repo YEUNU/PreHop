@@ -51,7 +51,11 @@ canonicalize_inference_transport() {
     registry="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/core/strategy_registry.py"
     defaults=$(python3 "$registry" --paper-defaults-tsv) || return 1
     while IFS=$'\t' read -r name value; do
-        export "$name=${!name:-$value}"
+        if [ -n "${RAG_EXECUTION_PROFILE:-}" ] && [[ "$name" =~ ^RAG_(GENERATION_CONCURRENCY|EMBEDDING_BATCH_SIZE|MAX_CONCURRENT_EMBEDDING_REQUESTS|BENCHMARK_CONCURRENCY)$ ]]; then
+            export "$name=$value"
+        else
+            export "$name=${!name:-$value}"
+        fi
     done <<< "$defaults"
     local repo_root python method_defaults
     repo_root="$(dirname "$(dirname "$registry")")"

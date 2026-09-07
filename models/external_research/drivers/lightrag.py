@@ -85,9 +85,17 @@ class LightRAGDriver:
             embedding_func=embedder,
             embedding_batch_num=transport.embedding_batch_size,
             embedding_func_max_async=transport.embedding_concurrency,
+            **self._producer_options(),
         )
         self.loop = asyncio.new_event_loop()
         self.loop.run_until_complete(self.engine.initialize_storages())
+
+    @staticmethod
+    def _producer_options():
+        from core.execution_profile import execution_profile
+        settings = execution_profile()['settings']
+        return ({'max_parallel_insert': settings['lightrag_document_concurrency']}
+                if 'lightrag_document_concurrency' in settings else {})
 
     def index(self) -> dict[str, Any]:
         track_id = self.loop.run_until_complete(
@@ -100,7 +108,8 @@ class LightRAGDriver:
         statuses = self.loop.run_until_complete(self.engine.aget_docs_by_track_id(track_id))
         if len(statuses) != len(self.rows) or any(str(getattr(status, "status", "")).lower().split(".")[-1] != "processed" for status in statuses.values()):
             raise RuntimeError("LightRAG did not mark every staged source as processed")
-        return {"source_count": len(self.rows), "coverage_complete": True, "query_mode": self.param.mode, "native_top_k": self.param.top_k}
+        return {"source_count": len(self.rows), "coverage_complete": True, "query_mode": self.param.mode,
+                "native_top_k": self.param.top_k, "document_concurrency": self.engine.max_parallel_insert}
 
     def query(self, question: str) -> dict[str, Any]:
         result = self.loop.run_until_complete(self.engine.aquery_llm(question, self.param))
@@ -125,5 +134,22 @@ class LightRAGDriver:
         return {"documents": documents, "answer": answer}
 
     def close(self) -> None:
-        self.loop.run_until_complete(self.engine.finalize_storages())
-        self.loop.close()
+        if self.loop.is_closed():
+            return
+        pending = ()
+        async def drain():
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        try:
+            self.loop.run_until_complete(self.engine.finalize_storages())
+        finally:
+            # Native limiter workers outlive finalize_storages. They belong to
+            # this adapter's private loop, and must be joined before closing it.
+            # Snapshot before wait_for creates its own tasks (Python 3.10 has
+            # a separate timeout supervisor which must not cancel itself).
+            pending = tuple(asyncio.all_tasks(self.loop))
+            self.loop.run_until_complete(asyncio.wait_for(drain(), timeout=10))
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+            self.loop.close()

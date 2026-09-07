@@ -33,6 +33,7 @@ esac
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_root"
 . "$repo_root/scripts/lib.sh"
+load_project_env "$repo_root/.env"
 PYTHON_BIN=$(resolve_python "$repo_root") || exit 1
 export PYTHON_BIN
 
@@ -42,10 +43,11 @@ if [ ! -f .env ]; then
 fi
 load_project_env "$repo_root/.env"
 canonicalize_inference_transport || exit 1
-# Served model identities are the revision identities for the controlled
-# gateway. Local method revisions come from the typed strategy registry.
-export RAG_GENERATION_REVISION="$RAG_GENERATION_MODEL"
-export RAG_EMBEDDING_REVISION="$RAG_EMBEDDING_MODEL"
+# Preserve an observed or explicitly pinned backend revision when supplied;
+# otherwise the served alias remains the only available revision identity.
+# Local method revisions come from the typed strategy registry.
+export RAG_GENERATION_REVISION="${RAG_GENERATION_REVISION:-$RAG_GENERATION_MODEL}"
+export RAG_EMBEDDING_REVISION="${RAG_EMBEDDING_REVISION:-$RAG_EMBEDDING_MODEL}"
 export RAG_PAPER_MODE=true
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     echo "Warning: tracked worktree changes will be recorded in code provenance; semantic compatibility is checked from model config." >&2

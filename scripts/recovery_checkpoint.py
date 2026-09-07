@@ -92,7 +92,8 @@ def validate_recovery_evidence(value: dict) -> None:
         raise RuntimeError('Recovery status/count is not an interrupted two-query exploratory benchmark')
     if stopped.get('completed') != 1 or stopped.get('total') != 2 or any(row.get('error') for row in new_rows):
         raise RuntimeError('Recovery has errors or incomplete checkpoint evidence')
-    if checkpoint.get('benchmark_concurrency') != 1 or checkpoint.get('benchmark_checkpoint_every') != 1:
+    from core.strategy_registry import PAPER_TRANSPORT
+    if checkpoint.get('benchmark_concurrency') != PAPER_TRANSPORT.benchmark_concurrency or checkpoint.get('benchmark_checkpoint_every') != 1:
         raise RuntimeError('Recovery did not serialize checkpoint writes')
     if len(old_traces) != 1 or len(new_traces) != 2 or len({row['query_id'] for row in new_rows}) != 2:
         raise RuntimeError('Recovery trace/row count or IDs invalid')

@@ -221,8 +221,8 @@ def _runtime_env(strategy: str) -> dict[str, str]:
             env.pop(name, None)
     env.update(
         {
-            "RAG_INFERENCE_BASE_URL": transport.generation_base_url,
-            "RAG_INFERENCE_API_KEY": transport.api_key,
+            "RAG_INFERENCE_BASE_URL": os.environ["RAG_INFERENCE_BASE_URL"],
+            "RAG_INFERENCE_API_KEY": os.environ["RAG_INFERENCE_API_KEY"],
             "RAG_GENERATION_MODEL": transport.generation_model,
             "RAG_EMBEDDING_MODEL": transport.embedding_model,
             "OPENAI_API_KEY": transport.api_key,

@@ -6,42 +6,14 @@ document intentionally contains no primary numerical result. Literature
 citations elsewhere describe prior work; they are not evidence for a local
 result.
 
-Admission now also binds the current validated corpus manifest and source
-bytes. A prior ledger is stale when these inputs or the verifier contract
-change. This audit adds no admitted result or numerical claim.
+Admission binds the current corpus bytes, semantic configuration, execution
+profile and result artifacts. A changed identity requires compatible evidence
+and current verification. Index reuse retains the original indexing cost and
+requires a verified index link plus complete query evaluation.
 
-The current Prehop controlled format-retry profile and serial benchmark
-configuration introduce no admitted full result. Index reuse preserves original
-index cost and requires a current content-bound link plus fresh full-query
-admission; a linked one-query gate is not a reportable benchmark.
-
-## Current profile boundary
-
-The structured Prehop, Hippo and Youtu profiles and fixed synthetic cold
-protocol require a new campaign bound to their effective configuration contract. Earlier format diagnostics and
-cold canaries remain historical observations under their original code and
-inputs. They cannot be transferred to these profiles or counted as full-target
-admission. Background service startup, stage completion and process exit zero
-also do not constitute a reportable result; the final supervisor summary must
-reference all sixteen independently revalidated real full-target admissions.
-
-## Preserved cold-canary attempt
-
-Campaign `paper-live-l5-20260906-091016` finished its diagnostic traversal with
-three cold canaries passed, eight executed failures, and five blocked targets.
-LightRAG passed on both datasets and Youtu passed on MuSiQue. These are small
-canaries, not full-target admissions. Later gates were not executed.
-
-The preserved failures exposed GFM configuration composition, Linear native QA
-initialization, MS dotenv environment reinjection, and a Youtu malformed
-attribute observer gap. Adapter corrections require a new gate context before
-fresh execution. Youtu MultiHop also returned no native chunk evidence; a
-separate copy-only diagnostic reproduced malformed nested attributes and
-missing native communities. Hippo's native NER returned no valid
-`named_entities` JSON on both datasets. Prehop's read-only namespace check
-could not reach the configured Neo4j service; dependent targets remained
-blocked. None of these observations justifies repairing native responses or
-changing method budgets.
+This register tracks publication admission. For live indexing progress, read
+the selected campaign's `index-supervisor/status.json`; smoke/index process
+states do not change a publication cell automatically.
 
 ## Primary matrix
 
@@ -60,7 +32,8 @@ single source of truth used by the Python CLI and the shell runners.
 | LinearRAG | `planned` | `planned` | official-faithful pinned MPNet mode |
 | Youtu-GraphRAG | `planned` | `planned` | controlled native no-agent API with pinned MiniLM and NER |
 
-The experiment ledger uses only these status values:
+The publication experiment ledger uses only these status values. The table
+above records that ledger; it does not mirror indexing-only smoke completion:
 
 - `planned`: the target has not passed a canary.
 - `canary_passed`: the strategy contract passed a small non-reportable canary.
@@ -86,14 +59,27 @@ keeps the original ledger bytes; a changed or invalid binding is rejected and
 preserved, requiring a fresh namespace. Failed probes write separate receipts
 and do not reserve the eventual successful admission ledger.
 
+## Prepared dataset identities
+
+Each admitted artifact must bind the prepared corpus and full query file.
+The query and metric denominators are defined in
+[the cost and metric protocol](THROUGHPUT_EXECUTION.md#final-tables-and-measurement-definitions).
+A different corpus fingerprint identifies different inputs and requires fresh
+compatible evidence.
+
+| Dataset | Source documents | Full queries | Corpus fingerprint |
+|---|---:|---:|---|
+| MultiHop-RAG | 609 | 2,556 | `c11b84f626c08d06d6dbc938512275824567aaffdc77a0f0b5424ad94f13a8ee` |
+| MuSiQue answerable dev | 21,099 | 2,417 | `63562ceaf17343507b305b152af93245959f458412be321662cfbc8fde9f2a34` |
+
 ## Evaluation configuration
 
 | Setting | Value |
 |---|---|
 | Remote generation model | `gemma-4-31b-it` |
 | Controlled remote embedding model | `qwen3-embedding-0.6b`, 1,024 dimensions |
-| Remote embedding batch/concurrency | 16 / 1 |
-| Query concurrency | 1 |
+| Remote embedding batch/concurrency | Serial default 16 / 1; explicit profile for throughput campaigns |
+| Query concurrency | Serial default 1; explicit content-bound throughput profile for new campaigns |
 | Seed | 42 |
 | LLM judge | disabled |
 
@@ -145,15 +131,12 @@ before a cell becomes `admitted`:
    Missing upstream token or cost telemetry is marked incomplete rather than
    estimated.
 
-## Legacy and reserve artifacts
+## Artifact retention
 
-BrowseNet, HopRAG, and PropRAG remain supported legacy adapters, but they are
-not primary matrix methods. The previously verified BrowseNet MultiHop-RAG and
-MuSiQue full-split artifacts (`naacl27-clean-20260905-multihoprag-browsenet` and
-`naacl27-clean-20260905-musique-browsenet`) are retained as legacy/reserve
-evidence. They cannot fill, replace, or be relabelled as any primary matrix
-cell, and their numerical values are therefore not reproduced in this primary
-register.
+Keep the complete evidence chain for every admitted result and active run.
+The [maintainer guide](../CLAUDE.md#generated-files-and-repository-hygiene) governs
+generated artifacts and explicit cleanup. Legacy adapter results cannot supply
+primary matrix cells.
 
 ## Publication synchronization
 
@@ -166,3 +149,15 @@ register.
   configuration and artifact identities; project commit numbers are provenance only.
 - The matrix continues after independent target failures, reports every failed
   target, and exits nonzero when any target failed.
+
+## Throughput cost profile
+
+New evidence uses contract v3 and the protocol in [THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md).
+Indexing s/doc and query s/query are total measured phase wall time divided by
+manifest source count and full query count, respectively; they are not mean
+request latency. Resumed query runs remain ineligible for continuous-run query
+cost. Transport and producer pilots are engineering validation and cannot
+supply a full benchmark result.
+Prehop phase wall time includes its enabled trace I/O. Retain the trace reference
+with the result and disclose instrumentation when comparing costs. Diagnostic
+trace files are excluded from retrieval-index storage measurements.

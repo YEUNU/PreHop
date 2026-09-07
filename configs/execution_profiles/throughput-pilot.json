@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "throughput-pilot-v1",
+  "settings": {
+    "generation_concurrency": 30,
+    "embedding_batch_size": 16,
+    "embedding_concurrency": 2,
+    "benchmark_concurrency": 8
+  }
+}

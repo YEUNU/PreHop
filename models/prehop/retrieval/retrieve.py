@@ -13,6 +13,7 @@ import asyncio
 from typing import Any
 
 from core.config import RAGConfig
+from models.prehop.tracing import traced
 
 
 class RetrieveMixin:
@@ -37,6 +38,7 @@ class RetrieveMixin:
         output_nodes = [self._without_transient_retrieval_scores(node) for node in selected_nodes]
         return self._build_context_from_nodes(output_nodes), output_nodes
 
+    @traced
     async def _retrieve_with_candidate_pool(
         self,
         query: str,
