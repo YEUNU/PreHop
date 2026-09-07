@@ -2,6 +2,51 @@
 
 ## 2026-09-07
 
+- Aligned method documentation and diagrams with role-view body retrieval,
+  per-view embeddings, iterative refinement and candidate-count limits. Moved
+  the primary MS GraphRAG indexer out of the legacy section and replaced the
+  stale HippoRAG2 format profile. Distinguished development-inspected evaluation
+  from confirmatory evidence and marked the vendored walkthrough as reference.
+
+- Fixed MS GraphRAG adapter rejection of native glean responses containing a
+  prose preamble followed by valid tuples. The adapter removes only a leading
+  unstructured preamble, preserves every tuple verbatim, and still rejects
+  incomplete or ambiguous structured output. Raw and normalized responses
+  remain auditable. Profile `strict-ms-native-glean-v4` distinguishes this
+  normalization; upstream code, prompts, glean count and generation parameters
+  are unchanged. This is an adapter formatting intervention, not a claim of
+  byte-identical upstream parsing.
+
+- Audited pinned native parameters across the primary methods. Removed MS's
+  adapter-added output caps and temperature (native call arguments omit them),
+  restored HippoRAG2 retrieval candidates 200 with QA context 5, and restored
+  LightRAG top-k 40. Connected GFM's native single-pass QA prompt/generator and
+  Youtu's original agent loop. Truncated MS outputs fail without identical
+  retries. The temporary 4,096-token proposal was superseded after native-default
+  review. Changed policies require fresh compatible evidence.
+
+- Hardened pending-model adapters at extraction and retrieval boundaries.
+  HippoRAG2/GFM-RAG validate structured NER/triple responses before native parsing;
+  MS GraphRAG checks native tuple/report formats and glean delimiters; Youtu
+  records bounded validation retries; LinearRAG validates stores and QA completion.
+  Exhausted extraction cannot become a successful index. Index-time audit prefixes
+  are content-bound and checked during publication admission. External source
+  files are unchanged; registered adapter identities distinguish the new behavior.
+  MS query streaming retains native chunks and validates termination. Publication
+  checks recompute primary row metrics from saved predictions and authoritative
+  gold evidence, and reject non-finite or out-of-range primary averages.
+
+- Extended the HippoRAG2 entity adapter to accept either explicit name field
+  (`entity` or `text`) with optional `type` and/or `label` annotations. Versioned
+  the normalization profile to v2 and index identity to v4; ambiguous names
+  and unsupported fields still fail closed. Replayed 608 cached responses:
+  all 214 dictionary-key failures recovered; 394 other results were unchanged.
+
+- Added a HippoRAG2 adapter for explicitly named entity objects that otherwise
+  produce `unhashable type: 'dict'` and empty native NER results. Preserved raw
+  responses, recorded per-chunk recovery/rejection, and versioned the index
+  identity. External source files and generation settings remain unchanged.
+
 - Updated the remote embedding contract to Qwen3-Embedding-4B with 2,560
   dimensions after a successful gateway probe. Updated local settings, adapter
   defaults, documentation and contract tests. Superseded 0.6B results and their

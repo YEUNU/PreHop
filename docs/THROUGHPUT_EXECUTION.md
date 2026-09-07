@@ -209,8 +209,8 @@ export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/index-shared-120.j
 ```
 
 The launcher returns a receipt with the supervisor PID, plan path and status
-path. The supervisor owns a nohup session, first performs sixteen small native
-smoke builds, then processes the
+path. The supervisor owns a nohup session, first performs a small native smoke build for each planned target (sixteen
+in the default matrix), then processes the
 complete corpora for targets whose smoke build passed. Failed targets are
 recorded independently; unrelated targets continue. The run writes
 `data/results/<campaign>/index-supervisor/{plan,status,queue-metrics}.json`
@@ -222,7 +222,7 @@ never overwritten and the runner does not restart failed attempts implicitly.
 Read the status file to verify the active `stage`, per-target outcomes and
 supervisor state. `smoke/...` identifies a bounded integration build;
 `index/...` identifies full-corpus indexing. `index_complete` describes one
-index. The supervisor reports `completed` only when all 16 full indexes finish;
+index. The supervisor reports `completed` only when every target in the frozen plan completes its full index;
 otherwise it reports `failed`. These process states are separate from the
 publication ledger in [RESULTS](RESULTS.md).
 

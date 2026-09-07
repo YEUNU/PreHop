@@ -76,15 +76,21 @@ schema digests also enter inference telemetry. Fresh paper runs use separate
 `data/index_cache/runs/<run>/<strategy>/<dataset>` directories; an existing
 cache cannot satisfy a fresh-index step. Resume retains its own run cache.
 
-HippoRAG2's controlled `hipporag2-paper-json-object-v2` profile sets the official
-`BaseConfig.response_format` to `{"type":"json_object"}` for native NER and
-triple extraction. Native prompts, parsers, seed, temperature and 512/2048-token
-limits remain unchanged. Native QA receives no extraction response format.
-The official cache and OpenIE state identity include this setting; project
-snapshots also require the observed format and limits to match policy.
+HippoRAG2 uses semantic identity `hipporag2-paper-strict-extraction-v5`
+and validation profile `strict-extraction-v1`. Its native BaseConfig retains
+`response_format={"type":"json_object"}`, but the extraction adapter supplies
+field-level JSON Schemas for NER and triples at the actual inference boundary.
+Native prompts, seed, temperature and 512/2048-token limits remain unchanged.
+The adapter validates and records raw responses, permits only declared
+unambiguous item normalization, and bypasses invalid cache entries on format
+retries. Native QA receives no extraction response format. See
+[controlled extraction](RUNTIME_REQUIREMENTS.md#controlled-extraction-and-artifact-validation)
+for audit binding and failure handling.
 
-Youtu's controlled `youtu-extraction-json-schema-v2` profile wraps only the
-constructor's public SDK client. It adds the frozen extraction JSON Schema,
+Youtu's `youtu-native-agent-v4` semantic identity includes the controlled
+`youtu-json-schema-v1` generation profile and `strict-youtu-extraction-v1`
+validation profile. The extraction wrapper applies only to the constructor's
+public SDK client. It adds the frozen extraction JSON Schema,
 checks raw completion and nested shape, and returns the identical SDK response
 to the unmodified native parser. Dynamic entity/type maps and native schema
 evolution remain available. Retrieval and QA clients receive no extraction
@@ -174,7 +180,7 @@ strategy == linear_rag
 
 strategy == youtu_graphrag
   -> pinned official knowledge-tree construction
-  -> declared controlled public no-agent query API
+  -> declared controlled native agent entrypoint with output observers
   -> local MiniLM/NER plus observational provenance sidecars
 
 strategy == browsenet
@@ -418,9 +424,9 @@ method-specific staging, declared producer scheduling, and upstream calls:
   path for compatibility with the upstream sentence-transformers version.
 - Youtu-GraphRAG stages one MuSiQue paragraph per source, maps the public
   corpus tag to the explicit upstream dataset alias, and uses native effective
-  `top_k=top_k_filter=20`. The pinned agent batch entrypoint does not return
-  structured answer/evidence, so the registered `controlled_adapter` calls the
-  public native no-agent query API and preserves its evidence order. Each fresh
+  `top_k=top_k_filter=20`. The registered `controlled_adapter` calls the pinned
+  `agent_retrieval` entrypoint and observes its final answer and evidence order.
+  Post-answer LLM evaluation is replaced by the common paper metrics. Each fresh
   worker calls the native `build_indices()` after retriever construction, as
   the pinned entrypoint does. It records
   staged coverage, native extraction success, and native source reachability
@@ -432,6 +438,15 @@ GFM's entity-linker model snapshot remains under its pinned runtime artifacts.
 Its mutable PLAID cache and metadata use the current run's
 `artifacts/gfm_entity_linker` directory through the native public `root`
 setting, including the graph constructor's interpolated entity linker.
+
+`models/ms_graphrag/official_indexer.py`
+
+- Stages every corpus file and calls the official `Standard` build pipeline.
+- The typed LiteLLM transport routes generation and embedding through the same
+  gateway. Output is isolated under the run-specific MS GraphRAG root.
+  LocalSearch receives the exact native community table; the adapter does not
+  synthesize singleton communities or augment community membership.
+- Expected output tables are verified; workflow errors fail the target.
 
 ### Legacy external modules
 
@@ -451,15 +466,6 @@ setting, including the graph constructor's interpolated entity linker.
   runtime failure. The complete input manifest remains attached to the index;
   represented and omitted source counts and digests are stored separately, so
   the omission is retained as baseline behavior and affects all full queries.
-
-`models/ms_graphrag/official_indexer.py`
-
-- Stages every corpus file and calls the official `Standard` build pipeline.
-- The typed LiteLLM transport routes generation and embedding through the same
-  gateway. Output is isolated under the run-specific MS GraphRAG root.
-  LocalSearch receives the exact native community table; the adapter does not
-  synthesize singleton communities or augment community membership.
-- Expected output tables are verified; workflow errors fail the target.
 
 `models/browsenet/official_indexer.py` and
 `models/proprag/official_indexer.py`
@@ -485,7 +491,8 @@ RAG_GRAPH_HOP_DEPTH == 0
 RAG_QUERY_REWRITE_VARIANT == role_aligned_evidence_iterative
   and input question has at most RAG_QUERY_REWRITE_MAX_WORDS words
   -> schema-constrained initial Q-/Q+ retrieval views
-  -> each view searches only its matching representation channel
+  -> each view searches its matching representation channel
+  -> role-body selection policies also search chunk bodies with each role view
   -> retrieved evidence proposes non-duplicate Q-/Q+ views
   -> stop when no new view or selected chunk appears
 
@@ -501,7 +508,7 @@ RAG_GRAPH_HOP_DEPTH == 1 (default)
 
 RAG_SOURCE_SELECTION_VARIANT == role_body_list_ranking
   -> select from the complete candidate union by numbered paragraph IDs
-  -> require exactly top_k distinct IDs from that candidate union
+  -> require exactly min(top_k, candidate_count) distinct IDs from that union
 
 empty context
   -> fixed "Insufficient evidence" result, no synthesis call
@@ -532,7 +539,10 @@ and there is no modality weight or query-time fusion constant.
 `retrieval/retrieve.py` searches the body representation with the original
 question. When rewriting is active for a compact question, Q− and Q+ each use
 their generated role-specific views; otherwise they also use the original
-question. Multiple views are fused inside their role first, so Q−, body, and
+question. The default `role_body_list_ranking` policy additionally searches
+chunk bodies with every Q−/Q+ view. These body hits join the candidate union;
+body-only additions carry zero representation score and do not become Q+
+dependency seeds. Multiple views are fused inside their role first, so Q−, body, and
 Q+ each contribute one ranked list rather than gaining weight from the number
 of generated views. Q- and body hits have the direct-evidence role; Q+ hits
 have the dependency-seed role. Q− and Q+ vector and full-text rows retain the
@@ -555,9 +565,9 @@ than a learned or fitted channel weight.
 
 The searches run concurrently. There is no second Q- support search: a Q-
 hit already identifies its owner evidence chunk, while a Q+ hit reaches target
-Q-/body evidence through the pre-built `HOP_ANSWER` relation. The query
-embedding is created once before parallel channel search and passed unchanged
-to every vector channel and final scoring call.
+Q-/body evidence through the pre-built `HOP_ANSWER` relation. The original-query embedding is reused for original-text searches and final
+scoring. When role views are present, distinct view texts are embedded in a
+batch and each vector search receives its own view's embedding.
 
 `retrieval/scoring.py` reuses the body and source-Q+ document embeddings stored
 during indexing and embeds only the user query. Body similarity defines the
@@ -574,7 +584,7 @@ benchmark ablation metadata. The default uses rank fusion rather than
 calibrated raw-score interpolation. Role rewriting changes channel queries
 before retrieval. The default selection passes the complete fused candidate
 union to one paragraph-number candidate-selection prompt. The structured-output
-validator requires exactly `top_k` distinct IDs from that union; unknown,
+validator requires exactly `min(top_k, candidate_count)` distinct IDs from that union; unknown,
 duplicate, or omitted IDs invalidate the response instead of being repaired or
 supplemented. Publisher, publication time,
 author, and category are included only when present in the source-manifest
@@ -583,14 +593,16 @@ exposed. `global`, `round_robin`, and the body-round policies remain explicit
 query-time ablations.
 
 Each representation retains at most `top_k` owner chunks, so the fused base
-pool is bounded by `top_k × active_representation_count` without a candidate
-multiplier. Vector and full-text search do not have separate tunable width
+representation pool is bounded by `top_k × active_representation_count`
+under the default candidate multiplier of one. Role-view body searches add up
+to `top_k` owners per view before deduplication, so that bound does not cover
+the complete seed union. Accumulated refinement views can enlarge this union. Vector and full-text search do not have separate tunable width
 knobs. Body nodes use the owner budget as-is. Q−/Q+
 indexes contain at most three questions per owner chunk, so their raw
 question-node searches use exactly three times the owner budget before
 deduplication. This factor is an indexing-schema bound, not a tuned retrieval
-parameter. The query embedding is created once before parallel channel search
-and passed unchanged to every vector channel.
+parameter. Each distinct search text uses its own query embedding; identical texts share
+the embedding within that retrieval call.
 
 `retrieval/traversal.py` treats the complete representation-union pool (not just the
 final top-k) as one frontier and expands it in one Neo4j request per depth. `NEXT` is
@@ -771,15 +783,17 @@ Prehop gates.
 - LightRAG retains dual-level mix-mode retrieval and its native answer path.
 - HippoRAG2 retains native retrieval and `rag_qa`, while the adapter preserves
   source-bearing evidence.
-- GFM-RAG retains its validated checkpoint-defined GNN and local components.
+- GFM-RAG retains its validated checkpoint-defined GNN, local components and
+  native single-pass QA prompt/generation path (top-k 5).
 - LinearRAG retains the official relation-free Tri-Graph path and pinned MPNet
   embeddings in the primary official-faithful mode. Its controlled Qwen mode
   is a distinct, currently unadmitted semantic configuration.
-- Youtu-GraphRAG's declared controlled variant calls the pinned public
-  `initial_question_decomposition` no-agent API, preserving its ordered
-  retrieval, reranking, retry, and final answer with `top_k_filter=20`.
-  MuSiQue staging preserves one prepared paragraph per source instead of
-  silently re-chunking it. It does not claim the non-returning agent batch path.
+- Youtu-GraphRAG calls the pinned `agent_retrieval` loop with native initial
+  decomposition, up to five IRCoT steps and final answer generation. Observers
+  preserve the final evidence order and `top_k_filter=20`; the common benchmark
+  replaces only post-answer evaluation. MuSiQue staging preserves one prepared
+  paragraph per source. Transport, format and parallel-construction adaptations
+  remain declared controlled differences.
 
 Official systems retain their stated search and context budgets, so tables and
 captions state unequal settings. A one-source-one-vector Naive run changes the

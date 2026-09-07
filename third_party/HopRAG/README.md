@@ -2,6 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> Vendored legacy integration: use the [Prehop setup](../../README.md#installation)
+> and [legacy adapter contract](../../docs/ARCHITECTURE.md#legacy-external-modules)
+> for this checkout. The upstream walkthrough below is retained as reference;
+> its standalone installation, provider settings and example datasets are not
+> the supported Prehop launch procedure. HopRAG is outside the primary matrix.
+
 Official repository for **HopRAG: Multi-hop Reasoning for Logic-Aware Retrieval-Augmented Generation**, accepted to ACL Findings 2025.
 
 HopRAG is a novel Retrieval-Augmented Generation (RAG) framework that leverages graph databases to enhance multi-hop reasoning. Instead of treating documents as a flat collection, HopRAG models them as a graph of interconnected text chunks (nodes) within a **Neo4j** database. This structure allows for more sophisticated, logic-aware retrieval paths, enabling Large Language Models (LLMs) to answer complex questions that require synthesizing information from multiple sources.

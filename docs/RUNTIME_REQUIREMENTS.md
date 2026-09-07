@@ -94,7 +94,8 @@ embedding width `NEO4J_VECTOR_DIMENSIONS=2560`, embedding input limit
 `MAX_EMBEDDING_LENGTH=32768`, `RAG_EMBEDDING_TOKEN_RESERVE=0`, generation
 context `RAG_MAX_CONTEXT_LENGTH=262144`, query instruction exactly as recorded
 in the canonical policy, and `NEO4J_FULLTEXT_ANALYZER=english`. MS GraphRAG's
-`RAG_MS_EMBED_DIM` is the same 2560 and its report output cap is 4096. Prehop
+`RAG_MS_EMBED_DIM` is the same 2560. Its native completion configuration omits
+client output limits and temperature; the serving model supplies those defaults. Prehop
 and Naive additionally admit only the registry's legacy question schema,
 enabled Q−/Q+ flags, disabled sentence channel, and reciprocal-hop
 precomputation. Explicit conflicting values fail before indexing, including in
@@ -138,14 +139,14 @@ checkout by the checked-in manifest. MultiHop-RAG maps explicitly to upstream
 are not caller-controlled. Both aliases use the upstream no-chunk document
 path and the native effective retrieval/filter budget of 20.
 
-The pinned agent batch entrypoint returns no structured answer/evidence and
-also invokes an upstream evaluator. Without changing that upstream behavior,
-it cannot satisfy content-bound per-query admission. The registry therefore
-labels the primary Youtu target `controlled_adapter` with `query_mode=noagent`
-and calls the pinned public `initial_question_decomposition` API. This is not
-an `official_faithful` agent result. The adapter preserves returned evidence
-order and native retrieval/deduplication, and rejects empty, malformed,
-sentinel, exhausted-retry, and swallowed sub-question failures.
+The adapter calls the pinned `agent_retrieval` entrypoint in `agent` mode,
+including initial decomposition, up to five native IRCoT steps and final answer
+generation. Observers capture the final answer and exact chunk order passed to
+the final prompt; they do not reconstruct the agent loop. The post-answer native
+LLM evaluator is replaced by the common paper evaluator. No ground truth is
+passed into native generation. `agent_query_audit.jsonl` records the native
+calls and returned evidence. The target remains `controlled_adapter` because
+of backbone, structured-format and parallel-construction adaptations.
 
 Youtu retains native graph and retrieval behavior, including its handling of
 duplicate entities and triples. The runtime records complete staged
@@ -382,8 +383,7 @@ intermediate document output under `data/debug`. Its defaults apply to both
 indexing and benchmark entrypoints; campaign environments preserve
 `RAG_PREHOP_TRACE` and `RAG_PREHOP_TRACE_DIR`. Storage must be writable for the
 selected main Python process. See
-[Prehop tracing](ARCHITECTURE.md#prehop-tracing) for the event format and
-inspection commands.
+[Prehop tracing](ARCHITECTURE.md#prehop-tracing) for the event format and storage contract.
 
 ### Local files and Git
 
@@ -395,3 +395,81 @@ while `.env.example`, execution-profile templates, and `uv.lock` are tracked.
 The working manuscript and submission logistics also remain local. A custom
 trace directory must be outside tracked paths or explicitly ignored before
 staging files.
+
+### Controlled extraction and artifact validation
+
+The adapters validate the inputs consumed by pinned native parsers and the
+artifacts used for retrieval. Their versioned contracts are registered in
+`core/strategy_registry.py`; external source files are not edited.
+
+| Adapter | Boundary and failure handling |
+|---|---|
+| HippoRAG2 | Requests the native NER/triple item schemas; validates every response before native parsing. Explicit entity/text names and unambiguous triple objects can be unwrapped without adding facts. |
+| GFM-RAG | Applies the same JSON item validation before native parsing/evaluation. A swallowed native extraction failure still prevents index completion. |
+| MS GraphRAG | Checks completion, tuple fields and report schemas through a registered completion provider. Separates completion markers when concatenating gleanings. Profile `strict-ms-native-glean-v4` removes an unstructured leading glean preamble only when the remaining tuples fully validate; tuple fields are preserved verbatim and raw/normalized responses are both recorded. Native relationship filtering remains unchanged and unresolved endpoint observations are recorded. |
+| Youtu | Keeps its native extraction schema; validates nonempty item values, retries incomplete/malformed responses within one budget and records each attempt. Native source reachability remains observational. |
+| LinearRAG | Index construction uses native local NER and pinned MPNet, without LLM extraction. Checks embedding counts/dimensions/finite values, persisted stores and passage-node coverage; native QA responses must finish with nonempty text. |
+
+Validation changes are controlled-adapter behavior, not claims of identical
+upstream-default execution. Prompts, graph algorithms, retrieval cutoffs and
+pinned method backbones retain their registered settings. HippoRAG2/GFM-RAG
+request field-level JSON schemas rather than merely JSON objects; their original
+token limits remain in force. Truncated JSON is not guessed or completed by the
+adapter. An invalid response exhausts a bounded retry budget and fails the run.
+HippoRAG2 format retries bypass invalid native cache entries. MS guarded calls
+disable native response caching so retries cannot replay the same invalid entry.
+
+`extraction_audit.jsonl` records prompts, original responses, available usage,
+normalization and retry/exhaustion decisions. LinearRAG records native QA text
+in `answer_audit.jsonl`. Format validation is separate from semantic correctness:
+a valid but incorrect model answer must be scored as produced. Missing provider
+telemetry remains unavailable rather than becoming a fabricated zero cost.
+
+MS GraphRAG query streaming preserves native chunks and records the complete
+stream, including its finish reason. An incomplete stream fails the query;
+partially delivered streams are not replayed as fresh successful answers.
+
+MS completion requests omit `max_tokens`, `max_completion_tokens` and
+`temperature`, matching the pinned `ModelConfig.call_args={}` default. This
+leaves effective limits with the server; it does not mean unlimited generation.
+The temporary 4,096-token experiment was superseded before full indexing.
+A `length` finish fails immediately without repeating the identical request and
+budget. Other format errors retain bounded retries; partial tuples are never
+admitted as a complete extraction.
+
+Completed guarded indexes bind the audit's byte prefix and SHA-256. Queries may
+append audit records without changing that index-time prefix. Publication
+verification rejects missing, altered, exhausted or stale-profile evidence;
+post-query inventories bind the final artifact bytes. Full source/query coverage
+and metric recomputation remain mandatory under the
+[result admission contract](RESULTS.md#admission-checks). Smoke tests and single
+fixture queries do not admit a full benchmark result.
+
+### Native parameter comparison
+
+Run the following to compare selected method-defining defaults against
+local pinned sources. The registry records HippoRAG2 retrieval candidates 200
+separately from QA context 5, LightRAG top-k 40 and chunk top-k 20, LinearRAG
+top-k 5, and Youtu native agent mode/top-k 20. GFM uses the upstream single-pass
+`qa.py`/`qa_inference.yaml` workflow with top-k 5 and its native QA prompt and
+omitted output cap. The optional IRCOT workflow is a different variant.
+
+```bash
+"$PYTHON_BIN" -m scripts.audit_native_parameters --home /absolute/pinned-runtime-home --output /absolute/receipt.json
+```
+
+| Method | Generation output policy | Retrieval policy |
+|---|---|---|
+| Prehop / Naive | Repository-owned question generation 4,096; short-answer synthesis 128. Naive does not generate index questions. | Shared six-sentence windows; repository top-k 12. |
+| MS GraphRAG | Native omission of output caps and temperature. | Native local search: 10 entities, 10 relationships, 12,000 context tokens; one glean. |
+| LightRAG | Native completion call arguments are forwarded. | Native mix mode, top-k 40, chunk top-k 20. |
+| HippoRAG2 | Native NER 512, triples 2,048; QA default 2,048. | 200 retrieval candidates; five QA passages. |
+| GFM-RAG | Native NER 300, triples 4,096; single-pass QA omits output cap. | Native single-pass QA top-k 5. |
+| LinearRAG | Native QA 2,000 tokens, temperature 0. | Native top-k 5, BFS retrieval, three iterations. |
+| Youtu | Native temperature 0.3 and omitted output cap. | Native agent mode, up to five IRCoT steps, top-k/filter 20. |
+
+Prehop and Naive are repository-owned methods. Shared model replacement,
+seed/transport controls, user-selected concurrency and structured-output guards
+remain declared experiment adaptations. In particular, parallel Youtu schema
+evolution is not claimed to be serial-equivalent. Matching selected native
+parameters does not establish full upstream-identical execution.
