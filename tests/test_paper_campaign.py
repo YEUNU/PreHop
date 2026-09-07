@@ -161,7 +161,11 @@ def test_lock_loser_does_not_overwrite_running_owner_status(tmp_path, monkeypatc
         handle.close()
 
 
-def test_other_failed_unit_native_descendant_blocks_new_campaign(monkeypatch):
+def test_other_failed_unit_native_descendant_blocks_new_campaign(tmp_path, monkeypatch):
+    from scripts import paper_detached_runtime
+
+    # Exercise systemd ownership independently of real detached campaigns.
+    monkeypatch.setattr(paper_detached_runtime, 'owner_directory', lambda: tmp_path)
     monkeypatch.setattr(campaign.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a[0], 0,
         'prehop-paper-old.service loaded failed failed preserved old unit\n', ''))
     monkeypatch.setattr(campaign, 'unit_processes', lambda unit: [{'pid': 123, 'start': 'preserved', 'boot_id': 'same'}])
