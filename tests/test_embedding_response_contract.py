@@ -144,7 +144,7 @@ def test_paper_client_uses_canonical_litellm_and_never_public_gpt(monkeypatch):
     monkeypatch.setattr("core.inference_transport._approved_gateway_identity", lambda: __import__("hashlib").sha256(b"http://litellm/v1").hexdigest())
     monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
     monkeypatch.setenv("RAG_GENERATION_MODEL", "gemma-4-31b-it")
-    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-0.6b")
+    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-4b")
     monkeypatch.setenv("RAG_LLM_SEED", "42")
     client = VLLMClient()
     assert client.vllm_url == client.embed_url == "http://litellm/v1"

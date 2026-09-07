@@ -364,7 +364,7 @@ class YoutuGraphRAGDriver:
 
         from .youtu_concurrency import BoundedYoutuDocuments, SynchronizedYoutuSchema
 
-        if execution_profile()['version'] == 2:
+        if execution_profile()['version'] >= 2:
             class ParallelKTBuilder(BoundedYoutuDocuments, SynchronizedYoutuSchema, KTBuilder):
                 pass
             builder_base = ParallelKTBuilder
@@ -456,7 +456,7 @@ class YoutuGraphRAGDriver:
         )
         from core.native_structured_profile import YoutuConstructionClient
 
-        if execution_profile()['version'] == 2:
+        if execution_profile()['version'] >= 2:
             from .youtu_format_retry import RetryingYoutuConstructionClient
             builder.llm_client.client = RetryingYoutuConstructionClient(
                 builder.llm_client.client, self.transport.retry_attempts)
@@ -572,11 +572,11 @@ class YoutuGraphRAGDriver:
         return {
             "extraction_generation_profile": YOUTU_STRUCTURED_PROFILE,
             "construction_workers_requested": self.config.construction.max_workers,
-            "construction_workers_effective": (self.config.construction.max_workers if execution_profile()['version'] == 2
+            "construction_workers_effective": (self.config.construction.max_workers if execution_profile()['version'] >= 2
                 else min(self.config.construction.max_workers, (os.cpu_count() or 1) + 4)),
-            "schema_update_policy": ("locked-native-v1" if execution_profile()['version'] == 2 else "native-serial"),
+            "schema_update_policy": ("locked-native-v1" if execution_profile()['version'] >= 2 else "native-serial"),
             "construction_retry_stats": (builder.llm_client.client.retry_stats()
-                if execution_profile()['version'] == 2 else None),
+                if execution_profile()['version'] >= 2 else None),
             "extraction_schema_sha256": youtu_profile_sha256(),
             "source_count": len(self.rows),
             "coverage_complete": True,

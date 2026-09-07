@@ -170,7 +170,8 @@ def test_ms_config_separates_query_embedding_from_index_embeddings(tmp_path, mon
 
 def test_ms_config_registers_typed_default_caps_when_optional_env_is_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(ms_official_indexer, "_install_litellm_router_for_gen", lambda: None)
-    monkeypatch.setattr(ms_official_indexer, "_EMBED_DIM", 1024)
+    monkeypatch.setattr(ms_official_indexer, "_EMBED_DIM", 2560)
+    monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "2560")
     registered = {}
 
     def capture(models):
@@ -194,7 +195,7 @@ def test_ms_config_registers_typed_default_caps_when_optional_env_is_absent(tmp_
     config = ms_official_indexer.build_config("musique", tmp_path / "input")
     assert config.concurrent_requests == 30
     assert config.embed_text.batch_size == 16
-    assert all(schema.vector_size == 1024 for schema in config.vector_store.index_schema.values())
+    assert all(schema.vector_size == 2560 for schema in config.vector_store.index_schema.values())
     assert ms_official_indexer._EMBED_CONCURRENCY == 1
     assert registered["openai/generation"]["max_tokens"] == 262144
     assert registered["openai/generation"]["max_input_tokens"] == 262144

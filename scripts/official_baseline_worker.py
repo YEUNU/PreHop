@@ -149,7 +149,7 @@ class LiteLLMEmbeddingEncoder:
 
         _ = device
         self.embedding_model_name = os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "embedding-model")
-        self.embedding_dim = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "1024"))
+        self.embedding_dim = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "2560"))
         # BrowseNet used to send 512 passages per request.  Large MuSiQue
         # batches can trigger a malformed MessagePack response in the remote
         # embedding stack, so keep the default request deliberately small.

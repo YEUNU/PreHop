@@ -12,8 +12,8 @@ class PaperTransportSpec:
     """Canonical public inference contract for every primary paper target."""
 
     generation_model: str = "gemma-4-31b-it"
-    embedding_model: str = "qwen3-embedding-0.6b"
-    embedding_dimensions: int = 1024
+    embedding_model: str = "qwen3-embedding-4b"
+    embedding_dimensions: int = 2560
     generation_context_tokens: int = 262144
     embedding_max_input_tokens: int = 32768
     embedding_token_reserve: int = 0
@@ -31,12 +31,12 @@ class PaperTransportSpec:
 
 # Also support the dependency-free `python core/strategy_registry.py` CLI.
 if __package__ in {None, ""}:
-    from execution_profile import execution_profile
+    from execution_profile import execution_profile, transport_settings
 else:
-    from core.execution_profile import execution_profile
+    from core.execution_profile import execution_profile, transport_settings
 
 PAPER_TRANSPORT = replace(PaperTransportSpec(), **{
-    key: value for key, value in execution_profile()["settings"].items()
+    key: value for key, value in transport_settings(execution_profile()).items()
     if key in PaperTransportSpec.__dataclass_fields__
 })
 
@@ -198,7 +198,7 @@ STRATEGIES = (
         ),
         paper_index_environment=(
             ("report_max_tokens", "RAG_MS_REPORT_MAX_TOKENS", 4096),
-            ("embedding_dimensions", "RAG_MS_EMBED_DIM", 1024),
+            ("embedding_dimensions", "RAG_MS_EMBED_DIM", 2560),
         ),
     ),
     _external(
@@ -407,7 +407,7 @@ STRATEGIES = (
     ),
 )
 
-if execution_profile()['version'] == 2:
+if execution_profile()['version'] >= 2:
     # Adaptive schema evolution makes producer concurrency a semantic as well
     # as an operational input. Never label the parallel index serial-equivalent.
     _workers = execution_profile()['settings']['youtu_document_concurrency']

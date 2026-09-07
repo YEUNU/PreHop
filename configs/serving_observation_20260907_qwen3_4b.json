@@ -1,0 +1,34 @@
+{
+  "observed_at_utc": "2026-09-07T04:22:26.599985+00:00",
+  "kind": "read_only_gateway_embedding_observation",
+  "service_changes": false,
+  "advertised_model_ids": [
+    "gemma-4-31b-it",
+    "qwen3-embedding-4b"
+  ],
+  "observed_gateway_sha256": "7e3df11cee3c6bfd5487edf010ef2493140cf1d2c16518c385a0a61824105fd4",
+  "embedding": {
+    "served_model": "qwen3-embedding-4b",
+    "checkpoint_repo": "Qwen/Qwen3-Embedding-4B",
+    "checkpoint_repo_basis": "operator_requested_model",
+    "loaded_checkpoint_revision": null,
+    "configured_revision": "qwen3-embedding-4b",
+    "probe": {
+      "http_status": 200,
+      "batch_size": 2,
+      "dimensions": [
+        2560,
+        2560
+      ],
+      "indices": [
+        0,
+        1
+      ],
+      "finite": true
+    }
+  },
+  "limitations": [
+    "Gateway response confirms alias and vector width, not loaded checkpoint or weight hashes.",
+    "This two-input probe does not validate 120-request throughput or full indexing."
+  ]
+}

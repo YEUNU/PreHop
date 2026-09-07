@@ -30,7 +30,7 @@ def main():
     import httpx
     from dotenv import load_dotenv
 
-    from core.execution_profile import execution_profile
+    from core.execution_profile import execution_profile, queue_limits
     from core.inference_queue import QueueServer
     load_dotenv(Path(__file__).resolve().parents[1] / '.env', override=False)
     raw = args.requests.read_bytes()
@@ -60,8 +60,7 @@ def main():
                         parser.error('embedding payload exceeds candidate batch size; keep batches fixed across candidates')
             token = secrets.token_urlsafe(32)
             server = QueueServer(os.environ['RAG_INFERENCE_BASE_URL'], os.environ['RAG_INFERENCE_API_KEY'], token,
-                                 {'generation': settings['generation_concurrency'],
-                                  'embedding': settings['embedding_concurrency']}, profile)
+                                 queue_limits(profile), profile)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
                 with httpx.Client(timeout=600, trust_env=False) as client:

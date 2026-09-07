@@ -70,7 +70,7 @@ def test_reuse_cannot_skip_failed_runtime_preflight(tmp_path):
     environment = {'PATH': os.defpath, 'PYTHON_BIN': str(python), 'TRACE': str(tmp_path / 'trace'),
                    'RAG_SKIP_PROJECT_ENV': 'true', 'RAG_INFERENCE_BASE_URL': 'http://litellm.test/v1',
                    'RAG_INFERENCE_API_KEY': 'synthetic', 'RAG_GENERATION_MODEL': 'gemma-4-31b-it',
-                   'RAG_EMBEDDING_MODEL': 'qwen3-embedding-0.6b'}
+                   'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b'}
     result = subprocess.run(['bash', 'scripts/run_paper_target.sh', 'musique', 'prehop', 'completed', '--check'],
                             cwd=tmp_path, env=environment, capture_output=True, check=False)
     assert result.returncode != 0

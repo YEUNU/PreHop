@@ -181,7 +181,7 @@ from core.strategy_registry import paper_environment_defaults
 from core.inference_transport import _FORBIDDEN_AMBIENT_PROVIDER_KEYS
 for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS: os.environ[name]=''
 os.environ.update(paper_environment_defaults())
-os.environ.update(RAG_PAPER_MODE='true',RAG_INFERENCE_BASE_URL='http://litellm.test/v1',RAG_INFERENCE_API_KEY='synthetic',RAG_GENERATION_MODEL='gemma-4-31b-it',RAG_EMBEDDING_MODEL='qwen3-embedding-0.6b',RAG_LLM_SEED='42')
+os.environ.update(RAG_PAPER_MODE='true',RAG_INFERENCE_BASE_URL='http://litellm.test/v1',RAG_INFERENCE_API_KEY='synthetic',RAG_GENERATION_MODEL='gemma-4-31b-it',RAG_EMBEDDING_MODEL='qwen3-embedding-4b',RAG_LLM_SEED='42')
 import core.inference_transport as transport
 transport._approved_gateway_identity=lambda:hashlib.sha256(b'http://litellm.test/v1').hexdigest()
 requests=[]

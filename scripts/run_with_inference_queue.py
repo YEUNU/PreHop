@@ -30,7 +30,7 @@ def main():
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parents[1] / '.env', override=False)
     os.environ['RAG_EXECUTION_PROFILE'] = str(args.profile.resolve())
-    from core.execution_profile import execution_profile
+    from core.execution_profile import execution_profile, queue_limits
     from core.inference_queue import QueueServer
     from core.inference_transport import InferenceTransport
     from core.strategy_registry import paper_environment_defaults
@@ -47,8 +47,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         token = secrets.token_urlsafe(32)
         server = QueueServer(transport.generation_base_url, transport.api_key, token,
-                             {'generation': transport.generation_concurrency,
-                              'embedding': transport.embedding_concurrency}, profile,
+                             queue_limits(profile), profile,
                              timeout=transport.timeout_seconds or None)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

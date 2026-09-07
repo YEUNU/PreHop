@@ -1,0 +1,14 @@
+{
+  "version": 3,
+  "name": "index-shared-120-v3",
+  "settings": {
+    "inference_concurrency": 120,
+    "embedding_batch_size": 16,
+    "benchmark_concurrency": 8,
+    "index_document_concurrency": 60,
+    "index_prefetch_documents": 120,
+    "prehop_chunk_concurrency": 8,
+    "lightrag_document_concurrency": 32,
+    "youtu_document_concurrency": 60
+  }
+}

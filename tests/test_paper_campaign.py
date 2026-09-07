@@ -88,6 +88,8 @@ import sys,os
 from pathlib import Path
 sys.path.insert(0,{str(ROOT)!r})
 from scripts import paper_campaign as c
+import utils.provenance
+utils.provenance.code_provenance=lambda:{{}}
 c.ROOT=Path({str(root)!r})
 c.resource_lock_path=lambda:Path({str(root/'data/results/.paper_resource.lock')!r})
 c.ensure_no_other_campaigns=lambda unit:None
@@ -183,6 +185,9 @@ def test_logs_redact_url_components_and_credentials():
 @pytest.mark.parametrize("report_descendant", [True, False])
 def test_child_inherited_pipes_fail_with_owned_descendant_receipt(tmp_path, monkeypatch, report_descendant):
     """A real grandchild retaining both FDs cannot stall a failed stage forever."""
+    # This deadline tests pipe draining, not inventory or disk fsync latency.
+    monkeypatch.setattr('utils.provenance.code_provenance', dict)
+    monkeypatch.setattr(campaign, 'atomic_json', lambda path, payload: path.write_text(json.dumps(payload)))
     monkeypatch.setattr(campaign, 'ROOT', tmp_path)
     monkeypatch.setattr(campaign, 'CHILD_LOG_DRAIN_SECONDS', .15)
     monkeypatch.setattr(campaign, 'resource_lock_path', lambda: tmp_path/'resource.lock')

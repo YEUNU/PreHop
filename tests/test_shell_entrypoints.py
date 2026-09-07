@@ -33,7 +33,7 @@ def _entrypoint_env(tmp_path: Path) -> dict[str, str]:
             "RAG_INFERENCE_BASE_URL": "http://litellm.test/v1",
             "RAG_INFERENCE_API_KEY": "test-key",
             "RAG_GENERATION_MODEL": "gemma-4-31b-it",
-            "RAG_EMBEDDING_MODEL": "qwen3-embedding-0.6b",
+            "RAG_EMBEDDING_MODEL": "qwen3-embedding-4b",
         }
     )
     return env

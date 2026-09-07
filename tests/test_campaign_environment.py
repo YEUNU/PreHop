@@ -56,7 +56,7 @@ from scripts.paper_campaign import safe_environment
 env=safe_environment()
 os.environ.clear();os.environ.update(env)
 os.environ['LITELLM_LOCAL_MODEL_COST_MAP']='True'
-os.environ.update(RAG_INFERENCE_BASE_URL='http://gateway.test/v1',RAG_INFERENCE_API_KEY='synthetic',RAG_GENERATION_MODEL='gemma-4-31b-it',RAG_EMBEDDING_MODEL='qwen3-embedding-0.6b')
+os.environ.update(RAG_INFERENCE_BASE_URL='http://gateway.test/v1',RAG_INFERENCE_API_KEY='synthetic',RAG_GENERATION_MODEL='gemma-4-31b-it',RAG_EMBEDDING_MODEL='qwen3-embedding-4b')
 from core.paper_policy import configure_target_environment
 configure_target_environment('ms_graphrag','multihoprag','test-import')
 def deny(*a,**k): raise AssertionError('network forbidden')
@@ -76,7 +76,7 @@ print('native_ms_import_environment_preserved')
 '''
     env = os.environ.copy()
     env.update(PYTHONDONTWRITEBYTECODE='1', RAG_SKIP_PROJECT_ENV='true',
-               RAG_EMBEDDING_BATCH_SIZE='16', NEO4J_VECTOR_DIMENSIONS='1024')
+               RAG_EMBEDDING_BATCH_SIZE='16', NEO4J_VECTOR_DIMENSIONS='2560')
     result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env=env,
                             capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stderr

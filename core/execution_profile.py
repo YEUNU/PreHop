@@ -16,22 +16,40 @@ def execution_profile() -> dict:
     if not path:
         return {'version': 1, 'name': 'serial-v1', 'sha256': None, 'settings': {}}
     value = json.loads(Path(path).read_text())
-    if set(value) != {'version', 'name', 'settings'} or type(value['version']) is not int or value['version'] not in (1, 2):
+    if set(value) != {'version', 'name', 'settings'} or type(value['version']) is not int or value['version'] not in (1, 2, 3):
         raise ValueError('Invalid execution profile schema')
     if not isinstance(value['name'], str) or not value['name'].strip():
         raise ValueError('Execution profile needs a name')
     settings = value['settings']
     fields = FIELDS if value['version'] == 1 else FIELDS + PRODUCER_FIELDS
-    optional = {'prehop_chunk_concurrency'} if value['version'] == 2 else set()
+    if value['version'] == 3:
+        fields = ('inference_concurrency', 'embedding_batch_size', 'benchmark_concurrency') + PRODUCER_FIELDS
+    optional = {'prehop_chunk_concurrency'} if value['version'] >= 2 else set()
     if not isinstance(settings, dict) or not set(fields) <= set(settings) or set(settings) - set(fields) - optional:
         raise ValueError('Execution profile must declare all operational concurrency/batch settings')
     for key, number in settings.items():
         if type(number) is not int or not 1 <= number <= 1024:
             raise ValueError(f'Invalid execution profile setting: {key}')
-    if value['version'] == 2 and settings['index_prefetch_documents'] < settings['index_document_concurrency']:
+    if value['version'] >= 2 and settings['index_prefetch_documents'] < settings['index_document_concurrency']:
         raise ValueError('Index prefetch must cover active document workers')
     digest = hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return {**value, 'sha256': digest}
+
+
+def transport_settings(profile):
+    """Resolve client ceilings; v3 admission is owned by one shared queue."""
+    settings = dict(profile['settings'])
+    if profile['version'] == 3:
+        settings['generation_concurrency'] = settings['inference_concurrency']
+        settings['embedding_concurrency'] = settings['inference_concurrency']
+    return settings
+
+
+def queue_limits(profile):
+    settings = profile['settings']
+    if profile['version'] == 3:
+        return {'shared': settings['inference_concurrency']}
+    return {'generation': settings['generation_concurrency'], 'embedding': settings['embedding_concurrency']}
 
 
 def require_queue(strategy='core') -> dict | None:
@@ -53,8 +71,7 @@ def require_queue(strategy='core') -> dict | None:
         value = response.json()
     if value.get('profile') != profile or value.get('gateway_identity_sha256') != transport.gateway_identity_sha256:
         raise RuntimeError('Queue profile or upstream gateway identity differs')
-    if value.get('limits') != {'generation': transport.generation_concurrency,
-                               'embedding': transport.embedding_concurrency}:
+    if value.get('limits') != queue_limits(profile):
         raise RuntimeError('Queue global limits differ from execution profile')
     return value
 
@@ -68,7 +85,7 @@ def apply_execution_profile(environment=None):
                'benchmark_concurrency': 'RAG_BENCHMARK_CONCURRENCY',
                'index_document_concurrency': 'RAG_MAX_PARALLEL_FILES',
                'index_prefetch_documents': 'RAG_FILE_SCHEDULE_BATCH'}
-    for key, value in execution_profile()['settings'].items():
+    for key, value in transport_settings(execution_profile()).items():
         if key in mapping:
             environment[mapping[key]] = str(value)
 

@@ -171,13 +171,19 @@ async def test_measured_targets_cannot_overlap(tmp_path, monkeypatch):
     assert await work() == 'done'  # Lock released even across repeated calls.
 
 
-def test_foreground_wrapper_owns_queue_and_propagates_exit(queue, tmp_path):
+@pytest.mark.parametrize('profile_version', [1, 3])
+def test_foreground_wrapper_owns_queue_and_propagates_exit(queue, tmp_path, profile_version):
     import os
+    from pathlib import Path
     server, received = queue
     profile = tmp_path / 'profile.json'
     profile.write_text(json.dumps({'version': 1, 'name': 'wrapper-test', 'settings': {
         'generation_concurrency': 2, 'embedding_batch_size': 16,
         'embedding_concurrency': 1, 'benchmark_concurrency': 2}}))
+    if profile_version == 3:
+        value = json.loads(Path('configs/execution_profiles/index-shared-120.json').read_text())
+        value['name'] = 'wrapper-test'
+        profile.write_text(json.dumps(value))
     metrics = tmp_path / 'metrics.json'
     env = dict(os.environ, RAG_PAPER_MODE='false', RAG_INFERENCE_BASE_URL=server.upstream,
                RAG_INFERENCE_API_KEY='upstream-key', RAG_GENERATION_MODEL='generation',
@@ -186,6 +192,8 @@ def test_foreground_wrapper_owns_queue_and_propagates_exit(queue, tmp_path):
     env.pop('RAG_QUEUE_TOKEN', None)
     command = [sys.executable, 'scripts/run_with_inference_queue.py', '--profile', str(profile),
                '--metrics', str(metrics), '--', sys.executable, '-c', '''import os, urllib.request
+from core.execution_profile import require_queue
+assert require_queue() is not None
 req=urllib.request.Request(os.environ['RAG_QUEUE_PROXY_URL']+'/chat/completions',
  data=b'wrapper',headers={'Authorization':'Bearer '+os.environ['RAG_QUEUE_TOKEN']})
 assert urllib.request.urlopen(req).read()==b'wrapper'
@@ -197,6 +205,9 @@ raise SystemExit(7)
     assert report['metrics']['generation']['requests'] == 1
     assert report['metrics']['generation']['active'] == 0
     assert report['profile']['name'] == 'wrapper-test'
+    if profile_version == 3:
+        assert report['limits'] == {'shared': 120}
+        assert report['metrics']['shared']['requests'] == 1
     assert received[0][2] == 'Bearer upstream-key'
     assert 'upstream-key' not in metrics.read_text()
 
@@ -261,3 +272,99 @@ def test_high_concurrency_burst_reaches_queue_without_tcp_backlog_loss(queue):
         server.shutdown()
         server.server_close()
         server.client.close()
+
+
+def test_shared_profile_resolves_one_limit_and_removes_old_client_caps(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from core.execution_profile import apply_execution_profile, queue_limits
+    path = Path('configs/execution_profiles/index-shared-120.json').resolve()
+    monkeypatch.setenv('RAG_EXECUTION_PROFILE', str(path))
+    profile = execution_profile()
+    assert queue_limits(profile) == {'shared': 120}
+    env = {'RAG_GENERATION_CONCURRENCY': '60', 'RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS': '2'}
+    apply_execution_profile(env)
+    assert env['RAG_GENERATION_CONCURRENCY'] == env['RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS'] == '120'
+    result = subprocess.run([sys.executable, '-c', '''
+from core.strategy_registry import PAPER_TRANSPORT, get_strategy
+assert PAPER_TRANSPORT.generation_concurrency == PAPER_TRANSPORT.embedding_concurrency == 120
+policy = dict(get_strategy('youtu_graphrag').paper_index_policy)
+assert policy['construction_concurrency'] == 60
+assert policy['schema_update_policy'] == 'locked-native-v1'
+'''], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    value = json.loads(path.read_text())
+    value['settings']['embedding_concurrency'] = 2
+    bad = tmp_path / 'bad.json'
+    bad.write_text(json.dumps(value))
+    monkeypatch.setenv('RAG_EXECUTION_PROFILE', str(bad))
+    with pytest.raises(ValueError):
+        execution_profile()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('limit,kind', [(3, 'generation'), (3, 'embedding'), (120, 'mixed')])
+async def test_shared_queue_borrows_all_slots_and_bounds_mixed_requests(limit, kind):
+    import asyncio
+
+    release = threading.Event()
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+        def do_POST(self):
+            payload = self.rfile.read(int(self.headers['Content-Length']))
+            assert release.wait(timeout=20)
+            self.send_response(429 if payload == b'fail' else 200)
+            self.end_headers()
+            self.wfile.write(payload)
+    class Server(ThreadingHTTPServer):
+        daemon_threads = True
+        request_queue_size = 256
+    upstream = Server(('127.0.0.1', 0), Upstream)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    server = QueueServer(f'http://127.0.0.1:{upstream.server_port}/v1', 'key', 'token',
+                         {'shared': limit}, {'version': 3})
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    tasks = []
+    try:
+        async with httpx.AsyncClient(timeout=25, trust_env=False,
+                limits=httpx.Limits(max_connections=256)) as client:
+            base = f'http://127.0.0.1:{server.server_port}/v1'
+            async def send(i):
+                embed = kind == 'embedding' or kind == 'mixed' and i % 2 == 0
+                return await client.post(base + ('/embeddings' if embed else '/chat/completions'),
+                    content=b'body', headers={'Authorization': 'Bearer token'})
+            tasks = [asyncio.create_task(send(i)) for i in range(limit + 4)]
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                metrics = server.snapshot()['metrics']
+                assert metrics['shared']['active'] == metrics['generation']['active'] + metrics['embedding']['active']
+                assert metrics['shared']['active'] <= limit
+                if metrics['shared']['active'] == limit and metrics['shared']['waiting'] == 4:
+                    break
+                await asyncio.sleep(.02)
+            else:
+                pytest.fail('Shared queue did not fill and backpressure excess requests')
+            if kind == 'mixed':
+                assert metrics['generation']['active'] > 0 and metrics['embedding']['active'] > 0
+            else:
+                assert metrics[kind]['active'] == limit
+            release.set()
+            responses = await asyncio.gather(*tasks)
+            assert all(r.status_code == 200 and r.content == b'body' for r in responses)
+            failure = await client.post(base + '/embeddings', content=b'fail',
+                                       headers={'Authorization': 'Bearer token'})
+            assert failure.status_code == 429
+            metrics = server.snapshot()['metrics']
+            assert metrics['shared']['peak_active'] == limit
+            assert metrics['shared']['requests'] == limit + 5
+            assert metrics['shared']['errors'] == metrics['embedding']['errors'] == 1
+            assert metrics['shared']['active'] == metrics['shared']['waiting'] == 0
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        server.shutdown()
+        server.server_close()
+        server.client.close()
+        upstream.shutdown()
+        upstream.server_close()

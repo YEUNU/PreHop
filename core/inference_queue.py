@@ -19,6 +19,9 @@ class QueueServer(ThreadingHTTPServer):
         self.upstream_key = upstream_key
         self.token = token
         self.profile = profile
+        if set(limits) not in ({'shared'}, {'generation', 'embedding'}) or any(
+                type(value) is not int or value < 1 for value in limits.values()):
+            raise ValueError('Queue needs one shared limit or legacy per-kind limits')
         self.limits = limits
         self.permits = {key: threading.BoundedSemaphore(value) for key, value in limits.items()}
         # Bound connection handlers as well as upstream requests.
@@ -30,7 +33,8 @@ class QueueServer(ThreadingHTTPServer):
         self.guard = threading.Lock()
         self.rejected_connections = 0
         self.stats = {key: {'requests': 0, 'errors': 0, 'active': 0, 'waiting': 0, 'peak_active': 0,
-                                'queue_seconds': 0.0, 'upstream_seconds': 0.0} for key in limits}
+                                'queue_seconds': 0.0, 'upstream_seconds': 0.0}
+                      for key in ('generation', 'embedding', *(['shared'] if 'shared' in limits else []))}
         self.client = httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False,
                                    limits=httpx.Limits(max_connections=sum(limits.values()) + 2))
         super().__init__(('127.0.0.1', 0), QueueHandler)
@@ -68,7 +72,8 @@ class QueueServer(ThreadingHTTPServer):
 
     def snapshot(self):
         with self.guard:
-            return {'version': 1, 'profile': self.profile, 'limits': self.limits,
+            return {'version': 2 if 'shared' in self.limits else 1,
+                    'profile': self.profile, 'limits': self.limits,
                     'rejected_connections': self.rejected_connections,
                     'listen_backlog': self.request_queue_size, 'handler_capacity': self.handler_capacity,
                     'gateway_identity_sha256': hashlib.sha256(self.upstream.encode()).hexdigest(),
@@ -118,20 +123,23 @@ class QueueHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         kind = routes[self.path]
         queued = time.perf_counter()
-        permit = server.permits.get(kind)
+        permit = server.permits.get('shared', server.permits.get(kind)) if kind else None
+        metric_keys = ([kind, 'shared'] if 'shared' in server.limits else [kind]) if kind else []
         if permit:
             with server.guard:
-                server.stats[kind]['waiting'] += 1
+                for key in metric_keys:
+                    server.stats[key]['waiting'] += 1
             permit.acquire()
         started = time.perf_counter()
         if kind:
             with server.guard:
-                stats = server.stats[kind]
-                stats['waiting'] -= 1
-                stats['requests'] += 1
-                stats['active'] += 1
-                stats['peak_active'] = max(stats['peak_active'], stats['active'])
-                stats['queue_seconds'] += started - queued
+                for key in metric_keys:
+                    stats = server.stats[key]
+                    stats['waiting'] -= 1
+                    stats['requests'] += 1
+                    stats['active'] += 1
+                    stats['peak_active'] = max(stats['peak_active'], stats['active'])
+                    stats['queue_seconds'] += started - queued
         status = 502
         response_started = False
         try:
@@ -160,9 +168,11 @@ class QueueHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             if kind:
                 with server.guard:
-                    stats['active'] -= 1
-                    stats['upstream_seconds'] += time.perf_counter() - started
-                    stats['errors'] += int(status >= 400)
+                    for key in metric_keys:
+                        stats = server.stats[key]
+                        stats['active'] -= 1
+                        stats['upstream_seconds'] += time.perf_counter() - started
+                        stats['errors'] += int(status >= 400)
             if permit:
                 permit.release()
 
@@ -181,7 +191,7 @@ class OwnedQueue:
         import secrets
         from pathlib import Path
 
-        from core.execution_profile import execution_profile
+        from core.execution_profile import execution_profile, queue_limits
         from core.inference_transport import InferenceTransport
         from core.strategy_registry import PAPER_TRANSPORT
         if os.environ.get('RAG_QUEUE_PROXY_URL'):
@@ -204,8 +214,7 @@ class OwnedQueue:
                     os.environ['RAG_LLM_SEED'] = prior_seed
             token = secrets.token_urlsafe(32)
             self.server = QueueServer(transport.generation_base_url, transport.api_key, token,
-                                      {'generation': transport.generation_concurrency,
-                                       'embedding': transport.embedding_concurrency}, profile,
+                                      queue_limits(profile), profile,
                                       timeout=transport.timeout_seconds or None)
             threading.Thread(target=self.server.serve_forever, daemon=True).start()
             for key, value in {'RAG_QUEUE_PROXY_URL': f'http://127.0.0.1:{self.server.server_port}/v1',
