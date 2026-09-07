@@ -173,11 +173,12 @@ EM/F1 and Support precision/recall/F1 over 2,417 questions; cost normalizes by
   Existing adapter boundaries remain explicit; storage/reporting measurements
   after the frozen timer are excluded. Record total time alongside s/doc.
 - `amortized_query_cost`: wall seconds from dispatching the complete query batch
-  through the last returned answer, divided by the full query count. Internal
+  through the last answer or terminal query failure, divided by the full query count. Internal
   queues, retry time, and any interleaved evaluation/checkpoint work that delays
   later answers are included. Initialization and trailing report generation are
   excluded. This is inverse throughput, not mean response latency.
-- Failed/incomplete runs have null normalized performance values. Resumed query
+- Incomplete or integrity-failed runs have null normalized performance values.
+  Fully executed batches include terminal query failures in measured query cost. Resumed query
   runs retain separate segment timing but have null s/query and throughput:
   they are not uninterrupted performance measurements. A fresh benchmark on the
   same immutable index can supply query cost without repeating indexing.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.benchmark_failures import BenchmarkIntegrityError
+
 import hashlib
 import importlib.util
 import json
@@ -85,58 +87,15 @@ def validate_native_query_result(result: Any, chunk_sources: dict[str, str]) -> 
     if not isinstance(result, dict):
         raise TypeError("Youtu official query API returned a malformed result")
     answer = result.get("initial_answer")
-    if not isinstance(answer, str) or not answer.strip():
-        raise RuntimeError("Youtu official query API returned an empty answer")
-    if answer.strip().lower().startswith(_NATIVE_ERROR_PREFIXES):
-        raise RuntimeError("Youtu official query API exhausted generation retries")
-
-    chunk_ids = result.get("chunk_ids")
-    chunk_contents = result.get("chunk_contents")
-    triples = result.get("triples")
-    if not isinstance(chunk_ids, list) or not isinstance(chunk_contents, list) or not isinstance(triples, list):
-        raise TypeError("Youtu official query API returned malformed evidence")
-    if not chunk_ids or len(chunk_ids) != len(chunk_contents):
-        raise RuntimeError("Youtu official query API returned empty or misaligned chunk evidence")
+    if not isinstance(answer, str):
+        raise TypeError("Youtu native answer cannot be represented as benchmark text")
+    chunk_ids, chunk_contents = result.get("chunk_ids"), result.get("chunk_contents")
+    if not isinstance(chunk_ids, list) or not isinstance(chunk_contents, list) or len(chunk_ids) != len(chunk_contents):
+        raise TypeError("Youtu native evidence cannot be mapped to source identities")
     normalized_ids = [str(chunk_id) for chunk_id in chunk_ids]
-    if any(not chunk_id for chunk_id in normalized_ids) or len(set(normalized_ids)) != len(normalized_ids):
-        raise RuntimeError("Youtu official query API returned empty or duplicate chunk IDs")
     if any(chunk_id not in chunk_sources for chunk_id in normalized_ids):
-        raise RuntimeError("Youtu retrieval returned chunk IDs absent from the provenance sidecar")
-    if any(
-        not isinstance(content, str)
-        or not content.strip()
-        or content.strip() in _NATIVE_EVIDENCE_SENTINELS
-        or content.strip().lower().startswith(_NATIVE_ERROR_PREFIXES)
-        or content.strip().startswith("[Missing content for chunk ")
-        for content in chunk_contents
-    ) or any(
-        not isinstance(triple, str)
-        or not triple.strip()
-        or triple.strip() in _NATIVE_EVIDENCE_SENTINELS
-        or triple.strip().lower().startswith(_NATIVE_ERROR_PREFIXES)
-        for triple in triples
-    ):
-        raise RuntimeError("Youtu official query API returned sentinel, empty, or malformed evidence")
-    sub_results = result.get("sub_question_results")
-    if not isinstance(sub_results, list) or not sub_results:
-        raise TypeError("Youtu official query API omitted sub-question status")
-    for sub_result in sub_results:
-        if not isinstance(sub_result, dict):
-            raise TypeError("Youtu official query API returned malformed sub-question status")
-        triples_count = sub_result.get("triples_count")
-        chunks_count = sub_result.get("chunk_ids_count")
-        if (
-            isinstance(triples_count, bool)
-            or not isinstance(triples_count, int)
-            or isinstance(chunks_count, bool)
-            or not isinstance(chunks_count, int)
-            or triples_count < 0
-            or chunks_count < 0
-        ):
-            raise TypeError("Youtu official query API returned malformed sub-question counts")
-        if triples_count == 0 and chunks_count == 0:
-            raise RuntimeError("Youtu official query API reported an empty or swallowed sub-question failure")
-    return answer.strip(), list(zip(normalized_ids, chunk_contents))
+        raise BenchmarkIntegrityError("Youtu retrieval returned a foreign source identity")
+    return answer, list(zip(normalized_ids, chunk_contents))
 
 
 def derive_native_source_reachability(
@@ -145,7 +104,7 @@ def derive_native_source_reachability(
     expected_source_ids: set[str],
 ) -> dict[str, Any]:
     """Observe source reachability from the unmodified upstream graph JSON."""
-    if not isinstance(graph_output, list) or not graph_output:
+    if not isinstance(graph_output, list):
         raise RuntimeError("Youtu construction persisted an empty graph artifact")
     source_chunks: dict[str, set[str]] = {source_id: set() for source_id in expected_source_ids}
     for relationship in graph_output:
@@ -398,13 +357,13 @@ class YoutuGraphRAGDriver:
             def _current_observation(inner):
                 source_id = getattr(inner._active_source, "source_id", "")
                 if source_id not in inner.extraction_by_source:
-                    raise RuntimeError("Youtu extraction lost its active staged source identity")
+                    raise BenchmarkIntegrityError("Youtu extraction lost its active staged source identity")
                 return inner.extraction_by_source[source_id]
 
             def chunk_text(inner, text):
                 source_id = str(text.get("source_id", "")) if isinstance(text, dict) else ""
                 if source_id not in self.by_id:
-                    raise RuntimeError("Youtu corpus record lost its source identity before chunking")
+                    raise BenchmarkIntegrityError("Youtu corpus record lost its source identity before chunking")
                 chunks, chunk2id = super().chunk_text(text)
                 inner.chunk_sources.update({chunk_id: source_id for chunk_id in chunk2id})
                 inner.extraction_by_source[source_id]["expected_chunk_count"] += len(chunk2id)
@@ -430,7 +389,7 @@ class YoutuGraphRAGDriver:
             def process_document(inner, document):
                 source_id = str(document.get("source_id", "")) if isinstance(document, dict) else ""
                 if source_id not in inner.extraction_by_source:
-                    raise RuntimeError("Youtu construction received a foreign staged source")
+                    raise BenchmarkIntegrityError("Youtu construction received a foreign staged source")
                 inner._active_source.source_id = source_id
                 try:
                     return super().process_document(document)
@@ -452,7 +411,7 @@ class YoutuGraphRAGDriver:
             retry_attempts=self.transport.retry_attempts,
             timeout_seconds=self.transport.timeout_seconds,
         )
-        from .youtu_format_retry import RetryingYoutuConstructionClient
+        from models.external_research.native_observation import ObservedYoutuClient as RetryingYoutuConstructionClient
 
         builder.llm_client.client = RetryingYoutuConstructionClient(
             builder.llm_client.client, self.transport.retry_attempts,
@@ -530,12 +489,6 @@ class YoutuGraphRAGDriver:
         self.extraction_evidence_path.write_text(
             json.dumps(extraction_observation, ensure_ascii=False, sort_keys=True), encoding="utf-8"
         )
-        if not extraction_observation["complete"]:
-            raise RuntimeError(
-                "Youtu native extraction was empty, malformed, or swallowed an upstream source failure "
-                f"(malformed={extraction_counts['malformed']}, empty={extraction_counts['empty']}, "
-                f"swallowed={extraction_counts['swallowed_error']})"
-            )
         if not self.schema_path.is_file():
             raise RuntimeError("Youtu agent construction removed its run-local schema")
         try:
@@ -562,12 +515,12 @@ class YoutuGraphRAGDriver:
         if persisted_source_evidence != native_reachability:
             raise RuntimeError("Youtu source-level graph evidence sidecar failed round-trip validation")
         self._load_retriever()
-        from core.native_structured_profile import YOUTU_STRUCTURED_PROFILE, youtu_profile_sha256
+        from core.native_structured_profile import NATIVE_YOUTU_PROFILE as YOUTU_STRUCTURED_PROFILE, native_youtu_profile_sha256 as youtu_profile_sha256
         from models.external_research.extraction_contract import audit_evidence
 
         return {
             "extraction_audit_evidence": audit_evidence(builder.llm_client.client._audit),
-            "extraction_validation_profile": "strict-youtu-extraction-v1",
+            "extraction_validation_profile": "native-observation-v1",
             "extraction_generation_profile": YOUTU_STRUCTURED_PROFILE,
             "construction_workers_requested": self.config.construction.max_workers,
             "construction_workers_effective": (self.config.construction.max_workers if execution_profile()['version'] >= 2

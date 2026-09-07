@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from core.generation_profiles import request_settings
+from core.benchmark_failures import BenchmarkIntegrityError
 from core.vllm_client import get_llm_client
 from models.official_baseline_runtime import OfficialQueryWorker, verify_snapshot
 from utils.prompts.shared import build_answer_prompt, mark_answer_boundary
@@ -23,13 +24,13 @@ class ExternalResearchAdapter:
     def _documents(self, response: dict[str, Any]) -> list[dict[str, Any]]:
         documents = response.get("documents")
         if not isinstance(documents, list):
-            raise TypeError(f"{self.strategy} official worker returned malformed documents")
+            raise BenchmarkIntegrityError(f"{self.strategy} official worker returned malformed documents")
         seen: set[str] = set()
         for row in documents:
             if not isinstance(row, dict) or not str(row.get("source_id", "")).strip():
-                raise TypeError(f"{self.strategy} official worker returned a document without source_id")
+                raise BenchmarkIntegrityError(f"{self.strategy} official worker returned a document without source_id")
             if row["source_id"] in seen:
-                raise ValueError(f"{self.strategy} official worker returned duplicate source_id")
+                raise BenchmarkIntegrityError(f"{self.strategy} official worker returned duplicate source_id")
             seen.add(row["source_id"])
         return documents
 
@@ -44,12 +45,6 @@ class ExternalResearchAdapter:
         # The worker returns the method-native retrieval cut-off. Do not apply
         # a cross-method top-k here: it would silently change graph traversal
         # and context semantics.
-        if not documents:
-            return (
-                mark_answer_boundary("Insufficient evidence."),
-                [],
-                [{"step": f"{self.strategy}_retrieval", "output": "empty"}],
-            )
         native_answer = response.get("answer")
         context_documents = documents
         context = "\n\n".join(
@@ -65,8 +60,8 @@ class ExternalResearchAdapter:
                 [{"role": "user", "content": build_answer_prompt(context, query)}],
                 **request_settings("answer"),
             )
-        if not str(answer or "").strip():
-            raise ValueError(f"{self.strategy} answer synthesis returned an empty response")
+        if not isinstance(answer, str):
+            raise TypeError(f"{self.strategy} native answer is not text")
         sources = [
             {
                 "doc": row.get("title") or row["source_id"],

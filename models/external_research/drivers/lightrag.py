@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.benchmark_failures import BenchmarkIntegrityError
+
 import asyncio
 import sys
 from pathlib import Path
@@ -124,7 +126,7 @@ class LightRAGDriver:
             source_id = str(chunk.get("file_path", ""))
             row = self.by_id.get(source_id)
             if row is None:
-                raise RuntimeError("LightRAG returned a foreign or missing file_path source identity")
+                raise BenchmarkIntegrityError("LightRAG returned a foreign or missing file_path source identity")
             if source_id not in seen:
                 documents.append(
                     {"source_id": source_id, "title": row["title"], "text": chunk.get("content", row["text"])}

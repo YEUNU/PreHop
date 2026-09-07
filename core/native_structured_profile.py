@@ -85,3 +85,11 @@ class YoutuConstructionClient:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
+
+
+NATIVE_YOUTU_PROFILE = "youtu-native-response-v1"
+
+
+def native_youtu_profile_sha256():
+    """Fingerprint the absence of adapter-enforced response formatting."""
+    return hashlib.sha256(b'{"response_format":"native-call-unchanged"}').hexdigest()

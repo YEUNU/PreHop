@@ -76,30 +76,22 @@ schema digests also enter inference telemetry. Fresh paper runs use separate
 `data/index_cache/runs/<run>/<strategy>/<dataset>` directories; an existing
 cache cannot satisfy a fresh-index step. Resume retains its own run cache.
 
-HippoRAG2 uses semantic identity `hipporag2-paper-strict-extraction-v5`
-and validation profile `strict-extraction-v1`. Its native BaseConfig retains
-`response_format={"type":"json_object"}`, but the extraction adapter supplies
-field-level JSON Schemas for NER and triples at the actual inference boundary.
-Native prompts, seed, temperature and 512/2048-token limits remain unchanged.
-The adapter validates and records raw responses, permits only declared
-unambiguous item normalization, and bypasses invalid cache entries on format
-retries. Native QA receives no extraction response format. See
-[controlled extraction](RUNTIME_REQUIREMENTS.md#controlled-extraction-and-artifact-validation)
-for audit binding and failure handling.
+External extraction adapters use `native-observation-v1`. HippoRAG2 retains
+native JSON-object requests, parsers, caches and 512/2048-token limits under
+`hipporag2-native-observation-v6`. GFM-RAG retains native JSON mode and
+empty-list fallback. MS responses and glean delimiters are passed unchanged.
+No adapter format retry, entity normalization or response repair is applied.
 
-Youtu's `youtu-native-agent-v4` semantic identity includes the controlled
-`youtu-json-schema-v1` generation profile and `strict-youtu-extraction-v1`
-validation profile. The extraction wrapper applies only to the constructor's
-public SDK client. It adds the frozen extraction JSON Schema,
-checks raw completion and nested shape, and returns the identical SDK response
-to the unmodified native parser. Dynamic entity/type maps and native schema
-evolution remain available. Retrieval and QA clients receive no extraction
-format. Construction retains temperature 0.3, no seed and no imposed token
-cap. The extraction-response schema digest is distinct from the approved
-starting ontology and evolved ontology digests. Old unstructured indexes
-cannot be admitted under these new profiles.
+Youtu uses `youtu-native-agent-observation-v5` and
+`youtu-native-response-v1`. Its constructor SDK observer records responses and
+exceptions without injecting a response schema. Native ontology evolution,
+temperature 0.3, unseeded calls and omitted token cap remain in effect.
+The response-profile digest describes unchanged native call formatting and is
+separate from the starting/evolved ontology digests. Earlier guarded snapshots
+require rebuilding. See [native output handling](RUNTIME_REQUIREMENTS.md#native-output-handling-and-artifact-validation)
+for the authoritative boundary and audit contract.
 
-The standard wire format follows the [vLLM structured-output interface](https://docs.vllm.ai/en/latest/features/structured_outputs/).
+Prehop's structured wire format follows the [vLLM structured-output interface](https://docs.vllm.ai/en/latest/features/structured_outputs/).
 Unsupported gateway/backend schema requests fail without an unstructured
 fallback. Local SDK acceptance is not evidence of a particular serving
 backend or version.
@@ -431,8 +423,8 @@ method-specific staging, declared producer scheduling, and upstream calls:
   the pinned entrypoint does. It records
   staged coverage, native extraction success, and native source reachability
   as separate content-bound sidecars without injecting visible markers or
-  changing retrieval/deduplication. Malformed, empty, sentinel, or swallowed
-  failures are fatal.
+  changing retrieval/deduplication. Native empty results and swallowed errors
+  remain observable outcomes. Source-mapping integrity errors stop the target.
 
 GFM's entity-linker model snapshot remains under its pinned runtime artifacts.
 Its mutable PLAID cache and metadata use the current run's
@@ -1135,10 +1127,9 @@ remain in place.
 
 Youtu worker count, `locked-native-v1` schema synchronization and the
 `adapter-bounded-io-v1` scheduler enter semantic identity because parallel
-schema visibility and completion order can change outputs. Its extraction
-retry facade shares five total attempts across format and transport errors,
-disables SDK retries and returns an unchanged valid response to the native
-parser. Retry policy and attempt counters are recorded. Native generation
+schema visibility and completion order can change outputs. Its SDK observer
+returns the native response unchanged and adds no format retries. Native
+exceptions remain available to upstream error handling. Native generation
 remains unseeded; parallel builds are not assumed equivalent to serial builds.
 
 ### Amortized throughput cost (evidence v3)
@@ -1151,8 +1142,9 @@ Producer behavior is defined in [Adapter producer parallelism](#adapter-producer
 
 `amortized_indexing_cost` divides original index wall time by manifest source
 count. `amortized_query_cost` uses a separate batch-dispatch-to-last-answer wall
-timer and full query count. Failed, partial or resumed query runs do not supply
-continuous-run query throughput. The original benchmark segment timer and
+timer through the last answer or terminal failure, divided by the full query
+count. Fully executed batches include failed queries. Partial, integrity-failed
+or resumed batches do not supply continuous-run query throughput. The original benchmark segment timer and
 request latency fields retain their existing meanings. Interleaved evaluation
 or checkpoint work delaying answers is included in the query batch timer.
 
@@ -1206,3 +1198,17 @@ result artifacts; they do not replace final admission. Inference and stage trace
 I/O during a measured phase contributes to its wall time; post-phase outcome
 reporting remains outside that phase timer. Trace files are excluded from
 retrieval index storage size. Older untraced responses cannot be reconstructed.
+
+### Terminal query failures and target isolation
+
+The benchmark loop records ordinary query exceptions and continues pending
+queries. Primary quality scores are zero for terminal failures; latency and
+available usage remain measured. The same policy applies to aggregation,
+verification and paired bootstrap. Resume retains terminal errors rather than
+retrying them into successful rows. `BenchmarkIntegrityError` crosses the worker
+boundary and stops pending queries for that target; active calls may finish.
+
+The index supervisor writes `outcomes.json` and `outcomes.md` alongside status
+and attempt logs. Failed indexes have unavailable quality; other eligible targets
+continue. See [failure handling](RESULTS.md#failure-handling) for reporting and
+admission rules. Prehop and Naive index construction is unchanged.

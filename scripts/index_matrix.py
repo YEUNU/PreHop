@@ -101,6 +101,10 @@ def supervise(plan_path):
         status.update(fields)
         status['updated_at'] = time.time()
         atomic_json(base / 'status.json', status)
+        from core.campaign_outcomes import index_outcomes, outcome_markdown
+        outcome_report = index_outcomes(status)
+        atomic_json(base / 'outcomes.json', outcome_report)
+        (base / 'outcomes.md').write_text(outcome_markdown(outcome_report))
     def stopped(signum, frame):
         raise RuntimeError(f'Index supervisor interrupted by signal {signum}')
     signal.signal(signal.SIGTERM, stopped)

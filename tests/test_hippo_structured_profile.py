@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_hippo_structured_profile_changes_semantic_identity():
     policy = canonical_semantic_index_policy('hipporag2', 'musique')
-    assert policy['semantic_config_id'] == 'hipporag2-paper-strict-extraction-v5'
+    assert policy['semantic_config_id'] == 'hipporag2-native-observation-v6'
     assert policy['openie_response_format'] == 'json_object'
     assert (policy['openie_ner_max_tokens'], policy['openie_triple_max_tokens']) == (512, 2048)
     old = {key: value for key, value in policy.items() if key not in {
@@ -49,8 +49,8 @@ def test_missing_or_legacy_native_observation_cannot_write_new_profile(observed)
         validate_native_generation_profile('hipporag2', observed, policy)
     validate_native_generation_profile('hipporag2', {
         'openie_response_format': {'type': 'json_object'},
-        'ner_normalization_profile': 'entity-text-object-v2',
-        'extraction_validation_profile': 'strict-extraction-v1',
+        'ner_normalization_profile': 'native-parser-v1',
+        'extraction_validation_profile': 'native-observation-v1',
         'openie_ner_max_tokens': 512, 'openie_triple_max_tokens': 2048,
     }, policy)
 

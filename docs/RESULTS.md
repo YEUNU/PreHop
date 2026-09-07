@@ -132,10 +132,33 @@ before a cell becomes `admitted`:
    worker-queue delay, and end-to-end latency retain their distinct meanings.
    Missing upstream token or cost telemetry is marked incomplete rather than
    estimated.
-8. Guarded extraction adapters report their effective validation profile and
-   bind the successful index-time audit prefix. Missing or changed audit bytes,
-   exhausted calls and stale profiles prevent admission. Later query appends do
+8. External adapters report their native observation profile and bind the
+   index-time audit prefix. Missing or changed audit bytes and stale profiles
+   prevent admission. Recorded native fallback events do not independently
+   invalidate a completed native run; extraction quality is evaluated as produced. Later query appends do
    not replace the index-time evidence; the final inventory binds them separately.
+
+## Failure handling
+
+The `terminal-query-failure-zero-v1` policy keeps every executed query in the
+primary quality denominator. Terminal query exceptions receive zero answer and
+retrieval/support scores, an incorrect-answer label, and a durable error trace.
+Failure counts and rates accompany the scores. Optional judge metrics remain
+unjudged, not fabricated zeros. Latency and available usage include failed calls;
+missing usage remains unavailable. Paired bootstrap retains failed queries as
+zero-score observations, subject to the existing gold-evidence applicability rule.
+
+A batch that executed every query can complete with query failures. Source
+mapping/integrity errors stop subsequent queries for that target and block
+admission. Resuming preserves terminal error rows and only executes missing
+queries; rerunning a failed query requires a separately recorded experiment.
+
+An index failure has unavailable quality, not zero quality. The index supervisor
+continues other eligible targets and writes `outcomes.json` and `outcomes.md`
+with states, attempt durations and diagnostic references. A smoke failure blocks
+only that target's full index. Failed index time is attempt cost, not successful
+per-document indexing performance. Index and query completeness, source identity,
+audit hashes and cost telemetry are still verified independently of quality.
 
 ## Artifact retention
 

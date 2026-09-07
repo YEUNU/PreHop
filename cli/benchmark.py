@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.benchmark_failures import POLICY as FAILURE_POLICY, QUALITY_METRICS, metric_value, BenchmarkIntegrityError
 from core.admission import current_post_query_inventory
 from core.config import RAGConfig
 from core.execution_profile import exclusive_measurement
@@ -473,10 +474,11 @@ def _apply_judge_label(result_item: dict[str, Any]) -> None:
         else result_item.get("answer_em")
     )
     primary_score = _safe_float(primary, -1.0)
+    primary_score = 0.0 if has_error else primary_score
     result_item["primary_answer_score"] = primary_score
     if has_error or primary_score < 0:
         answer_attempted = -1.0 if not has_error else 0.0
-        primary_label = "Unscored"
+        primary_label = "Incorrect Answer" if has_error else "Unscored"
     else:
         answer_attempted = 0.0 if abstained else 1.0
         primary_label = "Correct Answer" if primary_score >= 0.5 else ("Refusal" if abstained else "Incorrect Answer")
@@ -493,22 +495,12 @@ def _recompute_aggregates(s: dict[str, Any]) -> None:
     the UNJUDGED sentinel (-1); every real metric is in [0, 1] (or latency >= 0).
     """
     rows = s.get("details") or []
+    s["failure_policy"] = FAILURE_POLICY
+    s["query_failure_count"] = sum(bool(row.get("error")) for row in rows)
+    s["query_failure_rate"] = s["query_failure_count"] / len(rows) if rows else 0.0
 
     def _eligible_values(subset: list[dict], key: str) -> list[float]:
-        """Paper aggregates contain only successfully evaluated rows.
-
-        A runtime error may carry placeholder numeric fields for schema
-        stability, but those values are neither failures-as-zero nor valid
-        observations.  Negative values are the common unjudged/N/A sentinel.
-        """
-        return [
-            float(r[key])
-            for r in subset
-            if not r.get("error")
-            and isinstance(r.get(key), (int, float))
-            and not isinstance(r.get(key), bool)
-            and r[key] >= 0
-        ]
+        return [value for row in subset if (value := metric_value(row, key)) is not None]
 
     def _avg(subset: list[dict], key: str) -> float:
         vals = _eligible_values(subset, key)
@@ -556,7 +548,7 @@ def _unjudged_count(rows: list[dict[str, Any]], key: str = "llm_judge_score") ->
     return sum(
         1
         for row in rows
-        if not isinstance(row.get(key), (int, float)) or isinstance(row.get(key), bool) or float(row[key]) < 0
+        if not row.get("error") and (not isinstance(row.get(key), (int, float)) or isinstance(row.get(key), bool) or float(row[key]) < 0)
     )
 
 
@@ -579,12 +571,14 @@ def _unjudged_groundedness_count(rows: list[dict[str, Any]]) -> int:
 
 def _update_summary_status(summary: dict[str, Any]) -> None:
     rows = summary.get("details") or []
-    if len(rows) < int(summary.get("total_queries", len(rows)) or 0):
+    if any(row.get("failure_scope") == "target" for row in rows):
+        summary["status"] = "failed"
+    elif len(rows) < int(summary.get("total_queries", len(rows)) or 0):
         summary["status"] = "in_progress"
     elif any(
         (row.get("_deferred_judge") or row.get("judge_custom_id")) and _safe_float(row.get("llm_judge_score"), -1.0) < 0
         for row in rows
-    ) or any(row.get("error") for row in rows) or summary.get("judge_enabled") and (
+    ) or any(row.get("failure_scope") == "target" for row in rows) or summary.get("judge_enabled") and (
         _unjudged_count(rows) or _unjudged_count(rows, "hallucination") or _unjudged_groundedness_count(rows)
     ):
         summary["status"] = "failed"
@@ -594,14 +588,15 @@ def _update_summary_status(summary: dict[str, Any]) -> None:
 
 def _assert_benchmark_complete(summary: dict[str, Any], result_file: Path) -> None:
     rows = summary.get("details") or []
-    runtime_errors = sum(1 for row in rows if row.get("error"))
     judge_enabled = bool(summary.get("judge_enabled"))
     unjudged = _unjudged_count(rows) if judge_enabled else 0
     unjudged_hallucination = _unjudged_count(rows, "hallucination") if judge_enabled else 0
     unjudged_groundedness = _unjudged_groundedness_count(rows) if judge_enabled else 0
     failures = []
-    if runtime_errors:
-        failures.append(f"{runtime_errors} runtime error(s)")
+    if any(row.get("failure_scope") == "target" for row in rows):
+        failures.append("target integrity failure")
+    if len(rows) != int(summary.get("total_queries", len(rows))):
+        failures.append("query execution incomplete")
     if unjudged:
         failures.append(f"{unjudged} unjudged row(s)")
     if unjudged_hallucination:
@@ -750,7 +745,7 @@ def _resume_benchmark_rows(
 
     Resume is deliberately strict: the immutable query identity, runtime
     configuration, model selection and active index identity must match.
-    Runtime-error rows are not retained and are scheduled again.
+    Terminal runtime-error rows are retained; only unexecuted queries resume.
     """
     if judge_enabled:
         raise RuntimeError("Benchmark resume is not supported when the supplemental judge is enabled")
@@ -827,11 +822,10 @@ def _resume_benchmark_rows(
             raise RuntimeError(f"Resume trace ordering mismatch at row {position}")
         if trace_row.get("query_id") not in {None, "", query_id}:
             raise RuntimeError(f"Resume trace query_id mismatch for query_id {query_id!r}")
-        if raw_row.get("error"):
-            rerun_error_count += 1
-            continue
         retained.append({**raw_row, "idx": expected_idx, "interaction_trace": trace_row.get("interaction_trace", [])})
 
+    if any(row.get("failure_scope") == "target" for row in retained):
+        raise BenchmarkIntegrityError("Cannot resume a target with unresolved integrity failure; allocate a new run after repair")
     retained.sort(key=lambda row: int(row["idx"]))
 
     retained_ids = sorted(str(row["query_id"]) for row in retained)
@@ -1442,7 +1436,7 @@ async def run_benchmark(
                                   "resumed": resume_metadata is not None}
         s["amortized_query_cost"] = query_cost(
             query_wall, total_queries,
-            complete=len(results) == total_queries and not any(row.get("error") for row in results),
+            complete=len(results) == total_queries and not any(row.get("failure_scope") == "target" for row in results),
             resumed=resume_metadata is not None)
         s["benchmark_timing"] = phase_timing.snapshot()
         if reuse_reference is not None:
@@ -1453,7 +1447,7 @@ async def run_benchmark(
                 "benchmark_wall_seconds": s["benchmark_timing"]["total_wall_seconds"],
                 "index_plus_benchmark_wall_seconds": reuse_link["index_timing_seconds"]["total_elapsed_seconds"] + s["benchmark_timing"]["total_wall_seconds"],
                 "query_latency_sum_seconds": sum(float(row.get("latency", 0)) for row in results),
-                "scope": "successful_index_plus_checkpointed_benchmark_segments; failed_attempts_preserved_separately",
+                "scope": "successful_index_plus_checkpointed_query_segments_including_terminal_failures; other_run_attempts_separate",
             }
         s["details"] = results
         if len(results) == total_queries:
@@ -1468,10 +1462,14 @@ async def run_benchmark(
         _write_slim_main(s, result_file)
         return s
 
+    target_failure = False
+
     async def _process_query(idx: int, item: dict[str, Any]):
-        nonlocal summary, query_inflight, observed_query_peak, last_answer_finished
+        nonlocal summary, query_inflight, observed_query_peak, last_answer_finished, target_failure
         submitted_at = time.perf_counter()
         async with query_sem:
+            if target_failure:
+                return
             queue_wait_seconds = time.perf_counter() - submitted_at
             query_inflight += 1
             observed_query_peak = max(observed_query_peak, query_inflight)
@@ -1539,7 +1537,9 @@ async def run_benchmark(
 
                 logger.error(traceback.format_exc())
                 latency = time.time() - started
+                last_answer_finished = time.perf_counter()
                 error_text = f"{type(exc).__name__}: {exc}"
+                target_failure = target_failure or isinstance(exc, BenchmarkIntegrityError)
 
                 metrics = {
                     "llm_judge_score": -1.0,
@@ -1574,6 +1574,7 @@ async def run_benchmark(
                     "paragraph_support_recall": -1.0,
                     "paragraph_support_f1": -1.0,
                 }
+                metrics.update({key: 0.0 for key in QUALITY_METRICS})
                 expected_sources = {
                     "docs": item.get("evidence_docs", []),
                     "facts": item.get("evidence_facts", []),
@@ -1592,6 +1593,8 @@ async def run_benchmark(
                     "interaction_trace": [{"step": "error", "output": error_text}],
                     "latency": latency,
                     "error": error_text,
+                    "failure_scope": "target" if isinstance(exc, BenchmarkIntegrityError) else "query",
+                    "failure_policy": FAILURE_POLICY,
                     **stage_timing,
                     **metrics,
                 }

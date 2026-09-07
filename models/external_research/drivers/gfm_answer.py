@@ -11,20 +11,14 @@ def native_qa_client(transport, original_model, retries, audit_path):
     from gfmrag.llms.chatgpt import ChatGPT
     from openai import OpenAI
 
-    audit = ExtractionAudit(audit_path)
+    audit = ExtractionAudit(audit_path, profile="native-observation-v1")
     sdk = OpenAI(base_url=transport.generation_base_url, api_key=transport.api_key,
                  max_retries=0, timeout=transport.timeout_seconds)
 
     def create(**kwargs):
         # Keep the original method's temperature, message list and omitted cap.
         response = sdk.chat.completions.create(**kwargs, seed=transport.generation_seed)
-        choice = response.choices[0]
-        valid = (choice.finish_reason == 'stop' and isinstance(choice.message.content, str)
-                 and bool(choice.message.content.strip()) and not getattr(choice.message, 'refusal', None))
-        audit.write(messages=kwargs['messages'], response=response.model_dump(),
-                    status='accepted' if valid else 'exhausted')
-        if not valid:
-            raise RuntimeError('GFM native answer is incomplete or empty')
+        audit.write(messages=kwargs['messages'], response=response.model_dump(), status='observed')
         return response
 
     class TransportChatGPT(ChatGPT):

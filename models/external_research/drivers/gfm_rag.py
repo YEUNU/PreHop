@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.benchmark_failures import BenchmarkIntegrityError
+
 import hashlib
 import json
 import sys
@@ -76,9 +78,9 @@ class GFMRAGDriver:
         generation_model = transport.generation_model
         from models.external_research.extraction_contract import ExtractionAudit
 
-        from .gfm_extraction import guarded_chat_type
+        from models.external_research.native_observation import observed_chat_type as guarded_chat_type
 
-        self.extraction_audit = ExtractionAudit(output_dir / "artifacts" / "extraction_audit.jsonl")
+        self.extraction_audit = ExtractionAudit(output_dir / "artifacts" / "extraction_audit.jsonl", profile="native-observation-v1")
         compatible_chat = guarded_chat_type(ChatOpenAI)(
             model=generation_model,
             base_url=transport.generation_base_url,
@@ -144,7 +146,7 @@ class GFMRAGDriver:
         return {
             "extraction_audit_evidence": audit_evidence(self.extraction_audit),
             "source_count": len(self.rows),
-            "extraction_validation_profile": "strict-extraction-v1",
+            "extraction_validation_profile": "native-observation-v1",
             "coverage_complete": True,
             "native_top_k": self.top_k,
             "checkpoint": self.checkpoint,
@@ -167,7 +169,7 @@ class GFMRAGDriver:
             source_id = str(candidate.get("id", ""))
             row = self.rows.get(source_id)
             if row is None:
-                raise RuntimeError("GFM-RAG returned a foreign source identity")
+                raise BenchmarkIntegrityError("GFM-RAG returned a foreign source identity")
             documents.append(
                 {"source_id": source_id, "title": row["title"], "text": row["text"], "score": float(candidate["score"])}
             )
@@ -178,7 +180,7 @@ class GFMRAGDriver:
         self.qa_audit.assert_healthy()
         if isinstance(answer, Exception):
             raise answer
-        if not isinstance(answer, str) or not answer.strip():
+        if not isinstance(answer, str):
             raise RuntimeError('Native GFM QA returned no answer')
         return {'documents': documents, 'answer': answer}
 

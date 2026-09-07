@@ -138,7 +138,7 @@ def _write_resume_fixture(tmp_path, rows, *, status="in_progress", strategy="hop
     return result_file
 
 
-def test_benchmark_resume_retains_successes_and_reruns_errors(tmp_path):
+def test_benchmark_resume_retains_terminal_errors(tmp_path):
     benchmark_data = [
         {"_id": "q1", "query": "first"},
         {"_id": "q2", "query": "second"},
@@ -159,11 +159,11 @@ def test_benchmark_resume_retains_successes_and_reruns_errors(tmp_path):
         judge_enabled=False,
     )
 
-    assert [row["query_id"] for row in retained] == ["q1"]
+    assert [row["query_id"] for row in retained] == ["q1", "q2"]
     assert retained[0]["interaction_trace"] == [{"step": "trace-1"}]
     assert metadata["initial_rows"] == 2
-    assert metadata["retained_rows"] == 1
-    assert metadata["rerun_error_rows"] == 1
+    assert metadata["retained_rows"] == 2
+    assert metadata["rerun_error_rows"] == 0
 
 
 @pytest.mark.asyncio
@@ -789,7 +789,7 @@ def test_musique_corpus_failed_validation_preserves_existing_target(tmp_path, mo
     assert not list(tmp_path.glob(".corpus.tmp-*"))
 
 
-def test_paired_bootstrap_excludes_negative_sentinel_and_runtime_errors():
+def test_paired_bootstrap_retains_runtime_failure_as_zero():
     prehop = {
         "valid": {"paragraph_support_f1": 1.0, "expected_sources": {"paragraph_ids": ["p"]}},
         "sentinel": {"paragraph_support_f1": -1.0, "expected_sources": {"paragraph_ids": ["p"]}},
@@ -801,7 +801,7 @@ def test_paired_bootstrap_excludes_negative_sentinel_and_runtime_errors():
         "failed": {"paragraph_support_f1": 1.0, "expected_sources": {"paragraph_ids": ["p"]}},
     }
 
-    assert _paired(prehop, baseline, "paragraph_support_f1").tolist() == [0.5]
+    assert _paired(prehop, baseline, "paragraph_support_f1").tolist() == [0.5, -1.0]
 
 
 def test_paired_bootstrap_reports_all_document_diagnostics():
@@ -822,7 +822,7 @@ def test_paired_bootstrap_loads_fixed_development_ids(tmp_path):
     assert _load_excluded_query_ids(str(path)) == {"q1", "q2"}
 
 
-def test_aggregates_exclude_runtime_errors_and_record_eligible_count():
+def test_aggregates_include_runtime_errors_as_zero():
     summary = {
         "details": [
             {"category": "2hop", "answer_em": 1.0},
@@ -833,9 +833,9 @@ def test_aggregates_exclude_runtime_errors_and_record_eligible_count():
 
     _recompute_aggregates(summary)
 
-    assert summary["avg_answer_em"] == 1.0
-    assert summary["eligible_answer_em_count"] == 1
-    assert summary["category_summaries"]["2hop"]["eligible_answer_em_count"] == 1
+    assert summary["avg_answer_em"] == 0.5
+    assert summary["eligible_answer_em_count"] == 2
+    assert summary["category_summaries"]["2hop"]["eligible_answer_em_count"] == 2
 
 
 def test_musique_identity_is_content_stable_and_title_sensitive():

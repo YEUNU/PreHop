@@ -34,8 +34,9 @@ def test_facade_returns_identical_sdk_response_without_shared_mutation():
 
 def test_youtu_old_observation_cannot_admit_new_schema_profile():
     policy = canonical_semantic_index_policy('youtu_graphrag', 'musique')
-    assert policy['semantic_config_id'] == 'youtu-native-agent-v4'
-    assert policy['extraction_schema_sha256'] == youtu_profile_sha256()
+    assert policy['semantic_config_id'] == 'youtu-native-agent-observation-v5'
+    from core.native_structured_profile import native_youtu_profile_sha256
+    assert policy['extraction_schema_sha256'] == native_youtu_profile_sha256()
     assert policy['schema_sha256'] != policy['extraction_schema_sha256']
     with pytest.raises(RuntimeError, match='[Ee]ffective extraction'):
         validate_native_generation_profile('youtu_graphrag', {}, policy)

@@ -74,6 +74,8 @@ def _validate_primary_row(row: dict, expected: dict, dataset: str) -> list[str]:
             question_type=expected.get("question_type", ""),
         )
         scores.update(calculate_musique_support_metrics(sources, gold_sources["paragraph_ids"]))
+    if row.get("error"):
+        scores = {key.removeprefix("avg_"): 0.0 for key in DATASETS[dataset]["metrics"]}
     for summary_key in DATASETS[dataset]["metrics"]:
         key = summary_key.removeprefix("avg_")
         actual = row.get(key)
@@ -236,7 +238,7 @@ def _validate_artifact(
         expected_query_cost = query_cost(
             batch.get("wall_seconds"), expected_count,
             complete=payload.get("queries_count") == expected_count and not any(
-                row.get("error") for row in payload.get("details", [])),
+                row.get("failure_scope") == "target" for row in payload.get("details", [])),
             resumed=payload.get("resume") is not None)
         validate_cost(payload.get("amortized_query_cost"), expected_query_cost)
         if payload.get("resume") is None and not expected_query_cost["continuous_run_eligible"]:
@@ -463,8 +465,16 @@ def _validate_artifact(
                 row_errors = [f"cannot recompute primary metrics: {exc}"]
             errors.extend(f"{path}: detail {row.get('query_id')}: {error}" for error in row_errors)
     runtime_errors = sum(bool(row.get("error")) for row in details if isinstance(row, dict))
-    if runtime_errors:
-        errors.append(f"{path}: {runtime_errors} detail row(s) contain runtime errors")
+    from core.benchmark_failures import POLICY, metric_value
+    if runtime_errors and payload.get("failure_policy") != POLICY:
+        errors.append(f"{path}: terminal query failure policy is missing")
+    if payload.get("query_failure_count", 0) != runtime_errors:
+        errors.append(f"{path}: query failure count differs from detail rows")
+    expected_failure_rate = runtime_errors / len(details) if details else 0.0
+    if payload.get("query_failure_rate", 0.0) != expected_failure_rate:
+        errors.append(f"{path}: query failure rate differs from detail rows")
+    if any(row.get("failure_scope") == "target" for row in details):
+        errors.append(f"{path}: target integrity failure")
     try:
         current_ids_digest, current_records_digest, current_count = _current_query_digests(dataset)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -480,14 +490,7 @@ def _validate_artifact(
         if not field.startswith("eligible_") or not field.endswith("_count") or not isinstance(value, int):
             continue
         metric = field[len("eligible_") : -len("_count")]
-        actual = sum(
-            not row.get("error")
-            and isinstance(row.get(metric), (int, float))
-            and not isinstance(row.get(metric), bool)
-            and row[metric] >= 0
-            for row in details
-            if isinstance(row, dict)
-        )
+        actual = sum(metric_value(row, metric) is not None for row in details if isinstance(row, dict))
         if actual != value:
             errors.append(f"{path}: {field}={value}, recomputed={actual}")
 
@@ -497,15 +500,8 @@ def _validate_artifact(
         if not field.startswith("avg_") or not isinstance(value, (int, float)) or isinstance(value, bool):
             continue
         metric = field[len("avg_") :]
-        values = [
-            float(row[metric])
-            for row in details
-            if isinstance(row, dict)
-            and not row.get("error")
-            and isinstance(row.get(metric), (int, float))
-            and not isinstance(row.get(metric), bool)
-            and row[metric] >= 0
-        ]
+        values = [value for row in details if isinstance(row, dict)
+                  and (value := metric_value(row, metric)) is not None]
         recomputed = sum(values) / len(values) if values else 0.0
         if not math.isclose(float(value), recomputed, rel_tol=1e-12, abs_tol=1e-12):
             errors.append(f"{path}: {field}={value}, recomputed={recomputed}")
@@ -562,7 +558,7 @@ def _validate_artifact(
             errors.append(f"{path}: Youtu observational provenance metrics are missing")
         elif (
             official_stats.get("staged_input_coverage_complete") is not True
-            or official_stats.get("native_extraction_success_complete") is not True
+            or not isinstance(official_stats.get("native_extraction_success_complete"), bool)
             or official_stats.get("native_source_reachability_observational") is not True
         ):
             errors.append(f"{path}: Youtu observational provenance metrics are invalid")

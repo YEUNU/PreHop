@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.benchmark_failures import BenchmarkIntegrityError
+
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,7 +27,7 @@ class LinearNativeInference:
     def __init__(self, audit_path=None):
         from models.external_research.extraction_contract import ExtractionAudit
 
-        self.audit = ExtractionAudit(audit_path) if audit_path is not None else None
+        self.audit = ExtractionAudit(audit_path, profile="native-observation-v1") if audit_path is not None else None
         from openai import OpenAI
 
         from core.inference_transport import InferenceTransport
@@ -39,16 +41,8 @@ class LinearNativeInference:
             model=self.transport.generation_model, messages=messages, **request_settings("linear_native_qa"),
             seed=self.transport.generation_seed,
         )
-        valid = (len(response.choices) == 1 and response.choices[0].finish_reason == "stop"
-                 and isinstance(response.choices[0].message.content, str)
-                 and bool(response.choices[0].message.content.strip())
-                 and not getattr(response.choices[0].message, "refusal", None)
-                 and not getattr(response.choices[0].message, "tool_calls", None))
         if self.audit is not None:
-            self.audit.write(messages=messages, response=response.model_dump(),
-                             status="accepted" if valid else "exhausted")
-        if not valid:
-            raise ValueError("LinearRAG answer is incomplete or malformed")
+            self.audit.write(messages=messages, response=response.model_dump(), status='observed')
         return response.choices[0].message.content
 
     def close(self):
@@ -149,10 +143,10 @@ class LinearRAGDriver:
         for passage, score in zip(passages, scores):
             prefix, separator, _ = passage.partition(":")
             if not separator or not prefix.isdecimal():
-                raise RuntimeError("LinearRAG retrieval lost its official numeric passage identity")
+                raise BenchmarkIntegrityError("LinearRAG retrieval lost its official numeric passage identity")
             row = self.by_index.get(int(prefix))
             if row is None or passage != self.passages[int(prefix)]:
-                raise RuntimeError("LinearRAG returned a foreign or altered passage identity")
+                raise BenchmarkIntegrityError("LinearRAG returned a foreign or altered passage identity")
             source_id = row["source_id"]
             documents.append(
                 {"source_id": source_id, "title": row["title"], "text": row["text"], "score": float(score)}

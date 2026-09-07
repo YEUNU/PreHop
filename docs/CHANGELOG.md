@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-07 — Isolate failures without dropping queries
+
+Terminal query failures now remain in quality denominators and paired bootstrap
+as zero-score observations, with failure rates and measured latency retained.
+Resume preserves failed rows. Source integrity failures still block a target.
+Index supervisors emit execution outcome tables and continue independent targets;
+failed indexes have unavailable quality rather than fabricated scores.
+
+
+## 2026-09-07 — Preserve native fallback behavior
+
+External adapters now observe native outputs without extraction repair,
+additional format retries or stronger content-quality failure gates. GFM's
+native empty-entity fallback is retained. Hippo entity normalization, MS glean
+repair and Youtu forced schemas are no longer used by production adapters.
+Audit hashes and source identity checks remain enforced; native failures remain
+failures. All six external strategies require fresh indexes under the new policy.
+
+
 ## 2026-09-07
 
 - Aligned method documentation and diagrams with role-view body retrieval,

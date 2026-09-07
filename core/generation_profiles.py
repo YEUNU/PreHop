@@ -57,5 +57,5 @@ def generation_profiles(strategy: str) -> dict:
                                       'registered_overrides': dict(spec.paper_index_policy)}
     if strategy == 'youtu_graphrag':
         profiles['construction'] = {'temperature': 0.3, 'max_tokens': None, 'seed': None,
-                                    'response_format': 'youtu-json-schema-v1'}
+                                    'response_format': 'native-call-unchanged'}
     return profiles

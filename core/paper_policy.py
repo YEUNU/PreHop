@@ -216,7 +216,7 @@ def canonical_semantic_index_policy(strategy: str, dataset: str) -> dict[str, An
             }
         )
     if strategy == "youtu_graphrag":
-        from core.native_structured_profile import youtu_profile_sha256
+        from core.native_structured_profile import native_youtu_profile_sha256 as youtu_profile_sha256
         policy["extraction_schema_sha256"] = youtu_profile_sha256()
         schema = approved_youtu_schema(dataset)
         policy.update(

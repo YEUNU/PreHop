@@ -14,8 +14,8 @@ difference (prehop - baseline) per query, and bootstraps the mean diff to a
   excluded from retrieval comparisons. Gold-lessness is detected from the row's
   `expected_sources` (docs/facts) rather than a dataset-specific category
   name, so this works for the active datasets (every MuSiQue query carries gold
-  evidence, so the exclusion never fires there). Runtime errors and every
-  negative sentinel are excluded for all metric families.
+  evidence, so the exclusion never fires there). Terminal query failures count
+  as zero for primary quality metrics. Unjudged supplemental metrics remain excluded.
 
 The dataset name/tag is read from each result file's own `dataset`/
 `corpus_tag` fields — nothing dataset-specific needs to be passed in.
@@ -205,11 +205,10 @@ def _paired(prehop: dict[str, dict], base: dict[str, dict], metric: str) -> np.n
         ba = base.get(q)
         if ba is None:
             continue
-        if pr.get("error") or ba.get("error"):
-            continue
         if retrieval and not _has_gold(pr):
             continue  # gold-less (e.g. MultiHop-RAG null_query)
-        pv, bv = pr.get(metric), ba.get(metric)
+        from core.benchmark_failures import metric_value
+        pv, bv = metric_value(pr, metric), metric_value(ba, metric)
         if pv is None or bv is None:
             continue
         try:

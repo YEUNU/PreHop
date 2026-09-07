@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.benchmark_failures import BenchmarkIntegrityError
+
 import fcntl
 import hashlib
 import json
@@ -348,7 +350,7 @@ class OfficialQueryWorker:
         with self._lock:
             worker_queue_seconds = time.perf_counter() - queued_at
             if self._process.poll() is not None or self._process.stdin is None or self._process.stdout is None:
-                raise RuntimeError(f"{self.strategy} official query worker is not running")
+                raise BenchmarkIntegrityError(f"{self.strategy} official query worker is not running")
             self._process.stdin.write(json.dumps(payload) + "\n")
             self._process.stdin.flush()
             timeout = float(os.environ.get("RAG_OFFICIAL_QUERY_TIMEOUT", "1800"))
@@ -358,13 +360,16 @@ class OfficialQueryWorker:
                     line = self._stdout_queue.get(timeout=max(0.01, deadline - time.monotonic()))
                 except queue.Empty as exc:
                     self._process.terminate()
-                    raise TimeoutError(f"{self.strategy} official query exceeded {timeout:g} seconds") from exc
+                    raise BenchmarkIntegrityError(f"{self.strategy} official query exceeded {timeout:g} seconds and its worker was terminated") from exc
                 if line is None:
-                    raise RuntimeError(f"{self.strategy} official query worker exited without a response")
+                    raise BenchmarkIntegrityError(f"{self.strategy} official query worker exited without a response")
                 if not line.startswith(_RESULT_PREFIX):
                     continue
                 response = json.loads(line[len(_RESULT_PREFIX) :])
                 if not response.get("ok"):
+                    if response.get("failure_scope") == "target":
+                        from core.benchmark_failures import BenchmarkIntegrityError
+                        raise BenchmarkIntegrityError(response.get("error"))
                     raise RuntimeError(f"{self.strategy} official query failed: {response.get('error')}")
                 response["worker_queue_seconds"] = worker_queue_seconds
                 return response

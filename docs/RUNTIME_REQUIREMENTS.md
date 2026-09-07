@@ -396,54 +396,45 @@ The working manuscript and submission logistics also remain local. A custom
 trace directory must be outside tracked paths or explicitly ignored before
 staging files.
 
-### Controlled extraction and artifact validation
+### Native output handling and artifact validation
 
-The adapters validate the inputs consumed by pinned native parsers and the
-artifacts used for retrieval. Their versioned contracts are registered in
-`core/strategy_registry.py`; external source files are not edited.
+External adapters follow the pinned implementation's parsing, retries, and
+fallback behavior. They do not repair upstream algorithm or parser issues,
+complete truncated output, unwrap extracted entity objects, insert MS glean
+delimiters, or enforce additional extraction schemas. Native exceptions propagate
+to the native caller: if that caller catches an exception and returns an empty
+result, the adapter accepts that result. If the native operation fails, the run
+remains failed. Transport routing and source-identity checks remain adapter duties.
 
-| Adapter | Boundary and failure handling |
+| Adapter | Native behavior preserved |
 |---|---|
-| HippoRAG2 | Requests the native NER/triple item schemas; validates every response before native parsing. Explicit entity/text names and unambiguous triple objects can be unwrapped without adding facts. |
-| GFM-RAG | Applies the same JSON item validation before native parsing/evaluation. A swallowed native extraction failure still prevents index completion. |
-| MS GraphRAG | Checks completion, tuple fields and report schemas through a registered completion provider. Separates completion markers when concatenating gleanings. Profile `strict-ms-native-glean-v4` removes an unstructured leading glean preamble only when the remaining tuples fully validate; tuple fields are preserved verbatim and raw/normalized responses are both recorded. Native relationship filtering remains unchanged and unresolved endpoint observations are recorded. |
-| Youtu | Keeps its native extraction schema; validates nonempty item values, retries incomplete/malformed responses within one budget and records each attempt. Native source reachability remains observational. |
-| LinearRAG | Index construction uses native local NER and pinned MPNet, without LLM extraction. Checks embedding counts/dimensions/finite values, persisted stores and passage-node coverage; native QA responses must finish with nonempty text. |
+| HippoRAG2 | Returns the original OpenIE response, metadata and cache flag unchanged, without adapter format retries or entity normalization. |
+| GFM-RAG | Keeps native JSON mode and the 300-token NER limit. Native empty-list fallback after an extraction error does not independently fail the index. |
+| MS GraphRAG | Records completion responses and stream chunks unchanged, preserves native cache settings, and leaves tuple parsing, glean concatenation and report handling upstream. |
+| Youtu | Uses native construction response formatting and error handling; empty or swallowed extraction outcomes are recorded without an extra adapter failure gate. Native agent mode remains selected. |
+| LightRAG | Uses native extraction and document status; a document that upstream marks failed is not reported as processed. |
+| LinearRAG | Uses native local NER and MPNet; returns native QA text including empty or truncated text without an additional content-quality gate. |
 
-Validation changes are controlled-adapter behavior, not claims of identical
-upstream-default execution. Prompts, graph algorithms, retrieval cutoffs and
-pinned method backbones retain their registered settings. HippoRAG2/GFM-RAG
-request field-level JSON schemas rather than merely JSON objects; their original
-token limits remain in force. Truncated JSON is not guessed or completed by the
-adapter. An invalid response exhausts a bounded retry budget and fails the run.
-HippoRAG2 format retries bypass invalid native cache entries. MS guarded calls
-disable native response caching so retries cannot replay the same invalid entry.
+`native-observation-v1` records `observed` responses and `native_exception`
+events. These are observations, not assertions that extraction succeeded.
+Completion requires the native indexing operation to return and the required
+artifacts and source identities to be available. A native failure is never
+converted into a fabricated successful result. Source coverage and extraction
+quality are separate: empty native extraction is recorded and evaluated as such.
+Prehop and Naive are unchanged by this external-adapter policy.
 
-`extraction_audit.jsonl` records prompts, original responses, available usage,
-normalization and retry/exhaustion decisions. LinearRAG records native QA text
-in `answer_audit.jsonl`. Format validation is separate from semantic correctness:
-a valid but incorrect model answer must be scored as produced. Missing provider
-telemetry remains unavailable rather than becoming a fabricated zero cost.
+Audit files retain prompts, available raw responses, metadata, and exceptions.
+If an SDK raises before returning raw response text, that text is unavailable;
+the exception is retained and no response or token cost is invented. Completed
+indexes bind the audit byte prefix and SHA-256, and query records may append to
+that file. Missing, altered or stale-profile evidence still fails verification.
+Native fallback events alone do not invalidate that evidence.
 
-MS GraphRAG query streaming preserves native chunks and records the complete
-stream, including its finish reason. An incomplete stream fails the query;
-partially delivered streams are not replayed as fresh successful answers.
-
-MS completion requests omit `max_tokens`, `max_completion_tokens` and
-`temperature`, matching the pinned `ModelConfig.call_args={}` default. This
-leaves effective limits with the server; it does not mean unlimited generation.
-The temporary 4,096-token experiment was superseded before full indexing.
-A `length` finish fails immediately without repeating the identical request and
-budget. Other format errors retain bounded retries; partial tuples are never
-admitted as a complete extraction.
-
-Completed guarded indexes bind the audit's byte prefix and SHA-256. Queries may
-append audit records without changing that index-time prefix. Publication
-verification rejects missing, altered, exhausted or stale-profile evidence;
-post-query inventories bind the final artifact bytes. Full source/query coverage
-and metric recomputation remain mandatory under the
-[result admission contract](RESULTS.md#admission-checks). Smoke tests and single
-fixture queries do not admit a full benchmark result.
+MS completion requests retain the pinned empty `call_args` default; effective
+output limits remain with the server. Adapters do not override native behavior
+for a `length` finish. Old guarded-extraction snapshots are incompatible with
+this policy and must be rebuilt before current comparisons. Smoke checks do not
+constitute full benchmark admission; see the [result contract](RESULTS.md#admission-checks).
 
 ### Native parameter comparison
 

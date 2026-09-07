@@ -27,6 +27,11 @@ for understanding, running, or validating the public repository.
 
 ## Change policy
 
+External adapters must not fix upstream algorithm or parser issues. Preserve native
+responses, retries and fallback outcomes; record errors without converting native
+empty results into adapter failures. See `docs/RUNTIME_REQUIREMENTS.md` for the
+output-handling contract. External source files remain unchanged.
+
 - Keep one detailed contract per topic. Other documents should link to it and
   include only the context their readers need.
 - Update the implementation and its owning document together. Update the

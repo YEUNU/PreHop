@@ -203,11 +203,17 @@ def test_youtu_exact_pinned_checkout_declares_the_structured_top_level_api():
         ),
     ],
 )
-def test_youtu_native_query_validation_rejects_sentinel_malformed_and_swallowed_errors(
+def test_youtu_native_query_preserves_native_fallback_and_rejects_unmappable_result(
     native_result, message
 ):
-    with pytest.raises((RuntimeError, TypeError), match=message):
-        validate_native_query_result(native_result, {"chunk-a": "source-a", "chunk-b": "source-b"})
+    sources = {"chunk-a": "source-a", "chunk-b": "source-b"}
+    if native_result is None:
+        with pytest.raises(TypeError, match=message):
+            validate_native_query_result(native_result, sources)
+    else:
+        answer, chunks = validate_native_query_result(native_result, sources)
+        assert answer == native_result["initial_answer"]
+        assert chunks == list(zip(native_result["chunk_ids"], native_result["chunk_contents"]))
 
 
 def test_lightrag_uses_pinned_async_contract_and_exact_file_path(monkeypatch, tmp_path):

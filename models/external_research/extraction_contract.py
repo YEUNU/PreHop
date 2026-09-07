@@ -101,14 +101,15 @@ def validate_extraction(raw: str, field: str, finish_reason: str) -> str:
 
 
 class ExtractionAudit:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, profile=PROFILE):
+        self.profile = profile
         self.path = path
         self.lock = threading.Lock()
         self.exhausted = 0
 
     def write(self, *, messages: Any, **record):
         prompt = json.dumps(messages, ensure_ascii=False, default=str)
-        row = {'profile': PROFILE, 'time': time.time(), 'prompt': messages,
+        row = {'profile': self.profile, 'time': time.time(), 'prompt': messages,
                'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(), **record}
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,16 +131,16 @@ def audit_evidence(audit: ExtractionAudit) -> dict:
     raw = audit.path.read_bytes()
     rows = [json.loads(line) for line in raw.splitlines()]
     counts = dict(Counter(row['status'] for row in rows))
-    if counts.get('exhausted', 0) or not counts.get('accepted', 0):
+    if not _valid_counts(counts, audit.profile):
         raise RuntimeError('Extraction audit has no complete successful evidence')
     return {'version': 1, 'path': str(audit.path.resolve()), 'prefix_bytes': len(raw),
-            'sha256': hashlib.sha256(raw).hexdigest(), 'counts': counts, 'profile': PROFILE}
+            'sha256': hashlib.sha256(raw).hexdigest(), 'counts': counts, 'profile': audit.profile}
 
 
 def validate_audit_evidence(evidence: dict) -> None:
     from collections import Counter
 
-    if not isinstance(evidence, dict) or evidence.get('version') != 1 or evidence.get('profile') != PROFILE:
+    if not isinstance(evidence, dict) or evidence.get('version') != 1 or evidence.get('profile') not in {PROFILE, 'native-observation-v1'}:
         raise ValueError('Missing or incompatible extraction audit evidence')
     size = evidence.get('prefix_bytes')
     if type(size) is not int or size <= 0:
@@ -150,5 +151,13 @@ def validate_audit_evidence(evidence: dict) -> None:
         raise ValueError('Extraction audit prefix is missing or changed')
     rows = [json.loads(line) for line in raw.splitlines()]
     counts = dict(Counter(row['status'] for row in rows))
-    if counts != evidence.get('counts') or counts.get('exhausted', 0) or not counts.get('accepted', 0):
+    if counts != evidence.get('counts') or not _valid_counts(counts, evidence['profile']):
         raise ValueError('Extraction audit does not attest successful completion')
+
+
+def _valid_counts(counts, profile):
+    if profile == 'native-observation-v1':
+        # Attests observation integrity, not extraction quality. Native callers
+        # must return normally before the indexer can publish completion evidence.
+        return bool(counts) and set(counts) <= {'observed', 'native_exception'}
+    return not counts.get('exhausted', 0) and bool(counts.get('accepted', 0))

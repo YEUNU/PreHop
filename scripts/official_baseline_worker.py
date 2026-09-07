@@ -32,6 +32,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path = [entry for entry in sys.path if Path(entry or ".").resolve() != _SCRIPT_DIR]
 
 from core.strategy_registry import PAPER_TRANSPORT
+from core.benchmark_failures import BenchmarkIntegrityError
 
 
 def _proprag_concurrency() -> int:
@@ -587,11 +588,11 @@ def main() -> int:
                     raise ValueError(f"Unknown operation: {operation}")
             except Exception as exc:  # noqa: BLE001 - query failures must not kill the persistent worker
                 traceback.print_exc(file=sys.stderr)
-                emit({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+                emit({"ok": False, "error": f"{type(exc).__name__}: {exc}", "failure_scope": "target" if isinstance(exc, BenchmarkIntegrityError) else "query"})
         return 0
     except Exception as exc:  # noqa: BLE001 - serialize startup/index failures across the process boundary
         traceback.print_exc(file=sys.stderr)
-        emit({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+        emit({"ok": False, "error": f"{type(exc).__name__}: {exc}", "failure_scope": "target" if isinstance(exc, BenchmarkIntegrityError) else "query"})
         return 1
 
 
