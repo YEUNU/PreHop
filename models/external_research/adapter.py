@@ -57,7 +57,7 @@ class ExternalResearchAdapter:
         )
         answer = native_answer
         if answer is None:
-            if self.strategy in {"lightrag", "hipporag2", "linear_rag", "youtu_graphrag"}:
+            if self.strategy in {"lightrag", "hipporag2", "linear_rag", "youtu_graphrag", "gfm_rag"}:
                 raise ValueError(f"{self.strategy} native query omitted its required answer")
             if self.llm is None:
                 self.llm = get_llm_client(self.model_id)

@@ -22,7 +22,10 @@ def resolve_pinned_model_path(official_root: Path) -> str:
 class LinearNativeInference:
     """Transport-only implementation of the native config.llm_model interface."""
 
-    def __init__(self):
+    def __init__(self, audit_path=None):
+        from models.external_research.extraction_contract import ExtractionAudit
+
+        self.audit = ExtractionAudit(audit_path) if audit_path is not None else None
         from openai import OpenAI
 
         from core.inference_transport import InferenceTransport
@@ -36,6 +39,16 @@ class LinearNativeInference:
             model=self.transport.generation_model, messages=messages, **request_settings("linear_native_qa"),
             seed=self.transport.generation_seed,
         )
+        valid = (len(response.choices) == 1 and response.choices[0].finish_reason == "stop"
+                 and isinstance(response.choices[0].message.content, str)
+                 and bool(response.choices[0].message.content.strip())
+                 and not getattr(response.choices[0].message, "refusal", None)
+                 and not getattr(response.choices[0].message, "tool_calls", None))
+        if self.audit is not None:
+            self.audit.write(messages=messages, response=response.model_dump(),
+                             status="accepted" if valid else "exhausted")
+        if not valid:
+            raise ValueError("LinearRAG answer is incomplete or malformed")
         return response.choices[0].message.content
 
     def close(self):
@@ -72,12 +85,26 @@ class LinearRAGDriver:
         # never inject provenance markers into text seen by NER/embeddings.
         self.passages = [f"{i}:{r['title']}\n{r['text']}" for i, r in enumerate(self.rows)]
         self.by_index = {i: r for i, r in enumerate(self.rows)}
+        class ValidatedSentenceTransformer(SentenceTransformer):
+            def encode(inner, sentences, *args, **kwargs):
+                import numpy as np
+
+                vectors = super().encode(sentences, *args, **kwargs)
+                array = np.asarray(vectors)
+                expected = (768,) if isinstance(sentences, str) else (len(sentences), 768)
+                if len(sentences) == 0 and not isinstance(sentences, str):
+                    if array.size:
+                        raise ValueError("LinearRAG empty embedding input returned vectors")
+                elif array.shape != expected or not np.isfinite(array).all():
+                    raise ValueError("LinearRAG embedding count, dimension or finite-value check failed")
+                return vectors
+
         config = LinearRAGConfig(
             dataset_name="corpus",
-            embedding_model=SentenceTransformer(
+            embedding_model=ValidatedSentenceTransformer(
                 pinned_model_path,
             ),
-            llm_model=LinearNativeInference(),
+            llm_model=LinearNativeInference(output_dir / "artifacts" / "answer_audit.jsonl"),
             spacy_model=str(canonical_semantic_env("RAG_LINEAR_RAG_SPACY_MODEL", registry_policy["spacy_model"])),
             working_dir=str(output_dir / "artifacts"),
             batch_size=positive_env("RAG_EMBEDDING_BATCH_SIZE", 16),
@@ -92,9 +119,21 @@ class LinearRAGDriver:
         indexed_passages = self.engine.passage_embedding_store.get_hash_id_to_text()
         if len(indexed_passages) != len(self.passages) or set(indexed_passages.values()) != set(self.passages):
             raise RuntimeError("LinearRAG stored passage index does not cover the exact staged corpus")
+        import numpy as np
+
+        for store in (self.engine.passage_embedding_store, self.engine.entity_embedding_store,
+                      self.engine.sentence_embedding_store):
+            vectors = np.asarray(store.embeddings)
+            count = len(store.get_hash_id_to_text())
+            if count and (vectors.shape != (count, 768) or not np.isfinite(vectors).all()):
+                raise RuntimeError("LinearRAG persisted embedding store is malformed")
+        graph_names = set(self.engine.graph.vs["name"]) if self.engine.graph.vcount() else set()
+        if not set(indexed_passages) <= graph_names:
+            raise RuntimeError("LinearRAG graph omits indexed passage nodes")
         return {
             "source_count": len(self.rows),
             "coverage_complete": True,
+            "index_validation_profile": "strict-linear-stores-v1",
             "backbone_mode": "official_faithful",
             "native_top_k": self.engine.config.retrieval_top_k,
         }

@@ -39,6 +39,9 @@ class MSGraphRAGAdapter:
 
         # GraphRagConfig pointing to external inference + LanceDB at output_dir
         self._config = build_config(corpus_tag, input_dir_for(corpus_tag))
+        from models.ms_graphrag import official_indexer
+
+        self._extraction_audit = official_indexer._EXTRACTION_AUDIT
 
         # Lazy-loaded parquet DataFrames
         self._entities: pd.DataFrame | None = None
@@ -104,7 +107,12 @@ class MSGraphRAGAdapter:
         ):
             raise RuntimeError("MS GraphRAG active source-title metadata is invalid")
         self._source_id_to_display_title = source_titles
-        return metadata
+        # The shared benchmark snapshot preserves adapter observations through
+        # official_stats; top-level sidecar extensions are otherwise omitted.
+        return {**metadata, "official_stats": {
+            key: metadata[key] for key in ("extraction_validation_profile", "extraction_audit_evidence")
+            if key in metadata
+        }}
 
     # ------------------------------------------------------------------ parquet I/O
 
@@ -287,6 +295,7 @@ class MSGraphRAGAdapter:
             query=query,
         )
 
+        self._extraction_audit.assert_healthy()
         answer = str(response or "").strip()
         if not answer:
             raise ValueError("MS GraphRAG local search returned an empty answer")
@@ -311,6 +320,7 @@ class MSGraphRAGAdapter:
             query=query,
         )
 
+        self._extraction_audit.assert_healthy()
         answer = str(response or "").strip()
         if not answer:
             raise ValueError("MS GraphRAG global search returned an empty answer")

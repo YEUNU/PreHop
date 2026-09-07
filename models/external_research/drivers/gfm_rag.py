@@ -74,7 +74,12 @@ class GFMRAGDriver:
             transport.generation_concurrency,
         )
         generation_model = transport.generation_model
-        compatible_chat = ChatOpenAI(
+        from models.external_research.extraction_contract import ExtractionAudit
+
+        from .gfm_extraction import guarded_chat_type
+
+        self.extraction_audit = ExtractionAudit(output_dir / "artifacts" / "extraction_audit.jsonl")
+        compatible_chat = guarded_chat_type(ChatOpenAI)(
             model=generation_model,
             base_url=transport.generation_base_url,
             api_key=transport.api_key,
@@ -87,6 +92,11 @@ class GFMRAGDriver:
         graph_constructor = instantiate(retriever_cfg.graph_constructor)
         # Retain official NER/OpenIE prompts and parsers while replacing only
         # their transport with the configured OpenAI-compatible Gemma route.
+        compatible_chat.configure_validation(
+            self.extraction_audit, transport.retry_attempts,
+            {ner_model.max_tokens, graph_constructor.open_ie_model.max_ner_tokens},
+            graph_constructor.open_ie_model.max_triples_tokens,
+        )
         ner_model.client = compatible_chat
         graph_constructor.open_ie_model.client = compatible_chat
         self.retriever = GFMRetriever.from_index(
@@ -97,8 +107,22 @@ class GFMRAGDriver:
             el_model=instantiate(retriever_cfg.el_model),
             graph_constructor=graph_constructor,
         )
+        self.extraction_audit.assert_healthy()
         self.rows = {r["source_id"]: r for r in rows}
         self.top_k = int(canonical_semantic_env("RAG_GFM_RAG_TOP_K", registry_policy["retrieval_top_k"]))
+        # The primary single-pass workflow is qa.py/qa_inference, not IRCOT.
+        with initialize_config_dir(config_dir=str(config_path.parent.resolve()), version_base=None):
+            qa_cfg = compose(config_name="qa_inference")
+        from gfmrag.prompt_builder import QAPromptBuilder
+
+        from .gfm_answer import native_qa_client
+
+        if self.top_k != qa_cfg.test.top_k:
+            raise RuntimeError("GFM single-pass top_k differs from its native QA configuration")
+        self.qa_prompt = QAPromptBuilder(qa_cfg.qa_prompt)
+        self.qa_llm, self.qa_audit, self.qa_sdk = native_qa_client(
+            transport, qa_cfg.llm.model_name_or_path, qa_cfg.llm.retry,
+            output_dir / 'artifacts' / 'answer_audit.jsonl')
         self.checkpoint = checkpoint
         self.checkpoint_sha256 = actual_checkpoint_sha
         self.config_sha256 = actual_config_sha
@@ -115,8 +139,12 @@ class GFMRAGDriver:
         }
         if document_nodes != set(self.rows):
             raise RuntimeError("GFM-RAG stored graph document nodes do not cover the exact staged source set")
+        from models.external_research.extraction_contract import audit_evidence
+
         return {
+            "extraction_audit_evidence": audit_evidence(self.extraction_audit),
             "source_count": len(self.rows),
+            "extraction_validation_profile": "strict-extraction-v1",
             "coverage_complete": True,
             "native_top_k": self.top_k,
             "checkpoint": self.checkpoint,
@@ -128,8 +156,9 @@ class GFMRAGDriver:
             "entity_linker_revision": self.entity_linker_revision,
         }
 
-    def query(self, question: str) -> list[dict[str, Any]]:
+    def query(self, question: str) -> dict[str, Any]:
         result = self.retriever.retrieve(question, top_k=self.top_k)
+        self.extraction_audit.assert_healthy()
         candidates = result.get("document") if isinstance(result, dict) else None
         if not isinstance(candidates, list):
             raise TypeError("GFM-RAG retrieval returned malformed documents")
@@ -142,7 +171,16 @@ class GFMRAGDriver:
             documents.append(
                 {"source_id": source_id, "title": row["title"], "text": row["text"], "score": float(candidate["score"])}
             )
-        return documents
+        # Match qa.py's native name plus flattened attributes, not the
+        # repository's generic RAG answer prompt.
+        prompt_docs = [{'name': candidate['id'], **candidate['attributes']} for candidate in candidates]
+        answer = self.qa_llm.generate_sentence(self.qa_prompt.build_input_prompt(question, {'document': prompt_docs}))
+        self.qa_audit.assert_healthy()
+        if isinstance(answer, Exception):
+            raise answer
+        if not isinstance(answer, str) or not answer.strip():
+            raise RuntimeError('Native GFM QA returned no answer')
+        return {'documents': documents, 'answer': answer}
 
     def close(self) -> None:
-        return None
+        self.qa_sdk.close()

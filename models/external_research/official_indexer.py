@@ -19,6 +19,10 @@ from utils.io import _write_json
 
 
 def validate_native_generation_profile(strategy: str, stats: dict, policy: dict) -> None:
+    if policy.get("extraction_validation_profile") and stats.get("extraction_validation_profile") != policy["extraction_validation_profile"]:
+        raise RuntimeError("Effective extraction validation profile differs from semantic policy")
+    if policy.get("index_validation_profile") and stats.get("index_validation_profile") != policy["index_validation_profile"]:
+        raise RuntimeError("Effective index validation profile differs from semantic policy")
     if strategy == "youtu_graphrag":
         for field in ("extraction_generation_profile", "extraction_schema_sha256"):
             if not policy.get(field) or stats.get(field) != policy[field]:
@@ -28,6 +32,7 @@ def validate_native_generation_profile(strategy: str, stats: dict, policy: dict)
         return
     expected = {
         "openie_response_format": {"type": policy.get("openie_response_format")},
+        "ner_normalization_profile": policy.get("ner_normalization_profile"),
         "openie_ner_max_tokens": policy.get("openie_ner_max_tokens"),
         "openie_triple_max_tokens": policy.get("openie_triple_max_tokens"),
     }
@@ -63,6 +68,10 @@ async def run_official_index(
     operational_config = dict(index_policy or {}).get("operational_config", {})
     policy = semantic_index_policy(index_policy)
     validate_native_generation_profile(strategy, stats, policy)
+    if policy.get("extraction_validation_profile"):
+        from .extraction_contract import validate_audit_evidence
+
+        validate_audit_evidence(stats.get("extraction_audit_evidence"))
     semantic_sha256 = semantic_config_sha256(index_policy)
     _write_json(
         snapshot_metadata_path(strategy, corpus_tag),

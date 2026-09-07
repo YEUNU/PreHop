@@ -54,7 +54,10 @@ def classify_native_extraction(parsed: Any) -> str:
             or any(not isinstance(value, str) or not value.strip() for value in triple)
             for triple in triples
         )
-        or any(not isinstance(values, list) for values in new_schema_types.values())
+        or any(not isinstance(key, str) or not key.strip() or not isinstance(value, str) or not value.strip()
+               for key, value in entity_types.items())
+        or any(not isinstance(values, list) or any(not isinstance(value, str) or not value.strip() for value in values)
+               for values in new_schema_types.values())
     ):
         return "malformed"
     if not any(attributes.values()) and not triples:
@@ -299,11 +302,6 @@ class YoutuGraphRAGDriver:
             "noagent",
         }:
             raise ValueError("Youtu construction/query modes must be agent or noagent")
-        if self.config.triggers.mode != "noagent":
-            raise RuntimeError(
-                "Pinned Youtu exposes structured per-query results only through its public "
-                "initial_question_decomposition noagent API"
-            )
         self.retriever = None
         self.graphq = None
         if self.graph_path.exists():
@@ -454,14 +452,11 @@ class YoutuGraphRAGDriver:
             retry_attempts=self.transport.retry_attempts,
             timeout_seconds=self.transport.timeout_seconds,
         )
-        from core.native_structured_profile import YoutuConstructionClient
+        from .youtu_format_retry import RetryingYoutuConstructionClient
 
-        if execution_profile()['version'] >= 2:
-            from .youtu_format_retry import RetryingYoutuConstructionClient
-            builder.llm_client.client = RetryingYoutuConstructionClient(
-                builder.llm_client.client, self.transport.retry_attempts)
-        else:
-            builder.llm_client.client = YoutuConstructionClient(builder.llm_client.client)
+        builder.llm_client.client = RetryingYoutuConstructionClient(
+            builder.llm_client.client, self.transport.retry_attempts,
+            self.graph_path.parent / "extraction_audit.jsonl")
         builder.build_knowledge_graph(str(self.corpus_path))
         chunk_sources = builder.chunk_sources
         staged_complete = (
@@ -568,15 +563,17 @@ class YoutuGraphRAGDriver:
             raise RuntimeError("Youtu source-level graph evidence sidecar failed round-trip validation")
         self._load_retriever()
         from core.native_structured_profile import YOUTU_STRUCTURED_PROFILE, youtu_profile_sha256
+        from models.external_research.extraction_contract import audit_evidence
 
         return {
+            "extraction_audit_evidence": audit_evidence(builder.llm_client.client._audit),
+            "extraction_validation_profile": "strict-youtu-extraction-v1",
             "extraction_generation_profile": YOUTU_STRUCTURED_PROFILE,
             "construction_workers_requested": self.config.construction.max_workers,
             "construction_workers_effective": (self.config.construction.max_workers if execution_profile()['version'] >= 2
                 else min(self.config.construction.max_workers, (os.cpu_count() or 1) + 4)),
             "schema_update_policy": ("locked-native-v1" if execution_profile()['version'] >= 2 else "native-serial"),
-            "construction_retry_stats": (builder.llm_client.client.retry_stats()
-                if execution_profile()['version'] >= 2 else None),
+            "construction_retry_stats": builder.llm_client.client.retry_stats(),
             "extraction_schema_sha256": youtu_profile_sha256(),
             "source_count": len(self.rows),
             "coverage_complete": True,
@@ -606,18 +603,17 @@ class YoutuGraphRAGDriver:
         }
 
     def query(self, question: str) -> dict[str, Any]:
-        # The pinned checkout has one public per-query function that returns
-        # both its answer and retrieval evidence. Its agent batch entrypoint
-        # returns no result and unconditionally runs an evaluator, so this
-        # controlled adapter uses the native noagent API instead of recreating
-        # the agent loop in project code.
-        if getattr(getattr(self.config, "triggers", None), "mode", None) != "noagent":
-            raise RuntimeError("Youtu controlled adapter query mode changed after initialization")
-        query_api = getattr(self.official_main, "initial_question_decomposition", None)
-        if not callable(query_api):
-            raise TypeError("Pinned Youtu checkout lacks its public per-query API")
         self.official_main.config = self.config
-        native_result = query_api(self.graphq, self.retriever, question, str(self.schema_path))
+        if self.config.triggers.mode == "agent":
+            from .youtu_agent import run_native_agent
+
+            native_result = run_native_agent(self.official_main, self.graphq, self.retriever, question,
+                                             str(self.schema_path), self.workdir / 'agent_query_audit.jsonl')
+        elif self.config.triggers.mode == "noagent":
+            native_result = self.official_main.initial_question_decomposition(
+                self.graphq, self.retriever, question, str(self.schema_path))
+        else:
+            raise RuntimeError("Youtu query mode changed after initialization")
         answer, ordered_evidence = validate_native_query_result(native_result, self.chunk_sources)
         documents = []
         seen_sources: set[str] = set()

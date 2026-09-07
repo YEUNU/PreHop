@@ -160,6 +160,10 @@ def test_ms_config_separates_query_embedding_from_index_embeddings(tmp_path, mon
     config = ms_official_indexer.build_config("musique", tmp_path / "input")
 
     assert config.local_search.embedding_model_id == "query_embedding_model"
+    assert config.extract_graph.completion_model_id == "extraction_completion_model"
+    assert "max_tokens" not in config.completion_models["extraction_completion_model"].call_args
+    assert "max_tokens" not in config.completion_models["default_completion_model"].call_args
+    assert "max_tokens" not in config.completion_models["report_completion_model"].call_args
     assert config.embedding_models["default_embedding_model"].type == "prehop_bounded_litellm"
     assert config.embedding_models["query_embedding_model"].type == "prehop_query_instruction"
     assert config.embed_text.batch_size == 16
@@ -357,6 +361,7 @@ async def test_ms_local_search_requests_metric_compatible_short_answer(monkeypat
     adapter._text_units = object()
     adapter._relationships = object()
     adapter._ensure_loaded = Mock()
+    adapter._extraction_audit = Mock(spec=['assert_healthy'])
     adapter._extract_sources = Mock(return_value=[])
 
     answer, sources, trace = await adapter.local_search("Where was the person born?")
@@ -382,8 +387,41 @@ async def test_ms_local_search_marks_unlabelled_provider_response(monkeypatch):
     adapter._text_units = object()
     adapter._relationships = object()
     adapter._ensure_loaded = Mock()
+    adapter._extraction_audit = Mock(spec=['assert_healthy'])
     adapter._extract_sources = Mock(return_value=[])
 
     answer, _sources, _trace = await adapter.local_search("Where was the person born?")
 
     assert answer == "@@ANSWER: Paris"
+
+
+def test_ms_extraction_evidence_survives_shared_benchmark_snapshot(tmp_path, monkeypatch):
+    import asyncio
+    import hashlib
+    import json
+
+    import pandas as pd
+
+    from cli import benchmark
+    from models.ms_graphrag import ms_adapter
+
+    titles = {'doc': 'Document'}
+    evidence = {'version': 1, 'sha256': 'a' * 64}
+    metadata = {
+        'status': 'complete', 'strategy': 'ms_graphrag', 'corpus_tag': 'multihoprag',
+        'snapshot_version': 2, 'source_count': 1,
+        'source_set_sha256': hashlib.sha256(b'doc').hexdigest(),
+        'source_titles': titles, 'source_titles_sha256': ms_adapter._source_titles_sha256(titles),
+        'extraction_validation_profile': 'strict-ms-extraction-v1',
+        'extraction_audit_evidence': evidence,
+    }
+    path = tmp_path / 'metadata.json'
+    path.write_text(json.dumps(metadata))
+    monkeypatch.setattr(ms_adapter, 'snapshot_metadata_path', lambda _: path)
+    monkeypatch.setattr(benchmark, '_manifest_source_ids', lambda _: ['doc'])
+    engine = ms_adapter.MSGraphRAGAdapter.__new__(ms_adapter.MSGraphRAGAdapter)
+    engine.corpus_tag = 'multihoprag'
+    engine._read_parquet = lambda _: pd.DataFrame({'title': ['doc.txt']})
+    result = asyncio.run(benchmark._verify_active_index_snapshot(engine, 'ms_graphrag', 'multihoprag', None, True))
+    assert result['official_stats']['extraction_audit_evidence'] == evidence
+    assert result['official_stats']['extraction_validation_profile'] == 'strict-ms-extraction-v1'

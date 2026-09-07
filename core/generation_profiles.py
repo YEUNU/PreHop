@@ -13,14 +13,15 @@ def structured_retry_profile() -> dict:
 
 
 def request_settings(consumer: str) -> dict:
-    import os
-
     from core.config import RAGConfig
     from core.strategy_registry import get_strategy
-    if consumer in {'ms_completion', 'ms_report'}:
+    if consumer in {'ms_completion', 'ms_extract', 'ms_report'}:
         ms = dict(get_strategy("ms_graphrag").paper_index_policy)
-        cap = int(ms['extract_max_tokens']) if consumer == 'ms_completion' else int(os.environ.get('RAG_MS_REPORT_MAX_TOKENS', str(ms['report_max_tokens'])))
-        return {'temperature': 0.0, 'max_tokens': cap}
+        key = {'ms_report': 'report_max_tokens', 'ms_extract': 'extract_max_tokens', 'ms_completion': 'query_max_tokens'}[consumer]
+        cap = ms[key]
+        # Pinned GraphRAG ModelConfig.call_args defaults to {}: omit the limit
+        # instead of inventing a client cap (None is provenance, not a wire value).
+        return {'max_tokens': cap} if cap is not None else {}
     settings = {
         'question_index': {'temperature': 0.0, 'max_tokens': RAGConfig.MAX_OUTPUT_TOKENS},
         'rewrite': {'temperature': 0.0, 'max_tokens': 512},
@@ -43,12 +44,14 @@ def generation_profiles(strategy: str) -> dict:
             profiles['structured_format_retry'] = structured_retry_profile()
     elif strategy == 'ms_graphrag':
         profiles = {'default_completion_and_native_query': request_settings('ms_completion'),
+                    'graph_extraction_and_gleaning': request_settings('ms_extract'),
                     'community_report': request_settings('ms_report'),
                     'native_search': dict(spec.paper_index_policy)}
     elif strategy == 'linear_rag':
         profiles['native_qa'] = request_settings('linear_native_qa')
     elif strategy == 'gfm_rag':
-        profiles = {'construction': request_settings('gfm_construction'), 'answer': request_settings('answer')}
+        profiles = {'construction': request_settings('gfm_construction'),
+                    'answer': {'temperature': 0.0, 'max_tokens': None, 'owner': 'pinned_qa_inference'}}
     if spec.external:
         profiles['native_defaults'] = {'owner': 'pinned_upstream', 'revision': spec.revision,
                                       'registered_overrides': dict(spec.paper_index_policy)}

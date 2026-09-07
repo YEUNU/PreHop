@@ -8,6 +8,8 @@ from typing import Any
 
 from .base import canonical_semantic_env, load_rows, positive_env
 
+NER_NORMALIZATION_PROFILE = "entity-text-object-v2"
+
 
 def configure_hippo_openie(config: Any) -> None:
     """Use native structured extraction settings under a new semantic profile."""
@@ -125,6 +127,12 @@ class HippoRAG2Driver:
             index_identity=__import__("os").environ.get("RAG_SEMANTIC_CONFIG_SHA256", registry_policy["semantic_config_id"]),
         )
 
+        from .hippo_extraction import install_extraction_adapter
+
+        self.extraction_audit = install_extraction_adapter(
+            self.engine.openie, output_dir / "artifacts" / "extraction_audit.jsonl", transport.retry_attempts
+        )
+
     def index(self) -> dict[str, Any]:
         from hipporag.utils.misc_utils import Chunk
 
@@ -137,6 +145,7 @@ class HippoRAG2Driver:
             for r in self.rows
         ]
         self.engine.index(docs)
+        self.extraction_audit.assert_healthy()
         indexed_sources = {
             str(metadata.get("source_id", ""))
             for metadata in self.engine.chunk_metadata.values()
@@ -145,10 +154,15 @@ class HippoRAG2Driver:
         expected_sources = {row["source_id"] for row in self.rows}
         if indexed_sources != expected_sources:
             raise RuntimeError("HippoRAG2 stored chunk metadata does not cover the exact staged source set")
+        from models.external_research.extraction_contract import audit_evidence
+
         return {
+            "extraction_audit_evidence": audit_evidence(self.extraction_audit),
             "source_count": len(self.rows), "coverage_complete": True,
             "native_top_k": self.engine.global_config.retrieval_top_k,
             "openie_response_format": self.engine.global_config.response_format,
+            "ner_normalization_profile": NER_NORMALIZATION_PROFILE,
+            "extraction_validation_profile": "strict-extraction-v1",
             "openie_ner_max_tokens": self.engine.global_config.openie_ner_max_tokens,
             "openie_triple_max_tokens": self.engine.global_config.openie_triple_max_tokens,
         }

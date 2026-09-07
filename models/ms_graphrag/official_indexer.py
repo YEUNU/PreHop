@@ -71,12 +71,10 @@ def _with_ms_embedding_slot(call: Callable[[], object]) -> object:
 
 def _apply_shared_transport() -> None:
     from core.inference_transport import InferenceTransport
-    from core.semantic_config import parse_strict_bool
 
     transport = InferenceTransport.resolve("ms_graphrag")
-    report_max_tokens = int(os.environ.get("RAG_MS_REPORT_MAX_TOKENS", "4096"))
-    if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") and report_max_tokens != 4096:
-        raise RuntimeError("RAG_MS_REPORT_MAX_TOKENS differs from the checked-in paper policy")
+    if os.environ.get("RAG_MS_REPORT_MAX_TOKENS", "").strip():
+        raise RuntimeError("RAG_MS_REPORT_MAX_TOKENS overrides the pinned native omitted output limit")
     global _GEN_API_BASE, _GEN_API_BASES, _GEN_MODEL_NAME
     global _EMBED_API_BASE, _EMBED_MODEL_NAME, _GEN_API_KEY, _GEN_SEED
     global _GEN_CONCURRENCY, _EMBED_BATCH_SIZE, _EMBED_CONCURRENCY, _EMBED_DIM, _EMBED_REQUEST_SEMAPHORE
@@ -369,6 +367,7 @@ def _verify_and_publish_snapshot(
     source_ids: list[str],
     corpus_manifest: dict | None,
     source_titles: dict[str, str] | None = None,
+    extraction_evidence: dict | None = None,
 ) -> dict:
     """Compare actual ``documents.parquet`` sources to the staged corpus."""
     import pandas as pd
@@ -400,6 +399,8 @@ def _verify_and_publish_snapshot(
         raise RuntimeError("MS GraphRAG source-title metadata does not match the staged corpus")
     source_digest = _source_set_sha256(actual_ids)
     payload = {
+        **({"extraction_audit_evidence": extraction_evidence,
+            "extraction_validation_profile": "strict-ms-native-glean-v4"} if extraction_evidence else {}),
         "strategy": "ms_graphrag",
         "corpus_tag": corpus_tag,
         "status": "complete",
@@ -580,6 +581,12 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     _register_external_models_with_litellm()
     _install_litellm_router_for_gen()
     _register_query_embedding_model()
+    from models.external_research.extraction_contract import ExtractionAudit
+    from models.ms_graphrag.extraction_guard import PROVIDER, register_guard
+
+    global _EXTRACTION_AUDIT
+    _EXTRACTION_AUDIT = ExtractionAudit(output_dir_for(corpus_tag) / "extraction_audit.jsonl")
+    register_guard(_EXTRACTION_AUDIT, _RETRY_ATTEMPTS)
 
     from graphrag.config.models.embed_text_config import EmbedTextConfig
     from graphrag.config.models.graph_rag_config import GraphRagConfig
@@ -597,23 +604,15 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # vLLM 4B quirks:
-    # - encoding_format="float" required (LiteLLM 1.83 sends None which vLLM 0.15 rejects).
-    # - max_tokens: keep modest so a runaway entity-extraction doesn't blow chunk context.
-    # - extra_body.guided_json supported by vLLM but not configured here; rely on json_repair fallback.
+    # Keep extraction, query and report call settings independently registered.
     from core.generation_profiles import request_settings
     completion_call_args = request_settings("ms_completion")
     if _TIMEOUT_SECONDS is not None:
         completion_call_args["timeout"] = _TIMEOUT_SECONDS
     if _GEN_SEED is not None:
         completion_call_args["seed"] = _GEN_SEED
-    # Community reports need a higher output cap. The default 1500 truncates the
-    # report JSON mid-string (Unterminated string -> JSONDecodeError -> empty
-    # report; ~14% of communities failed at 1500 on the 4B model). max_length is
-    # 2000 content tokens + JSON wrapping, so give it headroom. A SEPARATE model
-    # id keeps extract_graph on max_tokens=1500 so its (expensive) per-call LLM
-    # cache stays valid — the cache key includes max_tokens, so bumping the
-    # shared model would force a full re-extraction.
+    extraction_call_args = {**completion_call_args, **request_settings("ms_extract")}
+    # Reports also preserve the native omitted output cap.
     report_call_args = request_settings("ms_report")
     if _TIMEOUT_SECONDS is not None:
         report_call_args["timeout"] = _TIMEOUT_SECONDS
@@ -627,7 +626,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     cfg = GraphRagConfig(
         completion_models={
             "default_completion_model": ModelConfig(
-                type="litellm",
+                type=PROVIDER,
                 model_provider="openai",
                 model=_GEN_MODEL_NAME,
                 api_base=_GEN_API_BASE,
@@ -635,8 +634,17 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
                 call_args=completion_call_args,
                 retry=retry_config,
             ),
+            "extraction_completion_model": ModelConfig(
+                type=PROVIDER,
+                model_provider="openai",
+                model=_GEN_MODEL_NAME,
+                api_base=_GEN_API_BASE,
+                api_key=_GEN_API_KEY,
+                call_args=extraction_call_args,
+                retry=retry_config,
+            ),
             "report_completion_model": ModelConfig(
-                type="litellm",
+                type=PROVIDER,
                 model_provider="openai",
                 model=_GEN_MODEL_NAME,
                 api_base=_GEN_API_BASE,
@@ -701,8 +709,7 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
             },
         ),
     )
-    # Route community-report generation to the higher-max_tokens model so long
-    # reports don't truncate; extract_graph stays on the cached default model.
+    cfg.extract_graph.completion_model_id = "extraction_completion_model"
     cfg.community_reports.completion_model_id = "report_completion_model"
     # Qwen3-style embedding models use asymmetric passage/query formatting.
     # Indexing keeps the official raw entity descriptions; LocalSearch alone
@@ -755,6 +762,7 @@ async def run_official_index(
     finally:
         await _close_litellm_async_clients()
 
+    _EXTRACTION_AUDIT.assert_healthy()
     failures = [r for r in results if getattr(r, "errors", None)]
     if failures:
         logger.error("MS pipeline produced %d workflow(s) with errors", len(failures))
@@ -778,7 +786,11 @@ async def run_official_index(
         if missing:
             parts.append(f"missing artifacts: {missing}")
         raise RuntimeError("MS GraphRAG indexing incomplete: " + "; ".join(parts))
-    snapshot = _verify_and_publish_snapshot(corpus_tag, source_ids, corpus_manifest, source_titles)
+    from models.external_research.extraction_contract import audit_evidence
+
+    snapshot = _verify_and_publish_snapshot(
+        corpus_tag, source_ids, corpus_manifest, source_titles, audit_evidence(_EXTRACTION_AUDIT)
+    )
     workflow_timing.timing["active_snapshot_verified"] = 1.0
     workflow_timing.timing["active_snapshot_source_count"] = float(snapshot["source_count"])
     logger.info("MS pipeline produced all expected parquet files at %s", out_dir)

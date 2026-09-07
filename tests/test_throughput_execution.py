@@ -152,6 +152,7 @@ async def test_measured_targets_cannot_overlap(tmp_path, monkeypatch):
 
     from core.execution_profile import exclusive_measurement
     monkeypatch.setattr('core.execution_profile.execution_profile', lambda: {'sha256': 'selected'})
+    monkeypatch.setattr('core.execution_profile.Path', lambda _: tmp_path / 'measured.lock')
     started, release = asyncio.Event(), asyncio.Event()
 
     @exclusive_measurement
@@ -161,7 +162,7 @@ async def test_measured_targets_cannot_overlap(tmp_path, monkeypatch):
         return 'done'
 
     first = asyncio.create_task(work())
-    await started.wait()
+    await asyncio.wait_for(started.wait(), timeout=2)
     try:
         with pytest.raises(RuntimeError, match='Another measured target'):
             await work()

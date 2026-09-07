@@ -65,10 +65,11 @@ def test_exact_native_linear_qa_owns_prompt_parser_and_one_retrieval():
     exec(compile(ast.Module(body=[qa], type_ignores=[]), '<exact-pinned-LinearRAG.qa>', 'exec'), namespace)  # noqa: S102 - execute exact approved native method in test isolation
     calls = []
     client = LinearNativeInference.__new__(LinearNativeInference)
+    client.audit = None
     client.transport = SimpleNamespace(generation_model='gemma-4-31b-it', generation_seed=42)
     def create(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='Thought: native\nAnswer: native answer'))])
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content='Thought: native\nAnswer: native answer'))])
     client.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
     retrieval_calls = []
     def retrieve(questions):
