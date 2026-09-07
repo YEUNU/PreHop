@@ -30,7 +30,7 @@ single source of truth used by the Python CLI and the shell runners.
 | HippoRAG2 | `planned` | `planned` | official method with controlled remote backbone |
 | GFM-RAG | `planned` | `planned` | official method with checkpoint-defined local components |
 | LinearRAG | `planned` | `planned` | official-faithful pinned MPNet mode |
-| Youtu-GraphRAG | `planned` | `planned` | controlled native no-agent API with pinned MiniLM and NER |
+| Youtu-GraphRAG | `planned` | `planned` | controlled native agent API with pinned MiniLM and NER |
 
 The publication experiment ledger uses only these status values. The table
 above records that ledger; it does not mirror indexing-only smoke completion:
@@ -92,11 +92,10 @@ embedding and graph components identified by its validated checkpoint and
 configuration files. These declared method components are not mislabeled as
 the controlled remote embedding backbone.
 
-Youtu's pinned agent batch entrypoint does not return structured per-query
-answer and evidence. The registered primary target therefore uses the pinned
-public native no-agent query API and is labelled `controlled_adapter`, not
-`official_faithful`. Its returned evidence order, native retrieval, and native
-deduplication are left unchanged.
+Youtu runs the pinned agent loop. Adapter observers capture its answer and
+final evidence order without changing retrieval or deduplication; the common
+benchmark performs post-answer evaluation. The target remains labelled
+`controlled_adapter` for its declared transport, format and concurrency changes.
 
 ## Admission checks
 
@@ -108,7 +107,10 @@ before a cell becomes `admitted`:
    MultiHop-RAG or 2,417 for MuSiQue.
 2. Detail rows have unique, gap-free indices in input order. Query IDs,
    query-record digests, ground-truth identities, eligible counts, and all
-   aggregates recompute exactly from those rows.
+   aggregates recompute exactly from those rows. Primary per-query metrics also
+   recompute from the saved answer/retrieved evidence and authoritative query
+   manifest; expected evidence must match that manifest. Primary averages must
+   be finite numbers in [0, 1], with ineligible rows excluded by the dataset rule.
 3. Corpus manifests and index statistics bind the full source-ID set, source
    count, content digest, query-ID set, and query-record digest. MuSiQue schema
    v2 keeps paragraph IDs distinct from source filenames.
@@ -130,6 +132,10 @@ before a cell becomes `admitted`:
    worker-queue delay, and end-to-end latency retain their distinct meanings.
    Missing upstream token or cost telemetry is marked incomplete rather than
    estimated.
+8. Guarded extraction adapters report their effective validation profile and
+   bind the successful index-time audit prefix. Missing or changed audit bytes,
+   exhausted calls and stale profiles prevent admission. Later query appends do
+   not replace the index-time evidence; the final inventory binds them separately.
 
 ## Artifact retention
 

@@ -45,6 +45,48 @@ DATASETS = {
 
 STRATEGIES = PRIMARY_STRATEGIES
 
+def _validate_primary_row(row: dict, expected: dict, dataset: str) -> list[str]:
+    """Recompute primary scores from predictions and authoritative gold data."""
+    from utils.metrics import (
+        calculate_answer_metrics,
+        calculate_musique_support_metrics,
+        calculate_retrieval_ranking_metrics,
+    )
+
+    errors = []
+    sources = row.get("retrieved_sources")
+    answer = row.get("answer")
+    if not isinstance(sources, list) or not isinstance(answer, str):
+        return ["answer/retrieved_sources have invalid types"]
+    gold_sources = {
+        "docs": expected.get("evidence_docs", []),
+        "facts": expected.get("evidence_facts", []),
+        "paragraph_ids": expected.get("evidence_paragraph_ids", []),
+    }
+    if row.get("expected_sources") != gold_sources:
+        errors.append("expected_sources differs from current query manifest")
+    if dataset == "multihoprag":
+        scores = calculate_retrieval_ranking_metrics(sources, gold_sources["facts"])
+    else:
+        scores = calculate_answer_metrics(
+            answer, expected.get("ground_truth", ""),
+            answer_aliases=expected.get("answer_aliases", []),
+            question_type=expected.get("question_type", ""),
+        )
+        scores.update(calculate_musique_support_metrics(sources, gold_sources["paragraph_ids"]))
+    for summary_key in DATASETS[dataset]["metrics"]:
+        key = summary_key.removeprefix("avg_")
+        actual = row.get(key)
+        if (
+            isinstance(actual, bool)
+            or not isinstance(actual, (int, float))
+            or not math.isfinite(actual)
+            or not math.isclose(actual, scores[key], rel_tol=1e-12, abs_tol=1e-12)
+        ):
+            errors.append(f"{key}={actual!r}, recomputed={scores[key]}")
+    return errors
+
+
 RESULT_DOCUMENTS = (
     Path("docs/RESULTS.md"),
     Path("docs/prehop_paper.md"),
@@ -415,6 +457,11 @@ def _validate_artifact(
                     errors.append(
                         f"{path}: detail {row.get('query_id')} {detail_field} differs from current query manifest"
                     )
+            try:
+                row_errors = _validate_primary_row(row, expected_row, dataset)
+            except (TypeError, ValueError, KeyError, AttributeError) as exc:
+                row_errors = [f"cannot recompute primary metrics: {exc}"]
+            errors.extend(f"{path}: detail {row.get('query_id')}: {error}" for error in row_errors)
     runtime_errors = sum(bool(row.get("error")) for row in details if isinstance(row, dict))
     if runtime_errors:
         errors.append(f"{path}: {runtime_errors} detail row(s) contain runtime errors")
@@ -484,6 +531,23 @@ def _validate_artifact(
         if payload.get("post_query_artifact_inventory") != current_inventory:
             errors.append(f"{path}: post-query retrieval artifact inventory is missing or stale")
 
+    if approved_common.get("index_validation_profile"):
+        observed = payload.get("active_index_snapshot", {}).get("official_stats", {})
+        if observed.get("index_validation_profile") != approved_common["index_validation_profile"]:
+            errors.append(f"{path}: effective index validation profile is missing or stale")
+
+    if approved_common.get("extraction_validation_profile"):
+        from models.external_research.extraction_contract import validate_audit_evidence
+
+        snapshot = payload.get("active_index_snapshot", {})
+        observed = snapshot.get("official_stats") or {}
+        try:
+            if observed.get("extraction_validation_profile") != approved_common["extraction_validation_profile"]:
+                raise ValueError("Effective extraction validation profile is missing or stale")
+            validate_audit_evidence(observed.get("extraction_audit_evidence"))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            errors.append(f"{path}: extraction evidence failed verification: {exc}")
+
     if strategy == "youtu_graphrag":
         official_stats = payload.get("active_index_snapshot", {}).get("official_stats")
         required_youtu_metrics = {
@@ -505,7 +569,10 @@ def _validate_artifact(
 
     for metric in DATASETS[dataset]["metrics"]:
         value = payload.get(metric)
-        if not isinstance(value, (int, float)) or value < 0:
+        if (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or not 0 <= value <= 1
+        ):
             errors.append(f"{path}: missing or invalid metric {metric}")
 
     return errors

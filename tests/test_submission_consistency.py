@@ -154,3 +154,43 @@ def test_submission_admission_rejects_runtime_freeze_or_inventory_drift(tmp_path
     monkeypatch.setattr(runtime_requirements, "runtime_identity", lambda strategy: {"freeze": "first"})
     monkeypatch.setattr(admission, "current_post_query_inventory", lambda *args: {"sha256": "second"})
     assert "stale" in " ".join(_validate_admission(relative, payload, "musique", "naive"))
+
+
+def test_primary_scores_recomputed_from_predictions_and_authoritative_gold():
+    import copy
+
+    expected = {
+        'ground_truth': 'New York', 'answer_aliases': ['NYC'],
+        'evidence_paragraph_ids': ['musique:aabbccddeeff'],
+    }
+    row = {
+        'answer': 'NYC', 'retrieved_sources': [{'paragraph_id': 'musique:aabbccddeeff'}],
+        'expected_sources': {'docs': [], 'facts': [], 'paragraph_ids': ['musique:aabbccddeeff']},
+        'official_answer_em': 1.0, 'official_answer_f1': 1.0,
+        'paragraph_support_precision': 1.0, 'paragraph_support_recall': 1.0,
+        'paragraph_support_f1': 1.0,
+    }
+    validate = verify_submission_consistency._validate_primary_row
+    assert validate(row, expected, 'musique') == []
+    for invalid in (float('inf'), float('nan'), True, 1.1, 0.5, None):
+        mutated = {**row, 'official_answer_f1': invalid}
+        assert any('official_answer_f1' in error for error in validate(mutated, expected, 'musique'))
+    assert validate({**row, 'answer': 'Boston'}, expected, 'musique')
+    mutated = copy.deepcopy(row)
+    mutated['expected_sources']['paragraph_ids'] = ['musique:ffffffffffff']
+    assert any('expected_sources' in error for error in validate(mutated, expected, 'musique'))
+
+
+def test_primary_retrieval_recompute_preserves_unanswerable_exclusion():
+    validate = verify_submission_consistency._validate_primary_row
+    expected = {'evidence_facts': ['Alpha is in Paris.']}
+    row = {
+        'answer': 'Paris', 'retrieved_sources': [{'text': 'Alpha is in Paris.'}],
+        'expected_sources': {'docs': [], 'facts': expected['evidence_facts'], 'paragraph_ids': []},
+        **{field.removeprefix('avg_'): 1.0 for field in verify_submission_consistency.DATASETS['multihoprag']['metrics']},
+    }
+    assert validate(row, expected, 'multihoprag') == []
+    assert validate({**row, 'retrieved_sources': []}, expected, 'multihoprag')
+    row.update(expected_sources={'docs': [], 'facts': [], 'paragraph_ids': []})
+    row.update({field.removeprefix('avg_'): -1.0 for field in verify_submission_consistency.DATASETS['multihoprag']['metrics']})
+    assert validate(row, {}, 'multihoprag') == []
