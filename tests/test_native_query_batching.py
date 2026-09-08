@@ -146,12 +146,6 @@ def test_batcher_keeps_successful_siblings_when_one_native_query_fails():
     asyncio.run(run())
 
 
-def test_youtu_retains_native_retrieval_workers():
-    from pathlib import Path
-    source = Path('models/external_research/drivers/youtu_graphrag.py').read_text()
-    assert 'self.config.retrieval.faiss.max_workers =' not in source
-
-
 def test_handoff_waits_for_cleanup_and_skips_terminal_attempts():
     import runpy
     from pathlib import Path

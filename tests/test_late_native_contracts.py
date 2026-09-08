@@ -1,6 +1,5 @@
 """Native configuration/answer contracts and observational extraction validation."""
 import ast
-import copy
 import os
 import subprocess
 import sys
@@ -12,24 +11,8 @@ import pytest
 
 from core.paper_policy import method_environment_defaults, preserve_method_environment
 from models.external_research.drivers.linear_rag import LinearNativeInference, LinearRAGDriver
-from models.external_research.drivers.youtu_graphrag import classify_native_extraction
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-@pytest.mark.parametrize('attribute', [{}, {'nested': ['bad']}, [], 3, None, '', ' '])
-def test_nested_native_attributes_are_rejected_without_repair(attribute):
-    value = {'attributes': {'entity': [attribute]}, 'triples': []}
-    before = copy.deepcopy(value)
-    assert classify_native_extraction(value) == 'malformed'
-    assert value == before
-
-
-def test_valid_native_string_attributes_remain_unchanged():
-    value = {'attributes': {'entity': ['scientist']}, 'triples': []}
-    before = copy.deepcopy(value)
-    assert classify_native_extraction(value) == 'success'
-    assert value == before
 
 
 def test_method_sentinels_are_generic_and_preserve_explicit_overrides(tmp_path):

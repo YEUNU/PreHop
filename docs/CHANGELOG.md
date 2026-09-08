@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-09 — Remove retired-model tests and refresh active contracts
+
+Removed Youtu, BrowseNet and PropRAG implementation tests and unused imports.
+Shared staging, snapshot and worker-protocol tests now use active methods;
+registry checks still reject retired methods. Updated HopRAG pipeline/defaults,
+HippoRAG2 extraction profiles and generation-seed expectations to match the
+current contracts. Queue subprocess tests use isolated lock identities so they
+do not compete with live indexing. The full test suite passed: 812 passed,
+12 skipped, with no collection errors.
+
 ## 2026-09-09 — Apply the shared GFM-RAG QA timeout
 
 The GFM-RAG adapter overrides the native per-call 60-second timeout with the

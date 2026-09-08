@@ -27,7 +27,7 @@ def test_finished_or_failed_target_is_replaced_without_waiting_for_sibling(capac
             elif name == 'ms':
                 assert first_started.wait(5)
                 return 1
-            elif name == 'youtu':
+            elif name == 'hop':
                 assert not release_first.is_set()
                 with guard:
                     assert 'light' in active
@@ -36,9 +36,9 @@ def test_finished_or_failed_target_is_replaced_without_waiting_for_sibling(capac
         finally:
             with guard:
                 active.remove(name)
-    rows = [{'strategy': name} for name in ['light', 'ms', 'youtu', 'gfm']]
+    rows = [{'strategy': name} for name in ['light', 'ms', 'hop', 'gfm']]
     outcomes = run_rolling(rows, execute, lambda row: None, lambda: None, capacity=capacity)
-    assert outcomes == {'light': 0, 'ms': 1, 'youtu': 0, 'gfm': 0}
+    assert outcomes == {'light': 0, 'ms': 1, 'hop': 0, 'gfm': 0}
     assert 2 <= peak <= capacity
 
 

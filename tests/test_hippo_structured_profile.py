@@ -49,8 +49,8 @@ def test_missing_or_legacy_native_observation_cannot_write_new_profile(observed)
         validate_native_generation_profile('hipporag2', observed, policy)
     validate_native_generation_profile('hipporag2', {
         'openie_response_format': {'type': 'json_object'},
-        'ner_normalization_profile': 'native-parser-v1',
-        'extraction_validation_profile': 'native-observation-v1',
+        'ner_normalization_profile': 'explicit-entity-name-v1',
+        'extraction_validation_profile': 'strict-extraction-v1',
         'openie_ner_max_tokens': 512, 'openie_triple_max_tokens': 2048,
     }, policy)
 

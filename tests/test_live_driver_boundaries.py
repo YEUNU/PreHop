@@ -1,7 +1,6 @@
 """Optional real pinned-runtime regressions; no inference and no original artifact writes."""
 import hashlib
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -34,7 +33,7 @@ def _canonical_child(monkeypatch, strategy):
     for name, value in {'RAG_INFERENCE_BASE_URL': 'http://litellm.test/v1',
                        'RAG_INFERENCE_API_KEY': 'synthetic', 'RAG_GENERATION_MODEL': 'gemma-4-31b-it',
                        'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b', 'RAG_PAPER_MODE': 'true',
-                       'RAG_LLM_SEED': '' if strategy == 'youtu_graphrag' else '42',
+                       'RAG_LLM_SEED': '',
                        'EMBEDDING_QUERY_INSTRUCTION': '',
                        }.items():
         if name == 'EMBEDDING_QUERY_INSTRUCTION' and strategy != 'hipporag2':
@@ -86,41 +85,3 @@ print("native_import_and_transport_ok")
 def _inventory(root):
     return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in root.rglob('*') if path.is_file()}
-
-
-def test_actual_youtu_query_worker_loads_native_indices_without_inference(tmp_path, monkeypatch):
-    runtime = _runtime('youtu_graphrag')
-    original_raw = os.environ.get('RAG_TEST_YOUTU_INDEX_ROOT')
-    if not original_raw:
-        pytest.skip('set RAG_TEST_YOUTU_INDEX_ROOT to an existing native index copied for this test')
-    original = Path(original_raw)
-    before = _inventory(original)
-    copied = tmp_path / 'multihoprag'
-    shutil.copytree(original, copied)
-    environment = _canonical_child(monkeypatch, 'youtu_graphrag')
-    command = f'''
-import hashlib,sys,socket
-from pathlib import Path
-def forbidden_network(*args, **kwargs):
-    raise AssertionError('network connection attempted during native index initialization')
-socket.socket.connect=forbidden_network
-socket.create_connection=forbidden_network
-sys.path.insert(0,{str(ROOT)!r})
-import core.inference_transport as transport
-transport._approved_gateway_identity=lambda: hashlib.sha256(b"http://litellm.test/v1").hexdigest()
-from models.external_research.drivers.youtu_graphrag import YoutuGraphRAGDriver
-driver=YoutuGraphRAGDriver(Path({str(runtime / 'source')!r}),Path({str(copied)!r}))
-try:
-    native=driver.retriever.faiss_retriever
-    assert native.triple_index is not None and native.triple_index.ntotal>0
-    assert native.node_index is not None and native.node_index.ntotal>0
-    assert native.relation_index is not None
-    print("native_query_worker_indices_ready_without_inference")
-finally:
-    driver.close()
-'''
-    result = subprocess.run([str(runtime / 'venv/bin/python'), '-c', command], cwd=tmp_path,
-                            env=environment, check=False, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    assert 'native_query_worker_indices_ready_without_inference' in result.stdout
-    assert _inventory(original) == before

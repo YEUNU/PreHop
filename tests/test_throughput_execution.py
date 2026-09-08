@@ -172,6 +172,15 @@ async def test_measured_targets_cannot_overlap(tmp_path, monkeypatch):
     assert await work() == 'done'  # Lock released even across repeated calls.
 
 
+def isolated_queue_script(script):
+    # Real flock semantics, separate test identity: never contend with live jobs.
+    bootstrap = ("import os,runpy,sys; "
+                 "test_uid=1000000000+os.getpid(); os.getuid=lambda:test_uid; "
+                 "sys.path.insert(0,os.getcwd()); sys.argv=sys.argv[1:]; "
+                 "runpy.run_path(sys.argv[0],run_name='__main__')")
+    return [sys.executable, '-c', bootstrap, script]
+
+
 @pytest.mark.parametrize('profile_version', [1, 3])
 def test_foreground_wrapper_owns_queue_and_propagates_exit(queue, tmp_path, profile_version):
     import os
@@ -191,7 +200,7 @@ def test_foreground_wrapper_owns_queue_and_propagates_exit(queue, tmp_path, prof
                RAG_EMBEDDING_MODEL='embedding')
     env.pop('RAG_QUEUE_PROXY_URL', None)
     env.pop('RAG_QUEUE_TOKEN', None)
-    command = [sys.executable, 'scripts/run_with_inference_queue.py', '--profile', str(profile),
+    command = isolated_queue_script('scripts/run_with_inference_queue.py') + ['--profile', str(profile),
                '--metrics', str(metrics), '--', sys.executable, '-c', '''import os, urllib.request
 from core.execution_profile import require_queue
 assert require_queue() is not None
@@ -227,7 +236,7 @@ def test_pilot_preserves_failed_candidates_and_writes_no_selected_profile(queue,
     output, selected = tmp_path / 'pilot.json', tmp_path / 'selected.json'
     env = dict(os.environ, RAG_INFERENCE_BASE_URL=server.upstream,
                RAG_INFERENCE_API_KEY='upstream-key', RAG_GENERATION_MODEL='generation')
-    result = subprocess.run([sys.executable, 'scripts/pilot_inference_queue.py',
+    result = subprocess.run(isolated_queue_script('scripts/pilot_inference_queue.py') + [
                              '--requests', str(requests), '--profiles', str(profile),
                              '--output', str(output), '--selected-profile', str(selected)],
                             env=env, capture_output=True, text=True, timeout=15, check=False)
@@ -289,9 +298,6 @@ def test_shared_profile_resolves_one_limit_and_removes_old_client_caps(monkeypat
     result = subprocess.run([sys.executable, '-c', '''
 from core.strategy_registry import PAPER_TRANSPORT, get_strategy
 assert PAPER_TRANSPORT.generation_concurrency == PAPER_TRANSPORT.embedding_concurrency == 120
-policy = dict(get_strategy('youtu_graphrag').paper_index_policy)
-assert policy['construction_concurrency'] == 60
-assert policy['schema_update_policy'] == 'locked-native-v1'
 '''], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     value = json.loads(path.read_text())

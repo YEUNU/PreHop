@@ -540,16 +540,18 @@ async def test_hoprag_run_workflow_marks_answer_boundary():
     from models.hoprag.hoprag_adapter import HopRAGAdapter
 
     adapter = object.__new__(HopRAGAdapter)
-    adapter.top_k = 20
+    adapter.top_k = 8
     node = {"title": "Doc", "text": "context", "source": "doc.txt", "page": 0, "sent_id": 0}
     adapter.retrieve = AsyncMock(return_value=("context", [node]))
-    adapter.llm = MagicMock()
-    adapter.llm.generate_response = AsyncMock(return_value="answer")
+    adapter._pipeline = MagicMock()
+    adapter._pipeline.rag.return_value = ("answer", ["context"], [1.0])
+    adapter._lookup_nodes_by_text = AsyncMock(return_value=[node])
 
     answer, _sources, trace = await adapter.run_workflow("question")
 
     assert answer == "@@ANSWER: answer"
-    assert trace[0]["output"] == answer
+    assert trace[0]["output"] == "answer"
+    adapter._pipeline.rag.assert_called_once_with("question")
 
 
 def test_naive_context_budget_keeps_complete_chunks_in_rank_order(monkeypatch):
@@ -576,5 +578,5 @@ def test_naive_context_budget_keeps_complete_chunks_in_rank_order(monkeypatch):
 def test_hoprag_adapter_keeps_official_top_k():
     from models.hoprag.hoprag_adapter import OFFICIAL_HOPRAG_TOP_K, HopRAGAdapter
 
-    assert OFFICIAL_HOPRAG_TOP_K == 20
+    assert OFFICIAL_HOPRAG_TOP_K == 8
     assert HopRAGAdapter.__init__.__defaults__[2] == OFFICIAL_HOPRAG_TOP_K

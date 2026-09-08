@@ -2,11 +2,6 @@ from __future__ import annotations
 
 import json
 import sys
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -19,134 +14,6 @@ from models.official_baseline_runtime import (
     stage_corpus,
     verify_snapshot,
 )
-from scripts.official_baseline_worker import (
-    LiteLLMEmbeddingEncoder,
-    _bounded_thread_pool_executor,
-    _normalize_proprag_entities,
-    _normalize_proprag_propositions,
-    _parse_proprag_ner_response,
-    _proprag_concurrency,
-    _proprag_config,
-)
-
-
-def test_browsenet_checkpoint_stays_outside_immutable_checkout():
-    setup = Path("scripts/setup_official_baselines.sh").read_text(encoding="utf-8")
-    worker = Path("scripts/official_baseline_worker.py").read_text(encoding="utf-8")
-    assert 'browsenet_artifact_root="$runtime_root/browsenet/artifacts"' in setup
-    assert 'official_root.parent / "artifacts" / "colbertv2.0"' in worker
-    assert 'official_root / "src" / "indexer" / "exp" / "colbertv2.0"' not in worker
-
-
-def test_browsenet_embedding_transport_bisects_malformed_messagepack_batch():
-    calls = []
-
-    class FakeEmbeddings:
-        def create(self, *, model, input, encoding_format):
-            assert encoding_format == "float"
-            calls.append((model, list(input)))
-            if len(input) > 1:
-                raise RuntimeError("MessagePack data is malformed: trailing characters")
-            return SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[3.0, 4.0])])
-
-    encoder = LiteLLMEmbeddingEncoder.__new__(LiteLLMEmbeddingEncoder)
-    encoder.client = SimpleNamespace(embeddings=FakeEmbeddings())
-    encoder.embedding_model_name = "embedding-model"
-    encoder.embedding_dim = 2
-    encoder.batch_size = 4
-
-    result = encoder._encode(["one", "two", "three", "four"])
-
-    assert result.shape == (4, 2)
-    for row in result.tolist():
-        assert row == pytest.approx([0.6, 0.8])
-    assert [len(batch) for _, batch in calls] == [4, 2, 1, 1, 2, 1, 1]
-
-
-def test_browsenet_embedding_transport_does_not_split_unrelated_errors():
-    class FakeEmbeddings:
-        def create(self, *, model, input, encoding_format):
-            raise RuntimeError("unknown embedding model")
-
-    encoder = LiteLLMEmbeddingEncoder.__new__(LiteLLMEmbeddingEncoder)
-    encoder.client = SimpleNamespace(embeddings=FakeEmbeddings())
-    encoder.embedding_model_name = "embedding-model"
-    encoder.embedding_dim = 2
-    encoder.batch_size = 4
-
-    with pytest.raises(RuntimeError, match="unknown embedding model"):
-        encoder._encode(["one", "two"])
-
-
-@pytest.mark.parametrize("indices", [[0, 0], [0, 2]])
-def test_browsenet_embedding_response_requires_exact_indices(indices):
-    class FakeEmbeddings:
-        def create(self, *, model, input, encoding_format):
-            return SimpleNamespace(
-                data=[SimpleNamespace(index=index, embedding=[3.0, 4.0]) for index in indices]
-            )
-
-    encoder = LiteLLMEmbeddingEncoder.__new__(LiteLLMEmbeddingEncoder)
-    encoder.client = SimpleNamespace(embeddings=FakeEmbeddings())
-    encoder.embedding_model_name = "embedding-model"
-    encoder.embedding_dim = 2
-    encoder.batch_size = 2
-
-    with pytest.raises(ValueError, match="exact permutation"):
-        encoder._encode(["one", "two"])
-
-
-def test_browsenet_embedding_requests_obey_serial_transport_cap():
-    in_flight = 0
-    peak = 0
-    lock = threading.Lock()
-
-    class FakeEmbeddings:
-        def create(self, *, model, input, encoding_format):
-            nonlocal in_flight, peak
-            with lock:
-                in_flight += 1
-                peak = max(peak, in_flight)
-            time.sleep(0.01)
-            with lock:
-                in_flight -= 1
-            return SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[3.0, 4.0])])
-
-    encoder = LiteLLMEmbeddingEncoder.__new__(LiteLLMEmbeddingEncoder)
-    encoder.client = SimpleNamespace(embeddings=FakeEmbeddings())
-    encoder.embedding_model_name = "embedding-model"
-    encoder._request_semaphore = threading.BoundedSemaphore(1)
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(lambda value: encoder._request_embeddings([value]), ["a", "b", "c", "d"]))
-    assert peak == 1
-
-
-def test_proprag_concurrency_uses_conservative_strategy_default(monkeypatch):
-    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "120")
-    monkeypatch.delenv("RAG_PROPRAG_CONCURRENT_REQUESTS", raising=False)
-    monkeypatch.delenv("VLLM_MAX_NUM_SEQS", raising=False)
-
-    assert _proprag_concurrency() == 1
-
-
-def test_proprag_concurrency_honors_all_explicit_caps(monkeypatch):
-    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "120")
-    monkeypatch.setenv("RAG_PROPRAG_CONCURRENT_REQUESTS", "24")
-    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "12")
-
-    assert _proprag_concurrency() == 12
-
-
-def test_proprag_config_limits_generation_reservation(monkeypatch):
-    class CaptureConfig:
-        def __init__(self, **kwargs):
-            self.values = kwargs
-
-    monkeypatch.delenv("RAG_PROPRAG_MAX_NEW_TOKENS", raising=False)
-    config = _proprag_config(CaptureConfig, Path("output"), 10)
-
-    assert config.values["max_new_tokens"] == 2048
 
 
 def test_stage_corpus_removes_only_transport_headers(tmp_path, monkeypatch):
@@ -155,9 +22,9 @@ def test_stage_corpus_removes_only_transport_headers(tmp_path, monkeypatch):
     (corpus / "source.one.txt").write_text(
         "Title: Human title\nParagraph-ID: musique:abc\n\nBody sentence.\nSecond line.", encoding="utf-8"
     )
-    monkeypatch.setenv("RAG_BROWSENET_OUTPUT_ROOT", str(tmp_path / "output"))
+    monkeypatch.setenv("RAG_LIGHTRAG_OUTPUT_ROOT", str(tmp_path / "output"))
 
-    rows, target = stage_corpus("browsenet", corpus, "musique")
+    rows, target = stage_corpus("lightrag", corpus, "musique")
 
     assert rows == [
         {
@@ -175,7 +42,7 @@ def test_official_python_preserves_virtualenv_symlink_path(tmp_path, monkeypatch
     venv_python = tmp_path / "venv" / "bin" / "python"
     venv_python.parent.mkdir(parents=True)
     venv_python.symlink_to(sys.executable)
-    monkeypatch.setenv("RAG_BROWSENET_PYTHON", str(venv_python))
+    monkeypatch.setenv("RAG_LIGHTRAG_PYTHON", str(venv_python))
     monkeypatch.setenv("VLLM_API_BASE", "http://generation/v1")
     monkeypatch.setenv("VLLM_EMBED_API_BASE", "http://embedding/v1")
     monkeypatch.setenv("VLLM_SERVED_MODEL_NAME", "generation")
@@ -186,12 +53,12 @@ def test_official_python_preserves_virtualenv_symlink_path(tmp_path, monkeypatch
     monkeypatch.setenv("RAG_GENERATION_MODEL", "generation")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding")
 
-    assert official_python("browsenet") == venv_python
-    assert _runtime_env("browsenet")["PATH"].split(":", 1)[0] == str(venv_python.parent)
+    assert official_python("lightrag") == venv_python
+    assert _runtime_env("lightrag")["PATH"].split(":", 1)[0] == str(venv_python.parent)
 
 
 def test_external_snapshot_verification_is_fail_closed(tmp_path, monkeypatch):
-    monkeypatch.setenv("RAG_PROPRAG_OUTPUT_ROOT", str(tmp_path / "output"))
+    monkeypatch.setenv("RAG_LIGHTRAG_OUTPUT_ROOT", str(tmp_path / "output"))
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "test-embedding")
     monkeypatch.setenv("RAG_EMBEDDING_REVISION", "test-revision")
     target = tmp_path / "output" / "musique"
@@ -200,8 +67,8 @@ def test_external_snapshot_verification_is_fail_closed(tmp_path, monkeypatch):
     (target / "artifacts/index.bin").write_bytes(b"index")
     metadata = {
         "status": "complete",
-        "strategy": "proprag",
-        "official_revision": OFFICIAL_REVISIONS["proprag"],
+        "strategy": "lightrag",
+        "official_revision": OFFICIAL_REVISIONS["lightrag"],
         "embedding_model": "test-embedding",
         "embedding_revision": "test-revision",
         "source_count": 2,
@@ -215,6 +82,10 @@ def test_external_snapshot_verification_is_fail_closed(tmp_path, monkeypatch):
         "corpus_manifest_fingerprint": "fingerprint",
     }
     from models.official_baseline_runtime import artifact_inventory
+    from core.semantic_config import semantic_config_sha256
+    semantic = {"embedding_model": "test-embedding", "embedding_revision": "test-revision"}
+    metadata.update(semantic_config_id="lightrag-paper-v1", semantic_config=semantic,
+                    semantic_config_sha256=semantic_config_sha256(semantic))
     metadata["artifact_inventory"] = artifact_inventory(target)
     (target / "input").mkdir()
     (target / "input" / "corpus.json").write_text(
@@ -228,14 +99,15 @@ def test_external_snapshot_verification_is_fail_closed(tmp_path, monkeypatch):
     )
     (target / "index_snapshot_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 
-    assert verify_snapshot("proprag", "musique", ["b", "a"], {"fingerprint": "fingerprint"}) == metadata
+    assert verify_snapshot("lightrag", "musique", ["b", "a"], {"fingerprint": "fingerprint"}) == metadata
     with pytest.raises(RuntimeError, match="source set"):
-        verify_snapshot("proprag", "musique", ["a", "c"], {"fingerprint": "fingerprint"})
+        verify_snapshot("lightrag", "musique", ["a", "c"], {"fingerprint": "fingerprint"})
     with pytest.raises(RuntimeError, match="fingerprint"):
-        verify_snapshot("proprag", "musique", ["a", "b"], {"fingerprint": "changed"})
-    monkeypatch.setenv("RAG_EMBEDDING_REVISION", "changed-revision")
+        verify_snapshot("lightrag", "musique", ["a", "b"], {"fingerprint": "changed"})
+    metadata["embedding_revision"] = "changed-revision"
+    (target / "index_snapshot_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     with pytest.raises(RuntimeError, match="embedding revision"):
-        verify_snapshot("proprag", "musique", ["a", "b"], {"fingerprint": "fingerprint"})
+        verify_snapshot("lightrag", "musique", ["a", "b"], {"fingerprint": "fingerprint"})
 
 
 def test_research_snapshot_requires_valid_semantic_config_hash(tmp_path, monkeypatch):
@@ -270,56 +142,8 @@ def test_research_snapshot_requires_valid_semantic_config_hash(tmp_path, monkeyp
         verify_snapshot("lightrag", "musique", ["a"], {"fingerprint": "fingerprint"})
 
 
-class _FakeWorker:
-    def __init__(self, strategy, corpus_tag):
-        self.strategy = strategy
-        self.corpus_tag = corpus_tag
-
-    def request(self, payload):
-        assert payload == {"operation": "query", "query": "question"}
-        return {
-            "ok": True,
-            "documents": [
-                {"source_id": "doc-1", "title": "First", "text": "Evidence one", "score": 0.9},
-                {"source_id": "doc-2", "title": "Second", "text": "Evidence two", "score": 0.8},
-            ],
-        }
-
-    def close(self):
-        return None
-
-
-class _FakeLLM:
-    async def generate_response(self, messages, **kwargs):
-        assert "Evidence one" in messages[0]["content"]
-        return "answer"
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("module_name", "adapter_name", "strategy"),
-    [
-        ("models.browsenet.browsenet_adapter", "BrowseNetAdapter", "browsenet"),
-        ("models.proprag.proprag_adapter", "PropRAGAdapter", "proprag"),
-    ],
-)
-async def test_official_adapter_preserves_retrieval_order_and_common_answer_boundary(
-    monkeypatch, module_name, adapter_name, strategy
-):
-    module = __import__(module_name, fromlist=[adapter_name])
-    monkeypatch.setattr(module, "OfficialQueryWorker", _FakeWorker)
-    monkeypatch.setattr(module, "get_llm_client", lambda _model_id: _FakeLLM())
-    adapter = getattr(module, adapter_name)(corpus_tag="musique")
-
-    answer, sources, trace = await adapter.run_workflow("question")
-
-    assert answer == "@@ANSWER: answer"
-    assert [row["source"] for row in sources] == ["doc-1", "doc-2"]
-    assert trace[0]["retrieved"] == 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("strategy", ["browsenet", "proprag"])
+@pytest.mark.parametrize("strategy", ["lightrag"])
 async def test_external_capacity_excludes_staged_input(tmp_path, monkeypatch, strategy):
     from cli.index import _collect_index_capacity
 
@@ -334,67 +158,6 @@ async def test_external_capacity_excludes_staged_input(tmp_path, monkeypatch, st
     capacity = await _collect_index_capacity(strategy, "musique")
 
     assert capacity["bytes"] == 17
-
-
-@pytest.mark.parametrize("strategy", ["browsenet", "proprag"])
-def test_external_index_policy_records_litellm_embedding(monkeypatch, strategy):
-    from cli.index import _resolved_index_policy
-    from core.config import RAGConfig
-
-    policy = _resolved_index_policy(strategy, "default")
-
-    assert policy["embedding_model"] == RAGConfig.EMBEDDING_MODEL
-    assert policy["embedding_dimensions"] == RAGConfig.EMBEDDING_DIMENSIONS
-    assert policy["embedding_transport"] == "litellm"
-
-
-def test_proprag_index_policy_records_its_query_instruction():
-    from cli.index import _resolved_index_policy
-
-    policy = _resolved_index_policy("proprag", "default")
-
-    assert policy["embedding_query_instruction"].startswith("Given a question")
-    assert "shared entity" in policy["embedding_query_instruction"]
-
-
-def test_proprag_ner_accepts_string_and_typed_entity_json_without_eval():
-    response = """```json
-    {"entities": ["OpenAI", {"name": "Sam Altman", "type": "PERSON"}, {"entity": "ChatGPT"}]}
-    ```"""
-
-    assert _parse_proprag_ner_response(response) == ["OpenAI", "Sam Altman", "ChatGPT"]
-
-
-def test_proprag_entity_normalization_is_ordered_deduplicated_and_strict():
-    assert _normalize_proprag_entities([" OpenAI ", {"text": "OpenAI"}, {"value": "ChatGPT"}]) == [
-        "OpenAI",
-        "ChatGPT",
-    ]
-    with pytest.raises(ValueError, match="no textual value"):
-        _normalize_proprag_entities([{"type": "PERSON"}])
-
-
-def test_proprag_proposition_entities_are_normalized_to_strings():
-    payload = {
-        "propositions": [
-            {"text": " Sam leads OpenAI. ", "entities": [{"name": "Sam"}, "OpenAI"]},
-        ]
-    }
-
-    assert _normalize_proprag_propositions(payload) == {
-        "propositions": [{"text": "Sam leads OpenAI.", "entities": ["Sam", "OpenAI"]}]
-    }
-
-
-def test_proprag_upstream_thread_pool_honors_shared_cap(monkeypatch):
-    monkeypatch.setenv("RAG_PROPRAG_CONCURRENT_REQUESTS", "300")
-    monkeypatch.setenv("MAX_CONCURRENT_LLM_CALLS", "3")
-    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "16")
-    executor = _bounded_thread_pool_executor(max_workers=300)
-    try:
-        assert executor._max_workers == 3
-    finally:
-        executor.shutdown()
 
 
 def test_persistent_worker_protocol_ignores_upstream_stdout(tmp_path, monkeypatch):
@@ -419,7 +182,7 @@ for line in sys.stdin:
 
     monkeypatch.setattr(runtime, "validate_runtime", lambda _strategy: None)
     monkeypatch.setattr(runtime, "_command", lambda *_args: [sys.executable, str(script)])
-    monkeypatch.setenv("RAG_BROWSENET_ROOT", str(tmp_path / "browsenet/source"))
+    monkeypatch.setenv("RAG_LIGHTRAG_ROOT", str(tmp_path / "lightrag/source"))
     monkeypatch.setenv("VLLM_API_BASE", "http://generation/v1")
     monkeypatch.setenv("VLLM_EMBED_API_BASE", "http://embedding/v1")
     monkeypatch.setenv("VLLM_SERVED_MODEL_NAME", "generation")
@@ -430,7 +193,7 @@ for line in sys.stdin:
     monkeypatch.setenv("RAG_GENERATION_MODEL", "generation")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding")
 
-    worker = OfficialQueryWorker("browsenet", "test")
+    worker = OfficialQueryWorker("lightrag", "test")
     try:
         assert worker.request({"operation": "query", "query": "evidence"})["documents"] == [
             {"text": "evidence"}
@@ -454,7 +217,7 @@ print(prefix + json.dumps({'ok': request['operation'] == 'index', 'stats': {'doc
 
     monkeypatch.setattr(runtime, "validate_runtime", lambda _strategy: None)
     monkeypatch.setattr(runtime, "_command", lambda *_args: [sys.executable, str(script)])
-    monkeypatch.setenv("RAG_BROWSENET_ROOT", str(tmp_path / "browsenet/source"))
+    monkeypatch.setenv("RAG_LIGHTRAG_ROOT", str(tmp_path / "lightrag/source"))
     monkeypatch.setenv("VLLM_API_BASE", "http://generation/v1")
     monkeypatch.setenv("VLLM_EMBED_API_BASE", "http://embedding/v1")
     monkeypatch.setenv("VLLM_SERVED_MODEL_NAME", "generation")
@@ -465,7 +228,7 @@ print(prefix + json.dumps({'ok': request['operation'] == 'index', 'stats': {'doc
     monkeypatch.setenv("RAG_GENERATION_MODEL", "generation")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding")
 
-    result = run_index_worker("browsenet", "test", {"operation": "index"})
+    result = run_index_worker("lightrag", "test", {"operation": "index"})
 
     assert result["stats"] == {"documents": 2}
     assert "official index progress" in capsys.readouterr().err

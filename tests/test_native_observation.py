@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel
 
 from models.external_research.extraction_contract import ExtractionAudit, audit_evidence, validate_audit_evidence
-from models.external_research.native_observation import PROFILE, observed_chat_type, observe_hippo, ObservedYoutuClient
+from models.external_research.native_observation import PROFILE, observed_chat_type, observe_hippo
 
 
 @pytest.mark.parametrize('content', ['{"named_entities":[{"entity":"A"}]}', '{"named_entities":', '', 'explanation\n("entity"<|>A)'])
@@ -57,25 +57,6 @@ def test_hippo_does_not_repair_dict_entities_or_retry_length(tmp_path):
     assert openie.llm_model.infer([], max_new_tokens=512) is result
     assert calls == [{'messages':[], 'max_new_tokens':512}]
     validate_audit_evidence(audit_evidence(audit))
-
-
-def test_youtu_does_not_inject_schema_or_retry_empty_output(tmp_path):
-    calls = []
-    reply = SimpleNamespace(choices=[])
-    def create(**kwargs):
-        calls.append(kwargs)
-        return reply
-    client = ObservedYoutuClient(SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))), 5, tmp_path/'audit.jsonl')
-    assert client.chat.completions.create(messages=[]) is reply
-    assert calls == [{'messages':[]}]
-    assert client.retry_stats()['adapter_retries'] == 0
-    validate_audit_evidence(audit_evidence(client._audit))
-
-
-def test_youtu_accepts_empty_native_answer_and_empty_graph():
-    from models.external_research.drivers.youtu_graphrag import validate_native_query_result, derive_native_source_reachability
-    assert validate_native_query_result({'initial_answer':'', 'chunk_ids':[], 'chunk_contents':[]}, {}) == ('', [])
-    assert derive_native_source_reachability([], {}, {'doc'})['unreachable_source_ids'] == ['doc']
 
 
 @pytest.mark.parametrize('asynchronous', [False, True])

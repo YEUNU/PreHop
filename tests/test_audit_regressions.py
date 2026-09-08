@@ -62,7 +62,7 @@ def test_snapshot_preflight_reads_and_checks_real_manifest(tmp_path, monkeypatch
         check_paper_runtime._check_local_snapshot('linear_rag', 'encoder', 'test/encoder', 'revision')
 
 
-@pytest.mark.parametrize('strategy', ['lightrag', 'hipporag2', 'gfm_rag', 'linear_rag', 'youtu_graphrag'])
+@pytest.mark.parametrize('strategy', ['lightrag', 'hipporag2', 'gfm_rag', 'linear_rag'])
 def test_primary_child_can_resolve_actual_parent_environment(monkeypatch, strategy):
     _transport(monkeypatch, strategy)
     environment = _runtime_env(strategy)
@@ -84,11 +84,11 @@ def test_paper_gateway_rejects_vendor_mismatch_and_userinfo(monkeypatch, endpoin
 
 
 def test_native_unseeded_adapter_initializes_without_generic_synthesis(monkeypatch):
-    _transport(monkeypatch, 'youtu_graphrag')
+    _transport(monkeypatch, 'lightrag')
     from models.external_research import adapter
     monkeypatch.setattr(adapter, 'get_llm_client', lambda _: pytest.fail('native adapter created generic client'))
     monkeypatch.setattr(adapter, 'OfficialQueryWorker', lambda *args: object())
-    instance = adapter.ExternalResearchAdapter('youtu_graphrag')
+    instance = adapter.ExternalResearchAdapter('lightrag')
     assert instance.llm is None
 
 
@@ -99,7 +99,7 @@ def test_paper_model_override_fails_before_request(monkeypatch):
         VLLMClient('unregistered')
 
 
-@pytest.mark.parametrize('strategy', ['lightrag', 'youtu_graphrag'])
+@pytest.mark.parametrize('strategy', ['lightrag'])
 @pytest.mark.parametrize('existing', ['result', 'index'])
 def test_target_verifier_observes_run_environment_before_reuse(tmp_path, strategy, existing):
     for folder in ('scripts', 'core', 'bin'):
@@ -121,7 +121,7 @@ def test_target_verifier_observes_run_environment_before_reuse(tmp_path, strateg
     uv.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
                   'if sys.argv[1] == "-c": os.execv(sys.executable,[sys.executable,*sys.argv[1:]])\n'
                   'keys=["RAG_RUN_ID","RAG_LLM_SEED","RAG_INDEX_NAMESPACE","RAG_INDEX_STATS_PATH",'
-                  '"RAG_LIGHTRAG_OUTPUT_ROOT","RAG_YOUTU_GRAPHRAG_OUTPUT_ROOT","RAG_EMBEDDING_BATCH_SIZE"]\n'
+                  '"RAG_LIGHTRAG_OUTPUT_ROOT","RAG_EMBEDDING_BATCH_SIZE"]\n'
                   'with open(os.environ["TRACE"],"a") as f: f.write(json.dumps({"argv":sys.argv[1:],'
                   '"env":{k:os.environ.get(k) for k in keys}})+"\\n")\n')
     uv.chmod(0o755)
@@ -136,7 +136,7 @@ def test_target_verifier_observes_run_environment_before_reuse(tmp_path, strateg
     assert calls[0]['argv'][0] == 'scripts/check_paper_runtime.py'
     call = calls[1]
     assert call['env']['RAG_RUN_ID'] == run_id
-    assert call['env']['RAG_LLM_SEED'] == ('' if strategy == 'youtu_graphrag' else '42')
+    assert call['env']['RAG_LLM_SEED'] == ''
     assert call['env']['RAG_INDEX_NAMESPACE'] == f'musique_{run_id}'
     assert call['env']['RAG_INDEX_STATS_PATH'] == f'data/index_stats/{strategy}_musique_{run_id}.json'
     assert call['env'][get_strategy(strategy).output_env] == f'{get_strategy(strategy).output_default}/runs/{run_id}'
@@ -172,15 +172,6 @@ def test_current_corpus_revalidates_manifest_and_actual_source_bytes(tmp_path, m
         admission.current_corpus_identity('multihoprag')
 
 
-@pytest.mark.parametrize('triple', [[None, None, None], ['', 'r', 'b'], ['a', 'r', 'b', 'extra'], ['a', 1, 'b']])
-def test_youtu_invalid_only_source_cannot_hide_behind_valid_source(triple):
-    from models.external_research.drivers.youtu_graphrag import classify_native_extraction
-    observations = [classify_native_extraction({'triples': [['a', 'r', 'b']]}),
-                    classify_native_extraction({'triples': [triple]})]
-    assert observations == ['success', 'malformed']
-    assert sum(value == 'success' for value in observations) != len(observations)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize('method', ['generate_response', 'generate_eval_json'])
 async def test_per_request_model_override_never_reaches_client(monkeypatch, method):
@@ -202,46 +193,16 @@ async def test_per_request_model_override_never_reaches_client(monkeypatch, meth
     assert calls == []
 
 
-@pytest.mark.asyncio
-async def test_youtu_multiseed_entry_reaches_snapshot_without_seeded_judge(tmp_path, monkeypatch):
-    from cli import benchmark
-    from models.external_research import adapter
-    _transport(monkeypatch, 'youtu_graphrag')
-    monkeypatch.setattr(benchmark.RAGConfig, 'JUDGE_ENABLED', False)
-    monkeypatch.setattr(benchmark.RAGConfig, 'LLM_SEED', benchmark.RAGConfig.LLM_SEED)
-    queries = tmp_path / 'queries.json'
-    queries.write_text(json.dumps([{'_id': 'q1', 'query': 'Question?', 'ground_truth': 'Answer', 'dataset': 'multihoprag'}]))
-    monkeypatch.setattr(benchmark, '_validate_benchmark_data', lambda rows, _: rows)
-    monkeypatch.setattr(benchmark, '_evaluation_scope', lambda *args: ('subset', 2556))
-    monkeypatch.setattr(benchmark, '_load_benchmark_corpus_manifest', lambda *args: None)
-    monkeypatch.setattr(benchmark, '_latest_index_manifest_metadata', lambda *args: None)
-    monkeypatch.setattr(benchmark, '_validate_corpus_index_fingerprint', lambda *args: 'subset')
-    monkeypatch.setattr(adapter, 'OfficialQueryWorker', lambda *args: object())
-    monkeypatch.setattr(benchmark, 'get_llm_client', lambda *args: pytest.fail('disabled judge created a core client'))
-    class ReachedSnapshot(Exception):
-        pass
-    async def snapshot(*args, **kwargs):
-        assert os.environ.get('RAG_LLM_SEED', '') == ''
-        assert benchmark.RAGConfig.LLM_SEED is None
-        assert os.environ['RAG_SEED'] == '42'
-        assert isinstance(args[0], adapter.ExternalResearchAdapter)
-        raise ReachedSnapshot
-    monkeypatch.setattr(benchmark, '_verify_active_index_snapshot', snapshot)
-    with pytest.raises(ReachedSnapshot):
-        await benchmark.run_benchmark_multi_seed(str(queries), 'youtu_graphrag', 'default', seeds=[42],
-                                                 corpus_tag='multihoprag', output_dir=tmp_path / 'results')
-
-
 def test_target_empty_seed_and_native_instruction_survive_dotenv_reload(tmp_path, monkeypatch):
     from dotenv import load_dotenv
 
     from core.paper_policy import configure_target_environment
-    _transport(monkeypatch, 'youtu_graphrag')
+    _transport(monkeypatch, 'lightrag')
     fixture = tmp_path / 'synthetic.env'
     fixture.write_text('RAG_LLM_SEED=42\nEMBEDDING_QUERY_INSTRUCTION=shared_default\n')
-    configure_target_environment('youtu_graphrag', 'musique', 'run')
+    configure_target_environment('lightrag', 'musique', 'run')
     load_dotenv(fixture, override=False)
-    assert InferenceTransport.resolve('youtu_graphrag').generation_seed is None
+    assert InferenceTransport.resolve('lightrag').generation_seed is None
     configure_target_environment('hipporag2', 'musique', 'run')
     load_dotenv(fixture, override=False)
     transport = InferenceTransport.resolve('hipporag2')
@@ -278,7 +239,7 @@ def test_gate_rejects_bound_fabricated_canary_without_actual_policy(tmp_path, mo
 def test_submission_verifier_resolves_and_restores_each_target(tmp_path, monkeypatch):
     from scripts import verify_submission_consistency as verifier
     monkeypatch.setattr(verifier, 'ROOT', tmp_path)
-    monkeypatch.setattr(verifier, 'STRATEGIES', ('hipporag2', 'youtu_graphrag'))
+    monkeypatch.setattr(verifier, 'STRATEGIES', ('hipporag2', 'lightrag'))
     for dataset in verifier.DATASETS:
         for strategy in verifier.STRATEGIES:
             path = tmp_path / verifier._artifact_path('campaign', dataset, strategy)
@@ -299,7 +260,7 @@ def test_submission_verifier_resolves_and_restores_each_target(tmp_path, monkeyp
         assert run_id == f'campaign-{dataset}-{strategy}'
         assert output.endswith('/runs/' + run_id)
         if strategy == 'hipporag2':
-            assert seed == '42' and instruction == ''
+            assert seed == '' and instruction == ''
         else:
             assert seed == ''
 
@@ -318,10 +279,10 @@ async def test_paper_request_uses_transport_seed_after_late_environment_resoluti
                                  chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
     client = VLLMClient()
     await client._create_generation_request(fake, {'model': 'gemma-4-31b-it'})
-    assert calls[0]['seed'] == 42
-    with pytest.raises(RuntimeError, match='request seed'):
-        await client._create_generation_request(fake, {'model': 'gemma-4-31b-it', 'seed': 41})
-    assert len(calls) == 1
+    assert 'seed' not in calls[0]
+    await client._create_generation_request(fake, {'model': 'gemma-4-31b-it', 'seed': 41})
+    assert len(calls) == 2
+    assert all('seed' not in call for call in calls)
 
 
 @pytest.mark.parametrize('entrypoint', ['target', 'submission', 'gate'])

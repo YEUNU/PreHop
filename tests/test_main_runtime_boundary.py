@@ -22,7 +22,7 @@ def test_main_runtime_checks_current_interpreter_and_frozen_lock(monkeypatch):
     assert calls[1][1]['env']['UV_PROJECT_ENVIRONMENT'] == str(Path(sys.prefix).absolute())
 
 
-@pytest.mark.parametrize('strategy', ['prehop', 'naive', 'ms_graphrag', 'lightrag', 'hipporag2', 'gfm_rag', 'linear_rag', 'youtu_graphrag'])
+@pytest.mark.parametrize('strategy', ['prehop', 'naive', 'ms_graphrag', 'lightrag', 'hipporag2', 'gfm_rag', 'linear_rag'])
 def test_dependency_conflicts_reject_main_strategies_before_success(monkeypatch, strategy):
     monkeypatch.setattr('core.paper_policy.validate_paper_semantic_environment', lambda *args: None)
     monkeypatch.setattr(runtime.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=1, stderr='incompatible packages'))

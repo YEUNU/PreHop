@@ -1,17 +1,13 @@
 import asyncio
-import concurrent.futures
 import json
 import os
 import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 
 import pytest
 
 from core.execution_profile import apply_execution_profile, execution_profile
-from models.external_research.drivers.youtu_concurrency import SynchronizedYoutuSchema
 
 
 def profile():
@@ -22,7 +18,7 @@ def profile():
         'lightrag_document_concurrency': 32, 'youtu_document_concurrency': 32}}
 
 
-def test_profile_binds_producers_and_semantic_youtu_policy(tmp_path, monkeypatch):
+def test_profile_binds_producers_and_validates_prefetch(tmp_path, monkeypatch):
     p = tmp_path / 'profile.json'
     p.write_text(json.dumps(profile()))
     monkeypatch.setenv('RAG_EXECUTION_PROFILE', str(p))
@@ -34,57 +30,17 @@ def test_profile_binds_producers_and_semantic_youtu_policy(tmp_path, monkeypatch
     assert LightRAGDriver._producer_options() == {'max_parallel_insert': 32}
     result = subprocess.run([sys.executable, '-c', '''
 from core.strategy_registry import get_strategy, PAPER_TRANSPORT
-p = dict(get_strategy('youtu_graphrag').paper_index_policy)
-assert p['construction_concurrency'] == 32
-assert p['schema_update_policy'] == 'locked-native-v1'
 assert PAPER_TRANSPORT.generation_concurrency == 60
 '''], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     old = execution_profile()['sha256']
-    value = profile(); value['settings']['youtu_document_concurrency'] = 16
+    value = profile(); value['settings']['lightrag_document_concurrency'] = 16
     p.write_text(json.dumps(value))
     assert execution_profile()['sha256'] != old
     value['settings']['index_prefetch_documents'] = 1
     p.write_text(json.dumps(value))
     with pytest.raises(ValueError, match='prefetch'):
         execution_profile()
-
-
-def test_schema_updates_do_not_lose_types_and_llm_work_remains_parallel(tmp_path):
-    path = tmp_path / 'schema.json'
-    path.write_text(json.dumps({'Nodes': []}))
-    class Native:
-        def __init__(self):
-            self.schema = {'Nodes': []}
-        def _get_construction_prompt(self, chunk):
-            return json.dumps(self.schema)
-        def _update_schema_with_new_types(self, update):
-            value = json.loads(path.read_text())
-            time.sleep(.002)  # expose native read/modify/write race
-            value['Nodes'].extend(update['nodes'])
-            path.write_text(json.dumps(value))
-            self.schema = value
-    class Builder(SynchronizedYoutuSchema, Native):
-        pass
-    builder = Builder()
-    barrier = threading.Barrier(8)
-    def document(i):
-        json.loads(builder._get_construction_prompt(str(i)))
-        barrier.wait(timeout=5)  # stand-in LLM call, outside schema critical section
-        builder._update_schema_with_new_types({'nodes': [str(i)]})
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        list(pool.map(document, range(8)))
-    assert set(json.loads(path.read_text())['Nodes']) == set(map(str, range(8)))
-    assert builder.schema == json.loads(path.read_text())
-
-
-def test_swallowed_native_schema_write_failure_is_rejected():
-    class Native:
-        def __init__(self): self.schema = {'Nodes': []}
-        def _update_schema_with_new_types(self, _): pass
-    class Builder(SynchronizedYoutuSchema, Native): pass
-    with pytest.raises(RuntimeError, match='did not persist'):
-        Builder()._update_schema_with_new_types({'nodes': ['new']})
 
 
 def test_lightrag_adapter_joins_native_background_workers():
@@ -133,25 +89,3 @@ assert driver.loop.is_closed()
         env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     assert result.returncode == 0, result.stderr
     assert 'Task was destroyed' not in result.stderr
-
-
-def test_youtu_adapter_uses_io_workers_and_joins_before_native_graph_stages(monkeypatch):
-    from types import SimpleNamespace
-
-    from models.external_research.drivers.youtu_concurrency import BoundedYoutuDocuments
-    monkeypatch.setattr('os.cpu_count', lambda: 1)
-    barrier = threading.Barrier(8)
-    finished = []
-    class Builder(BoundedYoutuDocuments):
-        config = SimpleNamespace(construction=SimpleNamespace(max_workers=8))
-        def process_document(self, document):
-            barrier.wait(timeout=5)  # fails if a CPU+4 clamp is accidentally restored
-            finished.append(document)
-        def triple_deduplicate(self):
-            assert set(finished) == set(range(16))
-            finished.append('dedup')
-        def process_level4(self):
-            assert finished[-1] == 'dedup'
-            finished.append('community')
-    Builder().process_all_documents(list(range(16)))
-    assert finished[-2:] == ['dedup', 'community']

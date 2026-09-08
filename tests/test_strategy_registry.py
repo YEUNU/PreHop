@@ -23,7 +23,7 @@ def test_primary_matrix_and_legacy_admission_are_centralized():
         "linear_rag",
     )
     assert "hoprag" in ALL_STRATEGIES
-    assert not {"browsenet", "proprag"} & set(ALL_STRATEGIES)
+    assert not {"browsenet", "proprag", "youtu_graphrag"} & set(ALL_STRATEGIES)
     assert set(RESEARCH_EXTERNAL_STRATEGIES) == {"lightrag", "hipporag2", "gfm_rag", "linear_rag"}
 
 

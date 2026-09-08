@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 from core.admission import admission_bindings
-from core.paper_policy import canonical_semantic_index_policy
 from scripts import verify_submission_consistency
 from scripts.verify_submission_consistency import (
     _approved_ablation_policy,
@@ -48,25 +47,8 @@ def test_semantic_config_detects_model_setting_change():
     assert _semantic_model_config_sha256(first) != _semantic_model_config_sha256(second)
 
 
-def test_youtu_cross_dataset_config_ignores_only_dataset_specific_policy():
-    hotpot = _payload(revision="same", namespace="hotpot")
-    musique = _payload(revision="same", namespace="musique")
-    hotpot["index_provenance"]["policy"] = canonical_semantic_index_policy("youtu_graphrag", "multihoprag")
-    musique["index_provenance"]["policy"] = canonical_semantic_index_policy("youtu_graphrag", "musique")
-    hotpot["index_provenance"]["policy"]["schema_path"] = "/runtime/schemas/hotpot.json"
-    musique["index_provenance"]["policy"]["schema_path"] = "/runtime/schemas/musique.json"
-    assert _semantic_model_config_sha256(hotpot, "youtu_graphrag") == _semantic_model_config_sha256(
-        musique, "youtu_graphrag"
-    )
-    musique["index_provenance"]["policy"]["retrieval_top_k"] = 19
-    assert _semantic_model_config_sha256(hotpot, "youtu_graphrag") != _semantic_model_config_sha256(
-        musique, "youtu_graphrag"
-    )
-
-
 def test_local_embedding_revisions_match_registry_contract():
     assert _expected_embedding_config("linear_rag")[2] == "e8c3b32edf5434bc2275fc9bab85f82640a19130"
-    assert _expected_embedding_config("youtu_graphrag")[2] == "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 
 
 def test_registered_official_revision_rejects_consistently_stale_artifact():

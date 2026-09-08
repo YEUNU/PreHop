@@ -7,7 +7,7 @@ from scripts.paper_campaign import build_steps, check_plan
 from utils.provenance import code_provenance
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUTS = ('lightrag', 'hipporag2', 'gfm_rag', 'linear_rag', 'youtu_graphrag')
+OUTPUTS = ('lightrag', 'hipporag2', 'gfm_rag', 'linear_rag')
 
 
 def test_actual_clean_worktree_native_outputs_preserve_provenance_and_plan(tmp_path, monkeypatch):

@@ -194,7 +194,7 @@ async def test_actual_four_paths_through_typed_transport_and_sdk(monkeypatch, in
         await rag._role_body_list_ranking('Who visited?', [{'id': 'Ada', 'text': 'Ada visited.'}], 1)
         assert [p['response_format']['json_schema']['name'] for p in requests] == [
             f'prehop_index_{index_schema}_v1', 'prehop_rewrite_legacy_v1', 'prehop_refine_legacy_v1', 'prehop_ranking_v1']
-        assert all(p['seed'] == 42 and p['model'] == 'gemma-4-31b-it' for p in requests)
+        assert all('seed' not in p and p['model'] == 'gemma-4-31b-it' for p in requests)
         from core.generation_profiles import request_settings
         for request, consumer in zip(requests, ('question_index', 'rewrite', 'refine', 'ranking'), strict=True):
             assert all(request[key] == value for key, value in request_settings(consumer).items())

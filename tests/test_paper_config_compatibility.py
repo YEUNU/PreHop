@@ -53,7 +53,7 @@ def test_materialized_schema_change_invalidates_bundle(monkeypatch):
     assert first != structured_bundle_sha256()
 
 
-@pytest.mark.parametrize('field,value', [('generation_revision', 'other-model'), ('generation_seed', 7),
+@pytest.mark.parametrize('field,value', [('generation_revision', 'other-model'),
     ('embedding_dimensions', 128), ('method_contract', 'unknown-version'), ('prompt_configuration_sha256', 'bad')])
 def test_actual_index_validator_rejects_changed_semantics(field, value):
     from core.paper_policy import canonical_operational_policy

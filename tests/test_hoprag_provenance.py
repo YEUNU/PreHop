@@ -133,21 +133,13 @@ def test_hoprag_cache_validator_rejects_corruption(monkeypatch, mutation, messag
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("payload", "error", "message"),
-    [
-        (("not-a-list", []), TypeError, "expected list"),
-        ((["valid", None], []), TypeError, "index 1.*expected str"),
-        ((["valid", "  "], []), ValueError, "index 1 is blank"),
-    ],
-)
-async def test_hoprag_retriever_contract_rejects_malformed_results(payload, error, message):
+async def test_hoprag_retrieval_preserves_native_result_order():
     adapter = object.__new__(HopRAGAdapter)
     adapter._retriever = MagicMock()
-    adapter._retriever.search_docs.return_value = payload
-
-    with pytest.raises(error, match=message):
-        await adapter._run_official_retrieval("query")
+    context = ["second", "first"]
+    adapter._retriever.search_docs.return_value = (context, [.9, .8])
+    assert await adapter._run_official_retrieval("query") is context
+    adapter._retriever.search_docs.assert_called_once_with("query")
 
 
 @pytest.mark.asyncio
@@ -237,8 +229,8 @@ async def test_hoprag_workflow_prefers_title_for_doc_and_keeps_source():
             ],
         )
     )
-    adapter.llm = MagicMock()
-    adapter.llm.generate_response = AsyncMock(return_value="answer")
+    adapter._pipeline = SimpleNamespace(rag=MagicMock(return_value=("answer", ["supporting evidence"], [1.0])))
+    adapter._lookup_nodes_by_text = AsyncMock(return_value=adapter.retrieve.return_value[1])
 
     _answer, sources, _trace = await adapter.run_workflow("question")
 
@@ -253,7 +245,7 @@ async def test_hoprag_workflow_prefers_title_for_doc_and_keeps_source():
     ]
 
 
-def test_hoprag_musique_edge_groups_resolve_same_title_by_paragraph_identity(tmp_path, monkeypatch):
+def test_hoprag_edge_groups_use_whole_corpus_independent_of_gold_queries(tmp_path, monkeypatch):
     staged_dir = tmp_path / "staged"
     staged_dir.mkdir()
     first_id = paragraph_identity("Repeated", "first body")
@@ -279,7 +271,7 @@ def test_hoprag_musique_edge_groups_resolve_same_title_by_paragraph_identity(tmp
 
     groups = _build_official_edge_groups("musique", staged_dir, [first_file, second_file])
 
-    assert groups == {"2hop__same-title": [first_file, second_file]}
+    assert groups == {"whole-corpus": [first_file, second_file]}
 
 
 def test_hoprag_snapshot_prune_is_scoped_and_clears_edges_for_rebuild():
