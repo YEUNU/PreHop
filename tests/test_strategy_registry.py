@@ -15,15 +15,16 @@ def test_primary_matrix_and_legacy_admission_are_centralized():
     assert PRIMARY_STRATEGIES == (
         "prehop",
         "naive",
+        "hoprag",
         "ms_graphrag",
         "lightrag",
         "hipporag2",
         "gfm_rag",
         "linear_rag",
-        "youtu_graphrag",
     )
-    assert {"browsenet", "hoprag", "proprag"} <= set(ALL_STRATEGIES)
-    assert set(RESEARCH_EXTERNAL_STRATEGIES) == {"lightrag", "hipporag2", "gfm_rag", "linear_rag", "youtu_graphrag"}
+    assert "hoprag" in ALL_STRATEGIES
+    assert not {"browsenet", "proprag"} & set(ALL_STRATEGIES)
+    assert set(RESEARCH_EXTERNAL_STRATEGIES) == {"lightrag", "hipporag2", "gfm_rag", "linear_rag"}
 
 
 def test_runtime_revision_repo_and_worker_are_registry_views(monkeypatch, tmp_path):
@@ -38,8 +39,6 @@ def test_runtime_revision_repo_and_worker_are_registry_views(monkeypatch, tmp_pa
 
 def test_license_boundaries_are_explicit():
     assert "GPL" in BY_NAME["linear_rag"].license_note
-    assert "academic" in BY_NAME["youtu_graphrag"].license_note
-    assert BY_NAME["youtu_graphrag"].adapter_variant == "controlled_adapter"
 
 
 def test_strategy_embedding_override_only_applies_to_isolated_worker(monkeypatch):

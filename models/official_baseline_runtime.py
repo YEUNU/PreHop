@@ -368,7 +368,6 @@ class OfficialQueryWorker:
                 response = json.loads(line[len(_RESULT_PREFIX) :])
                 if not response.get("ok"):
                     if response.get("failure_scope") == "target":
-                        from core.benchmark_failures import BenchmarkIntegrityError
                         raise BenchmarkIntegrityError(response.get("error"))
                     raise RuntimeError(f"{self.strategy} official query failed: {response.get('error')}")
                 response["worker_queue_seconds"] = worker_queue_seconds

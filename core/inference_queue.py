@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import select
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +33,8 @@ class QueueServer(ThreadingHTTPServer):
         self.request_queue_size = min(4096, self.handler_capacity)
         self.slots = threading.BoundedSemaphore(self.handler_capacity)
         self.guard = threading.Lock()
+        self.cancelled_runs = set()
+        self.cancelled_requests = 0
         self.rejected_connections = 0
         self.stats = {key: {'requests': 0, 'errors': 0, 'active': 0, 'waiting': 0, 'peak_active': 0,
                                 'queue_seconds': 0.0, 'upstream_seconds': 0.0}
@@ -75,8 +79,9 @@ class QueueServer(ThreadingHTTPServer):
             return {'version': 2 if 'shared' in self.limits else 1,
                     'profile': self.profile, 'limits': self.limits,
                     'rejected_connections': self.rejected_connections,
+                    'cancelled_requests': self.cancelled_requests,
                     'listen_backlog': self.request_queue_size, 'handler_capacity': self.handler_capacity,
-                    'gateway_identity_sha256': hashlib.sha256(self.upstream.encode()).hexdigest(),
+                    'gateway_identity_sha256': getattr(self, 'gateway_identity_sha256', hashlib.sha256(self.upstream.encode()).hexdigest()),
                     'metrics': {key: dict(value) for key, value in self.stats.items()}}
 
 
@@ -92,10 +97,30 @@ class QueueHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.forward()
 
+    def disconnected(self):
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            return bool(readable) and self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b''
+        except (OSError, ValueError):
+            return True
+
     def forward(self):
         server = self.server
         if self.headers.get('Authorization') != f'Bearer {server.token}':
             self.send_error(401)
+            return
+        if self.command == 'POST' and self.path == '/v1/queue-cancel':
+            run_id = self.headers.get('X-Prehop-Run-ID', '')
+            if not run_id or len(run_id) > 256:
+                self.send_error(400, 'Run ID required')
+                return
+            with server.guard:
+                server.cancelled_runs.add(run_id)
+            self.send_response(200)
+            self.send_header('Content-Length', '0')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.close_connection = True
             return
         if self.command == 'GET' and self.path == '/v1/queue-metrics':
             body = json.dumps(server.snapshot()).encode()
@@ -122,6 +147,7 @@ class QueueHandler(BaseHTTPRequestHandler):
         self.connection.settimeout(600)
         body = self.rfile.read(length)
         kind = routes[self.path]
+        run_id = self.headers.get('X-Prehop-Run-ID', '')
         queued = time.perf_counter()
         permit = server.permits.get('shared', server.permits.get(kind)) if kind else None
         metric_keys = ([kind, 'shared'] if 'shared' in server.limits else [kind]) if kind else []
@@ -129,7 +155,33 @@ class QueueHandler(BaseHTTPRequestHandler):
             with server.guard:
                 for key in metric_keys:
                     server.stats[key]['waiting'] += 1
-            permit.acquire()
+            while True:
+                with server.guard:
+                    cancelled = bool(run_id) and run_id in server.cancelled_runs
+                if cancelled or self.disconnected():
+                    with server.guard:
+                        for key in metric_keys:
+                            server.stats[key]['waiting'] -= 1
+                        server.cancelled_requests += 1
+                    self.close_connection = True
+                    if cancelled:
+                        self.send_error(409, 'Run cancelled')
+                    return
+                if permit.acquire(timeout=.1):
+                    # Recheck after acquiring: cancellation may race with release.
+                    with server.guard:
+                        cancelled = bool(run_id) and run_id in server.cancelled_runs
+                    if cancelled or self.disconnected():
+                        permit.release()
+                        with server.guard:
+                            for key in metric_keys:
+                                server.stats[key]['waiting'] -= 1
+                            server.cancelled_requests += 1
+                        self.close_connection = True
+                        if cancelled:
+                            self.send_error(409, 'Run cancelled')
+                        return
+                    break
         started = time.perf_counter()
         if kind:
             with server.guard:
@@ -149,6 +201,13 @@ class QueueHandler(BaseHTTPRequestHandler):
             # Preserve bytes, status and streaming; never follow a vendor redirect.
             with server.client.stream(self.command, server.upstream + self.path[len('/v1'):],
                                       content=body, headers=headers) as response:
+                with server.guard:
+                    cancelled = bool(run_id) and run_id in server.cancelled_runs
+                if cancelled or self.disconnected():
+                    with server.guard:
+                        server.cancelled_requests += 1
+                    status = 200
+                    return
                 status = response.status_code
                 self.send_response(status)
                 for name in ('content-type', 'content-encoding', 'retry-after', 'x-request-id'):

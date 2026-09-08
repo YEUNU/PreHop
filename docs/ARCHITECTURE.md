@@ -27,7 +27,8 @@ closed. Primary research workers receive canonical transport fields and only
 necessary native client credentials; they do not inherit legacy routing aliases.
 
 Target admission establishes the exact run ID, output root, namespace, and
-method generation seed before comparing current and stored policy. Matrix
+recorded inference settings before comparing current and stored policy. New
+paper requests omit the generation seed; historical index seeds remain evidence. Matrix
 execution uses that target exit status, including admission failure. Standalone
 target verification supports `--exact-run-id`. Admission revalidates current
 v2 corpus manifests and source bytes and binds their identity along with the
@@ -36,7 +37,7 @@ result, detail rows, index statistics, runtime, and explicit evidence-contract v
 HippoRAG2 retains its native unprefixed query embeddings and native newline-to-space
 normalization; its method policy records an empty instruction and `{query}`
 template. The injected encoder uses the typed embedding request timeout.
-Youtu's benchmark seed remains separate from its native unseeded generation;
+Evaluation seed 42 is separate from unseeded LLM generation;
 a native-answer adapter cannot silently synthesize a replacement answer.
 
 ## Structured generation contracts
@@ -76,20 +77,15 @@ schema digests also enter inference telemetry. Fresh paper runs use separate
 `data/index_cache/runs/<run>/<strategy>/<dataset>` directories; an existing
 cache cannot satisfy a fresh-index step. Resume retains its own run cache.
 
-External extraction adapters use `native-observation-v1`. HippoRAG2 retains
-native JSON-object requests, parsers, caches and 512/2048-token limits under
-`hipporag2-native-observation-v6`. GFM-RAG retains native JSON mode and
-empty-list fallback. MS responses and glean delimiters are passed unchanged.
-No adapter format retry, entity normalization or response repair is applied.
-
-Youtu uses `youtu-native-agent-observation-v5` and
-`youtu-native-response-v1`. Its constructor SDK observer records responses and
-exceptions without injecting a response schema. Native ontology evolution,
-temperature 0.3, unseeded calls and omitted token cap remain in effect.
-The response-profile digest describes unchanged native call formatting and is
-separate from the starting/evolved ontology digests. Earlier guarded snapshots
-require rebuilding. See [native output handling](RUNTIME_REQUIREMENTS.md#native-output-handling-and-artifact-validation)
-for the authoritative boundary and audit contract.
+External response handling is method-specific. GFM-RAG, MS GraphRAG,
+LightRAG and LinearRAG retain their declared native response paths. New
+HippoRAG2 runs use `strict-extraction-v1`: the adapter requests a structured
+response, validates entity/triple shapes and records bounded format retries.
+HopRAG uses `adapter-json-recovery-v1`: valid JSON is parsed before the native
+cleaner, and invalid return shapes receive bounded retries. Neither intervention
+edits an upstream source file or invents missing facts. Raw responses and
+recovery outcomes remain auditable. See [native output handling](RUNTIME_REQUIREMENTS.md#native-output-handling-and-artifact-validation)
+for the authoritative per-method contract.
 
 Prehop's structured wire format follows the [vLLM structured-output interface](https://docs.vllm.ai/en/latest/features/structured_outputs/).
 Unsupported gateway/backend schema requests fail without an unstructured
@@ -113,18 +109,18 @@ window splitter:
   makes the in-repo Naive path a controlled retrieval baseline rather than a
   claim that Naive RAG has one canonical chunker.
 - Primary external methods retain their upstream indexing units because
-  changing them would no longer be a full-system comparison. BrowseNet,
-  HopRAG, and PropRAG retain theirs as legacy/reserve adapters.
+  changing them would alter the method comparison. HopRAG also retains its
+  native document-internal chunking.
 
 ## Strategy dispatch and indexing branches
 
 `core/strategy_registry.py` is the typed source of truth for primary order,
-legacy support, external repository and revision, worker, output root, license
+supported methods, external repository and revision, worker, output root, license
 note, transport profile, and paper embedding identity. The CLI and shell
 runners consume that registry rather than maintaining independent lists. The
-primary order is Prehop, Naive RAG, MS GraphRAG, LightRAG, HippoRAG2, GFM-RAG,
-LinearRAG, and Youtu-GraphRAG. BrowseNet, HopRAG, and PropRAG remain callable
-legacy/reserve strategies.
+primary order is Prehop, Naive RAG, HopRAG, MS GraphRAG, LightRAG,
+HippoRAG2, GFM-RAG, and LinearRAG. BrowseNet, PropRAG, and Youtu have been
+removed from the registry and model dispatch.
 
 `cli/index.py::run_indexing` obtains a namespace-aware strategy/corpus lock,
 then `run_indexing_unlocked` dispatches as follows:
@@ -146,7 +142,7 @@ strategy == naive
 
 strategy == hoprag
   -> official HopRAG stage 1 node/question generation
-  -> official per-problem edge groups
+  -> whole-corpus edge construction without query/gold grouping
   -> Neo4j node/edge/index writes
 
 strategy == ms_graphrag
@@ -170,23 +166,6 @@ strategy == linear_rag
   -> pinned process-isolated official relation-free Tri-Graph
   -> local MPNet snapshot in the primary official-faithful mode
 
-strategy == youtu_graphrag
-  -> pinned official knowledge-tree construction
-  -> declared controlled native agent entrypoint with output observers
-  -> local MiniLM/NER plus observational provenance sidecars
-
-strategy == browsenet
-  -> isolated official BrowseNet revision
-  -> GLiNER entities + ColBERT entity linking + Graph-of-Chunks
-  -> LiteLLM passage embeddings + file-backed artifacts
-
-strategy == proprag
-  -> isolated official PropRAG revision
-  -> proposition extraction + entity/proposition/passage graph
-  -> LiteLLM embedding stores + file-backed graph artifacts
-
-legacy browsenet | hoprag | proprag
-  -> retained pinned official adapter; never a primary matrix target
 ```
 
 File-backed external methods use a process boundary rather than importing
@@ -204,30 +183,16 @@ external research worker loads one strategy-specific thin driver through the
 typed central registry; it does not rely on placeholder modules in upstream
 checkouts.
 
-LinearRAG's GPL upstream source stays in its external checkout and is never
-copied into the MIT repository. Youtu-GraphRAG's upstream
-academic/research-use terms continue to apply. The primary LinearRAG mode uses
-an exact local MPNet snapshot and pinned `en_core_web_trf`; Youtu-GraphRAG uses
-an exact local MiniLM snapshot and pinned `en_core_web_lg`; GFM-RAG requires
-content-addressed `model.pth` and `config.json`; and Youtu-GraphRAG requires a
-content-addressed schema selected from the pinned checkout. MultiHop-RAG maps
-to upstream `hotpot`; MuSiQue maps to `musique`. The registry records this
-alias/no-chunk policy and the native effective retrieval/filter budget of 20.
-`configs/paper_runtime_requirements.json` records the
-machine-readable requirements, and `scripts/check_paper_runtime.py` validates
-them without reading or printing secrets.
-MuSiQue uses BrowseNet's native decomposition template. Because BrowseNet does
-not provide a MultiHop-RAG template, MultiHop-RAG uses its official HotpotQA
-template without changing the retrieval algorithm. PropRAG's official example
-indexes and queries on one object; the persistent query worker therefore calls
-its cache-aware index entry point once at startup to restore the transient
-proposition maps from the completed artifacts.
+LinearRAG's GPL upstream source stays in its external checkout. Its primary
+mode uses pinned MPNet and `en_core_web_trf`; GFM-RAG retains its
+content-addressed checkpoint and ColBERT entity linker. HopRAG loads the pinned
+checkout through `models/hoprag/native_runtime.py` and uses a separate native
+PaddleNLP POS process. [Runtime requirements](RUNTIME_REQUIREMENTS.md) owns
+the environment layout and revision checks.
 
-The indexer selects all `.txt` and `.md` files. It applies no company or sample
-filter and has no fallback grouping for unsupported datasets. HopRAG accepts
-only the active known
-corpus tags (`multihoprag`, `musique`) because each needs its
-official problem-context grouping; another tag fails explicitly.
+The indexer selects the full prepared corpus without company or sample filters.
+HopRAG accepts `multihoprag` and `musique`; its edge input is the complete
+source corpus and does not consult benchmark queries or gold evidence.
 
 Both preparation scripts atomically publish `corpus_manifest.json` beside the
 corpus. The current manifest schema binds distinct source IDs, source count,
@@ -419,17 +384,8 @@ method-specific staging, declared producer scheduling, and upstream calls:
   configured `infer()` interface uses the typed gateway with the native
   2000-token limit. The pinned MPNet snapshot is downloaded at an exact revision and passed by local
   path for compatibility with the upstream sentence-transformers version.
-- Youtu-GraphRAG stages one MuSiQue paragraph per source, maps the public
-  corpus tag to the explicit upstream dataset alias, and uses native effective
-  `top_k=top_k_filter=20`. The registered `controlled_adapter` calls the pinned
-  `agent_retrieval` entrypoint and observes its final answer and evidence order.
-  Post-answer LLM evaluation is replaced by the common paper metrics. Each fresh
-  worker calls the native `build_indices()` after retriever construction, as
-  the pinned entrypoint does. It records
-  staged coverage, native extraction success, and native source reachability
-  as separate content-bound sidecars without injecting visible markers or
-  changing retrieval/deduplication. Native empty results and swallowed errors
-  remain observable outcomes. Source-mapping integrity errors stop the target.
+- HopRAG retains its native question-linked graph and BFS query path. The adapter
+  preserves source identity and records its JSON recovery intervention separately.
 
 GFM's entity-linker model snapshot remains under its pinned runtime artifacts.
 Its mutable PLAID cache and metadata use the current run's
@@ -784,8 +740,8 @@ rankings.
 
 Prehop begins rewriting only for questions within the fixed input-length
 limit. It can add evidence-conditioned role views while exact identities keep
-changing, then makes one complete-list selection call. The legacy HopRAG
-adapter retains upstream `bfs_node` judgement. MS GraphRAG and the other
+changing, then makes one complete-list selection call. The HopRAG adapter
+retains the native BFS entrypoint with five hops and top-k eight. MS GraphRAG and the other
 primary external methods retain their declared upstream extraction, indexing,
 retrieval, and answer prompts. Those prompts are method behavior, not hidden
 Prehop gates.
@@ -804,37 +760,29 @@ Prehop gates.
 - LinearRAG retains the official relation-free Tri-Graph path and pinned MPNet
   embeddings in the primary official-faithful mode. Its controlled Qwen mode
   is a distinct, currently unadmitted semantic configuration.
-- Youtu-GraphRAG calls the pinned `agent_retrieval` loop with native initial
-  decomposition, up to five IRCoT steps and final answer generation. Observers
-  preserve the final evidence order and `top_k_filter=20`; the common benchmark
-  replaces only post-answer evaluation. MuSiQue staging preserves one prepared
-  paragraph per source. Backbone, transport and parallel-construction adaptations
-  remain declared controlled differences.
+- HopRAG uses native BFS, five hops, top-k eight and the original query prompts;
+  its registered response recovery is an adapter intervention.
 
 Official systems retain their stated search and context budgets, so tables and
 captions state unequal settings. A one-source-one-vector Naive run changes the
 evidence unit and is, if used, a separate chunking sensitivity analysis.
-BrowseNet, HopRAG, and PropRAG keep their previous contracts only as
-legacy/reserve adapters and do not supply primary cells.
+Removed methods do not supply primary comparison cells.
 
 ### Upstream immutability boundary
 
 Pinned external source trees remain clean and immutable. Strategy adapters are
 limited to input normalization, declared producer scheduling, the LiteLLM transport, run-local
-configuration or schema preparation, observational sidecars, and validation
-after a native API call. They do not override upstream retrieval, graph
+configuration or schema preparation, observational sidecars, validation
+after a native API call, and the registered response-recovery exceptions below. They do not override upstream retrieval, graph
 deduplication, serialization, or answer orchestration. A method-defining
 override is a controlled deviation, receives a different semantic fingerprint,
 and is ineligible for an official-faithful primary cell.
 
-This distinction matters for Youtu-GraphRAG. Its native entity and triple
-deduplication may retain only the first chunk identity for repeated evidence.
-The adapter reports `input_chunk_coverage_complete` independently from
-`native_source_reachability_complete`, plus the reachable and unreachable
-counts. It does not add provenance to the graph or alter `_extract_chunk_ids_*`.
-BrowseNet likewise keeps its legacy ColBERT checkpoint in the external
-runtime's `artifacts/` directory and links that artifact into a run-local
-layout; the pinned checkout itself stays clean.
+HopRAG and HippoRAG2 have registered response-recovery interventions, described
+in [runtime requirements](RUNTIME_REQUIREMENTS.md#native-output-handling-and-artifact-validation).
+Their repaired runs must carry those profiles rather than claiming native
+response parsing is unchanged. Retrieval, graph construction and answer
+orchestration remain the declared native paths.
 
 ## Evaluation output contract
 
@@ -870,9 +818,9 @@ and post-query retrieval-artifact inventory. Admission verifies the compact JSON
 projection of full result rows using the separately saved interaction traces,
 including row counts, trace identity and order. Primary source evidence and
 metrics are checked against full main-JSON rows and prepared gold. See
-[Verification repair and evidence](RESULTS.md#verification-repair-and-evidence).
+[Evidence locations](RESULTS.md#evidence-locations).
 Only `admitted` primary artifacts enter quantitative results. Subset and
-legacy/reserve artifacts are development evidence only. Complete-split paired analyses record the evaluated ID
+removed-method artifacts are development evidence only. Complete-split paired analyses record the evaluated ID
 digest and are interpreted as descriptive diagnostics, because the prepared
 splits were also inspected during configuration development.
 The benchmark JSON keeps the machine execution value
@@ -961,7 +909,7 @@ recorded as integrity warnings in the target result rather than silently
 treated as a clean graph.
 
 `index_capacity` records the size of the persisted index that each strategy
-uses during retrieval. Prehop, Naive RAG, and legacy HopRAG retrieve from their
+uses during retrieval. Prehop, Naive RAG, and HopRAG retrieve from their
 strategy-scoped Neo4j nodes, relationships, properties, and search indexes.
 Their recorded value is a versioned logical-payload estimate: vector elements,
 list elements, and graph records are counted at eight bytes, with selected text
@@ -1144,30 +1092,24 @@ work can reach the shared inference queue:
 | HippoRAG2 | Parallel OpenIE, then embedding and graph construction | Sets `openie_max_workers` to the generation cap; retains the native encoder and graph stages. |
 | GFM-RAG | Parallel OpenIE, then local entity linking and checkpoint work | Sets constructor `num_processes` to the cap; the native implementation uses threads. |
 | LinearRAG | Local spaCy NER and MPNet batches | Retains the local pipeline. Native `max_workers` does not parallelize `spacy.pipe`. |
-| Youtu-GraphRAG | Parallel document extraction with an adaptive shared schema | Uses a bounded I/O executor, synchronized schema updates and native response observation. |
+| HopRAG | Independent documents with sequential native chunks | Runs ten document workers; retains native `max_thread_num=1` within each document. |
 
 Prehop uses `models/prehop/parallel_adapter.py` for bounded per-document chunk
 lookahead while retaining original assembly order and the native extractor.
 LightRAG configures its native insertion gate separately from request limits.
-Youtu's bounded I/O executor calls native `process_document` without the native
-scheduler's CPU+4 clamp and joins all documents before native deduplication and
-community stages. A lock protects adaptive schema updates and prompt snapshots;
-LLM calls run outside the lock. Native graph locking, merging and Tree-Comm
-remain in place.
-
-Youtu worker count, `locked-native-v1` schema synchronization and the
-`adapter-bounded-io-v1` scheduler enter semantic identity because parallel
-schema visibility and completion order can change outputs. Its SDK observer
-returns the native response unchanged and adds no format retries. Native
-exceptions remain available to upstream error handling. Native generation
-remains unseeded; parallel builds are not assumed equivalent to serial builds.
+HopRAG's document pool can issue work from ten documents at once. If only one
+long document remains, its native one-worker chunk loop limits request supply.
+A shared request ceiling of 120 does not create additional producers or promise
+GPU saturation. Document completion counters must be checked alongside failure
+records before reporting successfully indexed source coverage.
 
 ### Amortized throughput cost (evidence v3)
 
 The content-bound execution profile and measured cost boundaries are specified
 in [THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md). Each profile campaign owns
-a bounded transparent inference queue. Target executions remain sequential;
-adapter producer settings increase native document parallelism within one target.
+a bounded transparent inference queue. The default measurement limit is one
+target; an explicit limit of two to four permits rolling concurrent jobs. Adapter
+producer settings control work within each target.
 Producer behavior is defined in [Adapter producer parallelism](#adapter-producer-parallelism).
 
 `amortized_indexing_cost` divides original index wall time by manifest source

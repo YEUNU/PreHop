@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 FIELDS = ('generation_concurrency', 'embedding_batch_size', 'embedding_concurrency', 'benchmark_concurrency')
@@ -91,18 +93,46 @@ def apply_execution_profile(environment=None):
 
 
 def exclusive_measurement(function):
-    """Reject overlapping throughput targets before their measurement starts."""
+    """Own an exclusive measurement, or one of the explicitly shared slots."""
     import functools
 
     @functools.wraps(function)
     async def wrapped(*args, **kwargs):
         if not execution_profile()['sha256']:
             return await function(*args, **kwargs)
-        import fcntl
-        with Path(f'/tmp/prehop-measured-target-{os.getuid()}.lock').open('a+') as handle:  # noqa: ASYNC230 - local nonblocking ownership check
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise RuntimeError('Another measured target is active; do not mix target workloads') from exc
+        strategy = inspect.signature(function).bind_partial(*args, **kwargs).arguments.get('strategy', 'core')
+        with measurement_slot(strategy):
             return await function(*args, **kwargs)
     return wrapped
+
+
+@contextmanager
+def measurement_slot(strategy='core'):
+    """Keep exclusive runs isolated; shared runs still require the owned queue."""
+    import fcntl
+
+    capacity = os.environ.get('RAG_MEASUREMENT_MAX_TARGETS', '1')
+    if capacity not in {'1', '2', '3', '4'}:
+        raise ValueError('Measurement target capacity must be between 1 and 4')
+    shared = int(capacity) > 1
+    if shared and require_queue(strategy) is None:
+        raise RuntimeError('Shared measurements require a validated owned queue')
+    with ExitStack() as stack:
+        handle = stack.enter_context(Path(f'/tmp/prehop-measured-target-{os.getuid()}.lock').open('a+'))
+        try:
+            fcntl.flock(handle, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError('Another measured target is active; do not mix target workloads') from exc
+        if shared:
+            for slot in range(int(capacity)):
+                candidate = Path(f'/tmp/prehop-measured-target-{os.getuid()}-slot-{slot}.lock').open('a+')  # noqa: SIM115 - transferred to ExitStack after lock acquisition
+                try:
+                    fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    candidate.close()
+                else:
+                    stack.enter_context(candidate)
+                    break
+            else:
+                raise RuntimeError('All shared measurement slots are occupied')
+        yield

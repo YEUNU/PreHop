@@ -102,7 +102,6 @@ class LinearRAGDriver:
             spacy_model=str(canonical_semantic_env("RAG_LINEAR_RAG_SPACY_MODEL", registry_policy["spacy_model"])),
             working_dir=str(output_dir / "artifacts"),
             batch_size=positive_env("RAG_EMBEDDING_BATCH_SIZE", 16),
-            max_workers=positive_env("RAG_LINEAR_RAG_NER_WORKERS", 1),
             retrieval_top_k=int(canonical_semantic_env("RAG_LINEAR_RAG_TOP_K", registry_policy["retrieval_top_k"])),
             use_vectorized_retrieval=bool(canonical_semantic_env("RAG_LINEAR_RAG_VECTORIZED", registry_policy["vectorized_retrieval"])),
         )
@@ -133,9 +132,17 @@ class LinearRAGDriver:
         }
 
     def query(self, question: str) -> dict[str, Any]:
+        return self.query_batch([question])[0]
+
+    def query_batch(self, questions: list[str]) -> list[dict[str, Any]]:
         if self.engine.graph.vcount() == 0:
             self.engine.index(self.passages)
-        result = self.engine.qa([{"question": question, "answer": ""}])[0]
+        results = self.engine.qa([{"question": question, "answer": ""} for question in questions])
+        if len(results) != len(questions):
+            raise BenchmarkIntegrityError("LinearRAG native QA returned an incomplete batch")
+        return [self._query_result(result) for result in results]
+
+    def _query_result(self, result: dict[str, Any]) -> dict[str, Any]:
         passages, scores = result["sorted_passage"], result["sorted_passage_scores"]
         if len(passages) != len(scores):
             raise ValueError("LinearRAG returned inconsistent passage/score counts")

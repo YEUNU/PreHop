@@ -216,6 +216,51 @@ def _current_query_identity(dataset: str) -> dict[str, dict[str, Any]]:
     return {str(row["_id"]): row for row in rows}
 
 
+def _approved_generation_revisions(model):
+    """Distinguish a serving alias from the recorded checkpoint revision."""
+    revisions = {model}
+    try:
+        observed = json.loads((ROOT / "configs/serving_observation.json").read_text())["generation"]
+    except (OSError, ValueError, KeyError):
+        return revisions
+    if observed.get("served_model") == model and observed.get("cached_snapshot_revision"):
+        revisions.add(observed["cached_snapshot_revision"])
+    return revisions
+
+
+def _validate_detail_projection(details, compact, traces):
+    from utils.reporting import compact_detail_row
+    if len(compact) != len(details) or len(traces) != len(details):
+        return False
+    for idx, (row, projected, trace) in enumerate(zip(details, compact, traces), start=1):
+        if not isinstance(trace, dict) or not isinstance(trace.get("interaction_trace"), list):
+            return False
+        if any(trace.get(key) != row.get(key, default) for key, default in
+               (("idx", idx), ("query_id", ""), ("query", ""))):
+            return False
+        if projected != compact_detail_row({**row, "interaction_trace": trace["interaction_trace"]}, idx):
+            return False
+    return True
+
+
+def _validate_average_metrics(path, payload, details):
+    import math
+    from core.benchmark_failures import metric_value
+
+    errors = []
+    for field, value in payload.items():
+        if not field.startswith("avg_") or not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        metric = field[len("avg_") :]
+        values = [observation for row in details if isinstance(row, dict)
+                  and (observation := metric_value(row, metric)) is not None]
+        recomputed = sum(values) / len(values) if values else 0.0
+        if not math.isclose(float(value), recomputed, rel_tol=1e-12, abs_tol=1e-12):
+            errors.append(f"{path}: {field}={value}, recomputed={recomputed}")
+
+    return errors
+
+
 def _validate_artifact(
     path: Path,
     payload: dict[str, Any],
@@ -297,12 +342,13 @@ def _validate_artifact(
     expected_embedding, expected_dimensions, expected_embedding_revision = _expected_embedding_config(strategy)
     for field, value in {
         "default": strategy_spec.paper_generation_model,
-        "generation_revision": strategy_spec.paper_generation_model,
         "embedding": expected_embedding,
         "llm_seed": strategy_spec.paper_generation_seed,
     }.items():
         if models.get(field) != value:
             errors.append(f"{path}: models.{field}={models.get(field)!r}, expected {value!r}")
+    if models.get("generation_revision") not in _approved_generation_revisions(strategy_spec.paper_generation_model):
+        errors.append(f"{path}: models.generation_revision is not an approved alias or observed snapshot")
     if models.get("embedding_revision") != expected_embedding_revision:
         errors.append(
             f"{path}: models.embedding_revision={models.get('embedding_revision')!r}, "
@@ -496,25 +542,19 @@ def _validate_artifact(
 
     # Every published average must be reproducible from its admitted detail
     # rows; checking only eligible counts permits silent summary tampering.
-    for field, value in payload.items():
-        if not field.startswith("avg_") or not isinstance(value, (int, float)) or isinstance(value, bool):
-            continue
-        metric = field[len("avg_") :]
-        values = [value for row in details if isinstance(row, dict)
-                  and (value := metric_value(row, metric)) is not None]
-        recomputed = sum(values) / len(values) if values else 0.0
-        if not math.isclose(float(value), recomputed, rel_tol=1e-12, abs_tol=1e-12):
-            errors.append(f"{path}: {field}={value}, recomputed={recomputed}")
+    errors.extend(_validate_average_metrics(path, payload, details))
 
     details_path = (ROOT / path).with_name((ROOT / path).stem + ".details.jsonl")
     try:
         jsonl_rows = [json.loads(line) for line in details_path.read_text(encoding="utf-8").splitlines() if line]
+        traces_path = details_path.with_name((ROOT / path).stem + ".traces.jsonl")
+        trace_rows = [json.loads(line) for line in traces_path.read_text(encoding="utf-8").splitlines() if line]
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         errors.append(f"{path}: invalid details JSONL: {exc}")
     else:
         if len(jsonl_rows) != len(details):
             errors.append(f"{path}: details JSONL row count differs from main artifact")
-        elif jsonl_rows != details:
+        elif not _validate_detail_projection(details, jsonl_rows, trace_rows):
             errors.append(f"{path}: details JSONL row content differs from main artifact")
 
     try:

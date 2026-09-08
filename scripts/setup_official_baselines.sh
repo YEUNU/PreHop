@@ -122,23 +122,6 @@ install_source_package() {
         --constraint "$constraints" "$@"
 }
 
-if [ "$mode" = --legacy ] || [ "$mode" = --all ]; then
-    install_checkout browsenet "${official_repo[browsenet]}" "${official_revision[browsenet]}"
-    uv pip install --python "$runtime_root/browsenet/venv/bin/python" -r "$repo_root/scripts/requirements-browsenet.txt"
-    browsenet_artifact_root="$runtime_root/browsenet/artifacts"
-    browsenet_checkpoint="$browsenet_artifact_root/colbertv2.0"
-    if [ ! -d "$browsenet_checkpoint" ]; then
-        mkdir -p "$browsenet_artifact_root"
-        archive=$(mktemp)
-        curl -fL https://downloads.cs.stanford.edu/nlp/data/colbert/colbertv2/colbertv2.0.tar.gz -o "$archive"
-        tar -xzf "$archive" -C "$browsenet_artifact_root"
-        rm -f "$archive"
-    fi
-
-    install_checkout proprag "${official_repo[proprag]}" "${official_revision[proprag]}"
-    uv pip install --python "$runtime_root/proprag/venv/bin/python" -r "$repo_root/scripts/requirements-proprag.txt"
-fi
-
 if [ "$mode" = --primary ] || [ "$mode" = --all ]; then
 
 install_checkout lightrag "${official_repo[lightrag]}" "${official_revision[lightrag]}" "$(runtime_field lightrag python_version)"
@@ -192,25 +175,7 @@ snapshot_download(repo_id=os.environ["HF_MODEL"], revision=os.environ["HF_REVISI
 PY
 write_snapshot_manifest linear_rag embedding "$linear_model" "$linear_revision"
 
-# Youtu-GraphRAG is licensed for academic/research use only. Running its setup
-# acknowledges that upstream restriction; it is not a production dependency.
-install_checkout youtu_graphrag "${official_repo[youtu_graphrag]}" "${official_revision[youtu_graphrag]}" "$(runtime_field youtu_graphrag python_version)"
-youtu_constraints=$(constraint_path youtu_graphrag)
-uv pip install --python "$runtime_root/youtu_graphrag/venv/bin/python" \
-    --constraint "$youtu_constraints" -r "$runtime_root/youtu_graphrag/source/requirements.txt"
-uv pip install --python "$runtime_root/youtu_graphrag/venv/bin/python" \
-    "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.7.1/en_core_web_lg-3.7.1-py3-none-any.whl"
-"$runtime_root/youtu_graphrag/venv/bin/python" -c 'import spacy; spacy.load("en_core_web_lg")'
-youtu_model_row=$(python3 "$repo_root/core/strategy_registry.py" --local-model-tsv | awk -F '\t' '$1 == "youtu_graphrag" {print $2 "\t" $3}')
-IFS=$'\t' read -r youtu_model youtu_revision <<< "$youtu_model_row"
-HF_MODEL="$youtu_model" HF_REVISION="$youtu_revision" HF_TARGET="$runtime_root/youtu_graphrag/artifacts/embedding" "$runtime_root/youtu_graphrag/venv/bin/python" - <<'PY'
-import os
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id=os.environ["HF_MODEL"], revision=os.environ["HF_REVISION"],
-                  local_dir=os.environ["HF_TARGET"],
-                  ignore_patterns=["onnx/*", "openvino/*", "pytorch_model.bin", "tf_model.h5", "rust_model.ot"])
-PY
-write_snapshot_manifest youtu_graphrag embedding "$youtu_model" "$youtu_revision"
+
 fi
 
 # Freeze the complete resolved environment after every install. Preflight

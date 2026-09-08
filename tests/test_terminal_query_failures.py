@@ -102,6 +102,7 @@ async def test_external_adapter_keeps_native_empty_answer_and_no_evidence():
     from types import SimpleNamespace
     adapter=object.__new__(ExternalResearchAdapter)
     adapter.strategy='gfm_rag'
+    adapter._batcher=None
     adapter._worker=SimpleNamespace(request=lambda payload:{'documents':[],'answer':''})
     answer,sources,trace=await adapter.run_workflow('query')
     assert 'Insufficient evidence' not in answer

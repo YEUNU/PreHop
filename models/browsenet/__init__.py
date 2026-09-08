@@ -1,1 +1,0 @@
-"""BrowseNet comparison strategy."""

@@ -677,6 +677,7 @@ def _write_runtime_stage_stats(
             "dataset_path": dataset_path,
             "timing_seconds": dict(timing_seconds),
             "index_capacity": index_capacity,
+            **({"inference_usage": __import__('models.hoprag.native_runtime',fromlist=['usage_snapshot']).usage_snapshot()} if strategy == 'hoprag' else {}),
             "status": status,
             "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
             "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
@@ -1341,21 +1342,16 @@ async def _run_indexing_unlocked(
         return
 
     if strategy in EXTERNAL_STRATEGIES:
-        if strategy == "browsenet":
-            from models.browsenet.official_indexer import run_official_index
-        elif strategy == "proprag":
-            from models.proprag.official_indexer import run_official_index
-        else:
-            from models.external_research.official_indexer import run_official_index as _run_external_index
+        from models.external_research.official_indexer import run_official_index as _run_external_index
 
-            async def run_official_index(dataset_path, corpus_tag, corpus_manifest):
-                return await _run_external_index(
-                    strategy,
-                    dataset_path,
-                    corpus_tag,
-                    corpus_manifest,
-                    index_policy=_resolved_index_policy(strategy, model_id, corpus_tag or "default"),
-                )
+        async def run_official_index(dataset_path, corpus_tag, corpus_manifest):
+            return await _run_external_index(
+                strategy,
+                dataset_path,
+                corpus_tag,
+                corpus_manifest,
+                index_policy=_resolved_index_policy(strategy, model_id, corpus_tag or "default"),
+            )
 
         official_started = time.perf_counter()
         timing = {}

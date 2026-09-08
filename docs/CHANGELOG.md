@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-09-09 — Apply the shared GFM-RAG QA timeout
+
+The GFM-RAG adapter overrides the native per-call 60-second timeout with the
+common 600-second transport setting. Native source, prompts and retry counts
+remain unchanged. The discarded partial benchmark was removed and a fresh
+benchmark launched from the retained completed index. Targeted tests passed
+(33), including the timeout regression; the pinned native call path was also
+verified with an intercepted SDK request.
+
+## 2026-09-09 — Expand shared execution slots
+
+Measurement locks and the rolling benchmark scheduler now accept capacities
+from one to four. The active repair controller uses three slots and preserves
+the two existing indexing processes. The shared generation/embedding request
+limit remains 120; four-job throughput has not been validated.
+
+## 2026-09-09 — Repair adapters and update the comparison set
+
+Integrated the pinned HopRAG adapter into the main repository and made HopRAG
+primary. Removed BrowseNet, PropRAG and Youtu model implementations and setup
+paths. Upstream source files remain unchanged.
+
+New paper requests omit the LLM generation seed; evaluation and sampling retain
+seed 42. Historical index seeds and original costs remain in their evidence.
+Removed source/configuration change gates from index dispatch and replaced the
+active rolling controller while preserving its two running index processes.
+Artifact, corpus, runtime integrity and admission checks remain separate.
+
+Enabled declared HopRAG JSON/return-shape recovery and HippoRAG2 structured
+extraction. The repair suite passed 108 tests; offline replay parsed all 57,716
+saved HopRAG responses as JSON. These checks do not establish full-run success.
+Repaired jobs are queued for fresh execution, with status tracked in RESULTS.
+
+Updated the result register and manuscript to use the five retained admitted
+MultiHop-RAG runs, replacing superseded LightRAG/MS GraphRAG partial tables.
+Original result, detail and index-stat bindings remain unchanged. Current
+architecture and runtime contracts supersede earlier response-observation-only
+and legacy-model policies; older entries remain chronological history.
+
 ## 2026-09-08 — Batch LinearRAG queries and repair result verification
 
 The adapter now coalesces concurrent LinearRAG questions into the original QA

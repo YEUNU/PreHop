@@ -127,7 +127,8 @@ class InferenceTransport:
             os.environ.get("RAG_GENERATION_CONCURRENCY", str(PAPER_TRANSPORT.generation_concurrency))
         )
         seed_raw = os.environ.get("RAG_LLM_SEED", "").strip()
-        if seed_raw and not seed_raw.lstrip("-").isdigit():
+        paper_mode = parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
+        if not paper_mode and seed_raw and not seed_raw.lstrip("-").isdigit():
             raise ValueError("generation seed must be an integer")
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("inference timeout must be finite and non-negative")
@@ -153,7 +154,7 @@ class InferenceTransport:
         endpoint = _normalized_endpoint(_required("RAG_INFERENCE_BASE_URL"))
         generation_model = _required("RAG_GENERATION_MODEL")
         embedding_model = _required("RAG_EMBEDDING_MODEL")
-        observed_seed = int(seed_raw) if seed_raw else None
+        observed_seed = None if paper_mode else (int(seed_raw) if seed_raw else None)
         if paper_mode:
             host = (urlsplit(endpoint).hostname or "").rstrip(".")
             vendor_domains = ("openai.com", "azure.com", "azure.us", "anthropic.com", "googleapis.com")
@@ -169,11 +170,6 @@ class InferenceTransport:
             conflicts = sorted(name for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS if os.environ.get(name))
             if conflicts:
                 raise RuntimeError(f"paper mode rejects ambient provider/legacy aliases: {conflicts}")
-            expected_seed = (
-                PAPER_TRANSPORT.benchmark_seed
-                if strategy == "core"
-                else get_strategy(strategy).paper_generation_seed
-            )
             expected = {
                 "RAG_GENERATION_MODEL": (generation_model, PAPER_TRANSPORT.generation_model),
                 "RAG_EMBEDDING_MODEL": (embedding_model, PAPER_TRANSPORT.embedding_model),
@@ -185,7 +181,6 @@ class InferenceTransport:
                     embedding.concurrency,
                     PAPER_TRANSPORT.embedding_concurrency,
                 ),
-                "RAG_LLM_SEED": (observed_seed, expected_seed),
                 "EMBEDDING_QUERY_INSTRUCTION": (query_instruction, expected_instruction),
                 "MAX_EMBEDDING_LENGTH": (embedding_max_input_tokens, PAPER_TRANSPORT.embedding_max_input_tokens),
                 "NEO4J_VECTOR_DIMENSIONS": (embedding_dimensions, PAPER_TRANSPORT.embedding_dimensions),

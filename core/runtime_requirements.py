@@ -58,6 +58,10 @@ def runtime_identity(strategy: str) -> dict[str, Any]:
         "python": str(Path(sys.executable).absolute()),
         "installed_sha256": hashlib.sha256(json.dumps(installed, separators=(",", ":")).encode()).hexdigest(),
     }
+    if strategy == 'hoprag':
+        main_runtime['pos_runtime_freeze'] = identity(root / 'data/runtime_envs/hoprag-paper-20260908/pos-env.freeze.txt')
+        main_runtime['main_runtime_freeze'] = identity(root / 'data/runtime_envs/hoprag-paper-20260908/main-env.freeze.txt')
+        main_runtime['upstream_revision'] = get_strategy(strategy).revision
     return {
         "main_runtime": main_runtime,
         "runtime_freeze": identity(freeze_path),

@@ -65,7 +65,7 @@ _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
 _OUTPUT_ROOT = Path(os.environ.get("RAG_HOP_OUTPUT_ROOT", "data/hoprag_output"))
 _SNAPSHOT_LABEL = "RAGIndexSnapshot"
 _SNAPSHOT_VERSION = 2
-_CACHE_FORMAT_VERSION = 2
+_CACHE_FORMAT_VERSION = 3
 _PAGE_MARKER_RE = re.compile(r"^-+\s*Page\s+\d+\s*-+$", re.IGNORECASE)
 
 
@@ -385,6 +385,11 @@ class _VLLMEmbedClient:
             out.extend(self._request_batch(batch))
 
         arr = np.asarray(out, dtype=np.float32)
+        if normalize_embeddings:
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            if np.any(norms == 0):
+                raise ValueError("HopRAG embedding has zero norm")
+            arr = arr / norms
         return arr[0] if single else arr
 
     def _request_batch(self, batch: list[str]) -> list[list[float]]:
@@ -578,170 +583,10 @@ def _install_optional_stubs() -> None:
 
 
 def _setup_hoprag_modules(corpus_tag: str) -> None:
-    """Prep sys.path + override config + tool BEFORE HopBuilder imports."""
-    _install_optional_stubs()
-    if str(_HOPRAG_ROOT) not in sys.path:
-        sys.path.insert(0, str(_HOPRAG_ROOT))
-
-    # Upstream config.py prints its baked-in demo configuration at import time
-    # (a demo dataset + a localhost model).  It is replaced immediately below and is
-    # never used, so suppress that misleading vendor-only line in run logs.
-    with contextlib.redirect_stdout(io.StringIO()):
-        config = importlib.import_module("config")
-
-    config.local_base = _GEN_API_BASE
-    config.local_key = _GEN_API_KEY
-    config.local_model_name = _GEN_MODEL_NAME
-    config.query_generator_model = _GEN_MODEL_NAME
-    config.traversal_model = _GEN_MODEL_NAME
-    config.default_gpt_model = _GEN_MODEL_NAME
-
-    config.embed_model = "qwen3_embed_via_vllm"
-    config.embed_model_dict = {"qwen3_embed_via_vllm": "(vllm-served)"}
-    config.embed_dim = _EMBED_DIM
-    config.signal = "\n\n"
-    config.max_thread_num = max(1, int(os.environ.get("RAG_HOP_MAX_THREADS", "8")))
-
-    safe = index_namespace(corpus_tag)
-    config.dataset_name = corpus_tag
-    config.corpus_tag = corpus_tag
-    config.node_name = f"HO_{safe}"
-    config.edge_name = f"HO_{safe}_p2a"
-    config.generator_label = f"HO_{safe}_"
-    config.node_dense_index_name = f"HO_{safe}_node_dense_idx"
-    config.edge_dense_index_name = f"HO_{safe}_edge_dense_idx"
-    config.node_sparse_index_name = f"HO_{safe}_node_sparse_idx"
-    config.edge_sparse_index_name = f"HO_{safe}_edge_sparse_idx"
-
-    # Cypher templates were string-concat'd with the OLD edge_name at module
-    # load. Rebuild with the new one.
-    config.create_pending2answerable = (
-        "MATCH (a), (b) WHERE id(a) = $id1 AND id(b) = $id2 "
-        f"CREATE (a)-[r:{config.edge_name} "
-        "{keywords: $keywords, embed: $embed, question: $answerable_question}]->(b)"
-    )
-    config.create_abstract2answerable = (
-        "MATCH (a), (b) WHERE id(a) = $abstract_id AND id(b) = $id2 "
-        f"CREATE (a)-[r:{config.edge_name} "
-        "{keywords: $keywords, embed: $embed, question: $answerable_question}]->(b)"
-    )
-
-    # Reflect the external model in upstream's `local_model_name` field so
-    # `_get_chat_completion`
-    # routes to our vLLM rather than gpt.
-    config.deployment_sign = {
-        "gpt": {
-            "base": getattr(config, "gpt_base", ""),
-            "key": getattr(config, "gpt_key", ""),
-            "default_model": "gpt-4o-mini",
-        },
-        config.local_model_name: {"base": config.local_base, "key": config.local_key},
-    }
-
-    # Round-robin across multiple gen endpoints when RAG_HOP_GEN_API_BASES has
-    # more than one URL. Health-checks each endpoint first; only live servers
-    # enter the cycle. Monkey-patches tool._get_chat_completion (thread-safe).
-    if len(_GEN_API_BASES) >= 1:
-        _install_round_robin_patch(config)
-
-    # Neo4j connection from our env.
-    config.neo4j_url = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-    config.neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
-    config.neo4j_password = os.environ.get("NEO4J_PASSWORD", "")
-    config.neo4j_dbname = os.environ.get("NEO4J_DATABASE", "neo4j")
-
-    # Patch tool to use vLLM embeddings instead of local SentenceTransformer.
-    import tool
-
-    # Upstream ``try_run`` returns (None, None, None) after exhausting its
-    # retries. Callers unpack different tuple shapes, so the sentinel turns
-    # the real generation error into a misleading NoneType/unpack error.
-    # Re-raise the last exception after the exact configured attempt count.
-    config.max_try_num = _INTERNAL_RETRIES
-    tool.max_try_num = _INTERNAL_RETRIES
-
-    def _strict_try_run(func, *args, **kwargs):
-        last_error = None
-        for attempt in range(1, _INTERNAL_RETRIES + 1):
-            try:
-                return func(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001 - preserve upstream retry boundary
-                last_error = exc
-                with open(tool.exception_log_path, "a", encoding="utf-8") as handle:
-                    handle.write(f"Exception: {exc}\n")
-                    handle.write(f"Attempt: {attempt}/{_INTERNAL_RETRIES}\n")
-                    handle.write(f"Commandline: {sys.argv}\n")
-                if attempt < _INTERNAL_RETRIES:
-                    time.sleep(3)
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("HopRAG retry wrapper exited without a result")
-
-    tool.try_run = _strict_try_run
-
-    embed_client = _VLLMEmbedClient(_EMBED_API_BASE, _EMBED_MODEL_NAME, _EMBED_DIM)
-    tool.load_embed_model = lambda _name: embed_client
-    tool.get_doc_embeds = lambda documents, model: model.encode(
-        documents,
-        normalize_embeddings=True,
-    ).tolist()
-
-    # Replace paddlenlp-based POS tagging with spaCy. Original keeps content
-    # words (nouns/proper-nouns/verbs/adj) and drops function words. Without
-    # this, get_ner_eng falls back to character-level splitting (we saw
-    # keywords like [' ', '0', '2', 'B'] in the smoke), which trashes
-    # sparse_similarity in HopBuilder.create_edge.
-    tool.get_ner_eng = _spacy_ner_eng
-
-    # Fix: try_run() returns (None, None, None) on failure, but get_question_list
-    # callers unpack only 2 values → ValueError: too many values to unpack.
-    # Root cause: tool.try_run hardcodes a 3-tuple on exhausted retries, but
-    # _get_chat_completion with keys=["Question List"] normally returns 2 values.
-    # Patch get_question_list directly so exhausted retries fail the document
-    # instead of silently dropping every affected chunk from the graph.
-
-    def _safe_get_question_list(extract_template, sentences, query_generator):
-        last_error: Exception | None = None
-        for attempt in range(1, _QUESTION_RETRIES + 1):
-            try:
-                result = tool.get_chat_completion(
-                    [{"role": "user", "content": extract_template.format(sentences=sentences)}],
-                    keys=["Question List"],
-                    model=query_generator,
-                    max_tokens=4096,
-                )
-                return _validated_question_list(result)
-            except (TypeError, ValueError) as exc:
-                last_error = exc
-                if attempt < _QUESTION_RETRIES:
-                    logger.warning(
-                        "HopRAG question generation validation failed (%d/%d): %s; retrying",
-                        attempt,
-                        _QUESTION_RETRIES,
-                        exc,
-                    )
-                    time.sleep(min(2 ** (attempt - 1), 4))
-        logger.warning(
-            "HopRAG question generation remained invalid after %d attempts (%s); "
-            "using the official empty-list skip for this paragraph",
-            _QUESTION_RETRIES,
-            last_error,
-        )
-        return []
-
-    tool.get_question_list = _safe_get_question_list
-    import HopBuilder as _HB_tmp
-
-    _HB_tmp.get_question_list = _safe_get_question_list
-
-    _patch_hopbuilder_for_pandas2()
+    from models.hoprag.native_runtime import setup
+    setup(corpus_tag)
+    # This scheduler only invokes the unchanged per-document native function.
     _patch_create_nodes_offline_parallel()
-    _patch_create_nodes_cache_batched()
-    _patch_create_edge_batched()
-
-
-_SPACY_NLP = None
-_KEEP_POS = {"NOUN", "PROPN", "VERB", "ADJ", "NUM"}
 
 
 def _spacy_ner_eng(text: str):
@@ -1476,127 +1321,11 @@ def _patch_create_edge_batched() -> None:
 # ---------------------------------------------------------------- driver
 
 
-def _build_official_edge_groups(
-    corpus_tag: str,
-    staged_dir: Path,
-    staged_files: list[str],
-) -> dict[str, list[str]]:
-    """Build the small per-problem document groups used by official HopRAG.
-
-    Upstream HopRAG creates grouped edges within each problem's
-    supplied context instead of taking a corpus-wide Cartesian product. The
-    normalized benchmark files retain only gold evidence, so use the raw
-    dataset context when available and fall back to the normalized evidence
-    list for MultiHop-RAG (which upstream does not publish a loader for).
-    """
-    import html
-
-    title_to_files: dict[str, list[str]] = {}
-    paragraph_id_to_file: dict[str, str] = {}
-    for filename in staged_files:
-        path = staged_dir / filename
-        if not path.is_file():
-            continue
-        with open(path, "r", encoding="utf-8") as handle:
-            first_line = handle.readline().strip()
-            second_line = handle.readline().strip()
-        title = first_line.removeprefix("Title: ").strip()
-        if title:
-            title_to_files.setdefault(title, []).append(path.name)
-        paragraph_id = (
-            second_line.removeprefix("Paragraph-ID: ").strip() if second_line.startswith("Paragraph-ID: ") else ""
-        )
-        if paragraph_id:
-            previous = paragraph_id_to_file.setdefault(paragraph_id, path.name)
-            if previous != path.name:
-                raise RuntimeError(f"HopRAG staged paragraph identity is duplicated: {paragraph_id}")
-
-    def _resolve_titles(titles) -> list[str]:
-        resolved = []
-        for raw_title in titles or []:
-            title = html.unescape(str(raw_title or "").strip())
-            matches = title_to_files.get(title, [])
-            if len(matches) > 1:
-                raise RuntimeError(
-                    f"HopRAG cannot resolve title-only evidence with multiple staged documents: {title!r}"
-                )
-            filename = matches[0] if matches else None
-            if filename is None:
-                import re
-
-                safe = re.sub(r'[\\/*?:"<>|]', "_", title).strip()
-                safe = re.sub(r"\s+", "_", safe)[:150] or "untitled"
-                candidate = f"{safe}.txt"
-                if (staged_dir / candidate).is_file():
-                    filename = candidate
-            if filename and filename not in resolved:
-                resolved.append(filename)
-        return resolved
-
-    def _resolve_musique_paragraphs(paragraphs) -> list[str]:
-        from scripts.datasets.prepare_musique import clean_wiki_markup, paragraph_identity
-
-        resolved = []
-        for paragraph in paragraphs or []:
-            title = clean_wiki_markup(str(paragraph.get("title") or "").strip())
-            body = clean_wiki_markup(str(paragraph.get("paragraph_text") or "").strip())
-            if not title or not body:
-                continue
-            identity = paragraph_identity(title, body)
-            filename = paragraph_id_to_file.get(identity)
-            if filename is None:
-                candidate = f"musique_{identity.removeprefix('musique:')}.txt"
-                if (staged_dir / candidate).is_file():
-                    filename = candidate
-            if filename is None:
-                raise RuntimeError(f"HopRAG cannot resolve MuSiQue paragraph identity: {identity}")
-            if filename not in resolved:
-                resolved.append(filename)
-        return resolved
-
-    groups: dict[str, list[str]] = {}
-    tag = corpus_tag.lower()
-    if tag == "musique":
-        raw_path = Path("data/musique_ans_v1.0_dev.jsonl")
-        if not raw_path.is_file():
-            raise FileNotFoundError(f"MuSiQue raw context is required for official HopRAG edges: {raw_path}")
-        with open(raw_path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                row = json.loads(line)
-                if row.get("answerable") is False:
-                    continue
-                docs = _resolve_musique_paragraphs(row.get("paragraphs") or [])
-                if docs:
-                    groups[str(row.get("id"))] = docs
-    elif tag == "multihoprag":
-        raw_path = Path("data/MultiHopRAG.json")
-        if not raw_path.is_file():
-            raise FileNotFoundError(f"MultiHop-RAG source is required for HopRAG edges: {raw_path}")
-        with open(raw_path, "r", encoding="utf-8") as handle:
-            rows = json.load(handle)
-        for idx, row in enumerate(rows):
-            docs = _resolve_titles(evidence.get("title") for evidence in (row.get("evidence_list") or []))
-            if docs:
-                groups[str(idx)] = docs
-    else:
-        raise ValueError(f"HopRAG has no official edge grouping for unsupported corpus={corpus_tag!r}")
-
-    if not groups:
-        raise ValueError(f"HopRAG found no edge-construction groups for corpus={corpus_tag}")
-    grouped_docs = {doc for docs in groups.values() for doc in docs}
-    missing_docs = sorted(set(staged_files) - grouped_docs)
-    if missing_docs:
-        raise RuntimeError(
-            "HopRAG official edge groups do not cover every staged document: "
-            f"missing={len(missing_docs)}, sample={missing_docs[:5]}"
-        )
-    logger.info(
-        "HopRAG official edge groups: %d problems, %d/%d referenced documents",
-        len(groups),
-        len(grouped_docs),
-        len(staged_files),
-    )
-    return groups
+def _build_official_edge_groups(corpus_tag: str, staged_dir: Path, staged_files: list[str]) -> dict[str, list[str]]:
+    """Pass the corpus to native create_edge without consulting query/gold files."""
+    if not staged_files or any(not (staged_dir / name).is_file() for name in staged_files):
+        raise ValueError("HopRAG edge input requires a complete staged corpus")
+    return {"whole-corpus": list(staged_files)}
 
 
 def _prune_stale_hoprag_sources(builder, staged_files: list[str], edge_type: str) -> bool:

@@ -56,7 +56,7 @@ class StrategySpec:
     adapter_variant: str = "official_faithful"
     transport_profile: str = "openai_compatible_litellm"
     paper_generation_model: str = PAPER_TRANSPORT.generation_model
-    paper_generation_seed: int | None = 42
+    paper_generation_seed: int | None = None
     paper_embedding_model: str = PAPER_TRANSPORT.embedding_model
     paper_embedding_dimensions: int | None = PAPER_TRANSPORT.embedding_dimensions
     local_embedding_revision: str | None = None
@@ -82,7 +82,7 @@ def _external(
     adapter_variant: str = "official_faithful",
     transport_profile: str = "openai_compatible_litellm",
     paper_embedding_model: str = PAPER_TRANSPORT.embedding_model,
-    paper_generation_seed: int | None = 42,
+    paper_generation_seed: int | None = None,
     paper_embedding_dimensions: int | None = PAPER_TRANSPORT.embedding_dimensions,
     local_embedding_revision: str | None = None,
     paper_index_policy: tuple[tuple[str, Any], ...] = (),
@@ -181,7 +181,19 @@ STRATEGIES = (
         ),
         paper_query_policy=_CORE_QUERY_POLICY + (("structured_output_profile", None, "prehop-json-schema-v3"),),
     ),
-    StrategySpec("hoprag"),
+    StrategySpec("hoprag", primary=True,
+        repository="https://github.com/LIU-Hao-2002/HopRAG.git",
+        revision="a6e425b8f8a5d8131dd7805db40185ac76e09903",
+        output_env="RAG_HOP_OUTPUT_ROOT", output_default="data/hoprag_output",
+        paper_generation_seed=None,
+        paper_index_policy=(("native_observation_profile", "adapter-json-recovery-v1"), ("adapter_response_attempts", 3),
+                            ("edge_input_scope", "whole-corpus-without-query-or-gold"),
+                            ("native_chunk_workers", 1), ("document_workers", 10), ("native_retry_attempts", 2),
+                            ("pos_tagger", "paddlenlp-2.8.1-pos_tagging")),
+        paper_index_environment=(("document_workers", "RAG_HOP_DOC_WORKERS", 10),),
+        paper_query_policy=(("max_hop", None, 5), ("topk", None, 8),
+                            ("entry_type", None, "node"), ("tol", None, 20),
+                            ("traversal", None, "bfs"), ("mode", None, "common"))),
     StrategySpec(
         "ms_graphrag",
         primary=True,
@@ -202,22 +214,6 @@ STRATEGIES = (
         paper_index_environment=(
             ("embedding_dimensions", "RAG_MS_EMBED_DIM", 2560),
         ),
-    ),
-    _external(
-        "browsenet",
-        "https://github.com/bisect-group/BrowseNet.git",
-        "ba82eeceb089104de2999d00b744cd02583fe8a4",
-        primary=False,
-        worker="official_baseline_worker.py",
-        adapter_variant="controlled_remote_embedding_legacy",
-    ),
-    _external(
-        "proprag",
-        "https://github.com/ReLink-Inc/PropRAG.git",
-        "3ec103488abd5589e569ee0fdd6e0c7067e5b783",
-        primary=False,
-        worker="official_baseline_worker.py",
-        adapter_variant="controlled_schema_transport_legacy",
     ),
     _external(
         "lightrag",
@@ -257,8 +253,8 @@ STRATEGIES = (
             ("qa_top_k", 5),
             ("openie_mode", "online"),
             ("semantic_config_id", "hipporag2-native-observation-v6"),
-            ("ner_normalization_profile", "native-parser-v1"),
-            ("extraction_validation_profile", "native-observation-v1"),
+            ("ner_normalization_profile", "explicit-entity-name-v1"),
+            ("extraction_validation_profile", "strict-extraction-v1"),
             ("openie_generation_profile", "json-object-v2"),
             ("openie_response_format", "json_object"),
             ("openie_ner_max_tokens", 512),
@@ -363,78 +359,7 @@ STRATEGIES = (
             ("vectorized_retrieval", "RAG_LINEAR_RAG_VECTORIZED", False),
         ),
     ),
-    _external(
-        "youtu_graphrag",
-        "https://github.com/TencentCloudADP/youtu-graphrag.git",
-        "d982b5a8df1a269ee0e57a1d0ebd55feb719832c",
-        primary=True,
-        worker="research_baseline_worker.py",
-        driver="models.external_research.drivers.youtu_graphrag:YoutuGraphRAGDriver",
-        license_note="upstream academic/research-use terms apply",
-        adapter_variant="controlled_adapter",
-        paper_generation_seed=None,
-        paper_embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-        paper_embedding_dimensions=384,
-        local_embedding_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
-        paper_index_policy=(
-            ("semantic_config_id", "youtu-native-agent-observation-v5"),
-            ("extraction_validation_profile", "native-observation-v1"),
-            ("extraction_generation_profile", "youtu-native-response-v1"),
-            ("backbone_mode", "controlled_adapter"),
-            ("native_retrieval", True),
-            ("construction_mode", "agent"),
-            ("query_mode", "agent"),
-            ("agentic_reflection", True),
-            ("agent_max_steps", 5),
-            ("construction_concurrency", 1),
-            ("generation_seed_control", "upstream_native_unseeded"),
-            ("retrieval_top_k", 20),
-            ("retrieval_top_k_filter", 20),
-            ("native_answer_retry_attempts", 20),
-            ("official_embedding_model", "sentence-transformers/all-MiniLM-L6-v2"),
-            ("official_embedding_revision", "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"),
-        ),
-        paper_index_environment=(
-            ("backbone_mode", "RAG_YOUTU_BACKBONE_MODE", "controlled_adapter"),
-            ("native_retrieval", "RAG_YOUTU_NATIVE_RETRIEVAL", True),
-            ("construction_mode", "RAG_YOUTU_CONSTRUCTION_MODE", "agent"),
-            ("query_mode", "RAG_YOUTU_QUERY_MODE", "agent"),
-            ("agentic_reflection", "RAG_YOUTU_AGENTIC_REFLECTION", True),
-            ("construction_concurrency", "RAG_YOUTU_CONSTRUCTION_CONCURRENCY", 1),
-            ("retrieval_top_k", "RAG_YOUTU_TOP_K", 20),
-            ("retrieval_top_k_filter", "RAG_YOUTU_TOP_K_FILTER", 20),
-            (
-                "official_embedding_model",
-                "RAG_YOUTU_MINILM_MODEL",
-                "sentence-transformers/all-MiniLM-L6-v2",
-            ),
-            (
-                "official_embedding_revision",
-                "RAG_YOUTU_MINILM_REVISION",
-                "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
-            ),
-            ("no_chunk", "RAG_YOUTU_NO_CHUNK", True),
-        ),
-        dataset_aliases=(("multihoprag", "hotpot"), ("musique", "musique")),
-    ),
 )
-
-if execution_profile()['version'] >= 2:
-    # Adaptive schema evolution makes producer concurrency a semantic as well
-    # as an operational input. Never label the parallel index serial-equivalent.
-    _workers = execution_profile()['settings']['youtu_document_concurrency']
-    STRATEGIES = tuple(replace(spec,
-        paper_index_policy=tuple((key, _workers if key == 'construction_concurrency' else value)
-                                 for key, value in spec.paper_index_policy)
-                           + (('schema_update_policy', 'locked-native-v1'),
-                              ('construction_scheduler', 'adapter-bounded-io-v1'),
-                              ('construction_format_retry_profile', 'youtu-controlled-format-retry-v1'),
-                              ('construction_max_total_attempts', PAPER_TRANSPORT.retry_attempts),
-                              ('construction_sdk_retries', 0),
-                              ('construction_retry_budget_scope', 'transport-and-format-shared')),
-        paper_index_environment=tuple((key, env, _workers if key == 'construction_concurrency' else value)
-                                      for key, env, value in spec.paper_index_environment))
-        if spec.name == 'youtu_graphrag' else spec for spec in STRATEGIES)
 
 BY_NAME = {spec.name: spec for spec in STRATEGIES}
 ALL_STRATEGIES = tuple(BY_NAME)

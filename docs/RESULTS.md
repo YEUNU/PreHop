@@ -1,142 +1,133 @@
 # Result Evidence Register
 
-This file is the canonical register for reportable full-run results. Naive and
-Prehop on MultiHop-RAG have passed target admission. Other cells remain pending
-or unavailable. Admission of two targets does not complete the 16-target paper
-matrix or establish statistical significance.
+This register separates retained admitted results from current execution state.
+Five MultiHop-RAG runs have passing admission receipts. The 16-target comparison
+is incomplete; no MuSiQue quality result or repaired HopRAG/HippoRAG2 result is
+claimed here. Strategy order comes from `core/strategy_registry.py`.
 
-Admission binds the current corpus bytes, semantic configuration, execution
-profile and result artifacts. A changed identity requires compatible evidence
-and current verification. Index reuse retains the original indexing cost and
-requires a verified index link plus complete query evaluation.
+## Retained full-run results — 2026-09-09 06:07 KST
 
-This register tracks publication admission. For live indexing progress, read
-the selected campaign's `index-supervisor/status.json`; smoke/index process
-states do not change a publication cell automatically.
+Each row contains all 2,556 MultiHop-RAG queries with zero terminal query
+failures. Retrieval metrics use the same 2,255 eligible questions; official QA
+accuracy and mean query latency use all 2,556 questions. Scores below are
+percentages. Admission receipts were checked against the retained result, detail and
+original index-stat hashes at this snapshot. This is preservation of their original admission, not a claim
+that they were rerun under the new unseeded-generation or repair profiles.
 
-## Execution snapshot (2026-09-08, LinearRAG batch restart)
+| Method | Hits@4 | Hits@10 | MRR@10 | MAP@10 | Official QA accuracy | Mean query latency (s) |
+|---|---:|---:|---:|---:|---:|---:|
+| Naive RAG | 69.36 | 83.90 | 55.20 | 26.35 | 28.91 | 3.1811 |
+| Prehop | 92.42 | 94.90 | 82.00 | 45.22 | 34.23 | 35.1713 |
+| LinearRAG | 81.91 | 85.28 | 67.30 | 34.16 | 55.48 | 33.0635 |
+| MS GraphRAG | 58.27 | 62.48 | 37.82 | 18.68 | 37.56 | 22.8464 |
+| LightRAG | 72.73 | 87.54 | 63.65 | 30.39 | 11.19 | 97.8781 |
 
-Naive and Prehop completed all 2,556 MultiHop-RAG queries with zero query errors.
-The corrected verifier admitted both retained artifacts without changing their
-answers, metrics, or index evidence. Retrieval metrics below use 2,255 eligible
-queries; latency uses all 2,556 queries.
+### Recorded indexing and query costs
 
-| Metric | Naive | Prehop |
-|---|---:|---:|
-| Hits@4 | 69.36% | 92.42% |
-| Hits@10 | 83.90% | 94.90% |
-| MRR@10 | 0.5520 | 0.8200 |
-| MAP@10 | 0.2635 | 0.4522 |
-| Fact recall@4 | 39.96% | 66.53% |
-| Mean query latency (seconds) | 3.1811 | 35.1713 |
-| Query batch wall time (seconds) | 1047.6934 | 11309.8792 |
-| Batch wall time / query (seconds) | 0.4099 | 4.4248 |
+Index times cover each original successful 609-document index. Query batch
+wall time covers the full 2,556-query batch. Wall time per unit is inverse
+throughput; it is distinct from mean individual query latency. These are
+recorded execution costs, not controlled estimates of isolated serving latency.
+Prehop includes enabled trace I/O; local method backbones remain declared.
 
-Batch wall time divided by query count measures inverse throughput, not the
-latency of an individual request. Both runs used benchmark concurrency eight.
+| Method | Index wall (s) | Index wall / document (s) | Query batch wall (s) | Batch wall / query (s) |
+|---|---:|---:|---:|---:|
+| Naive RAG | 119.1448 | 0.1956 | 1047.6934 | 0.4099 |
+| Prehop | 2504.8409 | 4.1130 | 11309.8792 | 4.4248 |
+| LinearRAG | 638.5990 | 1.0486 | 10787.6445 | 4.2205 |
+| MS GraphRAG | 6861.4718 | 11.2668 | 7617.4921 | 2.9802 |
+| LightRAG | 6562.6064 | 10.7760 | 31578.0235 | 12.3545 |
 
-### Verification repair and evidence
+### Evidence locations
 
-The average checker no longer overwrites the aggregate variable when a detail
-metric is ineligible. It checks the compact JSONL projection against full main
-rows and the separately stored query traces, including trace identity and
-order. Generation revision validation distinguishes the serving alias from the
-checkpoint revision recorded in the checked-in serving observation. That
-observation is not proof of an explicitly pinned remote command revision.
+Each directory below contains `admission.json`; its bindings identify the exact
+result, detail rows and original index statistics. The result JSON may retain
+`completed_unadmitted`; the passing bound receipt owns admission status.
 
-Original failed verification receipts remain historical evidence. Successful
-admission receipts are at:
+- Naive RAG: `data/results/multihop-benchmark-first-20260908-multihoprag-naive/`
+- Prehop: `data/results/multihop-benchmark-first-20260908-multihoprag-prehop/`
+- LinearRAG: `data/results/linear-native-batch-v2-20260908-multihoprag-linear_rag/`
+- MS GraphRAG: `data/results/rolling-two-models-20260908-multihoprag-ms_graphrag/`
+- LightRAG: `data/results/rolling-two-models-20260908-multihoprag-lightrag/`
 
-- `data/results/multihop-benchmark-first-20260908-multihoprag-naive/admission.json`
-- `data/results/multihop-benchmark-first-20260908-multihoprag-prehop/admission.json`
+`data/maintenance/documentation-evidence-20260909.json` records the snapshot
+paths, metrics and admission checks for result, detail and index-stat hashes. The retained Prehop/Naive paired
+analysis remains in `tmp/paper-draft-20260908/admitted-results.json` with its
+reproduction script. Its 10,000 seed-42 paired bootstrap resamples describe
+query-sample uncertainty, not run-to-run variation or new comparative tests.
 
-Each receipt binds the retained result, detail rows, original index evidence,
-configuration and verifier provenance. No benchmark regeneration was needed to
-repair these verifier errors.
+## Execution update — 2026-09-09 07:35 KST
 
-### Paired full-split analysis
+GFM-RAG and HopRAG were restarted as `gfm-cancellable-20260909` and
+`hoprag-cancellable-20260909` behind the cancellable front queue. The previous
+600-second GFM attempt and HopRAG canary are superseded, not final results.
+MS GraphRAG retains its original process. Legacy in-flight requests may still
+drain through the original queue; this restart does not establish full recovery.
 
-A paired analysis joins the same 2,255 retrieval-eligible query IDs and uses
-10,000 bootstrap resamples with seed 42. Differences are Prehop minus Naive;
-Hits differences are percentage points. These percentile intervals describe
-this development-inspected query population, not repeated-run variance or a
-confirmatory significance test.
+### Superseded execution update — 2026-09-09 07:20 KST
 
-| Metric | Difference | 95% percentile interval |
-|---|---:|---:|
-| Hits@4 | +23.06 pp | [21.24, 24.88] pp |
-| Hits@10 | +11.00 pp | [9.58, 12.42] pp |
-| MRR@10 | +0.2680 | [0.2505, 0.2853] |
-| MAP@10 | +0.1887 | [0.1799, 0.1972] |
+The 60-second GFM-RAG benchmark attempt was discarded at the user’s request.
+Its partial results and run-local artifact copy were removed; the original
+completed index is retained. The replacement run uses
+`gfm-timeout600-20260909-multihoprag-gfm_rag` and applies the common 600-second
+QA transport deadline. It starts from the first query. LightRAG and MS GraphRAG
+indexing continue, and the rolling capacity remains three.
 
-`tmp/paper-draft-20260908/admitted-results.json` records the admission/result
-bindings and unrounded values. Its companion `collect_results.py` recomputes
-the four primary metrics from all 5,112 full rows against prepared gold,
-verifies the bound result/detail/index-stat hashes, and reproduces the paired
-intervals. It does not modify the retained results or admission receipts.
+### Superseded execution update — 2026-09-09 06:28 KST
 
-### Remaining execution
+The rolling controller now permits three active jobs. It retained both MuSiQue
+index processes and launched GFM-RAG/MultiHop-RAG from the completed index. By 06:29 KST,
+its benchmark worker was writing answer audit records. The shared request limit remains 120. This launch is not
+a completed benchmark result or a measured speedup; four jobs remain untested.
 
-The interrupted serial LinearRAG benchmark is discarded before its replacement
-starts. Its original completed index is retained and copied into a fresh query
-workspace. The adapter coalesces up to eight concurrent questions into the
-unchanged native `qa(questions)` API. Native retrieval remains sequential inside
-that batch; native answer generation uses its existing thread pool. Batch size
-is recorded in query traces. A failed native batch fails its member queries
-without adapter repair or individual retries.
+### Earlier execution snapshot — 2026-09-09 06:07 KST
 
-Read `tmp/current_benchmark_campaign.txt` for the active replacement campaign.
-It runs LinearRAG, LightRAG, MS GraphRAG, Youtu and GFM-RAG in order, then starts
-a fresh MuSiQue index campaign. HippoRAG2/MultiHop-RAG remains unavailable after
-its native index failed on 208 NER chunks. Partial MuSiQue LightRAG indexing is
-historical diagnostic evidence, not continuous indexing cost.
+The shared queue continues to serve two active MuSiQue indexing jobs:
+LightRAG and MS GraphRAG. The replacement controller adopted their existing
+processes. It dispatches GFM-RAG/MultiHop-RAG, HopRAG/MultiHop-RAG,
+HippoRAG2/MuSiQue, LinearRAG/MuSiQue and GFM-RAG/MuSiQue as slots become free.
+This is a timestamped queue plan, not evidence that these retries have started.
+
+- GFM-RAG previously failed before benchmark startup because a prior job's LLM
+  seed reached index validation. Target initialization and seed handling are
+  repaired; the new benchmark is pending.
+- HopRAG's previous full index failed on two documents after native response
+  retries returned three values to a two-value caller. The repaired adapter is
+  integrated into the main repository; its new full run is pending.
+- HippoRAG2/MuSiQue previously failed NER on 20 chunks. The structured extraction
+  adapter is enabled for the next fresh run; no successful full result follows
+  from unit tests alone.
+- The repair suite passed 108 tests. HopRAG's 57,716 saved responses parsed as
+  JSON in offline replay. These are engineering checks, not indexing completion
+  or benchmark admission.
+
+Read `tmp/current_benchmark_campaign.txt` and then
+`data/results/rolling-two-models-20260908/slot-fill-status.json` for live state.
+This controller can mix indexing and benchmark jobs. Older supervisor target
+labels and an earlier failed run's status are historical evidence. Check the
+current controller's active jobs, logs and target receipts before reporting ETA.
+HTTP 200 counts do not establish successful native extraction, and completed
+futures can include failed documents. Do not extrapolate full index time from
+extraction alone when graph construction is still pending.
 
 ## Primary matrix
 
-The primary matrix has 16 independent targets: eight methods on MultiHop-RAG
-and MuSiQue. Its order comes from `core/strategy_registry.py`, which is the
-single source of truth used by the Python CLI and the shell runners.
+| Method | MultiHop-RAG benchmark | MuSiQue benchmark |
+|---|---|---|
+| Prehop | Retained admitted result | No admitted result |
+| Naive RAG | Retained admitted result | No admitted result |
+| HopRAG | Failed index; repaired run pending | No admitted result |
+| MS GraphRAG | Retained admitted result | Indexing |
+| LightRAG | Retained admitted result | Indexing |
+| HippoRAG2 | No admitted result | Failed index; repaired run pending |
+| GFM-RAG | Repaired benchmark pending | No admitted result |
+| LinearRAG | Retained admitted result | No admitted result |
 
-| Strategy | MultiHop-RAG | MuSiQue | Backbone policy |
-|---|---|---|---|
-| Prehop | `admitted` | `planned` | controlled remote generation and embedding |
-| Naive RAG | `admitted` | `planned` | controlled remote generation and embedding |
-| MS GraphRAG | `planned` | `planned` | official pipeline with controlled remote backbone |
-| LightRAG | `planned` | `planned` | official method with controlled remote backbone |
-| HippoRAG2 | `planned` | `planned` | official method with controlled remote backbone |
-| GFM-RAG | `planned` | `planned` | official method with checkpoint-defined local components |
-| LinearRAG | `planned` | `planned` | official-faithful pinned MPNet mode |
-| Youtu-GraphRAG | `planned` | `planned` | controlled native agent API with pinned MiniLM and NER |
-
-The publication experiment ledger uses only these status values. The table
-above records the gated paper-matrix plan, not the separate benchmark-first
-campaign in the execution snapshot. Its `planned` cells do not assert that no
-index or standalone benchmark exists. Within each campaign, statuses mean:
-
-- `planned`: the target has not passed a canary.
-- `canary_passed`: the strategy contract passed a small non-reportable canary.
-- `in_progress`: the complete target is running or has a resumable checkpoint.
-- `completed_unadmitted`: the complete target produced artifacts, but admission
-  has not passed.
-- `admitted`: the complete target passed every check below and may supply
-  numerical results.
-- `failed`: the target or its admission check failed.
-
-A canary is not target completion, and target completion is not admission.
-Only `admitted` artifacts may supply numbers to primary paper tables or
-presentation material. Provisional diagnostics belong only in the timestamped
-execution snapshot above and must not be cited as admitted results. A successful benchmark artifact has execution
-status `completed_unadmitted` until `scripts/verify_paper_target.py` writes a passing
-`data/results/<run-id>/admission.json` record with status `admitted`. That
-record binds the result JSON, complete detail JSONL, exact index-stats path and
-bytes, canonical index-policy digest, runtime freeze and constraints,
-post-query retrieval-artifact inventory and versioned effective model
-configuration. Git and verifier-source hashes remain separate provenance;
-only semantic/evidence contract changes affect compatibility.
-Every strict skip reruns current verification. An unchanged admitted binding
-keeps the original ledger bytes; a changed or invalid binding is rejected and
-preserved, requiring a fresh namespace. Failed probes write separate receipts
-and do not reserve the eventual successful admission ledger.
+An index or canary completion is not a full benchmark admission. Retained
+results keep their original code, seed, profile and cost evidence. New profiles
+must not relabel old artifacts. Source edits no longer block index dispatch,
+but corpus, artifact, semantic compatibility and result-completeness checks
+remain required for reuse and admission.
 
 ## Prepared dataset identities
 
@@ -159,22 +150,18 @@ compatible evidence.
 | Controlled remote embedding model | `qwen3-embedding-4b`, 2,560 dimensions |
 | Remote embedding batch/concurrency | Serial default 16 / 1; explicit profile for throughput campaigns |
 | Query concurrency | Serial default 1; explicit content-bound throughput profile for new campaigns |
-| Seed | 42 |
+| Evaluation / sampling seed | 42 |
+| LLM generation seed | Omitted in new paper runs from 2026-09-09; retained runs keep their recorded values |
 | LLM judge | disabled |
 
 LinearRAG instead uses pinned
 `sentence-transformers/all-mpnet-base-v2` embeddings at 768 dimensions in the
-primary official-faithful mode. Youtu-GraphRAG uses pinned
-`sentence-transformers/all-MiniLM-L6-v2`
-embeddings at 384 dimensions and its pinned NER dependency. GFM-RAG uses the
-embedding and graph components identified by its validated checkpoint and
-configuration files. These declared method components are not mislabeled as
-the controlled remote embedding backbone.
-
-Youtu runs the pinned agent loop. Adapter observers capture its answer and
-final evidence order without changing retrieval or deduplication; the common
-benchmark performs post-answer evaluation. The target remains labelled
-`controlled_adapter` for its declared transport, format and concurrency changes.
+primary official-faithful mode. GFM-RAG retains its checkpoint-defined local
+components. HopRAG uses the pinned upstream runtime with the registered
+`adapter-json-recovery-v1` response intervention. HippoRAG2 uses
+`strict-extraction-v1` for newly launched repaired indexes. These profiles
+describe changed response handling and are not claims of unmodified upstream
+execution. See [runtime requirements](RUNTIME_REQUIREMENTS.md#native-output-handling-and-artifact-validation).
 
 ## Admission checks
 
@@ -197,11 +184,7 @@ before a cell becomes `admitted`:
    v2 keeps paragraph IDs distinct from source filenames.
 4. The completed index has exact source coverage derived from its stored
    retrieval artifacts, plus a content-addressed artifact inventory. A staged
-   input directory alone is not proof of coverage. For Youtu, admission binds
-   exact staged-source-to-native-chunk coverage separately from observational
-   native graph reachability. Native duplicate deduplication may make the
-   latter incomplete; the ledger records that method-native limitation without
-   modifying retrieval or mislabelling input coverage.
+   input directory alone is not proof of coverage.
 5. The semantic configuration ID and hash match the checked-in per-strategy
    specification, including the upstream revision and method-defining model,
    checkpoint, schema, and retrieval settings. Operational throughput settings
@@ -213,7 +196,7 @@ before a cell becomes `admitted`:
    worker-queue delay, and end-to-end latency retain their distinct meanings.
    Missing upstream token or cost telemetry is marked incomplete rather than
    estimated.
-8. External adapters report their native observation profile and bind the
+8. External adapters report their executed observation or recovery profile and bind the
    index-time audit prefix. Missing or changed audit bytes and stale profiles
    prevent admission. Recorded native fallback events do not independently
    invalidate a completed native run; extraction quality is evaluated as produced. Later query appends do
@@ -250,8 +233,7 @@ audit hashes and cost telemetry are still verified independently of quality.
 
 Keep the complete evidence chain for every admitted result and active run.
 The [maintainer policy](../CLAUDE.md#execution-and-repository-hygiene) governs
-generated artifacts and explicit cleanup. Legacy adapter results cannot supply
-primary matrix cells.
+generated artifacts and explicit cleanup. Results from removed strategies cannot supply primary matrix cells.
 
 ## Publication synchronization
 
@@ -262,8 +244,9 @@ primary matrix cells.
 - A dirty tracked worktree is recorded in provenance; it is not silently
   described as clean. Semantic compatibility is decided by the recorded
   configuration and artifact identities; project commit numbers are provenance only.
-- The matrix continues after independent target failures, reports every failed
-  target, and exits nonzero when any target failed.
+- Target failures remain visible even when a scheduler finishes dispatching all
+  jobs. A scheduler state of `completed` is not proof that every target passed;
+  inspect target exit codes and admission receipts.
 
 ## Throughput cost profile
 

@@ -17,6 +17,10 @@ class ExternalResearchAdapter:
         self.llm = None
         self.model_id = model_id
         self._worker = OfficialQueryWorker(strategy, corpus_tag)
+        self._batcher = None
+        if strategy in {"linear_rag", "lightrag", "gfm_rag"}:
+            from .query_batching import NativeQueryBatcher
+            self._batcher = NativeQueryBatcher(self._worker)
 
     def verify_active_snapshot(self, expected_source_ids: list[str], corpus_manifest: dict | None) -> dict:
         return verify_snapshot(self.strategy, self.corpus_tag, expected_source_ids, corpus_manifest)
@@ -34,13 +38,18 @@ class ExternalResearchAdapter:
             seen.add(row["source_id"])
         return documents
 
+    async def _query(self, query: str) -> dict[str, Any]:
+        if self._batcher is not None:
+            return await self._batcher.request(query)
+        return await asyncio.to_thread(self._worker.request, {"operation": "query", "query": query})
+
     async def retrieve(self, query: str) -> list[dict[str, Any]]:
-        response = await asyncio.to_thread(self._worker.request, {"operation": "query", "query": query})
+        response = await self._query(query)
         return self._documents(response)
 
     async def run_workflow(self, query: str, history: list[dict] | None = None) -> tuple[str, list, list]:
         _ = history
-        response = await asyncio.to_thread(self._worker.request, {"operation": "query", "query": query})
+        response = await self._query(query)
         documents = self._documents(response)
         # The worker returns the method-native retrieval cut-off. Do not apply
         # a cross-method top-k here: it would silently change graph traversal
@@ -80,6 +89,9 @@ class ExternalResearchAdapter:
                 "step": f"{self.strategy}_official_retrieval",
                 "retrieved": len(documents),
                 "worker_queue_seconds": float(response.get("worker_queue_seconds", 0.0)),
+                "native_query_batch_size": int(response.get("native_query_batch_size", 1)),
+                **({"native_qa_max_workers": response["native_qa_max_workers"]}
+                   if response.get("native_qa_max_workers") is not None else {}),
             }],
         )
 

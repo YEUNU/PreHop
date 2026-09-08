@@ -10,10 +10,10 @@ for answer synthesis. The incoming/outgoing question formulation follows
 [HopRAG](https://arxiv.org/html/2502.12442v2#S3.S2); Prehop uses its own
 role-aligned retrieval, refinement, and selection policy.
 
-The primary comparison set is Prehop, Naive RAG, MS GraphRAG, LightRAG,
-HippoRAG2, GFM-RAG, LinearRAG, and Youtu-GraphRAG. BrowseNet, HopRAG, and
-PropRAG are callable legacy/reserve adapters; MS GraphRAG is a primary method,
-not a legacy adapter.
+The primary comparison set is Prehop, Naive RAG, HopRAG, MS GraphRAG,
+LightRAG, HippoRAG2, GFM-RAG, and LinearRAG. Strategy identities and pinned
+revisions come from `core/strategy_registry.py`. HopRAG uses a separately
+prepared runtime; see [runtime requirements](docs/RUNTIME_REQUIREMENTS.md#hoprag-runtime).
 
 ## Installation
 

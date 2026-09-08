@@ -37,6 +37,8 @@ VERIFIER_SOURCES = (
     ROOT / "cli/index.py",
     ROOT / "utils/provenance.py",
     ROOT / "utils/metrics.py",
+    ROOT / "utils/reporting.py",
+    ROOT / "configs/serving_observation.json",
     ROOT / "configs/paper_runtime_requirements.json",
     ROOT / "configs/paper_gateway.json",
     Path(__file__).resolve(),

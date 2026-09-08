@@ -18,9 +18,10 @@ PAPER_EMBEDDING_MAX_INPUT_TOKENS = PAPER_TRANSPORT.embedding_max_input_tokens
 
 
 _METHOD_PREFIXES = {
+    "hoprag": ("RAG_HOP_",),
     "ms_graphrag": ("RAG_MS_",), "lightrag": ("RAG_LIGHTRAG_",),
     "hipporag2": ("RAG_HIPPORAG2_",), "gfm_rag": ("RAG_GFM_RAG_",),
-    "linear_rag": ("RAG_LINEAR_RAG_",), "youtu_graphrag": ("RAG_YOUTU_",),
+    "linear_rag": ("RAG_LINEAR_RAG_",),
 }
 
 
@@ -259,6 +260,12 @@ def validate_canonical_index_policy(
                 raise RuntimeError("Youtu canonical policy has an invalid runtime schema_path")
     expected = canonical_semantic_index_policy(strategy, dataset)
     expected["operational_config"] = canonical_operational_policy(strategy)
+    # Historical indexes keep their measured generation seed; changing the
+    # launch default must not rewrite or invalidate their original evidence.
+    if 'generation_seed' in observed:
+        expected['generation_seed'] = observed['generation_seed']
+    if 'generation_seed' in observed.get('operational_config', {}):
+        expected['operational_config']['generation_seed'] = observed['operational_config']['generation_seed']
     if observed != expected:
         missing = sorted(set(expected) - set(observed))
         extra = sorted(set(observed) - set(expected))

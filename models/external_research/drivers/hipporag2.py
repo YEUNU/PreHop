@@ -8,7 +8,7 @@ from typing import Any
 
 from .base import canonical_semantic_env, load_rows, positive_env
 
-NER_NORMALIZATION_PROFILE = "native-parser-v1"
+NER_NORMALIZATION_PROFILE = "explicit-entity-name-v1"
 
 
 def configure_hippo_openie(config: Any) -> None:
@@ -127,7 +127,7 @@ class HippoRAG2Driver:
             index_identity=__import__("os").environ.get("RAG_SEMANTIC_CONFIG_SHA256", registry_policy["semantic_config_id"]),
         )
 
-        from models.external_research.native_observation import observe_hippo as install_extraction_adapter
+        from models.external_research.drivers.hippo_extraction import install_extraction_adapter
 
         self.extraction_audit = install_extraction_adapter(
             self.engine.openie, output_dir / "artifacts" / "extraction_audit.jsonl", transport.retry_attempts
@@ -162,7 +162,7 @@ class HippoRAG2Driver:
             "native_top_k": self.engine.global_config.retrieval_top_k,
             "openie_response_format": self.engine.global_config.response_format,
             "ner_normalization_profile": NER_NORMALIZATION_PROFILE,
-            "extraction_validation_profile": "native-observation-v1",
+            "extraction_validation_profile": "strict-extraction-v1",
             "openie_ner_max_tokens": self.engine.global_config.openie_ner_max_tokens,
             "openie_triple_max_tokens": self.engine.global_config.openie_triple_max_tokens,
         }

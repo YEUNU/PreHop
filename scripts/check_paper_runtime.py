@@ -187,7 +187,11 @@ def check(strategy: str, dataset: str | None = None) -> None:
     if dataset not in {"multihoprag", "musique"}:
         raise RuntimeError("paper runtime preflight requires an explicit supported dataset")
     validate_paper_semantic_environment(strategy, dataset)
-    _check_main_runtime()
+    if strategy == 'hoprag':
+        from models.hoprag.native_runtime import validate_runtime
+        validate_runtime()
+    else:
+        _check_main_runtime()
     if strategy in {"prehop", "naive"}:
         return
     if not isinstance(requirement, dict):

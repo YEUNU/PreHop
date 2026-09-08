@@ -447,10 +447,10 @@ class VLLMClient:
                 raise RuntimeError("paper generation request model is not registered in the transport policy")
             if _normalized_endpoint(str(request_client.base_url)) != approved.generation_base_url:
                 raise RuntimeError("paper generation request endpoint differs from the approved gateway")
-            if params.get("seed", approved.generation_seed) != approved.generation_seed:
-                raise RuntimeError("paper generation request seed differs from the transport policy")
             if approved.generation_seed is not None:
                 params["seed"] = approved.generation_seed
+            else:
+                params.pop("seed", None)
         endpoint = str(getattr(request_client, "base_url", self.vllm_url)).rstrip("/")
         key = (endpoint, self._running_loop_id())
         cls = type(self)

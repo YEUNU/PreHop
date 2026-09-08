@@ -77,8 +77,8 @@ class RAGConfig:
     # ``grounded_v1`` requires source-verifiable structured provenance.
     QUESTION_SCHEMA = os.environ.get("RAG_QUESTION_SCHEMA", "legacy").strip().lower() or "legacy"
     # HOP ANN sends high-dimensional vectors and candidate rows through bounded waves.
-    HOP_GATHER_WAVE = int(os.environ.get("RAG_HOP_GATHER_WAVE", "64"))
-    HOP_BUILD_CONCURRENCY = int(os.environ.get("RAG_HOP_BUILD_CONCURRENCY", "4"))
+    HOP_GATHER_WAVE = int((os.environ.get("RAG_HOP_GATHER_WAVE") or "64"))
+    HOP_BUILD_CONCURRENCY = int((os.environ.get("RAG_HOP_BUILD_CONCURRENCY") or "4"))
     DEFAULT_TOP_K = 12
     CANDIDATE_POOL_MULTIPLIER = int(os.environ.get("RAG_CANDIDATE_POOL_MULTIPLIER", "1"))
     FULLTEXT_ANALYZER = os.environ.get("NEO4J_FULLTEXT_ANALYZER", "english")

@@ -114,7 +114,16 @@ class LightRAGDriver:
                 "native_top_k": self.param.top_k, "document_concurrency": self.engine.max_parallel_insert}
 
     def query(self, question: str) -> dict[str, Any]:
-        result = self.loop.run_until_complete(self.engine.aquery_llm(question, self.param))
+        return self.loop.run_until_complete(self._query_async(question))
+
+    def query_batch(self, questions):
+        async def run():
+            return await asyncio.gather(*(self._query_async(q) for q in questions), return_exceptions=True)
+        return self.loop.run_until_complete(run())
+
+    async def _query_async(self, question):
+        from copy import deepcopy
+        result = await self.engine.aquery_llm(question, deepcopy(self.param))
         if not isinstance(result, dict) or result.get("status") != "success":
             raise RuntimeError(f"LightRAG query failed: {(result or {}).get('message', 'malformed response')}")
         chunks = (result.get("data") or {}).get("chunks")

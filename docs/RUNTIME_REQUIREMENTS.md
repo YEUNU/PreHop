@@ -27,7 +27,8 @@ are not a second supported public configuration interface.
 
 Paper entrypoints validate the actual running environment with `uv pip check`
 and read-only `uv sync --check --frozen --no-install-project --offline` before
-accepting any target, including Prehop and Naive. Gate evidence binds the
+accepting standard targets, including Prehop and Naive. HopRAG instead
+validates its separately prepared runtime and POS environment, described below. Gate evidence binds the
 interpreter path and installed distribution metadata as well as the lockfile.
 Preserve an incompatible environment and prepare a new directory instead:
 
@@ -108,7 +109,7 @@ environments under ignored `data/official_baselines/`. The setup uses the exact
 repository revisions in `core/strategy_registry.py`; it does not copy upstream
 source into this repository. Preflight rejects the wrong revision and dirty
 tracked or untracked upstream files. For LightRAG, HippoRAG2, GFM-RAG,
-LinearRAG, and Youtu, setup also consumes repository-owned reviewed direct constraints
+and LinearRAG, setup also consumes repository-owned reviewed direct constraints
 whose paths and digests are bound by
 `configs/paper_runtime_requirements.json`. Every setup records the complete
 locally resolved environment as `runtime.freeze.txt`; preflight rejects later
@@ -120,9 +121,8 @@ run-local inputs and schemas, configure the approved LiteLLM route, write
 observational sidecars, and validate native artifacts. They may not patch
 method-defining retrieval, deduplication, serialization, or answer methods.
 Such a change is a controlled deviation and requires a separate semantic
-configuration before it can be evaluated. BrowseNet's ColBERT files therefore
-live at `data/official_baselines/browsenet/artifacts/colbertv2.0`, not under
-`source/`.
+configuration before it can be evaluated. The registered HopRAG and HippoRAG2
+response interventions are described under [native output handling](#native-output-handling-and-artifact-validation).
 
 LinearRAG is GPL-licensed upstream and remains process-isolated from this MIT
 tree. Its primary official-faithful mode uses the pinned
@@ -131,28 +131,31 @@ tree. Its primary official-faithful mode uses the pinned
 revision and loaded from its local path. The controlled Qwen mode is a distinct
 semantic configuration and is not a primary result mode until admitted.
 
-Youtu-GraphRAG retains its upstream academic/research-use terms. It uses the
-pinned `sentence-transformers/all-MiniLM-L6-v2` snapshot,
-`en_core_web_lg-3.7.1`, and a dataset-specific schema selected from its pinned
-checkout by the checked-in manifest. MultiHop-RAG maps explicitly to upstream
-`hotpot` and MuSiQue maps to `musique`; their schema paths and SHA-256 values
-are not caller-controlled. Both aliases use the upstream no-chunk document
-path and the native effective retrieval/filter budget of 20.
+### HopRAG runtime
 
-The adapter calls the pinned `agent_retrieval` entrypoint in `agent` mode,
-including initial decomposition, up to five native IRCoT steps and final answer
-generation. Observers capture the final answer and exact chunk order passed to
-the final prompt; they do not reconstruct the agent loop. The post-answer native
-LLM evaluator is replaced by the common paper evaluator. No ground truth is
-passed into native generation. `agent_query_audit.jsonl` records the native
-calls and returned evidence. The target remains `controlled_adapter` because
-of backbone, transport and parallel-construction adaptations.
+HopRAG is a primary method at upstream revision
+`a6e425b8f8a5d8131dd7805db40185ac76e09903`. Its repository-owned adapter now lives
+under `models/hoprag/`; the prepared installation is under ignored
+`data/runtime_envs/hoprag-paper-20260908/`. `main-env` uses Python 3.12 and
+`pos-env` uses Python 3.10 with native PaddleNLP POS tagging. The adapter loads
+the immutable checkout from that installation's `source/third_party/HopRAG`.
+The setup script for packaged external methods does not provision these two
+HopRAG environments automatically.
 
-Youtu retains native graph and retrieval behavior, including its handling of
-duplicate entities and triples. The runtime records complete staged
-chunk/source coverage separately from native graph source reachability. A
-false reachability flag is an observed method-native limitation, not permission
-to patch the graph or reject an otherwise completed native index.
+`models/hoprag/native_runtime.py` checks the upstream revision, tracked source
+bytes, both environment freezes, dependency consistency and the raw POS-model
+hashes in `configs/hoprag_pos_model.json`. `pos_worker.py` compiles generated POS
+files in a fresh run-local directory and records their realized hashes. It does
+not substitute spaCy for the native POS model.
+
+`scripts/run_hoprag_scheduled.py` uses this interpreter for a 16-document
+source-only canary, the full 609-document MultiHop-RAG index, then the full
+benchmark and admission. Its canary runs a real query after verifying the
+index snapshot. It does not use query or gold evidence to group index edges.
+Runtime preflight or offline parser replay alone does not pass that canary.
+The native internal chunk worker remains one; the adapter adds ten document
+workers. Query defaults remain BFS, five hops, top-k eight, node entry, tolerance
+20 and common mode. Response recovery is declared separately below.
 
 GFM-RAG loads `model.pth` and `config.json` from the pinned
 `rmanluo/GFM-RAG-8M` snapshot and loads its ColBERT entity linker from the
@@ -181,7 +184,6 @@ uv run python scripts/check_paper_runtime.py --strategy lightrag --dataset multi
 uv run python scripts/check_paper_runtime.py --strategy hipporag2 --dataset multihoprag
 uv run python scripts/check_paper_runtime.py --strategy gfm_rag --dataset multihoprag
 uv run python scripts/check_paper_runtime.py --strategy linear_rag --dataset multihoprag
-uv run python scripts/check_paper_runtime.py --strategy youtu_graphrag --dataset multihoprag
 ```
 
 The check validates the pinned checkout, declared direct-constraint digest,
@@ -198,6 +200,14 @@ after admission. The target wrapper invokes the same preflight in both
 than an alternative execution path.
 
 ## Live gates
+
+This full-matrix ledger is separate from the active rolling repair controller.
+Removing dispatch source-change gates does not certify old live-gate evidence.
+The generic two-document fixture below is not the current HopRAG canary; the
+HopRAG runner uses 16 real source documents. A complete new matrix ledger must
+reconcile these fixtures and validate the new primary set before claiming all
+16 targets passed. Current target admissions are listed in [RESULTS](RESULTS.md).
+
 
 Static review must be GO before live preparation. The live sequence is clean
 primary setup; all 16 target preflights; one chat probe; embedding at the selected profile batch/concurrency
@@ -247,7 +257,7 @@ selected clean main interpreter (`PYTHON_BIN`):
 ```bash
 "$PYTHON_BIN" scripts/paper_stage_runner.py reattest CAMPAIGN --attempt a1
 # Run the existing preflight and gateway probe stages in ledger order.
-"$PYTHON_BIN" scripts/paper_cold_canary.py CAMPAIGN youtu_graphrag multihoprag --attempt a1
+"$PYTHON_BIN" scripts/paper_cold_canary.py CAMPAIGN lightrag multihoprag --attempt a1
 # Repeat the cold command for every primary strategy and both datasets.
 "$PYTHON_BIN" scripts/paper_stage_runner.py cold-aggregate CAMPAIGN --attempt a1
 "$PYTHON_BIN" scripts/paper_stage_runner.py recovery CAMPAIGN --attempt a1
@@ -334,11 +344,14 @@ The successor binds the original plan and terminal status bytes, changes only
 the failed target's attempt, and revalidates every inherited completed step.
 The producer, target validator and matrix assembly use the same attempt map.
 Original plans, status files and failed outputs remain in place. A changed
-configuration or invalid prior evidence blocks continuation.
+configuration requires compatible evidence; invalid prior evidence blocks
+reuse. The index dispatcher no longer rejects a job solely for a source or
+configuration difference from its plan.
 Automatic service restart is disabled. Any failed prerequisite stops dependent
 stages. The final summary requires sixteen actual full-target admissions,
-reports missing/invalid cells and exits nonzero otherwise. Effective configuration
-or runtime drift stops execution; Git and documentation changes remain provenance.
+reports missing/invalid cells and exits nonzero otherwise. Full-gate freshness
+and runtime integrity remain enforced; the current rolling dispatcher has no
+source/configuration change gate. Git and documentation changes remain provenance.
 
 Primary benchmarks use the selected content-bound profile concurrency (serial default one). Prehop structured format
 retry shares the typed maximum of five wire attempts with transport retry and
@@ -398,57 +411,55 @@ staging files.
 
 ### Native output handling and artifact validation
 
-External adapters follow the pinned implementation's parsing, retries, and
-fallback behavior. They do not repair upstream algorithm or parser issues,
-complete truncated output, unwrap extracted entity objects, insert MS glean
-delimiters, or enforce additional extraction schemas. Native exceptions propagate
-to the native caller: if that caller catches an exception and returns an empty
-result, the adapter accepts that result. If the native operation fails, the run
-remains failed. Transport routing and source-identity checks remain adapter duties.
+Pinned source files remain unchanged. Response handling follows each method's
+registered adapter profile. GFM-RAG, MS GraphRAG, LightRAG and LinearRAG retain
+their native parsing and fallback behavior. New HopRAG and HippoRAG2 runs include
+explicit response-recovery interventions; they must not be described as
+unchanged native parsers.
 
-| Adapter | Native behavior preserved |
+| Adapter | Executed response contract |
 |---|---|
-| HippoRAG2 | Returns the original OpenIE response, metadata and cache flag unchanged, without adapter format retries or entity normalization. |
-| GFM-RAG | Keeps native JSON mode and the 300-token NER limit. Native empty-list fallback after an extraction error does not independently fail the index. |
-| MS GraphRAG | Records completion responses and stream chunks unchanged, preserves native cache settings, and leaves tuple parsing, glean concatenation and report handling upstream. |
-| Youtu | Uses native construction response formatting and error handling; empty or swallowed extraction outcomes are recorded without an extra adapter failure gate. Native agent mode remains selected. |
-| LightRAG | Uses native extraction and document status; a document that upstream marks failed is not reported as processed. |
-| LinearRAG | Uses native local NER and MPNet; returns native QA text including empty or truncated text without an additional content-quality gate. |
+| HopRAG | `adapter-json-recovery-v1` parses valid plain/fenced JSON before the native cleaner. It validates completion return shape and performs at most three adapter attempts, each retaining the native retry boundary. Exhaustion remains a failure. |
+| HippoRAG2 | `strict-extraction-v1` requests structured NER/triple output, validates complete responses, unwraps supported explicit entity-name fields, and records bounded format retries. The native 512/2,048 token limits remain. |
+| GFM-RAG | Keeps native JSON mode and the 300-token NER limit. Native empty-list fallback does not independently fail the index. |
+| MS GraphRAG | Records responses and stream chunks; leaves tuple parsing, glean concatenation and report handling upstream. |
+| LightRAG | Uses native extraction and document status; a document marked failed is not counted as processed. |
+| LinearRAG | Uses native local NER and MPNet; retains native QA text without an extra answer-quality gate. |
+
+HopRAG stores wire responses in `native_calls.jsonl`, embedding responses in
+`native_embeddings.jsonl`, and recovery attempts in `response_recovery.jsonl`.
+Its native retry-exhaustion sentinel has three values while the question caller
+expects two; the adapter detects this boundary instead of silently dropping a
+document. Valid JSON recovery preserves supplied strings, including braces and
+quotes, without inventing missing questions.
+
+HippoRAG2's adapter rejects ambiguous entity objects and malformed or incomplete
+responses. It retains raw text alongside normalized output and retry metadata;
+retry accounting includes the attempted calls. Native retrieval and `rag_qa`
+remain the upstream implementations. An exhausted extraction still fails the
+index rather than supplying a fabricated successful row.
 
 `native-observation-v1` records `observed` responses and `native_exception`
-events. These are observations, not assertions that extraction succeeded.
-Completion requires the native indexing operation to return and the required
-artifacts and source identities to be available. A native failure is never
-converted into a fabricated successful result. Source coverage and extraction
-quality are separate: empty native extraction is recorded and evaluated as such.
-Prehop and Naive are unchanged by this external-adapter policy.
+events for the methods that retain observation-only handling. Observation is
+not proof of extraction success. Completion also requires native indexing to
+return and stored artifacts to establish exact source coverage. Audit hashes,
+profile identity and available usage remain required. Missing raw response or
+cost telemetry is marked unavailable, not invented. Later query appends do not
+replace the bound index-time audit prefix.
 
-Audit files retain prompts, available raw responses, metadata, and exceptions.
-If an SDK raises before returning raw response text, that text is unavailable;
-the exception is retained and no response or token cost is invented. Completed
-indexes bind the audit byte prefix and SHA-256, and query records may append to
-that file. Missing, altered or stale-profile evidence still fails verification.
-Native fallback events alone do not invalidate that evidence.
-
-For profile versions 2 and 3, the registry still records the historical
-`construction_format_retry_profile` and retry-budget fields for Youtu. The
-production `ObservedYoutuClient` does not implement those format retries.
-Those fields are stale descriptive metadata, not evidence of executed retries;
-they need reconciliation in a separately validated configuration revision.
-
-MS completion requests omit output caps and temperature, as in the pinned
-empty `call_args` default; declared timeout and seed controls are still supplied.
-Effective output limits remain with the server. Adapters do not override native behavior
-for a `length` finish. Old guarded-extraction snapshots are incompatible with
-this policy and must be rebuilt before current comparisons. Smoke checks do not
-constitute full benchmark admission; see the [result contract](RESULTS.md#admission-checks).
+New paper generation requests omit the LLM seed. Stale ambient `RAG_LLM_SEED`
+values do not block the paper transport or become its generation seed. The
+benchmark ordering/sampling seed remains 42. Retained indexes preserve their
+original seed in evidence; changing the new-run default does not relabel them.
+MS completion requests still omit client output caps and temperature. Effective
+limits remain with the server; a `length` finish is not repaired by this policy.
 
 ### Native parameter comparison
 
 Run the following to compare selected method-defining defaults against
 local pinned sources. The registry records HippoRAG2 retrieval candidates 200
 separately from QA context 5, LightRAG top-k 40 and chunk top-k 20, LinearRAG
-top-k 5, and Youtu native agent mode/top-k 20. GFM uses the upstream single-pass
+top-k 5, and HopRAG BFS/five hops/top-k eight. GFM uses the upstream single-pass
 `qa.py`/`qa_inference.yaml` workflow with top-k 5 and its native QA prompt and
 omitted output cap. The optional IRCOT workflow is a different variant.
 
@@ -464,11 +475,18 @@ omitted output cap. The optional IRCOT workflow is a different variant.
 | HippoRAG2 | Native NER 512, triples 2,048; QA default 2,048. | 200 retrieval candidates; five QA passages. |
 | GFM-RAG | Native NER 300, triples 4,096; single-pass QA omits output cap. | Native single-pass QA top-k 5. |
 | LinearRAG | Native QA 2,000 tokens, temperature 0. | Native top-k 5, BFS retrieval, three iterations. |
-| Youtu | Native temperature 0.3 and omitted output cap. | Native agent mode, up to five IRCoT steps, top-k/filter 20. |
+| HopRAG | Native temperature 0.1 and 4,096-token cap; declared adapter JSON recovery. | Native BFS, five hops, top-k eight. |
 
 Prehop and Naive are repository-owned methods. Shared model replacement,
-seed/transport controls and user-selected concurrency remain declared
-experiment adaptations. Strict structured-output guards apply to Prehop;
-external adapters preserve native response handling. In particular, parallel Youtu schema
-evolution is not claimed to be serial-equivalent. Matching selected native
-parameters does not establish full upstream-identical execution.
+transport, unseeded generation and declared concurrency are experiment
+adaptations. HopRAG and HippoRAG2 additionally declare their response recovery.
+Matching selected native parameters does not establish upstream-identical
+execution or guarantee full-run success.
+
+### GFM-RAG QA transport deadline
+
+The adapter applies the common 600-second transport timeout to each native QA
+request, overriding the upstream call’s explicit 60 seconds. Waiting for the
+shared queue contributes to the client response wait. Native prompts, temperature
+and retry count remain unchanged. This is a transport override, not an upstream
+source edit. A client timeout does not immediately cancel queued upstream work.

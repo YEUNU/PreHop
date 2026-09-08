@@ -10,8 +10,8 @@ belongs in `docs/RESULTS.md`.
 
 - `core/strategy_registry.py` owns strategy identity, primary order, upstream
   revision, runtime worker, output root, transport profile, and legacy status.
-  The primary set includes MS GraphRAG. Only BrowseNet, HopRAG, and PropRAG are
-  legacy/reserve adapters.
+  The primary set includes HopRAG and MS GraphRAG. BrowseNet, PropRAG, and
+  Youtu have been removed from the strategy registry.
 - `core/config.py` and checked-in configuration files own runtime defaults and
   semantic settings. Documentation must describe them, not redefine them.
 - `docs/ARCHITECTURE.md` owns module boundaries and indexing/query behavior.
@@ -29,10 +29,12 @@ for understanding, running, or validating the public repository.
 
 ## Change policy
 
-External adapters must not fix upstream algorithm or parser issues. Preserve native
-responses, retries and fallback outcomes; record errors without converting native
-empty results into adapter failures. See `docs/RUNTIME_REQUIREMENTS.md` for the
-output-handling contract. External source files remain unchanged.
+External source files remain unchanged. Preserve native behavior unless a
+registered adapter profile explicitly declares a recovery intervention. HopRAG
+JSON/return-value recovery and HippoRAG2 structured extraction are such
+interventions; retain raw responses, transformations and bounded retry records.
+Do not fabricate missing entities, answers, usage or successful completion. See
+`docs/RUNTIME_REQUIREMENTS.md` for the per-method output-handling contract.
 
 - Keep one detailed contract per topic. Other documents should link to it and
   include only the context their readers need.
@@ -68,8 +70,9 @@ output-handling contract. External source files remain unchanged.
 
 - Use a unique run ID and strategy-scoped output namespace. Never clear shared
   graph or artifact state while another run may be active.
-- Resume only through the repository's compatibility checks. Preserve failed
-  attempts and original phase costs.
+- Source/configuration edits do not by themselves block index dispatch. Keep
+  executed code and settings in provenance; retain artifact, corpus and resume
+  compatibility checks. Preserve failed attempts and original phase costs.
 - Keep credentials out of commands, logs, artifacts, and tracked files.
 - Generated corpora, indexes, results, traces, runtime homes, private submission
   notes, and manuscript drafts remain ignored. Do not force-add them.

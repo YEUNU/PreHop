@@ -369,3 +369,55 @@ async def test_shared_queue_borrows_all_slots_and_bounds_mixed_requests(limit, k
         server.client.close()
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_cancelled_waiting_run_never_reaches_upstream(queue):
+    server, received = queue
+    permit = server.permits['generation']
+    permit.acquire()
+    permit.acquire()
+    base = f'http://127.0.0.1:{server.server_port}/v1'
+    headers = {'Authorization': 'Bearer local-token', 'X-Prehop-Run-ID': 'discarded'}
+    results = []
+    def request():
+        results.append(httpx.post(base + '/chat/completions', headers=headers, content=b'old', timeout=5).status_code)
+    worker = threading.Thread(target=request)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 3
+        while server.snapshot()['metrics']['generation']['waiting'] != 1:
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        assert httpx.post(base + '/queue-cancel', headers=headers).status_code == 200
+        worker.join(3)
+        assert results == [409]
+        assert received == []
+        assert server.snapshot()['metrics']['generation']['waiting'] == 0
+    finally:
+        permit.release()
+        permit.release()
+    assert httpx.post(base + '/chat/completions', headers={'Authorization': 'Bearer local-token'}, content=b'live').status_code == 200
+
+
+def test_disconnected_waiter_is_removed(queue):
+    import socket
+    server, received = queue
+    permit = server.permits['generation']
+    permit.acquire()
+    permit.acquire()
+    connection = socket.create_connection(('127.0.0.1', server.server_port))
+    connection.sendall(b'POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer local-token\r\nContent-Length: 3\r\n\r\nold')
+    try:
+        deadline = time.monotonic() + 3
+        while not server.snapshot()['metrics']['generation']['waiting']:
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        connection.close()
+        while server.snapshot()['metrics']['generation']['waiting']:
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        assert received == []
+    finally:
+        connection.close()
+        permit.release()
+        permit.release()

@@ -14,7 +14,7 @@ from core.config import RAGConfig
 from core.execution_profile import exclusive_measurement
 from core.index_namespace import index_namespace
 from core.paper_compatibility import method_identity
-from core.paper_policy import structured_query_identity
+from core.paper_policy import structured_query_identity, canonical_query_policy
 from core.semantic_config import parse_strict_bool
 from core.strategy_registry import EXTERNAL_STRATEGIES, RESEARCH_EXTERNAL_STRATEGIES
 from core.vllm_client import get_llm_client
@@ -1150,14 +1150,6 @@ async def run_benchmark(
             from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter
 
             engine = MSGraphRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
-        elif strategy == "browsenet":
-            from models.browsenet.browsenet_adapter import BrowseNetAdapter
-
-            engine = BrowseNetAdapter(model_id=model_id, corpus_tag=corpus_tag)
-        elif strategy == "proprag":
-            from models.proprag.proprag_adapter import PropRAGAdapter
-
-            engine = PropRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
         elif strategy in RESEARCH_EXTERNAL_STRATEGIES:
             from models.external_research.adapter import ExternalResearchAdapter
 
@@ -1298,6 +1290,7 @@ async def run_benchmark(
                     "final_rank_variant": RAGConfig.FINAL_RANK_VARIANT,
                     **structured_query_identity(strategy),
                     **method_identity(strategy),
+                    **(canonical_query_policy(strategy) if strategy == "hoprag" else {}),
                 },
             },
             judge_enabled=judge_enabled,
@@ -1402,6 +1395,7 @@ async def run_benchmark(
                 "final_rank_variant": RAGConfig.FINAL_RANK_VARIANT,
                     **structured_query_identity(strategy),
                     **method_identity(strategy),
+                    **(canonical_query_policy(strategy) if strategy == "hoprag" else {}),
             },
         }
         if resume_metadata is not None:

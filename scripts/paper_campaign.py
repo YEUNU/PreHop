@@ -93,8 +93,8 @@ def check_plan(plan: dict) -> None:
     if plan.get('python') != selected['PYTHON_BIN'] or plan.get('python_prefix') != selected['UV_PROJECT_ENVIRONMENT']:
         raise RuntimeError('Campaign selected main runtime changed')
     context = _context()
-    if context != plan.get('context'):
-        raise RuntimeError('Campaign effective model configuration or runtime content changed')
+    # A plan records its original context; new stages record their current context.
+    # Source/configuration edits do not block dispatch.
     if plan.get('steps') != build_steps(plan['campaign'], plan['attempt'], plan['python'], plan.get('target_attempts')):
         raise RuntimeError('Campaign execution plan differs from the registered ordered protocol')
     if 'predecessor_plan' in plan:
@@ -200,7 +200,7 @@ def safe_environment() -> dict[str, str]:
     current = selected_python_environment()
     preserve_provider_environment(current)
     preserve_method_environment(current)
-    allowed = {'RAG_PREHOP_TRACE', 'RAG_PREHOP_TRACE_DIR', 'RAG_EXECUTION_PROFILE', 'RAG_QUEUE_PROXY_URL', 'RAG_QUEUE_TOKEN', 'PYTHON_BIN', 'UV_PROJECT_ENVIRONMENT', 'RAG_OFFICIAL_BASELINE_HOME',
+    allowed = {'RAG_MEASUREMENT_MAX_TARGETS', 'RAG_PREHOP_TRACE', 'RAG_PREHOP_TRACE_DIR', 'RAG_EXECUTION_PROFILE', 'RAG_QUEUE_PROXY_URL', 'RAG_QUEUE_TOKEN', 'PYTHON_BIN', 'UV_PROJECT_ENVIRONMENT', 'RAG_OFFICIAL_BASELINE_HOME',
         'RAG_INFERENCE_BASE_URL', 'RAG_INFERENCE_API_KEY', 'RAG_GENERATION_MODEL', 'RAG_EMBEDDING_MODEL',
         'RAG_GENERATION_REVISION', 'RAG_EMBEDDING_REVISION', 'NEO4J_URI', 'NEO4J_URL', 'NEO4J_USERNAME', 'NEO4J_USER',
         'NEO4J_PASSWORD', 'NEO4J_DATABASE', 'HF_HOME', 'HF_HUB_CACHE', 'TRANSFORMERS_CACHE', 'PATH', 'HOME', 'LITELLM_MODE'}

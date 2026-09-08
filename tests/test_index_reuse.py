@@ -253,8 +253,39 @@ print('query_path_and_static_config_passed')
     # This independent import test starts with an explicit canonical environment.
     environment = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'LD_LIBRARY_PATH') if key in os.environ}
     environment.update(paper_environment_defaults())
-    for method in ('ms_graphrag', 'lightrag', 'hipporag2', 'gfm_rag', 'linear_rag', 'youtu_graphrag'):
+    for method in ('ms_graphrag', 'lightrag', 'hipporag2', 'gfm_rag', 'linear_rag'):
         result = subprocess.run([sys.executable, '-c', script, str(tmp_path), method],
                                 env=environment, capture_output=True, text=True, check=False)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip().endswith('query_path_and_static_config_passed')
+
+
+@pytest.mark.parametrize('mutation', ['none','failed','smoke','digest','coverage','cost'])
+def test_completed_receipt_reuse_requires_full_bound_success(tmp_path, monkeypatch, mutation):
+    from core.amortized_cost import indexing_cost
+    from core import paper_policy
+    monkeypatch.setattr(reuse,'ROOT',tmp_path)
+    monkeypatch.setattr(reuse,'current_corpus_identity',lambda _:{'fingerprint':'corpus','paragraph_count':2})
+    monkeypatch.setattr(paper_policy,'validate_canonical_index_policy',lambda *a:None)
+    stats=tmp_path/'data/index_stats/lightrag_multihoprag_source.json'
+    stats.parent.mkdir(parents=True)
+    raw={'status':'complete','strategy':'lightrag','corpus_tag':'multihoprag','run_id':'source',
+         'corpus_manifest_fingerprint':'corpus','corpus_manifest_paragraph_count':2,
+         'timing_seconds':{'total_elapsed_seconds':10}}
+    raw['amortized_indexing_cost']=indexing_cost(raw)
+    stats.write_text(json.dumps(raw))
+    receipt={'status':'index_complete','phase':'index','strategy':'lightrag','dataset':'multihoprag',
+             'run_id':'source','source_count':2,'stats_path':str(stats.relative_to(tmp_path)),
+             'stats_sha256':reuse.ref(stats)['sha256'],'amortized_indexing_cost':raw['amortized_indexing_cost']}
+    if mutation=='failed':receipt['status']='index_failed'
+    if mutation=='smoke':receipt['phase']='smoke'
+    if mutation=='digest':receipt['stats_sha256']='0'*64
+    if mutation=='coverage':receipt['source_count']=1
+    if mutation=='cost':receipt['amortized_indexing_cost']={}
+    path=tmp_path/'completion.json';path.write_text(json.dumps(receipt))
+    if mutation=='none':
+        index,observed=reuse.completed_source_evidence(reuse.ref(path),'lightrag','multihoprag')
+        assert index['run_id']=='source' and observed==raw
+    else:
+        with pytest.raises((RuntimeError,ValueError)):
+            reuse.completed_source_evidence(reuse.ref(path),'lightrag','multihoprag')

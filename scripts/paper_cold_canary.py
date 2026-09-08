@@ -31,7 +31,7 @@ async def ensure_fresh_namespace(strategy: str, dataset: str) -> None:
         from models.ms_graphrag.official_indexer import output_dir_for
         if output_dir_for(dataset).exists():
             raise FileExistsError('Native output already exists')
-    elif strategy not in {'prehop', 'naive'}:
+    elif strategy not in {'prehop', 'naive', 'hoprag'}:
         from models.official_baseline_runtime import corpus_output_dir
         if corpus_output_dir(strategy, dataset).exists():
             raise FileExistsError('Native output already exists')

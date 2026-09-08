@@ -125,22 +125,27 @@ def validate(link_path: Path, target: str, strategy: str, dataset: str, *, prist
     if link_path != local_path(f'data/results/{safe_name(target)}/index_link.json'):
         raise RuntimeError('Reuse link must be stored under its exact fresh result target')
     link = json.loads(link_path.read_text())
-    for field, expected in {'version': 1, 'target_run_id': target, 'strategy': strategy, 'dataset': dataset}.items():
+    if link.get('version') not in {1, 2}:
+        raise RuntimeError('Unsupported reuse link version')
+    for field, expected in {'target_run_id': target, 'strategy': strategy, 'dataset': dataset}.items():
         if link.get(field) != expected:
             raise RuntimeError('Reuse link target identity differs')
-    gate_snapshot, source_ledger = bound(link['gate_ledger'])
-    if gate_snapshot != link_path.parent / 'source_gate_ledger.json':
-        raise RuntimeError('Reuse gate snapshot must belong to the exact fresh result target')
-    configuration = source_ledger.get('context', {}).get('targets', {}).get(f'{dataset}/{strategy}')
-    if configuration is None or identity_sha256(configuration) != link.get('configuration_sha256'):
-        raise RuntimeError('Source gate configuration differs from reuse configuration')
-    source_stage = source_ledger.get('stages', {}).get('one_query_matrix_16', {})
-    if source_stage.get('status') != 'canary_passed':
-        raise RuntimeError('Reuse source matrix gate was not passed')
-    _, matrix = bound({'path': source_stage['evidence_path'], 'sha256': source_stage['evidence_sha256']})
-    if matrix.get('targets', {}).get(f'{dataset}/{strategy}') != link['source_evidence']:
-        raise RuntimeError('Reuse source differs from the recorded complete-corpus matrix target')
-    index, raw = source_evidence(link['source_evidence'], strategy, dataset)
+    if link['version'] == 2:
+        index, raw = completed_source_evidence(link['source_evidence'], strategy, dataset)
+    else:
+        gate_snapshot, source_ledger = bound(link['gate_ledger'])
+        if gate_snapshot != link_path.parent / 'source_gate_ledger.json':
+            raise RuntimeError('Reuse gate snapshot must belong to the exact fresh result target')
+        configuration = source_ledger.get('context', {}).get('targets', {}).get(f'{dataset}/{strategy}')
+        if configuration is None or identity_sha256(configuration) != link.get('configuration_sha256'):
+            raise RuntimeError('Source gate configuration differs from reuse configuration')
+        source_stage = source_ledger.get('stages', {}).get('one_query_matrix_16', {})
+        if source_stage.get('status') != 'canary_passed':
+            raise RuntimeError('Reuse source matrix gate was not passed')
+        _, matrix = bound({'path': source_stage['evidence_path'], 'sha256': source_stage['evidence_sha256']})
+        if matrix.get('targets', {}).get(f'{dataset}/{strategy}') != link['source_evidence']:
+            raise RuntimeError('Reuse source differs from the recorded complete-corpus matrix target')
+        index, raw = source_evidence(link['source_evidence'], strategy, dataset)
     source = safe_name(index['run_id'])
     if source == target or link.get('source_run_id') != source:
         raise RuntimeError('Reuse requires distinct source-index and fresh-result identities')
@@ -253,3 +258,72 @@ def validate_costs(link: dict, payload: dict) -> None:
     latency = sum(float(row.get('latency', 0)) for row in payload.get('details', []))
     if not math.isclose(costs.get('query_latency_sum_seconds', -1), latency, rel_tol=1e-12, abs_tol=1e-9):
         raise RuntimeError('Query service latency sum differs from full result rows')
+
+
+def completed_source_evidence(value, strategy, dataset):
+    """Validate an index-supervisor completion, without claiming a canary gate."""
+    from core.paper_policy import validate_canonical_index_policy
+    from core.amortized_cost import indexing_cost, validate_cost
+    _, completion = bound(value)
+    for key, expected in {'status':'index_complete', 'phase':'index', 'strategy':strategy, 'dataset':dataset}.items():
+        if completion.get(key) != expected:
+            raise RuntimeError('Reuse requires a completed full index receipt')
+    run_id = safe_name(completion['run_id'])
+    stats_ref = {'path':completion['stats_path'], 'sha256':completion['stats_sha256']}
+    path, raw = bound(stats_ref)
+    if path != local_path(f'data/index_stats/{strategy}_{dataset}_{run_id}.json'):
+        raise RuntimeError('Completed index stats path is not exact')
+    if any(raw.get(k) != v for k,v in {'status':'complete','strategy':strategy,'corpus_tag':dataset,'run_id':run_id}.items()):
+        raise RuntimeError('Completed index identity/status differs')
+    validate_canonical_index_policy(strategy,dataset,raw.get('index_policy'),raw.get('index_policy_sha256'))
+    corpus = current_corpus_identity(dataset)
+    if raw.get('corpus_manifest_fingerprint') != corpus['fingerprint'] or raw.get('corpus_manifest_paragraph_count') != corpus['paragraph_count'] or completion.get('source_count') != corpus['paragraph_count']:
+        raise RuntimeError('Completed index corpus coverage differs')
+    cost = indexing_cost(raw)
+    validate_cost(completion.get('amortized_indexing_cost'),cost)
+    validate_cost(raw.get('amortized_indexing_cost'),cost)
+    if not cost['continuous_run_eligible']:
+        raise RuntimeError('Completed index has no measured continuous indexing cost')
+    return {**raw, 'native_index_stats':stats_ref}, raw
+
+
+def prepare_completed(campaign, strategy, dataset, completion_path):
+    """Reuse a completed full index in a fresh benchmark workspace (link v2)."""
+    from core.paper_compatibility import target_configuration
+    from core.paper_policy import configure_target_environment
+    from core.strategy_registry import get_strategy
+    from scripts.paper_cold_canary import save
+    target = safe_name(f'{safe_name(campaign)}-{dataset}-{strategy}')
+    evidence = ref(local_path(str(completion_path)))
+    index, raw = completed_source_evidence(evidence,strategy,dataset)
+    base = local_path(f'data/results/{target}')
+    if base.exists():
+        raise FileExistsError('Completed-index benchmark requires fresh result paths')
+    configure_target_environment(strategy,dataset,index['run_id'])
+    spec = get_strategy(strategy)
+    started = time.perf_counter()
+    clone = None
+    if spec.output_env:
+        original = local_path(os.environ[spec.output_env])
+        destination = local_path(f'{spec.output_default}/runs/{target}')
+        if destination.exists():
+            raise FileExistsError('Query clone must be fresh')
+        original_inventory = inventory(original)
+        shutil.copytree(original,destination)
+        if inventory(destination) != original_inventory or inventory(original) != original_inventory:
+            raise RuntimeError('Query clone differs from source index')
+        clone = {'source_output_root':str(original.relative_to(ROOT)), 'query_output_root':str(destination.relative_to(ROOT)),
+                 'source_inventory':original_inventory, 'initial_clone_inventory_sha256':identity_sha256(original_inventory),
+                 'operation':'byte_identical_copy_without_metadata_rebinding'}
+    base.mkdir(parents=True,exist_ok=False)
+    value = {'version':2,'strategy':strategy,'dataset':dataset,'target_run_id':target,
+             'source_run_id':index['run_id'],'source_index_namespace':os.environ['RAG_INDEX_NAMESPACE'],
+             'source_evidence':evidence,'index_stats':index['native_index_stats'],
+             'corpus_identity_sha256':identity_sha256(current_corpus_identity(dataset)),
+             'configuration_sha256':identity_sha256(target_configuration(strategy,dataset)),
+             'index_timing_seconds':raw['timing_seconds'],'clone':clone,
+             'preparation_elapsed_seconds':time.perf_counter()-started}
+    path=base/'index_link.json'
+    save(path,value)
+    validate(path,target,strategy,dataset,pristine_clone=True)
+    return path

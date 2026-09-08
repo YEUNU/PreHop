@@ -121,6 +121,7 @@ class GFMRAGDriver:
 
         if self.top_k != qa_cfg.test.top_k:
             raise RuntimeError("GFM single-pass top_k differs from its native QA configuration")
+        self.native_qa_max_workers = int(qa_cfg.test.n_threads)
         self.qa_prompt = QAPromptBuilder(qa_cfg.qa_prompt)
         self.qa_llm, self.qa_audit, self.qa_sdk = native_qa_client(
             transport, qa_cfg.llm.model_name_or_path, qa_cfg.llm.retry,
@@ -159,6 +160,28 @@ class GFMRAGDriver:
         }
 
     def query(self, question: str) -> dict[str, Any]:
+        return self._answer_prepared(self._prepare_query(question))
+
+    def query_batch(self, questions):
+        from multiprocessing.dummy import Pool as ThreadPool
+        prepared = []
+        for question in questions:
+            try:
+                prepared.append(self._prepare_query(question))
+            except Exception as exc:
+                prepared.append(exc)
+        def answer(item):
+            if isinstance(item, Exception):
+                return item
+            try:
+                return self._answer_prepared(item)
+            except Exception as exc:
+                return exc
+        # Match the native qa.py ThreadPool; retrieval remains sequential.
+        with ThreadPool(self.native_qa_max_workers) as pool:
+            return list(pool.imap(answer, prepared))
+
+    def _prepare_query(self, question):
         result = self.retriever.retrieve(question, top_k=self.top_k)
         self.extraction_audit.assert_healthy()
         candidates = result.get("document") if isinstance(result, dict) else None
@@ -176,7 +199,11 @@ class GFMRAGDriver:
         # Match qa.py's native name plus flattened attributes, not the
         # repository's generic RAG answer prompt.
         prompt_docs = [{'name': candidate['id'], **candidate['attributes']} for candidate in candidates]
-        answer = self.qa_llm.generate_sentence(self.qa_prompt.build_input_prompt(question, {'document': prompt_docs}))
+        return documents, self.qa_prompt.build_input_prompt(question, {'document': prompt_docs})
+
+    def _answer_prepared(self, prepared):
+        documents, prompt = prepared
+        answer = self.qa_llm.generate_sentence(prompt)
         self.qa_audit.assert_healthy()
         if isinstance(answer, Exception):
             raise answer

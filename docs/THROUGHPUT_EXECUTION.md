@@ -2,14 +2,16 @@
 
 Use this protocol to select request and document concurrency, launch indexing
 or benchmark work, and report comparable per-document and per-query costs.
-The eight primary methods run on both complete prepared datasets. Run
-one target at a time on the same remote replica/GPU and declared local resource
-budget. Queueing changes request admission only, not native prompts, retrieval
-budgets, ordering dependencies, seeds or retry policies. Producer parallelism uses
-native APIs through adapters; adaptive Youtu schema visibility is declared
-as a distinct synchronized parallel policy. GPU utilization is observational; 99% is not an
-admission criterion. An external workload on the same backend invalidates a
-claim of exclusive resources even though local target locks pass.
+The eight primary methods run on both complete prepared datasets. The default
+measurement limit is one target; `RAG_MEASUREMENT_MAX_TARGETS` accepts 1–4.
+Values above one permit shared targets and require the owned queue. The active
+repair controller currently uses three slots while eligible work remains and
+can mix indexing with benchmarks. Four slots are supported but have not been
+validated under the current workload. The shared inference ceiling remains 120.
+Queue admission does not itself change prompts, dependencies or retry behavior.
+Native worker counts and local graph/model work can limit request supply below
+the configured ceiling. GPU utilization is observational; 99% is not an
+admission criterion or a guaranteed operating point.
 
 ## Execution contract
 
@@ -37,9 +39,11 @@ use of the pool. Native dependencies and producer counts still bound demand.
 
 Legacy version 1 declares four transport settings. Version 2 additionally
 binds active document workers, document prefetch, LightRAG insertion workers
-and Youtu construction workers, with optional bounded Prehop chunk lookahead
+and the historical Youtu worker field, with optional bounded Prehop chunk lookahead
 (`prehop_chunk_concurrency`, default 1). Adapter producer settings supersede ambient
-defaults. Youtu concurrency and schema synchronization also enter semantic policy. The profile's canonical JSON hash enters both
+defaults. The retained `youtu_document_concurrency` field is inactive after
+Youtu removal; it remains in existing profile files to preserve their recorded
+identities. The profile's canonical JSON hash enters both
 index and query provenance, gate context, and admission. The included
 `configs/execution_profiles/throughput-pilot.json` (generation 30, embedding
 16/2, queries 8) is an unvalidated starting point, not a measured optimum.
@@ -81,7 +85,7 @@ indexing configuration:
 | `index_prefetch_documents` | 120 | Prehop document scheduling window |
 | `prehop_chunk_concurrency` | 8 | Prehop per-document chunk lookahead |
 | `lightrag_document_concurrency` | 32 | Native LightRAG insertion limit |
-| `youtu_document_concurrency` | 60 | Adapter Youtu document worker limit |
+| `youtu_document_concurrency` | 60 | Historical field; no current Youtu producer |
 
 Indexing pilots and native smoke builds validate execution at these settings.
 They do not establish a global optimum, query throughput, downstream quality
@@ -119,15 +123,15 @@ Freeze the chosen profile before full runs and repeat the ordered gates.
 ### Validate before full indexing
 
 1. Test profile binding, bounded scheduling, assembly order and failure
-   propagation. For Youtu, verify schema updates retain all types while LLM
-   calls remain outside the lock.
+   propagation. Distinguish completed tasks from successful source documents.
 2. Run relevant tests with the main and actual pinned native interpreters.
    Verify original source hashes and checkout integrity before and after.
 3. Run fixed real-document pilots for changed producer paths. Record coverage,
    elapsed time, errors, retries and achieved concurrency. Small synthetic
    smoke builds establish integration, not saturation or an optimum.
-4. Freeze code and profile before full indexing. Retain target run IDs, original
-   costs and effective settings. A profile change requires a fresh measurement.
+4. Retain each target's executed code, run ID, original costs and effective
+   settings. Source edits do not block dispatch; a changed measurement profile
+   still needs compatible new evidence.
 
 Local model work and dependent graph stages can leave the remote LLM idle.
 Validate query concurrency separately: native query workers can duplicate model
@@ -154,8 +158,8 @@ after stages and on shutdown, drains outstanding requests before the next stage,
 and retains its existing sequential gate protocol.
 Use the same selected profile for later read-only admission/verification.
 
-Local locks reject concurrent queue owners and overlapping measured throughput
-targets. They cannot establish exclusivity against other users or remote clients.
+Local locks reject concurrent queue owners and targets beyond the configured
+measurement limit. They cannot establish exclusivity against other users or remote clients.
 Queue metrics record request/error counts, peak active requests, summed upstream
 and queue seconds. Summed request seconds are not campaign wall time. Client
 connection/worker limits may restrict actual concurrency below the configured cap.
@@ -217,8 +221,10 @@ recorded independently; unrelated targets continue. The run writes
 `data/results/<campaign>/index-supervisor/{plan,status,queue-metrics}.json`
 and per-stage logs. Full source indexes use `<campaign>-index-<dataset>-<strategy>`
 run IDs, so a later exact-target benchmark can use their original indexing
-artifacts. Code/configuration drift stops execution. Existing artifacts are
-never overwritten and the runner does not restart failed attempts implicitly.
+artifacts. Source/configuration differences from the original plan are recorded
+without blocking dispatch. Existing artifacts are never overwritten; a repaired
+retry uses a fresh run ID. The index-only runner does not retry failed attempts
+implicitly. A separate rolling controller may explicitly enqueue those retries.
 
 Read the status file to verify the active `stage`, per-target outcomes and
 supervisor state. `smoke/...` identifies a bounded integration build;
@@ -232,8 +238,9 @@ publication ledger in [RESULTS](RESULTS.md).
 Read `status.json` and the per-stage log paths it names. A fresh supervisor
 heartbeat proves that the supervisor is alive; it does not prove that the child
 is completing documents. Compare successive `Indexing progress` records and,
-for Prehop, the trace event timestamps. The persisted `queue-metrics.json` is a
-stage-boundary snapshot, not a live utilization reading.
+for Prehop, the trace event timestamps. Check the modification time of `queue-metrics.json`: some runners write only
+at stage boundaries, while the active shared queue updates its snapshot
+periodically. A stale snapshot is not a live utilization reading.
 
 Low remote GPU utilization can be expected during parsing, local model work,
 graph writes, and final graph construction. If document counts and trace events
@@ -255,11 +262,20 @@ benchmark and applicable independent review, live gates and admission checks.
 
 ## Documentation during an active campaign
 
-The index and benchmark supervisors bind executable source content and effective
-configuration. Editing an executed `.py` or `.sh` file can stop scheduling at
-the next target boundary; an already running query process may continue with
-its loaded code. Markdown-only documentation edits do not change that source
-digest. This is not permission to edit configuration files during measurement.
+Source/configuration change gates were removed from index dispatch and the
+active rolling controller on 2026-09-09. Editing code no longer blocks the next
+job solely because its source digest differs from the original plan. Already
+running Python processes can retain loaded code and settings; edits are not a
+retroactive update of their execution. Preserve original evidence and use the
+new code/settings for newly launched jobs. Runtime integrity, source coverage,
+artifact hashes, semantic reuse checks and admission remain independent.
+The separate full paper-gate ledger still validates its own evidence and
+freshness; it is not the active rolling dispatcher.
+
+New paper generation requests omit the LLM seed and ignore stale ambient
+`RAG_LLM_SEED` values at the transport boundary. Dataset order, sampling and
+bootstrap seeds remain separate. Existing indexes keep their historical seed
+in provenance; changing the launch default does not rewrite them.
 
 Record timestamped progress and provisional metrics in the
 [result evidence register](RESULTS.md). Keep the exact query
@@ -278,3 +294,19 @@ GPU saturation: MPNet and graph retrieval use local resources. The shared
 inference limit remains 120. Record actual batch sizes and report batch wall
 time/query separately from request latency. Restart interrupted serial runs
 under a fresh ID when switching to this execution path.
+
+## Cancelling queued work
+
+Updated GFM-RAG QA and HopRAG generation/embedding clients attach
+`X-Prehop-Run-ID`. An authenticated `POST /v1/queue-cancel` with that header
+marks the run cancelled. Waiting requests are removed before forwarding; later
+requests for that ID are rejected. Disconnected waiting clients are also
+removed. Use a new run ID when restarting. Already forwarded requests retain
+their slot until the upstream response or timeout; cancellation does not prove
+that LiteLLM stopped inference.
+
+The current migration keeps the original queue serving MS GraphRAG and routes
+new MultiHop-RAG jobs through a cancellable front queue into that original
+queue. The original shared ceiling of 120 still bounds total upstream work.
+Old requests have no cancellation support and must drain. Front-queue and
+original-queue counters overlap and must not be added together.

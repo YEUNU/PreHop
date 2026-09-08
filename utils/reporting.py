@@ -4,6 +4,54 @@ from typing import Any
 from utils.io import _safe_float, _write_json, _write_jsonl
 
 
+def compact_detail_row(item: dict[str, Any], idx: int) -> dict[str, Any]:
+    """Canonical JSONL projection; complete evidence remains in the main artifact."""
+    trace = item.get("interaction_trace", [])
+    return {
+        "idx": item.get("idx", idx),
+        "query_id": item.get("query_id", ""),
+        "query": item.get("query", ""),
+        "category": item.get("category", ""),
+        "answer": item.get("answer", ""),
+        "ground_truth": item.get("ground_truth", ""),
+        "final_answer_extracted": item.get("final_answer_extracted", ""),
+        "answer_em": _safe_float(item.get("answer_em", -1.0), -1.0),
+        "answer_f1": _safe_float(item.get("answer_f1", -1.0), -1.0),
+        "answer_precision": _safe_float(item.get("answer_precision", -1.0), -1.0),
+        "answer_recall": _safe_float(item.get("answer_recall", -1.0), -1.0),
+        "official_answer_em": _safe_float(item.get("official_answer_em", -1.0), -1.0),
+        "official_answer_f1": _safe_float(item.get("official_answer_f1", -1.0), -1.0),
+        "official_qa_accuracy": _safe_float(item.get("official_qa_accuracy", -1.0), -1.0),
+        "null_refusal": _safe_float(item.get("null_refusal", -1.0), -1.0),
+        "llm_judge_score": _safe_float(item.get("llm_judge_score", 0.0)),
+        "groundedness": _safe_float(item.get("groundedness", -1.0), -1.0),
+        "groundedness_source": item.get("groundedness_source", ""),
+        "answer_attempted": _safe_float(item.get("answer_attempted", 0.0)),
+        "hallucination": _safe_float(item.get("hallucination", 0.0)),
+        "hallucination_reason": item.get("hallucination_reason", ""),
+        "hallucination_source": item.get("hallucination_source", ""),
+        "hallucination_model": item.get("hallucination_model", ""),
+        "llm_judge_reason": item.get("llm_judge_reason", ""),
+        "doc_match": _safe_float(item.get("doc_match", 0.0)),
+        "page_match": _safe_float(item.get("page_match", 0.0)),
+        "evidence_doc_precision": _safe_float(item.get("evidence_doc_precision", -1.0), -1.0),
+        "evidence_doc_recall": _safe_float(item.get("evidence_doc_recall", -1.0), -1.0),
+        "evidence_doc_f1": _safe_float(item.get("evidence_doc_f1", -1.0), -1.0),
+        "official_hits@4": _safe_float(item.get("official_hits@4", -1.0), -1.0),
+        "official_hits@10": _safe_float(item.get("official_hits@10", -1.0), -1.0),
+        "official_mrr@10": _safe_float(item.get("official_mrr@10", -1.0), -1.0),
+        "official_map@10": _safe_float(item.get("official_map@10", -1.0), -1.0),
+        "evidence_fact_recall@4": _safe_float(item.get("evidence_fact_recall@4", -1.0), -1.0),
+        "evidence_fact_recall@10": _safe_float(item.get("evidence_fact_recall@10", -1.0), -1.0),
+        "paragraph_support_precision": _safe_float(item.get("paragraph_support_precision", -1.0), -1.0),
+        "paragraph_support_recall": _safe_float(item.get("paragraph_support_recall", -1.0), -1.0),
+        "paragraph_support_f1": _safe_float(item.get("paragraph_support_f1", -1.0), -1.0),
+        "latency": _safe_float(item.get("latency", 0.0)),
+        "error": item.get("error", ""),
+        "trace_steps": _collect_trace_steps(trace),
+    }
+
+
 def _collect_trace_steps(trace: Any) -> list[str]:
     if not isinstance(trace, list):
         return []
@@ -211,51 +259,7 @@ def _write_model_report_artifacts(
     trace_rows: list[dict[str, Any]] = []
     for idx, item in enumerate(details, start=1):
         trace = item.get("interaction_trace", [])
-        detail_rows.append(
-            {
-                "idx": item.get("idx", idx),
-                "query_id": item.get("query_id", ""),
-                "query": item.get("query", ""),
-                "category": item.get("category", ""),
-                "answer": item.get("answer", ""),
-                "ground_truth": item.get("ground_truth", ""),
-                "final_answer_extracted": item.get("final_answer_extracted", ""),
-                "answer_em": _safe_float(item.get("answer_em", -1.0), -1.0),
-                "answer_f1": _safe_float(item.get("answer_f1", -1.0), -1.0),
-                "answer_precision": _safe_float(item.get("answer_precision", -1.0), -1.0),
-                "answer_recall": _safe_float(item.get("answer_recall", -1.0), -1.0),
-                "official_answer_em": _safe_float(item.get("official_answer_em", -1.0), -1.0),
-                "official_answer_f1": _safe_float(item.get("official_answer_f1", -1.0), -1.0),
-                "official_qa_accuracy": _safe_float(item.get("official_qa_accuracy", -1.0), -1.0),
-                "null_refusal": _safe_float(item.get("null_refusal", -1.0), -1.0),
-                "llm_judge_score": _safe_float(item.get("llm_judge_score", 0.0)),
-                "groundedness": _safe_float(item.get("groundedness", -1.0), -1.0),
-                "groundedness_source": item.get("groundedness_source", ""),
-                "answer_attempted": _safe_float(item.get("answer_attempted", 0.0)),
-                "hallucination": _safe_float(item.get("hallucination", 0.0)),
-                "hallucination_reason": item.get("hallucination_reason", ""),
-                "hallucination_source": item.get("hallucination_source", ""),
-                "hallucination_model": item.get("hallucination_model", ""),
-                "llm_judge_reason": item.get("llm_judge_reason", ""),
-                "doc_match": _safe_float(item.get("doc_match", 0.0)),
-                "page_match": _safe_float(item.get("page_match", 0.0)),
-                "evidence_doc_precision": _safe_float(item.get("evidence_doc_precision", -1.0), -1.0),
-                "evidence_doc_recall": _safe_float(item.get("evidence_doc_recall", -1.0), -1.0),
-                "evidence_doc_f1": _safe_float(item.get("evidence_doc_f1", -1.0), -1.0),
-                "official_hits@4": _safe_float(item.get("official_hits@4", -1.0), -1.0),
-                "official_hits@10": _safe_float(item.get("official_hits@10", -1.0), -1.0),
-                "official_mrr@10": _safe_float(item.get("official_mrr@10", -1.0), -1.0),
-                "official_map@10": _safe_float(item.get("official_map@10", -1.0), -1.0),
-                "evidence_fact_recall@4": _safe_float(item.get("evidence_fact_recall@4", -1.0), -1.0),
-                "evidence_fact_recall@10": _safe_float(item.get("evidence_fact_recall@10", -1.0), -1.0),
-                "paragraph_support_precision": _safe_float(item.get("paragraph_support_precision", -1.0), -1.0),
-                "paragraph_support_recall": _safe_float(item.get("paragraph_support_recall", -1.0), -1.0),
-                "paragraph_support_f1": _safe_float(item.get("paragraph_support_f1", -1.0), -1.0),
-                "latency": _safe_float(item.get("latency", 0.0)),
-                "error": item.get("error", ""),
-                "trace_steps": _collect_trace_steps(trace),
-            }
-        )
+        detail_rows.append(compact_detail_row(item, idx))
         trace_rows.append(
             {
                 "idx": item.get("idx", idx),

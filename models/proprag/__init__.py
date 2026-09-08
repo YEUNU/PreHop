@@ -1,1 +1,0 @@
-"""PropRAG comparison strategy."""
