@@ -146,7 +146,7 @@ the final prompt; they do not reconstruct the agent loop. The post-answer native
 LLM evaluator is replaced by the common paper evaluator. No ground truth is
 passed into native generation. `agent_query_audit.jsonl` records the native
 calls and returned evidence. The target remains `controlled_adapter` because
-of backbone, structured-format and parallel-construction adaptations.
+of backbone, transport and parallel-construction adaptations.
 
 Youtu retains native graph and retrieval behavior, including its handling of
 duplicate entities and triples. The runtime records complete staged
@@ -430,8 +430,15 @@ indexes bind the audit byte prefix and SHA-256, and query records may append to
 that file. Missing, altered or stale-profile evidence still fails verification.
 Native fallback events alone do not invalidate that evidence.
 
-MS completion requests retain the pinned empty `call_args` default; effective
-output limits remain with the server. Adapters do not override native behavior
+For profile versions 2 and 3, the registry still records the historical
+`construction_format_retry_profile` and retry-budget fields for Youtu. The
+production `ObservedYoutuClient` does not implement those format retries.
+Those fields are stale descriptive metadata, not evidence of executed retries;
+they need reconciliation in a separately validated configuration revision.
+
+MS completion requests omit output caps and temperature, as in the pinned
+empty `call_args` default; declared timeout and seed controls are still supplied.
+Effective output limits remain with the server. Adapters do not override native behavior
 for a `length` finish. Old guarded-extraction snapshots are incompatible with
 this policy and must be rebuilt before current comparisons. Smoke checks do not
 constitute full benchmark admission; see the [result contract](RESULTS.md#admission-checks).
@@ -460,7 +467,8 @@ omitted output cap. The optional IRCOT workflow is a different variant.
 | Youtu | Native temperature 0.3 and omitted output cap. | Native agent mode, up to five IRCoT steps, top-k/filter 20. |
 
 Prehop and Naive are repository-owned methods. Shared model replacement,
-seed/transport controls, user-selected concurrency and structured-output guards
-remain declared experiment adaptations. In particular, parallel Youtu schema
+seed/transport controls and user-selected concurrency remain declared
+experiment adaptations. Strict structured-output guards apply to Prehop;
+external adapters preserve native response handling. In particular, parallel Youtu schema
 evolution is not claimed to be serial-equivalent. Matching selected native
 parameters does not establish full upstream-identical execution.

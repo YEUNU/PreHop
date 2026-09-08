@@ -357,8 +357,13 @@ change its generated questions.
 `indexing/hop_edges.py`
 
 - Runs once after the complete Prehop corpus is flushed and indexes are online.
-- Every individual source Q+ retrieves the best cross-document Q-. The matched
+- Every individual source Q+ selects the highest-scoring eligible Q- returned
+  by approximate nearest-neighbor search. The matched
   Q-'s owner chunk is the HOP target; no second body ANN search is needed.
+- Exclusion compares the `source` file identity. Prepared MuSiQue paragraphs
+  are separate source files, so this does not require different document titles.
+  The returned ANN match is not a guaranteed corpus-wide exact nearest neighbor
+  or a verified answer to the source question.
 - Multiple Q+ questions from one source that resolve to the same target are merged
   into one `HOP_ANSWER` edge while retaining every question.
   `ANSWERED_BY` preserves the Q+→Q- link and Q- ownership preserves the
@@ -366,8 +371,8 @@ change its generated questions.
   and `SUPPORTED_BY` records that alternative path.
 - There are deliberately no Q-↔Q- edges. Documents with the same answer but
   different year/version remain alternative candidates rather than being
-  asserted as semantic continuations. Cross-document scope is mandatory.
-- Neo4j filters source documents after ANN. Each source therefore requests its
+  asserted as semantic continuations. Different source files are mandatory.
+- Neo4j filters source-file identity after ANN. Each source therefore requests its
   own channel count plus one foreign slot, without a fixed ANN floor.
 - There is no cosine threshold, same-company filter, runtime-HOP mode,
   cross-encoder, domain rule, or semantic verification call. If Q+ is disabled,
@@ -478,7 +483,8 @@ format suffix and then:
 
 ```text
 RAG_GRAPH_HOP_DEPTH == 0
-  -> retrieve(query, top_k=12)
+  -> retrieve or retrieve_with_views without graph expansion
+  -> preserve the configured rewrite, refinement, and selection policies
 
 RAG_QUERY_REWRITE_VARIANT == role_aligned_evidence_iterative
   and input question has at most RAG_QUERY_REWRITE_MAX_WORDS words
@@ -489,7 +495,8 @@ RAG_QUERY_REWRITE_VARIANT == role_aligned_evidence_iterative
   -> stop when no new view or selected chunk appears
 
 question exceeds the rewrite limit
-  -> use the original question without a rewrite call
+  -> use the original question without rewrite or refinement
+  -> search all enabled representation channels with that original text
 
 RAG_GRAPH_HOP_DEPTH == 1 (default)
   -> retrieve(query) for seeds
@@ -518,8 +525,8 @@ rewrite-all, additive-view, `global`, reciprocal-filter, exact-activation,
 edge-variant, channel-variant, and no-graph paths are explicit experimental
 configurations rather than implicit fallbacks.
 
-`retrieval/hybrid.py` embeds the original query and runs vector plus Neo4j
-full-text search for one channel (`body`, `q_minus`, or `q_plus`). Vector and
+`retrieval/hybrid.py` searches the supplied query text and embedding with vector
+plus Neo4j full-text search for one channel (`body`, `q_minus`, or `q_plus`). Vector and
 full-text branches share one Cypher request per representation; enabled
 representations run concurrently. Their results fuse into one ordered list
 using equal reciprocal ranks `1 / (rank + 1)`. Because Cypher aggregation and
@@ -554,6 +561,11 @@ than a learned or fitted channel weight.
 - `qplus_only`: Q+ dependency seeds only.
 - `single_combined`: Q-/Q+ once each, set union, no body.
 - `full`: Q-/body direct evidence plus Q+ dependency seeds.
+
+These switches select the representation channels. If role views and a
+role-body selection policy are also enabled, additional body searches still
+run. A channel-only ablation must declare the selection policy as well; the
+channel label alone does not describe the complete candidate path.
 
 The searches run concurrently. There is no second Q- support search: a Q-
 hit already identifies its owner evidence chunk, while a Q+ hit reaches target
@@ -629,21 +641,23 @@ and does not filter activated provenance. `reciprocal_offline` applies the
 same reverse rule from materialized edge IDs and performs no query-time reverse
 ANN. Traversal constructs only the selected NEXT/HOP/filter Cypher branches,
 avoiding inactive ablations on the query hot path.
-Q−/body-only seeds and graph-discovered nodes expose NEXT only, preventing an
-unrelated Q+ attached to a direct-evidence chunk from triggering a HOP. NEXT and
+Main-representation Q−/body-only seeds expose NEXT only, preventing an
+unrelated Q+ attached to a direct-evidence chunk from triggering a HOP. Additional
+role-body-only candidates do not enter the expansion frontier. Graph-discovered
+nodes are not revisited for further expansion within the one-step pass. NEXT and
 HOP paths are ranked separately per expansion step, then fused per target
 chunk. A NEXT target inherits the source's total representation evidence; a
 HOP target inherits only the source's Q+ evidence. In either case the inherited
 value is multiplied by `RAG_GRAPH_PATH_DECAY`, whose default is the reciprocal
 one-edge value `1 / (depth + 1) = 0.5`. Values 0 and 1 are retained only as
-declared propagation sensitivities. This attenuation prevents an expanded
-target from tying its directly retrieved owner in the default configuration;
-the switch also makes the assumption directly testable.
+declared propagation sensitivities. This attenuation reduces each inherited
+contribution relative to its source; it does not guarantee the final ordering
+of all source and target candidates. The switch makes the assumption testable.
 The structurally bounded results are retained without a candidate reservoir or
 graph-search floor. HOP candidates compare the query against each indexed
 source Q+ separately, take the best bridge similarity, and use
-`min(body, bridge)` as the semantic score. This requires agreement on both
-sides without a mixing weight. The default evidence-conditioned rewrite
+`min(body, bridge)` as the semantic score. This penalizes a candidate when
+either similarity is low, without a mixing weight; it does not verify an answer. The default evidence-conditioned rewrite
 repeats retrieval only while newly proposed role questions select at least one
 unseen chunk. Exact normalized question and chunk identities provide the stop
 rule; there is no fitted round count, score gate, hop label, dataset branch,
@@ -674,6 +688,7 @@ remain separate from complete query-pipeline runs.
 | ID | Stage | Intervention | Primary output |
 |---|---|---|---|
 | Ablation 1 | Query: graph expansion | One-step `NEXT` and `HOP_ANSWER` expansion on versus off | Answer, support, and retrieval passes |
+| HOP control | Query: dependency edges | `RAG_GRAPH_EDGE_VARIANT=full` versus `next_only`, depth 1 in both | Answer, support, and HOP-added evidence |
 | Ablation 2 | Query: refinement | Evidence-conditioned follow-up views on versus initial rewrite only | Answer and support |
 | Ablation 3 | Query: candidate selection | Question-role selection versus integrated top 12 | Answer and support |
 | Ablation 4 | Fixed candidates: ranking | Recompute rank signals and graph-distance weights | Support |
@@ -685,6 +700,15 @@ query-stage condition. Ablation 4 and the order robustness test reuse identical
 candidate IDs, titles, texts, and annotations; they do not generate new
 answers. The timing analysis separates query refinement, retrieval, graph
 expansion, deterministic scoring, candidate selection, and synthesis.
+
+The HOP control isolates dependency-edge availability while retaining `NEXT`;
+depth 1 versus depth 0 measures their combined effect. Channel-only controls
+can also change seed activation, so they do not isolate representation quality
+from graph use. Fixed-candidate ranking results describe ordering effects, not
+changes in upstream candidate recall. These are planned comparisons, not
+completed empirical findings. Paired intervals use 95% percentile bounds and
+describe the fixed query population; they do not estimate repeated-index or
+repeated-run variance. Multiple component contrasts remain exploratory.
 
 The benchmark records `retrieve_ms`, `rewrite_ms`, `synthesis_ms`, and the
 compatibility aggregate `traversal_ms`. It also splits the latter into
@@ -784,7 +808,7 @@ Prehop gates.
   decomposition, up to five IRCoT steps and final answer generation. Observers
   preserve the final evidence order and `top_k_filter=20`; the common benchmark
   replaces only post-answer evaluation. MuSiQue staging preserves one prepared
-  paragraph per source. Transport, format and parallel-construction adaptations
+  paragraph per source. Backbone, transport and parallel-construction adaptations
   remain declared controlled differences.
 
 Official systems retain their stated search and context budgets, so tables and
@@ -842,8 +866,11 @@ recomputes exact row order and count, error rows, query and ground-truth
 identities, eligible counts, aggregates, corpus/index coverage, artifact
 inventory, semantic configuration, model revisions, operational metadata,
 exact index-stat bytes/path, runtime freeze/constraints, versioned effective method configuration,
-and post-query retrieval-artifact inventory. Result JSON detail rows must equal
-the complete JSONL bytes in manifest order.
+and post-query retrieval-artifact inventory. Admission verifies the compact JSONL
+projection of full result rows using the separately saved interaction traces,
+including row counts, trace identity and order. Primary source evidence and
+metrics are checked against full main-JSON rows and prepared gold. See
+[Verification repair and evidence](RESULTS.md#verification-repair-and-evidence).
 Only `admitted` primary artifacts enter quantitative results. Subset and
 legacy/reserve artifacts are development evidence only. Complete-split paired analyses record the evaluated ID
 digest and are interpreted as descriptive diagnostics, because the prepared
@@ -865,8 +892,8 @@ separately for every metric and requires the declared relative gain on all of
 them. It rejects incomplete, fingerprint-mismatched, query-mismatched, and
 non-full artifacts unless an explicitly non-paper exploratory override is
 used.
-Metric definitions, evaluator references, and artifact eligibility are
-maintained in [RESULTS](RESULTS.md). This document owns only the implemented
+Artifact eligibility is maintained in [RESULTS](RESULTS.md); metric denominators
+and cost definitions are maintained in [THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md#final-tables-and-measurement-definitions). This document owns only the implemented
 evaluation behavior and data contract.
 
 The runner checkpoints its result and report artifacts every ten completed
@@ -879,8 +906,8 @@ latency.
 `RAG_BENCHMARK_RESUME=true` resumes only an existing `in_progress`
 deterministic benchmark. It rejects an enabled supplemental judge, mismatched
 query identity, configuration, model, corpus/index identity, duplicate or
-foreign query IDs, and missing or misaligned traces. Successful rows are
-retained and error rows are run again. The final artifact records the retained
+foreign query IDs, and missing or misaligned traces. Successful and terminal
+error rows are retained; only missing query IDs are executed. The final artifact records the retained
 and resumed query sets and their code provenance separately. This is query
 execution recovery, not indexing recovery or an orchestration-level retry.
 
@@ -1043,12 +1070,15 @@ cache identity change: Naive uses no structured question or ranking call path.
 
 ## Complete-index reuse for final benchmarks
 
-The final matrix reuses only the complete native indexes produced by its
-one-query matrix. The intervening Naive MultiHop-RAG full-target gate still
+The gated final matrix uses version-1 links to complete native indexes produced
+by its one-query matrix. A separate benchmark-first path uses version-2 links
+to full-index supervisor completions; see
+[Reusing index-supervisor completions](#reusing-index-supervisor-completions).
+Version 2 does not attest that the version-1 canary gates passed. The intervening Naive MultiHop-RAG full-target gate still
 builds a fresh index and evaluates the complete query split. A one-query answer,
 result, or admission never supplies a full benchmark row or full admission.
 
-Each final target creates `data/results/<target>/index_link.json` and an
+Each version-1 final target creates `data/results/<target>/index_link.json` and an
 exclusive byte-identical snapshot of the source gate ledger. The link binds the
 original index run ID, raw index statistics and digest, complete corpus identity,
 recorded and current method configuration, source one-query evidence, runtime,
@@ -1114,7 +1144,7 @@ work can reach the shared inference queue:
 | HippoRAG2 | Parallel OpenIE, then embedding and graph construction | Sets `openie_max_workers` to the generation cap; retains the native encoder and graph stages. |
 | GFM-RAG | Parallel OpenIE, then local entity linking and checkpoint work | Sets constructor `num_processes` to the cap; the native implementation uses threads. |
 | LinearRAG | Local spaCy NER and MPNet batches | Retains the local pipeline. Native `max_workers` does not parallelize `spacy.pipe`. |
-| Youtu-GraphRAG | Parallel document extraction with an adaptive shared schema | Uses a bounded I/O executor, synchronized schema updates and a declared extraction retry policy. |
+| Youtu-GraphRAG | Parallel document extraction with an adaptive shared schema | Uses a bounded I/O executor, synchronized schema updates and native response observation. |
 
 Prehop uses `models/prehop/parallel_adapter.py` for bounded per-document chunk
 lookahead while retaining original assembly order and the native extractor.
@@ -1212,3 +1242,32 @@ The index supervisor writes `outcomes.json` and `outcomes.md` alongside status
 and attempt logs. Failed indexes have unavailable quality; other eligible targets
 continue. See [failure handling](RESULTS.md#failure-handling) for reporting and
 admission rules. Prehop and Naive index construction is unchanged.
+
+### Reusing index-supervisor completions
+
+Index links version 2 accept an immutable full-index `completion.json` from the
+index supervisor. They verify the exact statistics path and hash, canonical
+index policy, current corpus coverage and original measured indexing cost.
+They do not claim the version-1 canary ledger was passed. Query execution still
+verifies the live snapshot before a full benchmark, and publication admission
+still verifies the full query artifacts.
+
+File-based methods receive a byte-identical query copy; the original output
+inventory stays bound. Service-backed methods retain their verified namespace.
+The common index-link validator checks the clone, corpus, configuration and
+original cost for both versions. Failed or smoke-only completion receipts cannot
+supply version-2 links.
+
+
+### LinearRAG native query batching
+
+The external adapter collects concurrent LinearRAG requests for a bounded
+10 ms window and passes at most `RAG_BENCHMARK_CONCURRENCY` questions to one
+persistent worker. The worker invokes the original `qa(questions)` once.
+Retrieval remains native and sequential; answer inference uses the original
+`max_workers` pool. No source files, prompt text, retrieval parameters or native
+retry behavior change. Other external methods retain their existing execution
+path. Trace records include `native_query_batch_size` and adapter queue delay.
+Latency includes native batch execution; batch wall time per query remains the
+throughput measure. Native batch exceptions propagate to every member without
+an adapter retry; integrity exceptions retain target failure scope.

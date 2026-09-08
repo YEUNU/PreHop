@@ -252,3 +252,29 @@ does not start the separate paper campaign monitor or send chat notifications,
 and it does not provide automatic reboot recovery. It writes
 `benchmark_admitted: false`; publication still requires the complete query
 benchmark and applicable independent review, live gates and admission checks.
+
+## Documentation during an active campaign
+
+The index and benchmark supervisors bind executable source content and effective
+configuration. Editing an executed `.py` or `.sh` file can stop scheduling at
+the next target boundary; an already running query process may continue with
+its loaded code. Markdown-only documentation edits do not change that source
+digest. This is not permission to edit configuration files during measurement.
+
+Record timestamped progress and provisional metrics in the
+[result evidence register](RESULTS.md). Keep the exact query
+population, metric denominator and admission state visible. Do not copy live
+counters into setup instructions, implementation contracts or manuscript claims.
+A verifier failure and a query failure are different states; completed query
+artifacts must remain available for verification after a verifier repair.
+
+
+## LinearRAG query batches
+
+With benchmark concurrency eight, the adapter submits up to eight questions to
+the original batch QA API. This permits concurrent generation after the native
+retrieval phase. It does not change native parameters or promise continuous
+GPU saturation: MPNet and graph retrieval use local resources. The shared
+inference limit remains 120. Record actual batch sizes and report batch wall
+time/query separately from request latency. Restart interrupted serial runs
+under a fresh ID when switching to this execution path.

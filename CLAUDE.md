@@ -19,6 +19,8 @@ belongs in `docs/RESULTS.md`.
 - `docs/THROUGHPUT_EXECUTION.md` owns execution-profile fields, queue semantics,
   launch procedures, and cost definitions.
 - `docs/RESULTS.md` owns result status and artifact-to-number traceability.
+  Timestamped provisional diagnostics must be separate from admitted paper
+  values and identify their query population, denominators and evidence paths.
 - `docs/CHANGELOG.md` records completed engineering changes; it is not a second
   current-state specification.
 

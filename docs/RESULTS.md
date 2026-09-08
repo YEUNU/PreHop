@@ -1,10 +1,9 @@
 # Result Evidence Register
 
-This file is the canonical register for reportable full-run results. At this
-revision no cell in the primary paper matrix has passed admission, so this
-document intentionally contains no primary numerical result. Literature
-citations elsewhere describe prior work; they are not evidence for a local
-result.
+This file is the canonical register for reportable full-run results. Naive and
+Prehop on MultiHop-RAG have passed target admission. Other cells remain pending
+or unavailable. Admission of two targets does not complete the 16-target paper
+matrix or establish statistical significance.
 
 Admission binds the current corpus bytes, semantic configuration, execution
 profile and result artifacts. A changed identity requires compatible evidence
@@ -15,6 +14,83 @@ This register tracks publication admission. For live indexing progress, read
 the selected campaign's `index-supervisor/status.json`; smoke/index process
 states do not change a publication cell automatically.
 
+## Execution snapshot (2026-09-08, LinearRAG batch restart)
+
+Naive and Prehop completed all 2,556 MultiHop-RAG queries with zero query errors.
+The corrected verifier admitted both retained artifacts without changing their
+answers, metrics, or index evidence. Retrieval metrics below use 2,255 eligible
+queries; latency uses all 2,556 queries.
+
+| Metric | Naive | Prehop |
+|---|---:|---:|
+| Hits@4 | 69.36% | 92.42% |
+| Hits@10 | 83.90% | 94.90% |
+| MRR@10 | 0.5520 | 0.8200 |
+| MAP@10 | 0.2635 | 0.4522 |
+| Fact recall@4 | 39.96% | 66.53% |
+| Mean query latency (seconds) | 3.1811 | 35.1713 |
+| Query batch wall time (seconds) | 1047.6934 | 11309.8792 |
+| Batch wall time / query (seconds) | 0.4099 | 4.4248 |
+
+Batch wall time divided by query count measures inverse throughput, not the
+latency of an individual request. Both runs used benchmark concurrency eight.
+
+### Verification repair and evidence
+
+The average checker no longer overwrites the aggregate variable when a detail
+metric is ineligible. It checks the compact JSONL projection against full main
+rows and the separately stored query traces, including trace identity and
+order. Generation revision validation distinguishes the serving alias from the
+checkpoint revision recorded in the checked-in serving observation. That
+observation is not proof of an explicitly pinned remote command revision.
+
+Original failed verification receipts remain historical evidence. Successful
+admission receipts are at:
+
+- `data/results/multihop-benchmark-first-20260908-multihoprag-naive/admission.json`
+- `data/results/multihop-benchmark-first-20260908-multihoprag-prehop/admission.json`
+
+Each receipt binds the retained result, detail rows, original index evidence,
+configuration and verifier provenance. No benchmark regeneration was needed to
+repair these verifier errors.
+
+### Paired full-split analysis
+
+A paired analysis joins the same 2,255 retrieval-eligible query IDs and uses
+10,000 bootstrap resamples with seed 42. Differences are Prehop minus Naive;
+Hits differences are percentage points. These percentile intervals describe
+this development-inspected query population, not repeated-run variance or a
+confirmatory significance test.
+
+| Metric | Difference | 95% percentile interval |
+|---|---:|---:|
+| Hits@4 | +23.06 pp | [21.24, 24.88] pp |
+| Hits@10 | +11.00 pp | [9.58, 12.42] pp |
+| MRR@10 | +0.2680 | [0.2505, 0.2853] |
+| MAP@10 | +0.1887 | [0.1799, 0.1972] |
+
+`tmp/paper-draft-20260908/admitted-results.json` records the admission/result
+bindings and unrounded values. Its companion `collect_results.py` recomputes
+the four primary metrics from all 5,112 full rows against prepared gold,
+verifies the bound result/detail/index-stat hashes, and reproduces the paired
+intervals. It does not modify the retained results or admission receipts.
+
+### Remaining execution
+
+The interrupted serial LinearRAG benchmark is discarded before its replacement
+starts. Its original completed index is retained and copied into a fresh query
+workspace. The adapter coalesces up to eight concurrent questions into the
+unchanged native `qa(questions)` API. Native retrieval remains sequential inside
+that batch; native answer generation uses its existing thread pool. Batch size
+is recorded in query traces. A failed native batch fails its member queries
+without adapter repair or individual retries.
+
+Read `tmp/current_benchmark_campaign.txt` for the active replacement campaign.
+It runs LinearRAG, LightRAG, MS GraphRAG, Youtu and GFM-RAG in order, then starts
+a fresh MuSiQue index campaign. HippoRAG2/MultiHop-RAG remains unavailable after
+its native index failed on 208 NER chunks. Partial MuSiQue LightRAG indexing is
+historical diagnostic evidence, not continuous indexing cost.
+
 ## Primary matrix
 
 The primary matrix has 16 independent targets: eight methods on MultiHop-RAG
@@ -23,8 +99,8 @@ single source of truth used by the Python CLI and the shell runners.
 
 | Strategy | MultiHop-RAG | MuSiQue | Backbone policy |
 |---|---|---|---|
-| Prehop | `planned` | `planned` | controlled remote generation and embedding |
-| Naive RAG | `planned` | `planned` | controlled remote generation and embedding |
+| Prehop | `admitted` | `planned` | controlled remote generation and embedding |
+| Naive RAG | `admitted` | `planned` | controlled remote generation and embedding |
 | MS GraphRAG | `planned` | `planned` | official pipeline with controlled remote backbone |
 | LightRAG | `planned` | `planned` | official method with controlled remote backbone |
 | HippoRAG2 | `planned` | `planned` | official method with controlled remote backbone |
@@ -33,7 +109,9 @@ single source of truth used by the Python CLI and the shell runners.
 | Youtu-GraphRAG | `planned` | `planned` | controlled native agent API with pinned MiniLM and NER |
 
 The publication experiment ledger uses only these status values. The table
-above records that ledger; it does not mirror indexing-only smoke completion:
+above records the gated paper-matrix plan, not the separate benchmark-first
+campaign in the execution snapshot. Its `planned` cells do not assert that no
+index or standalone benchmark exists. Within each campaign, statuses mean:
 
 - `planned`: the target has not passed a canary.
 - `canary_passed`: the strategy contract passed a small non-reportable canary.
@@ -45,8 +123,9 @@ above records that ledger; it does not mirror indexing-only smoke completion:
 - `failed`: the target or its admission check failed.
 
 A canary is not target completion, and target completion is not admission.
-Only `admitted` artifacts may supply numbers to this register or presentation
-material. A successful benchmark artifact has execution
+Only `admitted` artifacts may supply numbers to primary paper tables or
+presentation material. Provisional diagnostics belong only in the timestamped
+execution snapshot above and must not be cited as admitted results. A successful benchmark artifact has execution
 status `completed_unadmitted` until `scripts/verify_paper_target.py` writes a passing
 `data/results/<run-id>/admission.json` record with status `admitted`. That
 record binds the result JSON, complete detail JSONL, exact index-stats path and
@@ -103,8 +182,10 @@ benchmark performs post-answer evaluation. The target remains labelled
 `scripts/verify_submission_consistency.py` must establish all of the following
 before a cell becomes `admitted`:
 
-1. The full target completed with zero error rows: 2,556 ordered query rows for
-   MultiHop-RAG or 2,417 for MuSiQue.
+1. Every query reached an answer or a terminal query failure: 2,556 ordered
+   rows for MultiHop-RAG or 2,417 for MuSiQue. Terminal failures follow the
+   versioned zero-score policy below; source-mapping or integrity failures
+   block admission.
 2. Detail rows have unique, gap-free indices in input order. Query IDs,
    query-record digests, ground-truth identities, eligible counts, and all
    aggregates recompute exactly from those rows. Primary per-query metrics also
@@ -140,13 +221,18 @@ before a cell becomes `admitted`:
 
 ## Failure handling
 
-The `terminal-query-failure-zero-v1` policy keeps every executed query in the
-primary quality denominator. Terminal query exceptions receive zero answer and
+The `terminal-query-failure-zero-v1` policy keeps terminal query failures in
+primary quality aggregation. Terminal query exceptions receive zero answer and
 retrieval/support scores, an incorrect-answer label, and a durable error trace.
 Failure counts and rates accompany the scores. Optional judge metrics remain
 unjudged, not fabricated zeros. Latency and available usage include failed calls;
 missing usage remains unavailable. Paired bootstrap retains failed queries as
-zero-score observations, subject to the existing gold-evidence applicability rule.
+zero-score observations. Successful rows retain metric applicability filtering.
+The current `metric_value` helper gives failed quality rows zero even when a
+successful null query would be ineligible for retrieval metrics. Report failed
+null-query counts separately so this failure-inclusive denominator is visible.
+The admitted Naive/Prehop pair has no terminal failures, so its retrieval
+denominator remains 2,255 in both columns.
 
 A batch that executed every query can complete with query failures. Source
 mapping/integrity errors stop subsequent queries for that target and block

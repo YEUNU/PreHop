@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-09-08 — Batch LinearRAG queries and repair result verification
+
+The adapter now coalesces concurrent LinearRAG questions into the original QA
+batch API, recording batch size without changing upstream code or parameters.
+Fixed aggregate-variable shadowing, compact-detail verification with separate
+traces, and serving-alias versus observed-checkpoint revision validation. Naive
+and Prehop retained results passed verification without rewriting predictions.
+
+## 2026-09-08 — Clarify retrieval branches and component attribution
+
+Documented original-text search across enabled channels when rewriting is
+skipped, and retention of rewrite/refinement policies at depth zero. Added a
+dependency-edge availability contrast that keeps NEXT enabled, with explicit limits
+on channel, fixed-candidate and bootstrap interpretations. These are method
+and evaluation-contract clarifications, not new experimental findings. Clarified
+ANN/source-file scope, inherited rank evidence and additional body-only
+candidate handling; attributed the question-role formulation to HopRAG.
+
+## 2026-09-08 — Align documentation with native outcomes
+
+Reconciled the manuscript and runtime guide with native response observation,
+terminal-query failure scoring and resume retention. Distinguished version-1
+and version-2 index reuse and historical submission handoffs. Reconstructed the
+260-query diagnostic comparison from stable IDs and verified its primary scores
+against gold data. Documented the independent aggregate and JSONL admission
+blockers; no publication admission or executable repair is claimed.
+
+## 2026-09-08 — Benchmark completed indexes first
+
+Added version-2 index reuse links for verified full-index supervisor receipts.
+Original index costs and artifact inventories remain bound; file-backed query
+workspaces are separate copies. This supports benchmarking completed datasets
+without rebuilding indexes or claiming a canary gate that was not run.
+
+
 ## 2026-09-07 — Isolate failures without dropping queries
 
 Terminal query failures now remain in quality denominators and paired bootstrap

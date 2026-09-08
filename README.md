@@ -1,12 +1,14 @@
-# Prehop: Offline Question Links for Multi-Hop Retrieval
+# Prehop: Role-Activated Retrieval over Offline Question Links
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Prehop builds question-guided links between corpus chunks during indexing and
 uses those stored links for multi-hop evidence retrieval. It generates Q−
 (answered here) and Q+ (needed elsewhere) representations, connects Q+ to a
-cross-document Q− owner, expands those links at query time, and selects evidence
-for answer synthesis.
+Q− owner in another source file, activates links through Q+ matches, and selects evidence
+for answer synthesis. The incoming/outgoing question formulation follows
+[HopRAG](https://arxiv.org/html/2502.12442v2#S3.S2); Prehop uses its own
+role-aligned retrieval, refinement, and selection policy.
 
 The primary comparison set is Prehop, Naive RAG, MS GraphRAG, LightRAG,
 HippoRAG2, GFM-RAG, LinearRAG, and Youtu-GraphRAG. BrowseNet, HopRAG, and
