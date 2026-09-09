@@ -55,7 +55,7 @@ for strategy in "${strategies[@]}"; do
         fi
         if "${target_command[@]}"; then
             # run_paper_target.sh returns success only after exact-target
-            # verify_paper_target.py admission in its effective environment.
+            # record_paper_completion.py admission in its effective environment.
             :
         else
             rc=$?

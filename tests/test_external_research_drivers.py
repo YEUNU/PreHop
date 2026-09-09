@@ -167,3 +167,39 @@ def test_linear_resolves_pinned_snapshot_before_old_sentence_transformer(tmp_pat
     source = tmp_path / "source"
     (tmp_path / "artifacts/embedding").mkdir(parents=True)
     assert resolve_pinned_model_path(source) == str(tmp_path / "artifacts/embedding")
+
+
+def test_linear_constructor_uses_published_runner_query_defaults(monkeypatch, tmp_path):
+    import ast
+    from core.strategy_registry import get_strategy
+    from models.external_research.drivers import linear_rag as driver
+    captured = {}
+    class Encoder:
+        def __init__(self, path): pass
+    def config(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(**kwargs)
+    monkeypatch.setitem(sys.modules, 'sentence_transformers', types.SimpleNamespace(SentenceTransformer=Encoder))
+    monkeypatch.setitem(sys.modules, 'src.config', types.SimpleNamespace(LinearRAGConfig=config))
+    monkeypatch.setitem(sys.modules, 'src.LinearRAG', types.SimpleNamespace(LinearRAG=lambda **kwargs: types.SimpleNamespace(config=kwargs['global_config'])))
+    monkeypatch.setattr(driver, 'resolve_pinned_model_path', lambda _: 'pinned-model')
+    monkeypatch.setattr(driver, 'LinearNativeInference', lambda _: object())
+    before = sys.path[:]
+    try:
+        engine = driver.LinearRAGDriver(tmp_path/'source', _stage(tmp_path)).engine
+    finally:
+        sys.path[:] = before
+    expected = {'iteration_threshold': 0.4, 'passage_ratio': 2.0, 'top_k_sentence': 3}
+    for field, value in expected.items():
+        assert getattr(engine.config, field) == value
+        assert field not in dict(get_strategy('linear_rag').paper_index_policy)
+    native = Path('data/official_baselines/qwen06-1024/linear_rag/source/run.py')
+    if native.exists():
+        defaults = {}
+        for node in ast.walk(ast.parse(native.read_text())):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'add_argument' and node.args:
+                flag = ast.literal_eval(node.args[0])
+                for arg in node.keywords:
+                    if arg.arg == 'default' and flag.removeprefix('--') in expected:
+                        defaults[flag.removeprefix('--')] = ast.literal_eval(arg.value)
+        assert defaults == expected

@@ -57,6 +57,7 @@ class LinearRAGDriver:
 
         strategy_spec = get_strategy("linear_rag")
         registry_policy = dict(strategy_spec.paper_index_policy)
+        query_policy = {field: value for field, _, value in strategy_spec.paper_query_policy}
         canonical_semantic_env("RAG_LINEAR_RAG_BACKBONE_MODE", registry_policy["backbone_mode"])
         sys.path.insert(0, str(official_root))
         from sentence_transformers import SentenceTransformer
@@ -104,6 +105,9 @@ class LinearRAGDriver:
             batch_size=positive_env("RAG_EMBEDDING_BATCH_SIZE", 16),
             retrieval_top_k=int(canonical_semantic_env("RAG_LINEAR_RAG_TOP_K", registry_policy["retrieval_top_k"])),
             use_vectorized_retrieval=bool(canonical_semantic_env("RAG_LINEAR_RAG_VECTORIZED", registry_policy["vectorized_retrieval"])),
+            iteration_threshold=query_policy["iteration_threshold"],
+            passage_ratio=query_policy["passage_ratio"],
+            top_k_sentence=query_policy["top_k_sentence"],
         )
         self.engine = LinearRAG(global_config=config)
 

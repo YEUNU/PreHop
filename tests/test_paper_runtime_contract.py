@@ -23,7 +23,7 @@ def _canonical_transport(monkeypatch, strategy="prehop"):
     from core.strategy_registry import PAPER_TRANSPORT, paper_environment_defaults
     for name, value in paper_environment_defaults().items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "" if strategy == "hipporag2" else PAPER_TRANSPORT.query_instruction)
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", PAPER_TRANSPORT.query_instruction)
     monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "2560")
     monkeypatch.setenv("MAX_EMBEDDING_LENGTH", "32768")
     for name in tuple(os.environ):
@@ -199,7 +199,7 @@ def test_canonical_policy_records_shared_dimensions_context_and_reserve():
 
 @pytest.mark.parametrize(
     "strategy",
-    ["prehop", "naive", "ms_graphrag", "lightrag", "hipporag2", "linear_rag"],
+    ["prehop", "naive", "ms_graphrag", "lightrag", "linear_rag"],
 )
 def test_paper_index_builder_emits_registry_canonical_semantics(monkeypatch, strategy):
     from cli.index import _resolved_index_policy
@@ -221,8 +221,8 @@ def test_paper_runner_and_matrix_bind_preflight_seed_and_admission():
     assert 'check_paper_runtime.py --strategy "$strategy"' in runner
     assert "--output-tsv" in runner
     assert "RAG_MS_OUTPUT_ROOT=" not in runner
-    assert "verify_paper_target.py" in runner
-    assert "verify_paper_target.py" in matrix
+    assert "record_paper_completion.py" in runner
+    assert "record_paper_completion.py" in matrix
     assert 'failed_targets+=("$dataset/$strategy:$rc")' in matrix
     assert "RAG_PAPER_GENERATION_CONCURRENCY" not in runner
     assert '--output "data/results/$run_id/admission.json"' in runner
@@ -233,7 +233,7 @@ def test_paper_runner_and_matrix_bind_preflight_seed_and_admission():
 def test_runtime_requirements_are_valid_json_and_cover_external_primary_methods():
     payload = json.loads(Path("configs/paper_runtime_requirements.json").read_text(encoding="utf-8"))
     assert payload["schema_version"] == 2
-    assert {"ms_graphrag", "lightrag", "hipporag2", "gfm_rag", "linear_rag"} <= payload.keys()
+    assert {"ms_graphrag", "lightrag", "gfm_rag", "linear_rag"} <= payload.keys()
 
 
 def test_preflight_main_uses_runner_environment_and_typed_transport():
@@ -316,7 +316,6 @@ def test_code_provenance_excludes_failed_and_generated_output_roots_without_read
     assert not _is_generated_path(b"core/paper_policy.py")
     assert {
         "configs/runtime_constraints/lightrag.txt",
-        "configs/runtime_constraints/hipporag2.txt",
         "configs/runtime_constraints/gfm_rag.txt",
         "configs/runtime_constraints/linear_rag.txt",
         "configs/runtime_constraints/lightrag.txt",
@@ -358,7 +357,7 @@ def test_frozen_runtime_runs_installed_metadata_consistency_check(tmp_path, monk
 
 def test_checked_in_runtime_constraints_are_content_bound():
     requirements = check_paper_runtime.load_runtime_requirements()
-    for strategy in ("lightrag", "hipporag2", "gfm_rag", "linear_rag"):
+    for strategy in ("lightrag", "gfm_rag", "linear_rag"):
         check_paper_runtime._check_approved_constraints(requirements[strategy])
     mutated = dict(requirements["linear_rag"])
     mutated["constraints_sha256"] = "0" * 64
@@ -367,7 +366,6 @@ def test_checked_in_runtime_constraints_are_content_bound():
     setup = Path("scripts/setup_official_baselines.sh").read_text(encoding="utf-8")
     assert "constraint_path linear_rag" in setup
     assert "constraint_path lightrag" in setup
-    assert "constraint_path hipporag2" in setup
     assert "constraint_path gfm_rag" in setup
     assert '--constraint "$linear_constraints"' in setup
     gfm_constraints = Path("configs/runtime_constraints/gfm_rag.txt").read_text(encoding="utf-8")

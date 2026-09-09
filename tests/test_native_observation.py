@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel
 
 from models.external_research.extraction_contract import ExtractionAudit, audit_evidence, validate_audit_evidence
-from models.external_research.native_observation import PROFILE, observed_chat_type, observe_hippo
+from models.external_research.native_observation import PROFILE, observed_chat_type
 
 
 @pytest.mark.parametrize('content', ['{"named_entities":[{"entity":"A"}]}', '{"named_entities":', '', 'explanation\n("entity"<|>A)'])
@@ -46,17 +46,6 @@ def test_native_exception_is_rethrown_once_and_does_not_override_native_fallback
     with pytest.raises(ValueError): validate_audit_evidence(evidence)
 
 
-def test_hippo_does_not_repair_dict_entities_or_retry_length(tmp_path):
-    result = ('{"named_entities":[{"entity":"A"}]}', {'finish_reason':'length'}, True)
-    calls = []
-    def infer(**kwargs):
-        calls.append(kwargs)
-        return result
-    openie = SimpleNamespace(llm_model=SimpleNamespace(infer=infer))
-    audit = observe_hippo(openie, tmp_path/'audit.jsonl', 5)
-    assert openie.llm_model.infer([], max_new_tokens=512) is result
-    assert calls == [{'messages':[], 'max_new_tokens':512}]
-    validate_audit_evidence(audit_evidence(audit))
 
 
 @pytest.mark.parametrize('asynchronous', [False, True])

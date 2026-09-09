@@ -1,7 +1,8 @@
 """Level-batched traversal over pre-built NEXT/HOP_ANSWER edges.
 
 The complete representation-union seed pool is expanded in one Neo4j request.
-Only query-matched Q+ owners expose HOP at level zero. The default path
+By default, only query-matched Q+ owners expose HOP at level zero. The
+explicit representation ablations expose HOP on every retrieved seed. The default path
 activates all stored provenance on that owner; reciprocal filtering and exact
 matched-ID activation remain selectable ablations. Later levels expose NEXT
 only. All structurally bounded results are retained until final
@@ -82,12 +83,12 @@ class TraversalMixin:
                 if str(question_id).strip()
             }
             for node in traversal_seeds
-            if bool(node.get("dependency_seed"))
+            if RAGConfig.HOP_SEED_POLICY == "all" or bool(node.get("dependency_seed"))
         }
         hop_source_question_ids = {
             source_id: question_ids
             for source_id, question_ids in hop_source_question_ids.items()
-            if source_id and question_ids
+            if source_id and (question_ids or RAGConfig.HOP_SEED_POLICY == "all")
         }
         continuation_source_question_ids = {
             self._node_identity(node): {
@@ -142,7 +143,7 @@ class TraversalMixin:
             source_candidate = collected.get(str(row.get("source_id") or ""), {})
             source_channel_scores = source_candidate.get("representation_scores") or {}
             if not already_direct:
-                if path_type == "hop":
+                if path_type == "hop" and RAGConfig.HOP_SEED_POLICY != "all":
                     inherited_score = float(source_channel_scores.get("q_plus", 0.0))
                 elif path_type == "continuation":
                     inherited_score = float(source_channel_scores.get("q_minus", 0.0))

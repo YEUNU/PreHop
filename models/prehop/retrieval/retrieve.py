@@ -90,6 +90,8 @@ class RetrieveMixin:
         }:
             owner_order = 0
             for role in ("q_minus", "q_plus"):
+                if RAGConfig.PREHOP_ABLATION_PROFILE and role not in channels:
+                    continue
                 for view in channel_queries.get(role) or []:
                     search_specs.append(("role_body_owner", "body", view, owner_order))
                     owner_order += 1

@@ -208,6 +208,8 @@ class KnowledgeMappingMixin:
         the identical call until it validates, not a content-quality filter
         -- it does not change what a valid response looks like.
         """
+        if RAGConfig.HOP_LINK_VARIANT == "body":
+            return {"q_minus": [], "q_plus": []}
         question_schema = RAGConfig.QUESTION_SCHEMA
         grounded = question_schema in {"grounded_v1", "linked_v2"}
         if question_schema == "linked_v2":

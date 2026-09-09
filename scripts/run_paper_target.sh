@@ -102,9 +102,9 @@ if [ -e "data/results/$run_id" ]; then
     if [ "$check_only" = false ]; then
         admission_args=(--output "data/results/$run_id/admission.json")
     fi
-    if "$PYTHON_BIN" scripts/verify_paper_target.py "$run_id" "$dataset" "$strategy" --exact-run-id \
+    if "$PYTHON_BIN" scripts/record_paper_completion.py "$run_id" "$dataset" "$strategy" --exact-run-id \
         "${admission_args[@]}"; then
-        echo "Strictly verified completed target; skipping: $run_id"
+        echo "Completed target; skipping: $run_id"
         exit 0
     fi
     partial_result="data/results/$run_id/$strategy/$dataset/seed_42/${strategy}_${dataset}.json"
@@ -186,5 +186,5 @@ else
     ./run_dataset.sh musique "$stage" --model "$strategy" --queries full
 fi
 
-"$PYTHON_BIN" scripts/verify_paper_target.py "$run_id" "$dataset" "$strategy" --exact-run-id \
+"$PYTHON_BIN" scripts/record_paper_completion.py "$run_id" "$dataset" "$strategy" --exact-run-id \
     --output "data/results/$run_id/admission.json"

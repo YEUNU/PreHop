@@ -1,5 +1,4 @@
 """Compare paper settings and adapter boundaries against the pinned native code."""
-import ast
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 from core.generation_profiles import request_settings
-from core.strategy_registry import get_strategy
 
 
 def _native(strategy, relative):
@@ -26,18 +24,6 @@ def test_ms_native_models_do_not_set_an_output_cap():
         assert 'temperature' not in request_settings(consumer)
 
 
-def test_hippo_retrieval_candidates_are_not_qa_context_count():
-    tree = ast.parse(_native('hipporag2', 'src/hipporag/utils/config_utils.py').read_text())
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'BaseConfig')
-    defaults = {}
-    for n in cls.body:
-        if isinstance(n, ast.AnnAssign) and isinstance(n.value, ast.Call):
-            for keyword in n.value.keywords:
-                if keyword.arg == 'default' and n.target.id in ('retrieval_top_k', 'qa_top_k'):
-                    defaults[n.target.id] = ast.literal_eval(keyword.value)
-    policy = dict(get_strategy('hipporag2').paper_index_policy)
-    assert policy['retrieval_top_k'] == defaults['retrieval_top_k'] == 200
-    assert policy['qa_top_k'] == defaults['qa_top_k'] == 5
 
 
 def test_gfm_driver_uses_native_prompt_and_answer_without_shared_synthesis():

@@ -253,7 +253,7 @@ print('query_path_and_static_config_passed')
     # This independent import test starts with an explicit canonical environment.
     environment = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'LD_LIBRARY_PATH') if key in os.environ}
     environment.update(paper_environment_defaults())
-    for method in ('ms_graphrag', 'lightrag', 'hipporag2', 'gfm_rag', 'linear_rag'):
+    for method in ('ms_graphrag', 'lightrag', 'gfm_rag', 'linear_rag'):
         result = subprocess.run([sys.executable, '-c', script, str(tmp_path), method],
                                 env=environment, capture_output=True, text=True, check=False)
         assert result.returncode == 0, result.stderr

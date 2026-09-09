@@ -1,26 +1,28 @@
 # Result Evidence Register
 
-This register separates retained admitted results from current execution state.
-Five MultiHop-RAG runs have passing admission receipts. The 16-target comparison
-is incomplete; no MuSiQue quality result or repaired HopRAG/HippoRAG2 result is
-claimed here. Strategy order comes from `core/strategy_registry.py`.
+This register preserves completed benchmark evidence, dataset identities, and
+measurement definitions. Live counters and queue state belong in generated
+campaign artifacts, not this document.
 
-## Retained full-run results — 2026-09-09 06:07 KST
+## Completed full-run results
 
 Each row contains all 2,556 MultiHop-RAG queries with zero terminal query
 failures. Retrieval metrics use the same 2,255 eligible questions; official QA
 accuracy and mean query latency use all 2,556 questions. Scores below are
-percentages. Admission receipts were checked against the retained result, detail and
-original index-stat hashes at this snapshot. This is preservation of their original admission, not a claim
-that they were rerun under the new unseeded-generation or repair profiles.
+percentages. Existing runs retain their original execution settings and evidence.
+The first four runs record generation seed 42; the GFM-RAG query run omits
+the generation seed and retains checkpoint-defined local retrieval components.
+All five use benchmark concurrency eight. Completion does not imply identical
+backbones, decoding settings, or native answer prompts. QA is preserved here
+as recorded evidence, not as an isolated retrieval-quality comparison.
 
 | Method | Hits@4 | Hits@10 | MRR@10 | MAP@10 | Official QA accuracy | Mean query latency (s) |
 |---|---:|---:|---:|---:|---:|---:|
 | Naive RAG | 69.36 | 83.90 | 55.20 | 26.35 | 28.91 | 3.1811 |
 | Prehop | 92.42 | 94.90 | 82.00 | 45.22 | 34.23 | 35.1713 |
-| LinearRAG | 81.91 | 85.28 | 67.30 | 34.16 | 55.48 | 33.0635 |
 | MS GraphRAG | 58.27 | 62.48 | 37.82 | 18.68 | 37.56 | 22.8464 |
 | LightRAG | 72.73 | 87.54 | 63.65 | 30.39 | 11.19 | 97.8781 |
+| GFM-RAG | 49.62 | 55.65 | 35.97 | 18.92 | 22.46 | 37.7325 |
 
 ### Recorded indexing and query costs
 
@@ -34,100 +36,42 @@ Prehop includes enabled trace I/O; local method backbones remain declared.
 |---|---:|---:|---:|---:|
 | Naive RAG | 119.1448 | 0.1956 | 1047.6934 | 0.4099 |
 | Prehop | 2504.8409 | 4.1130 | 11309.8792 | 4.4248 |
-| LinearRAG | 638.5990 | 1.0486 | 10787.6445 | 4.2205 |
+| LinearRAG (index only) | 638.5990 | 1.0486 | — | — |
 | MS GraphRAG | 6861.4718 | 11.2668 | 7617.4921 | 2.9802 |
 | LightRAG | 6562.6064 | 10.7760 | 31578.0235 | 12.3545 |
+| GFM-RAG | 1033.6809 | 1.6973 | 12300.5139 | 4.8124 |
 
 ### Evidence locations
 
-Each directory below contains `admission.json`; its bindings identify the exact
-result, detail rows and original index statistics. The result JSON may retain
-`completed_unadmitted`; the passing bound receipt owns admission status.
+These links open the final result JSON directly. Detail rows, traces and index
+cost evidence remain alongside each run. No seed-exception record is required.
 
-- Naive RAG: `data/results/multihop-benchmark-first-20260908-multihoprag-naive/`
-- Prehop: `data/results/multihop-benchmark-first-20260908-multihoprag-prehop/`
-- LinearRAG: `data/results/linear-native-batch-v2-20260908-multihoprag-linear_rag/`
-- MS GraphRAG: `data/results/rolling-two-models-20260908-multihoprag-ms_graphrag/`
-- LightRAG: `data/results/rolling-two-models-20260908-multihoprag-lightrag/`
+- [Naive RAG](../data/results/multihop-benchmark-first-20260908-multihoprag-naive/naive/multihoprag/seed_42/naive_multihoprag.json)
+- [Prehop](../data/results/multihop-benchmark-first-20260908-multihoprag-prehop/prehop/multihoprag/seed_42/prehop_multihoprag.json)
+- [MS GraphRAG](../data/results/rolling-two-models-20260908-multihoprag-ms_graphrag/ms_graphrag/multihoprag/seed_42/ms_graphrag_multihoprag.json)
+- [LightRAG](../data/results/rolling-two-models-20260908-multihoprag-lightrag/lightrag/multihoprag/seed_42/lightrag_multihoprag.json)
+- [GFM-RAG](../data/results/benchmark-first-two-20260909-multihoprag-gfm_rag/gfm_rag/multihoprag/seed_42/gfm_rag_multihoprag.json)
 
-`data/maintenance/documentation-evidence-20260909.json` records the snapshot
-paths, metrics and admission checks for result, detail and index-stat hashes. The retained Prehop/Naive paired
-analysis remains in `tmp/paper-draft-20260908/admitted-results.json` with its
-reproduction script. Its 10,000 seed-42 paired bootstrap resamples describe
-query-sample uncertainty, not run-to-run variation or new comparative tests.
+## Derived evidence
 
-## Execution update — 2026-09-09 07:35 KST
+The manuscript's four-system retained-output analysis uses Prehop, Naive RAG,
+LightRAG, and MS GraphRAG. Its input hashes and per-query data are recorded in
+`artifacts/paper_revision_20260909/analysis.json` and `*.per_query.jsonl`.
+`coverage_partition.json` records complete, partial, and absent fact coverage.
+These are analyses of saved outputs, not new retrieval runs.
 
-GFM-RAG and HopRAG were restarted as `gfm-cancellable-20260909` and
-`hoprag-cancellable-20260909` behind the cancellable front queue. The previous
-600-second GFM attempt and HopRAG canary are superseded, not final results.
-MS GraphRAG retains its original process. Legacy in-flight requests may still
-drain through the original queue; this restart does not establish full recovery.
-
-### Superseded execution update — 2026-09-09 07:20 KST
-
-The 60-second GFM-RAG benchmark attempt was discarded at the user’s request.
-Its partial results and run-local artifact copy were removed; the original
-completed index is retained. The replacement run uses
-`gfm-timeout600-20260909-multihoprag-gfm_rag` and applies the common 600-second
-QA transport deadline. It starts from the first query. LightRAG and MS GraphRAG
-indexing continue, and the rolling capacity remains three.
-
-### Superseded execution update — 2026-09-09 06:28 KST
-
-The rolling controller now permits three active jobs. It retained both MuSiQue
-index processes and launched GFM-RAG/MultiHop-RAG from the completed index. By 06:29 KST,
-its benchmark worker was writing answer audit records. The shared request limit remains 120. This launch is not
-a completed benchmark result or a measured speedup; four jobs remain untested.
-
-### Earlier execution snapshot — 2026-09-09 06:07 KST
-
-The shared queue continues to serve two active MuSiQue indexing jobs:
-LightRAG and MS GraphRAG. The replacement controller adopted their existing
-processes. It dispatches GFM-RAG/MultiHop-RAG, HopRAG/MultiHop-RAG,
-HippoRAG2/MuSiQue, LinearRAG/MuSiQue and GFM-RAG/MuSiQue as slots become free.
-This is a timestamped queue plan, not evidence that these retries have started.
-
-- GFM-RAG previously failed before benchmark startup because a prior job's LLM
-  seed reached index validation. Target initialization and seed handling are
-  repaired; the new benchmark is pending.
-- HopRAG's previous full index failed on two documents after native response
-  retries returned three values to a two-value caller. The repaired adapter is
-  integrated into the main repository; its new full run is pending.
-- HippoRAG2/MuSiQue previously failed NER on 20 chunks. The structured extraction
-  adapter is enabled for the next fresh run; no successful full result follows
-  from unit tests alone.
-- The repair suite passed 108 tests. HopRAG's 57,716 saved responses parsed as
-  JSON in offline replay. These are engineering checks, not indexing completion
-  or benchmark admission.
-
-Read `tmp/current_benchmark_campaign.txt` and then
-`data/results/rolling-two-models-20260908/slot-fill-status.json` for live state.
-This controller can mix indexing and benchmark jobs. Older supervisor target
-labels and an earlier failed run's status are historical evidence. Check the
-current controller's active jobs, logs and target receipts before reporting ETA.
-HTTP 200 counts do not establish successful native extraction, and completed
-futures can include failed documents. Do not extrapolate full index time from
-extraction alone when graph construction is still pending.
+Retrieval diagnostics use 2,255 evidence-bearing questions. Exact-fact recall
+and AllFacts use the official case-sensitive, space/newline-stripped matcher;
+they are additional measures, not official leaderboard metrics. Normalized/fuzzy
+recall is a separate matching-rule sensitivity analysis. These diagnostics do not establish reasoning correctness.
 
 ## Primary matrix
 
-| Method | MultiHop-RAG benchmark | MuSiQue benchmark |
-|---|---|---|
-| Prehop | Retained admitted result | No admitted result |
-| Naive RAG | Retained admitted result | No admitted result |
-| HopRAG | Failed index; repaired run pending | No admitted result |
-| MS GraphRAG | Retained admitted result | Indexing |
-| LightRAG | Retained admitted result | Indexing |
-| HippoRAG2 | No admitted result | Failed index; repaired run pending |
-| GFM-RAG | Repaired benchmark pending | No admitted result |
-| LinearRAG | Retained admitted result | No admitted result |
-
-An index or canary completion is not a full benchmark admission. Retained
-results keep their original code, seed, profile and cost evidence. New profiles
-must not relabel old artifacts. Source edits no longer block index dispatch,
-but corpus, artifact, semantic compatibility and result-completeness checks
-remain required for reuse and admission.
+The supported methods and their identities are defined in
+`core/strategy_registry.py`. Only completed full-run artifacts can supply
+benchmark scores. An index or canary alone is not a completed benchmark.
+Runtime readiness, index reuse, and checkpoint checks still apply before
+execution or resume. Consult generated campaign artifacts for queue state.
 
 ## Prepared dataset identities
 
@@ -158,49 +102,23 @@ LinearRAG instead uses pinned
 `sentence-transformers/all-mpnet-base-v2` embeddings at 768 dimensions in the
 primary official-faithful mode. GFM-RAG retains its checkpoint-defined local
 components. HopRAG uses the pinned upstream runtime with the registered
-`adapter-json-recovery-v1` response intervention. HippoRAG2 uses
-`strict-extraction-v1` for newly launched repaired indexes. These profiles
-describe changed response handling and are not claims of unmodified upstream
+`adapter-json-recovery-v1` response intervention. This profile
+describes changed response handling and is not a claim of unmodified upstream
 execution. See [runtime requirements](RUNTIME_REQUIREMENTS.md#native-output-handling-and-artifact-validation).
 
-## Admission checks
+## Completion records
 
-`scripts/verify_paper_target.py` and
-`scripts/verify_submission_consistency.py` must establish all of the following
-before a cell becomes `admitted`:
+`scripts/record_paper_completion.py` records a finished benchmark without a
+final paper-policy check. It accepts a completed execution status and writes
+`admission.json` with `status=admitted` and `verification=disabled_by_user`.
+The legacy status name supports existing launchers; it does not certify an
+independent validation. In-progress and failed executions are not completed.
+The result JSON retains its original `completed_unadmitted` execution label.
 
-1. Every query reached an answer or a terminal query failure: 2,556 ordered
-   rows for MultiHop-RAG or 2,417 for MuSiQue. Terminal failures follow the
-   versioned zero-score policy below; source-mapping or integrity failures
-   block admission.
-2. Detail rows have unique, gap-free indices in input order. Query IDs,
-   query-record digests, ground-truth identities, eligible counts, and all
-   aggregates recompute exactly from those rows. Primary per-query metrics also
-   recompute from the saved answer/retrieved evidence and authoritative query
-   manifest; expected evidence must match that manifest. Primary averages must
-   be finite numbers in [0, 1], with ineligible rows excluded by the dataset rule.
-3. Corpus manifests and index statistics bind the full source-ID set, source
-   count, content digest, query-ID set, and query-record digest. MuSiQue schema
-   v2 keeps paragraph IDs distinct from source filenames.
-4. The completed index has exact source coverage derived from its stored
-   retrieval artifacts, plus a content-addressed artifact inventory. A staged
-   input directory alone is not proof of coverage.
-5. The semantic configuration ID and hash match the checked-in per-strategy
-   specification, including the upstream revision and method-defining model,
-   checkpoint, schema, and retrieval settings. Operational throughput settings
-   are recorded separately.
-6. The generation and embedding transports match the strategy's declared
-   policy. Remote calls use the single fail-closed LiteLLM gateway; pinned
-   local method components match their exact revisions and dimensions.
-7. Dataset metrics remain separate, and indexing cost, query service latency,
-   worker-queue delay, and end-to-end latency retain their distinct meanings.
-   Missing upstream token or cost telemetry is marked incomplete rather than
-   estimated.
-8. External adapters report their executed observation or recovery profile and bind the
-   index-time audit prefix. Missing or changed audit bytes and stale profiles
-   prevent admission. Recorded native fallback events do not independently
-   invalidate a completed native run; extraction quality is evaluated as produced. Later query appends do
-   not replace the index-time evidence; the final inventory binds them separately.
+`scripts/verify_paper_target.py` is only a compatibility entry for already-running
+launchers. The standalone `verify_submission_consistency.py` remains an optional
+offline audit, outside automatic completion and dispatch. Seed differences do
+not require an exception record. Raw results, detail rows and traces are retained.
 
 ## Failure handling
 

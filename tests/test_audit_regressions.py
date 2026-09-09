@@ -62,7 +62,7 @@ def test_snapshot_preflight_reads_and_checks_real_manifest(tmp_path, monkeypatch
         check_paper_runtime._check_local_snapshot('linear_rag', 'encoder', 'test/encoder', 'revision')
 
 
-@pytest.mark.parametrize('strategy', ['lightrag', 'hipporag2', 'gfm_rag', 'linear_rag'])
+@pytest.mark.parametrize('strategy', ['lightrag', 'gfm_rag', 'linear_rag'])
 def test_primary_child_can_resolve_actual_parent_environment(monkeypatch, strategy):
     _transport(monkeypatch, strategy)
     environment = _runtime_env(strategy)
@@ -203,11 +203,6 @@ def test_target_empty_seed_and_native_instruction_survive_dotenv_reload(tmp_path
     configure_target_environment('lightrag', 'musique', 'run')
     load_dotenv(fixture, override=False)
     assert InferenceTransport.resolve('lightrag').generation_seed is None
-    configure_target_environment('hipporag2', 'musique', 'run')
-    load_dotenv(fixture, override=False)
-    transport = InferenceTransport.resolve('hipporag2')
-    assert transport.embedding_query_instruction == ''
-    assert transport.embedding_query_template == '{query}'
 
 
 def test_gate_rejects_bound_fabricated_canary_without_actual_policy(tmp_path, monkeypatch):
@@ -239,7 +234,7 @@ def test_gate_rejects_bound_fabricated_canary_without_actual_policy(tmp_path, mo
 def test_submission_verifier_resolves_and_restores_each_target(tmp_path, monkeypatch):
     from scripts import verify_submission_consistency as verifier
     monkeypatch.setattr(verifier, 'ROOT', tmp_path)
-    monkeypatch.setattr(verifier, 'STRATEGIES', ('hipporag2', 'lightrag'))
+    monkeypatch.setattr(verifier, 'STRATEGIES', ('linear_rag', 'lightrag'))
     for dataset in verifier.DATASETS:
         for strategy in verifier.STRATEGIES:
             path = tmp_path / verifier._artifact_path('campaign', dataset, strategy)
@@ -259,10 +254,7 @@ def test_submission_verifier_resolves_and_restores_each_target(tmp_path, monkeyp
     for strategy, dataset, run_id, seed, instruction, output in observed:
         assert run_id == f'campaign-{dataset}-{strategy}'
         assert output.endswith('/runs/' + run_id)
-        if strategy == 'hipporag2':
-            assert seed == '' and instruction == ''
-        else:
-            assert seed == ''
+        assert seed == ''
 
 
 @pytest.mark.asyncio
@@ -285,9 +277,9 @@ async def test_paper_request_uses_transport_seed_after_late_environment_resoluti
     assert all('seed' not in call for call in calls)
 
 
-@pytest.mark.parametrize('entrypoint', ['target', 'submission', 'gate'])
+@pytest.mark.parametrize('entrypoint', ['submission', 'gate'])
 def test_verifier_cli_loads_canonical_dotenv_before_validation(tmp_path, monkeypatch, entrypoint):
-    from scripts import paper_gate_ledger, verify_paper_target, verify_submission_consistency
+    from scripts import paper_gate_ledger, verify_submission_consistency
     monkeypatch.setattr(check_paper_runtime, 'ROOT', tmp_path)
     monkeypatch.delenv('RAG_SKIP_PROJECT_ENV', raising=False)
     monkeypatch.delenv('RAG_INFERENCE_BASE_URL', raising=False)
@@ -304,12 +296,6 @@ def test_verifier_cli_loads_canonical_dotenv_before_validation(tmp_path, monkeyp
         module = verify_submission_consistency
         monkeypatch.setattr(module, 'verify', observe)
         argv = ['submission', '--matrix-prefix', 'synthetic']
-    else:
-        module = verify_paper_target
-        monkeypatch.setattr(module, '_load', observe)
-        monkeypatch.setattr(module, '_validate_artifact', lambda *args, **kwargs: ['synthetic no artifact'])
-        monkeypatch.setattr(module, 'admission_bindings', lambda *args: {})
-        argv = ['target', 'synthetic', 'musique', 'prehop', '--exact-run-id']
     monkeypatch.setattr(sys, 'argv', argv)
     module.main()
     assert seen == ['http://synthetic-gateway.test/v1']

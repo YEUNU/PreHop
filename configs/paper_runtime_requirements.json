@@ -20,15 +20,6 @@
     "constraints_file": "configs/runtime_constraints/lightrag.txt",
     "constraints_sha256": "76ee427b5a6d182e9db8347ee6d69969c4940122fc25da2bbbd83899d49a3322"
   },
-  "hipporag2": {
-    "python_version": "3.10",
-    "required_imports": [
-      "hipporag",
-      "openai"
-    ],
-    "constraints_file": "configs/runtime_constraints/hipporag2.txt",
-    "constraints_sha256": "f030517e9aed9a63cab8bbc21ecbbffc16044a621fa032d01979409920ea84c6"
-  },
   "gfm_rag": {
     "python_version": "3.12",
     "required_imports": [

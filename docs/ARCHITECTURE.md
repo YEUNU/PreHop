@@ -1,1215 +1,321 @@
 # Architecture
 
-This document defines the current indexing and query paths at module level.
-Remote generation and remote embeddings use one configured, fail-closed
-OpenAI-compatible LiteLLM gateway; the repository does not start a local
-generation model. Pinned local ancillary models remain part of methods that
-define them. Historical changes belong in `CHANGELOG.md`; research
-interpretation and manuscript prose are outside this implementation contract.
-
-## External package installation
-
-Pinned checkouts are runtime source references, not packaging work directories.
-`scripts/build_official_package.py` exports the approved revision to a unique
-strategy-local `artifacts/builds/` directory and passes that export to package
-installation. It records the archive digest and rejects tracked, untracked,
-or ignored changes in the original source before and after the build.
-`RAG_OFFICIAL_BASELINE_HOME` selects the same runtime layout for setup and
-worker source, interpreter, snapshot, and freeze resolution. Setup leaves existing attempts in place when a new runtime home is selected;
-explicit cleanup is a separate operation.
-
-## Admission and transport identity
-
-The typed transport checks the normalized gateway URL against the non-secret
-`configs/paper_gateway.json` digest before client construction. Public vendor
-endpoints, URL userinfo, and unregistered generation-model overrides fail
-closed. Primary research workers receive canonical transport fields and only
-necessary native client credentials; they do not inherit legacy routing aliases.
-
-Target admission establishes the exact run ID, output root, namespace, and
-recorded inference settings before comparing current and stored policy. New
-paper requests omit the generation seed; historical index seeds remain evidence. Matrix
-execution uses that target exit status, including admission failure. Standalone
-target verification supports `--exact-run-id`. Admission revalidates current
-v2 corpus manifests and source bytes and binds their identity along with the
-result, detail rows, index statistics, runtime, and explicit evidence-contract version.
-
-HippoRAG2 retains its native unprefixed query embeddings and native newline-to-space
-normalization; its method policy records an empty instruction and `{query}`
-template. The injected encoder uses the typed embedding request timeout.
-Evaluation seed 42 is separate from unseeded LLM generation;
-a native-answer adapter cannot silently synthesize a replacement answer.
-
-## Structured generation contracts
-
-Prehop's Q−/Q+ indexing, role rewrite, evidence refinement, and candidate
-ranking use registered `response_format.json_schema` requests with
-`strict: true` through the same typed LiteLLM transport. The client requires
-one completed, non-refused raw JSON response and validates every nested field.
-It rejects fenced/prose-wrapped JSON, wrong types, extra fields, duplicate
-keys, and incomplete generations. Ranking requires exactly the requested
-number of distinct IDs from the actual candidate pool. It does not fill or
-repair an invalid ranking. Empty question directions and linked-schema empty
-continuation anchors retain their existing meaning. Final answer synthesis
-keeps its text response contract.
-
-`core/structured_outputs.py` owns these schemas.
-Nonblank strings use `[\s\S]*\S[\s\S]*`, preserving the intended
-non-whitespace requirement under both JSON Schema search and constrained-decoder
-full-match semantics, including multiline text. Console diagnostics retain allowlisted schema, choice, finish-reason and
-token-count metadata. Prehop additionally stores raw request/response bodies
-in its private trace artifacts before response validation; see
-[Prehop tracing](#prehop-tracing).
-
-The v3 wire schema omits `uniqueItems`; exact ranking count and candidate IDs
-remain constrained, and the local validator rejects duplicate IDs without
-repair or filling. Redundant `minLength` on patterned strings is also omitted.
-A reviewed keyword subset is checked recursively before transmission, keeping
-property names and enum/const values separate from schema keywords. This follows
-[vLLM's documented XGrammar feature checks](https://docs.vllm.ai/en/latest/api/vllm/v1/structured_output/backend_xgrammar/).
-Local compiler acceptance alone does not establish serving support. Validate
-the schema variants through the production request helper and gateway before
-full execution; such integration checks do not establish benchmark admission.
-
-`prehop-json-schema-v3` and the materialized-schema bundle digest enter index policy,
-query metadata, and the v4 chunk-generation cache signature. Per-request
-schema digests also enter inference telemetry. Fresh paper runs use separate
-`data/index_cache/runs/<run>/<strategy>/<dataset>` directories; an existing
-cache cannot satisfy a fresh-index step. Resume retains its own run cache.
-
-External response handling is method-specific. GFM-RAG, MS GraphRAG,
-LightRAG and LinearRAG retain their declared native response paths. New
-HippoRAG2 runs use `strict-extraction-v1`: the adapter requests a structured
-response, validates entity/triple shapes and records bounded format retries.
-HopRAG uses `adapter-json-recovery-v1`: valid JSON is parsed before the native
-cleaner, and invalid return shapes receive bounded retries. Neither intervention
-edits an upstream source file or invents missing facts. Raw responses and
-recovery outcomes remain auditable. See [native output handling](RUNTIME_REQUIREMENTS.md#native-output-handling-and-artifact-validation)
-for the authoritative per-method contract.
-
-Prehop's structured wire format follows the [vLLM structured-output interface](https://docs.vllm.ai/en/latest/features/structured_outputs/).
-Unsupported gateway/backend schema requests fail without an unstructured
-fallback. Local SDK acceptance is not evidence of a particular serving
-backend or version.
-
-## Shared input contract
-
-`models/prehop/indexing/chunking.py` owns the in-repo parser and fixed
-window splitter:
-
-- `parse_pages_offline(filename, content)` reads an optional first-line
-  `Title: ...` header and `--- Page N ---` markers.
-- If page markers are absent, the remaining body is one logical page. This is
-  a supported corpus format, not an LLM fallback.
-- `split_fixed_sentence_windows(...)` sentence-splits each page, emits fixed
-  six-sentence windows, and retains the final partial window.
-- Page boundaries are never crossed. Pipe-delimited text is preserved exactly;
-  there is no table-to-text branch.
-- Prehop and Naive apply the same fixed window splitter after parsing. This
-  makes the in-repo Naive path a controlled retrieval baseline rather than a
-  claim that Naive RAG has one canonical chunker.
-- Primary external methods retain their upstream indexing units because
-  changing them would alter the method comparison. HopRAG also retains its
-  native document-internal chunking.
+This document describes implementation behavior. `core/config.py` owns runtime
+defaults; `core/strategy_registry.py` owns supported methods, primary order,
+upstream revisions, and paper policies. Experimental controls are specified in
+[PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md), measured evidence in
+[RESULTS](RESULTS.md), and launch procedures in
+[THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md).
 
 ## Strategy dispatch and indexing branches
 
-`core/strategy_registry.py` is the typed source of truth for primary order,
-supported methods, external repository and revision, worker, output root, license
-note, transport profile, and paper embedding identity. The CLI and shell
-runners consume that registry rather than maintaining independent lists. The
-primary order is Prehop, Naive RAG, HopRAG, MS GraphRAG, LightRAG,
-HippoRAG2, GFM-RAG, and LinearRAG. BrowseNet, PropRAG, and Youtu have been
-removed from the registry and model dispatch.
+The primary order is Prehop, Naive RAG, HopRAG, MS GraphRAG, LightRAG, GFM-RAG,
+and LinearRAG. The two supported paper datasets are MultiHop-RAG and MuSiQue.
+Removed methods do not supply primary comparison cells.
 
-`cli/index.py::run_indexing` obtains a namespace-aware strategy/corpus lock,
-then `run_indexing_unlocked` dispatches as follows:
+`cli/index.py::run_indexing` acquires a strategy/corpus lock in the working
+checkout and calls `_run_indexing_unlocked`. Namespace isolation is separate
+from that local lock; it is not a cross-worktree database lock.
 
-```text
-strategy == prehop
-  shared parser in spawn ProcessPool
-  -> shared fixed page windows
-  -> external generation: Q-/Q+ per chunk
-  -> external body/Q-/Q+ document embeddings + Q+ query embeddings
-  -> atomic Neo4j Document/Chunk/question replacement + NEXT writes
-  -> after every document succeeds: whole-corpus HOP edge pass
-  -> materialize reciprocal source-Q+ provenance on each HOP edge
+| Method | Index construction | Query path |
+|---|---|---|
+| Prehop | Six-sentence passages, Q−/Q+ nodes, NEXT and directed HOP links | Representation search, activated links, LLM evidence selection |
+| Naive RAG | The same six-sentence passages and body embeddings | Dense body search and shared answer synthesis |
+| HopRAG | Native question-linked passage graph over the complete staged corpus | Native BFS, five hops, top-k eight |
+| MS GraphRAG | Standard indexing: text units, entities, relations, communities, reports | Native LocalSearch |
+| LightRAG | Native insertion and graph storage | Mix retrieval, top-k 40, chunk top-k 20, native answer |
+| GFM-RAG | Native extraction and checkpoint-defined graph components | Native single-pass QA, top-k five |
+| LinearRAG | Native relation-free Tri-Graph, local MPNet and spaCy | Native QA with top-k five and registered query parameters |
 
-strategy == naive
-  shared parser + shared fixed page windows
-  -> external body embeddings
-  -> Neo4j Chunk writes
+File-backed external methods run in isolated Python processes. Their adapters
+stage input, configure transport and producer scheduling, preserve source IDs,
+and observe native responses. They do not edit pinned upstream source.
+[Runtime requirements](RUNTIME_REQUIREMENTS.md) define local models and declared
+response interventions.
 
-strategy == hoprag
-  -> official HopRAG stage 1 node/question generation
-  -> whole-corpus edge construction without query/gold grouping
-  -> Neo4j node/edge/index writes
+## Shared input contract
 
-strategy == ms_graphrag
-  -> official GraphRAG Standard pipeline
-  -> text units/entities/relationships/communities/reports/embeddings
-  -> corpus-scoped parquet + LanceDB output
+`models/prehop/indexing/chunking.py` owns the parser and window splitter:
 
-strategy == lightrag
-  -> pinned official LightRAG storage initialization and insertion
-  -> dual-level mix-mode retrieval and native answer path
+- `parse_pages_offline` accepts a first-line `Title:` header and optional
+  `--- Page N ---` markers. Without markers, the body is one logical page.
+- `split_fixed_sentence_windows` forms six-sentence windows within each page,
+  retaining the final partial window. It preserves pipe-delimited text.
+- Prehop and Naive use the same splitter. External systems retain their native
+  indexing units; equal rank cutoffs do not imply equal passage sizes.
 
-strategy == hipporag2
-  -> pinned official HippoRAG2 indexing and source metadata
-  -> native rag_qa answer with source-bearing evidence
+Prepared `corpus_manifest.json` files bind source IDs, file and corpus-record
+hashes, query IDs, counts, and query-record hashes. MuSiQue paragraph IDs and
+filename-derived source IDs are distinct. Full benchmarks require a completed
+index with matching corpus identity and verify the active source snapshot.
+Gold evidence is used for evaluation, not index construction or retrieval.
 
-strategy == gfm_rag
-  -> pinned official GFM-RAG worker
-  -> validated model.pth/config.json and checkpoint-defined GNN components
+## Prehop index construction
 
-strategy == linear_rag
-  -> pinned process-isolated official relation-free Tri-Graph
-  -> local MPNet snapshot in the primary official-faithful mode
+CPU parsing uses a spawn-based process pool. A bounded rolling document window
+limits resident work; completed tasks release slots without waiting for a whole
+batch. Document failures are recorded, and incomplete source coverage cannot
+produce a complete index.
 
-```
+| Module under `models/prehop/indexing/` | Responsibility |
+|---|---|
+| `chunking.py` | Parsing, windowing, generation cache, intermediate output |
+| `knowledge_mapping.py` | Question generation and question-record validation |
+| `embedding.py` | Role-aware cached embeddings and bounded request batches |
+| `graph_writer.py` | Document replacement, question ownership, indexes and NEXT |
+| `hop_edges.py` | Question-based cross-source HOP construction and provenance |
+| `answer_links.py` | Optional grounded continuation links for `linked_v2` |
+| `body_links.py` | Explicit body-to-body representation ablation |
 
-File-backed external methods use a process boundary rather than importing
-conflicting dependencies into the main environment.
-`scripts/setup_official_baselines.sh` checks out exact upstream revisions into
-an ignored directory and creates isolated runtimes. The preflight rejects a
-revision mismatch or a tracked or untracked change in an upstream checkout.
-The parent stages the prepared corpus, starts the official index or persistent
-retrieval worker, and accepts only structured JSON responses. Snapshot metadata
-binds the official revision, source/content digests, corpus fingerprint,
-artifact inventory, exact indexed source coverage, and immutable
-semantic-configuration hash before evaluation. Throughput controls are
-operational configuration and do not silently change method semantics. The
-external research worker loads one strategy-specific thin driver through the
-typed central registry; it does not rely on placeholder modules in upstream
-checkouts.
+The primary legacy schema generates up to three Q− and three Q+ strings per
+passage. Q− asks about facts answered by the passage; Q+ asks for information
+elsewhere. Empty lists are valid. Invalid types and blank questions fail;
+deduplication and source-relative wording filters remove unsuitable records.
+Grounded and linked schemas remain explicit experimental settings.
 
-LinearRAG's GPL upstream source stays in its external checkout. Its primary
-mode uses pinned MPNet and `en_core_web_trf`; GFM-RAG retains its
-content-addressed checkpoint and ColBERT entity linker. HopRAG loads the pinned
-checkout through `models/hoprag/native_runtime.py` and uses a separate native
-PaddleNLP POS process. [Runtime requirements](RUNTIME_REQUIREMENTS.md) owns
-the environment layout and revision checks.
+Each body and individual question has a document embedding scoped by its title.
+Q+ additionally stores an instructed query embedding for outgoing ANN search.
+Embedding reuse requires matching model, revision, endpoint, role, instruction,
+dimensions, and normalized input. Cold target wrappers disable generation and
+embedding caches and allocate fresh storage rather than deleting shared state.
 
-The indexer selects the full prepared corpus without company or sample filters.
-HopRAG accepts `multihoprag` and `musique`; its edge input is the complete
-source corpus and does not consult benchmark queries or gold evidence.
+Document replacement writes complete Document/Chunk/question subgraphs in one
+transaction; ordered NEXT edges are written separately. Graph batches respect a
+document count and an 8 MiB logical parameter budget. Only transaction-memory
+failures split a failed document group; successful prefixes are not replayed.
+An exhausted write failure stops further work and prevents a complete index.
 
-Both preparation scripts atomically publish `corpus_manifest.json` beside the
-corpus. The current manifest schema binds distinct source IDs, source count,
-file and corpus-record content digests, query IDs, query count, and query-record
-digest. MuSiQue keeps paragraph IDs distinct from filename-derived source IDs;
-the two digests are never aliases. Schema-v1 inputs are rejected in paper
-mode. Full benchmarks recompute the active
-corpus and query identities before a retrieval client starts and require them
-to match the completed index artifact.
+After corpus flushing, each source Q+ retrieves a Q− from another source file.
+The ANN pool includes the source's own channel count plus one foreign slot;
+filtering excludes the source file. The selected Q− owner is the destination.
+This is the best eligible returned ANN candidate, not a guaranteed exact global
+nearest neighbor or a verified answer. No second body ANN lookup is required.
 
-The in-repo path limits simultaneously active files with
-`RAG_MAX_PARALLEL_FILES`. CPU parsing uses a spawn-based `ProcessPoolExecutor`
-(`RAG_PARSE_WORKERS`) so forked HTTP clients cannot corrupt the async inference
-clients. Files are read and scheduled in bounded batches. A document failure is
-isolated and persisted in `data/index_failures`; any failure still makes the
-target fail after cleanup/finalization, so partial success cannot be reported as
-a complete index. Graph indexing uses a bounded rolling task window: when any
-document finishes, its slot is reused immediately. A slow document therefore
-does not impose a barrier on the rest of its original scheduling batch, while
-the number of resident tasks remains bounded by `RAG_FILE_SCHEDULE_BATCH`.
+Multiple questions resolving to the same passage pair merge into one
+`HOP_ANSWER` edge. Question IDs/texts retain provenance; `ANSWERED_BY` and
+`SUPPORTED_BY` retain question-to-evidence paths. The primary constructor skips
+HOP construction if Q+ is disabled. The explicit body-link profile is the
+exception described below. Reciprocal-hop precomputation is enabled by default;
+the default query policy does not filter edges by reciprocity.
 
-### Inference transport
+The `linked_v2` experiment also stores normalized answer anchors and exact
+cross-source mentions. These optional relations do not change the legacy
+primary graph. Prepared MuSiQue paragraphs are individual source files, so
+cross-source exclusion need not imply different article titles.
 
-`core/inference_transport.py` owns one typed transport: base URL, API key,
-registered generation and embedding model IDs, timeout, retry policy, remote
-embedding batch size, generation/embedding concurrency, seed semantics,
-context/input limits, dimension, reserve, and exact query instruction/template.
-The same base serves `/chat/completions` and `/embeddings`. Legacy `VLLM_*`,
-ambient provider, and direct-vendor variables are rejected as public inputs.
-Primary child processes receive canonical typed values and empty forbidden
-aliases, preventing native dotenv imports from restoring competing settings.
-Populated compatibility aliases are limited to isolated legacy children.
-Internal clients do not interpret competing URL or credential variables. Empty bases, two different
-bases, unregistered models, direct public-vendor routes, and unsupported
-fallbacks fail closed in paper mode.
+## Structured generation contracts
 
-Remote embedding responses must contain exactly one finite, dimensionally
-consistent vector per input with unique, gap-free response indices. Only
-MessagePack/context-size errors and HTTP 413 trigger order-preserving
-bisection; an unrelated HTTP 400 or a failing singleton is raised. The paper
-serial operational configuration uses embedding batches of 16 and concurrency
-1. An explicit content-bound throughput profile selects different operational
-limits through the owned queue; see THROUGHPUT_EXECUTION.md.
+`core/structured_outputs.py` defines schemas for question generation, role
+rewriting, refinement, and candidate selection. Requests use strict JSON-schema
+response formats through the common gateway. Validators reject extra fields,
+wrong types, duplicate keys, malformed JSON, refusals, and incomplete responses.
+Ranking requires exactly the requested number of distinct IDs from the supplied
+candidate pool; it does not fill missing IDs or repair rankings.
 
-### Prehop modules
-
-`indexing/chunking.py`
-
-- Owns the parser, shared splitter, optional content-addressed Q-/Q+
-  cache, and run-namespaced debug output.
-- `RAG_CHUNK_CACHE=off` disables reuse. A measured cold run sets it explicitly
-  and clears prior artifacts.
-- Prehop tracing enables intermediate output by default. `--save-intermediate` writes to
-  `data/debug/<run-id>/<strategy>/<corpus>/<source>/`; normal logs and paper
-  artifacts live elsewhere, so parallel debugging cannot overwrite them.
-
-`indexing/knowledge_mapping.py`
-
-- Makes one schema-validated external generation call per chunk using
-  `HOPRAG_PROMPT`.
-- Uses greedy decoding (`temperature=0`) so indexing does not inherit a
-  deployment-specific sampling default.
-- Returns `q_minus` and `q_plus`; missing keys, invalid JSON, schema-invalid
-  records, or more than three questions raise after client retries. Empty
-  Q-/Q+ lists are intentional valid outputs.
-- Empty strings, within-channel duplicates, source-relative wording, and exact
-  Q−/Q+ duplicates are removed deterministically before storage. The filter
-  does not score semantic quality or introduce a dataset-tuned threshold.
-- `RAG_QUESTION_SCHEMA=legacy` retains the string-only contract. The opt-in
-  `grounded_v1` contract requires a verbatim source quote and source anchors,
-  plus a quote-contained Q− answer or non-empty Q+ missing information.
-  Invalid individual records are logged and removed without discarding valid
-  siblings or failing the document.
-- The experimental `linked_v2` schema retains that grounding contract and
-  adds `continuation_anchor` to Q−. A non-empty value must equal the complete
-  Q− answer and is requested only for a specific named entity that can anchor
-  a relation in another document. Empty anchors are valid. Auxiliary
-  `anchor_entities` that cannot be verified against the chunk are removed
-  without discarding an otherwise grounded question; `grounded_v1` retains
-  its stricter all-fields-valid behavior.
-
-`indexing/embedding.py`
-
-- Reuses cached vectors only when model, revision, endpoint, dimensions,
-  encoding role, instruction, and normalized text all match.
-- Batches cache misses through the external embedding endpoint.
-- Cold timing runs disable both generation and embedding caches.
-- Restores sparse results to original positions and verifies response count,
-  non-empty vectors, and consistent dimensions. Every returned vector must
-  match `NEO4J_VECTOR_DIMENSIONS` before it can be written or queried.
-- Index artifacts record the served model, declared revision, and vector
-  dimension. A measured run that changes any of these values builds a new
-  cold index under a new run ID; an earlier index is not relabelled or reused.
-
-The Q−/Q+ generation cache key includes the generation model, declared model
-revision, sampling seed, question schema, prompt digest, source digest, and
-chunking flags. It accepts early v1 records whose title was stored
-only at document level and backfills that title on each in-memory chunk before
-graph writing. This compatibility normalization does not rewrite the cache or
-change its generated questions.
-
-`indexing/graph_writer.py`
-
-- Creates corpus-tagged body/Q-/Q+ vector and full-text indexes plus id indexes.
-- Stores each generated question as an individual `QMinus` or `QPlus` node;
-  multiple directions from one chunk are never concatenated into one vector.
-- Body, Q-, and document-side Q+ embeddings include `Document title: ...` so
-  manuals or reports from different years retain version scope. Q+ also stores
-  a separately instructed query embedding used only as the outgoing search.
-- Re-indexing one document atomically deletes its old contained chunks and
-  question nodes and writes its replacement subgraph. A second write creates
-  forward-only ordered `NEXT` edges; stale NEXT/HOP edges disappear with the
-  deleted old chunks.
-- There is no company property and no conditional index-recreation path. A
-  paper cold run allocates a collision-resistant namespace and may clear only
-  that namespace; it never globally deletes a concurrently usable graph.
-- Graph writes group complete documents up to the document-count limit and
-  an 8 MiB logical parameter-size budget. An oversized document remains one
-  atomic transaction. The payload budget is not a Neo4j heap-size estimate.
-- A Neo4j transaction memory-limit error splits only the failed document group;
-  successful prefixes are never replayed. Other transient/session/service errors
-  retain bounded retries. An exhausted error or singleton memory failure stops
-  the writer and new document generation; the unwritten suffix remains pending,
-  and the run fails without building HOP edges. Physical grouping is recorded
-  in index statistics and does not change the semantic configuration.
-
-`indexing/hop_edges.py`
-
-- Runs once after the complete Prehop corpus is flushed and indexes are online.
-- Every individual source Q+ selects the highest-scoring eligible Q- returned
-  by approximate nearest-neighbor search. The matched
-  Q-'s owner chunk is the HOP target; no second body ANN search is needed.
-- Exclusion compares the `source` file identity. Prepared MuSiQue paragraphs
-  are separate source files, so this does not require different document titles.
-  The returned ANN match is not a guaranteed corpus-wide exact nearest neighbor
-  or a verified answer to the source question.
-- Multiple Q+ questions from one source that resolve to the same target are merged
-  into one `HOP_ANSWER` edge while retaining every question.
-  `ANSWERED_BY` preserves the Q+→Q- link and Q- ownership preserves the
-  evidence target. In the no-Q- indexing ablation, Q+ retrieves body directly
-  and `SUPPORTED_BY` records that alternative path.
-- There are deliberately no Q-↔Q- edges. Documents with the same answer but
-  different year/version remain alternative candidates rather than being
-  asserted as semantic continuations. Different source files are mandatory.
-- Neo4j filters source-file identity after ANN. Each source therefore requests its
-  own channel count plus one foreign slot, without a fixed ANN floor.
-- There is no cosine threshold, same-company filter, runtime-HOP mode,
-  cross-encoder, domain rule, or semantic verification call. If Q+ is disabled,
-  the pass skips.
-- `RAG_PRECOMPUTE_RECIPROCAL_HOPS=true` evaluates reverse Q−→Q+ nearest
-  neighbors in bounded concurrent index-time pages, groups accepted IDs by
-  HOP edge, and writes each edge once. The grouped write prevents lost list
-  updates while retaining the same nearest-neighbour rule.
-
-`indexing/answer_links.py`
-
-- Runs only for `linked_v2`, after all chunks and grounded questions are
-  visible. It token-normalizes complete continuation anchors and finds exact
-  contiguous mentions in one corpus scan.
-- Each normalized answer is stored once as an `AnswerAnchor`. `ANSWER_ANCHOR`
-  joins grounded Q− nodes to that shared record and `MENTIONED_IN` joins it to
-  exact corpus mentions. This preserves the same source-question-to-target
-  paths without materializing their Cartesian product for common answers.
-  Benchmark questions, gold paragraphs, hop labels, score thresholds, and
-  semantic candidate widths are not inputs to this pass.
-
-### Primary external driver contracts
-
-The common external worker owns lifecycle, structured requests, telemetry,
-semantic provenance, and artifact inventory. Thin strategy drivers own
-method-specific staging, declared producer scheduling, and upstream calls:
-
-- LightRAG supplies a NumPy-array embedding callback with exact count,
-  dimension, and finite-value validation; storage initialization, insertion,
-  insertion status, mix-mode retrieval, and finalization errors propagate.
-  The adapter sets native insertion concurrency separately from request
-  concurrency. On close, it finalizes storage, snapshots the remaining tasks
-  in its private event loop, and joins cancelled workers before closing the
-  loop. Timeout supervision is excluded from that snapshot on Python 3.10.
-- HippoRAG2 maps the canonical gateway into the upstream OpenAI-compatible
-  fields, checks embedding width, calls native `rag_qa`, and retains both its
-  answer and source-bearing evidence.
-- GFM-RAG validates checkpoint/configuration hashes before constructing or
-  loading the official index. Completion requires source-document coverage in
-  the stored graph, not merely a staged corpus.
-- LinearRAG maps the official numeric passage prefix back to source IDs through
-  a sidecar, avoiding visible metadata markers in NER and embedding text. The
-  native `qa()` owns retrieval, prompt construction and answer parsing; its
-  configured `infer()` interface uses the typed gateway with the native
-  2000-token limit. The pinned MPNet snapshot is downloaded at an exact revision and passed by local
-  path for compatibility with the upstream sentence-transformers version.
-- HopRAG retains its native question-linked graph and BFS query path. The adapter
-  preserves source identity and records its JSON recovery intervention separately.
-
-GFM's entity-linker model snapshot remains under its pinned runtime artifacts.
-Its mutable PLAID cache and metadata use the current run's
-`artifacts/gfm_entity_linker` directory through the native public `root`
-setting, including the graph constructor's interpolated entity linker.
-
-`models/ms_graphrag/official_indexer.py`
-
-- Stages every corpus file and calls the official `Standard` build pipeline.
-- The typed LiteLLM transport routes generation and embedding through the same
-  gateway. Output is isolated under the run-specific MS GraphRAG root.
-  LocalSearch receives the exact native community table; the adapter does not
-  synthesize singleton communities or augment community membership.
-- Expected output tables are verified; workflow errors fail the target.
-
-### Legacy external modules
-
-`models/hoprag/official_indexer.py`
-
-- Stages every corpus file, routes both model types externally, and preserves
-  upstream node/question generation.
-- Edges are constructed inside official problem contexts: MuSiQue paragraph
-  groups or MultiHop-RAG evidence lists.
-- Per-document caches and stage markers support safe resume for ordinary runs;
-  the measured cold runner assigns a new run-specific output root instead of
-  reusing or deleting another run's cache.
-- Stage 2 inserts each document once and then streams each problem group to
-  bound memory. No company metadata is stored.
-- Upstream HopRAG can return no nodes when both question lists are empty. The
-  adapter preserves this as an empty document representation rather than a
-  runtime failure. The complete input manifest remains attached to the index;
-  represented and omitted source counts and digests are stored separately, so
-  the omission is retained as baseline behavior and affects all full queries.
-
-`models/browsenet/official_indexer.py` and
-`models/proprag/official_indexer.py`
-
-- Stage the complete prepared corpus into a run-specific file output and call
-  the pinned official implementation through an isolated Python process.
-- A complete snapshot records the upstream commit, source identities, staged
-  content digest, and prepared-corpus fingerprint. Evaluation fails before
-  retrieval if any identity differs.
-- One persistent worker loads the completed official index and serializes its
-  GPU retrieval calls. The parent evaluator receives the ordered passages and
-  applies the common answer and metric boundary.
+`prehop-json-schema-v3` omits unsupported wire keywords such as `uniqueItems`
+while enforcing uniqueness locally. Materialized schema and prompt digests are
+part of semantic identity. The controlled format-retry profile retries the same
+request under one shared maximum of five wire attempts, including transport
+retries. Discarded responses and available usage remain recorded; retries do
+not select among valid outputs by quality. Final synthesis remains text output.
 
 ## Prehop query path and branches
 
-`models/prehop/graphrag.py::run_workflow` strips only the benchmark output
-format suffix and then:
+The primary settings use depth one, full NEXT/HOP expansion, Q−/body/Q+ search,
+Q+-owner activation, unfiltered stored links, and final LLM evidence selection.
+Questions of at most 32 words receive role-aligned rewriting and iterative
+refinement; longer questions use their original text on all enabled channels.
 
-```text
-RAG_GRAPH_HOP_DEPTH == 0
-  -> retrieve or retrieve_with_views without graph expansion
-  -> preserve the configured rewrite, refinement, and selection policies
+1. Search each enabled representation with vector and full-text search.
+2. Merge representation hits into owner passages while retaining question IDs.
+3. Expand stored NEXT and activated HOP links from the starting-passage pool.
+4. Score the complete candidate union and select up to 12 passages by LLM.
+5. For refinement-eligible inputs, repeat while new views select new evidence.
+6. Synthesize a short answer from selected evidence, or return the fixed
+   insufficient-evidence response for empty context.
 
-RAG_QUERY_REWRITE_VARIANT == role_aligned_evidence_iterative
-  and input question has at most RAG_QUERY_REWRITE_MAX_WORDS words
-  -> schema-constrained initial Q-/Q+ retrieval views
-  -> each view searches its matching representation channel
-  -> role-body selection policies also search chunk bodies with each role view
-  -> retrieved evidence proposes non-duplicate Q-/Q+ views
-  -> stop when no new view or selected chunk appears
+`retrieval/hybrid.py` sorts vector and lexical results independently by raw
+score and stable identity, then combines reciprocal ranks `1 / (rank + 1)`.
+Raw scores are not mixed across modalities. `retrieval/retrieve.py` fuses views
+within each role before fusing roles, avoiding extra weight merely from having
+more rewrites. The complete owner union becomes the base candidate pool.
 
-question exceeds the rewrite limit
-  -> use the original question without rewrite or refinement
-  -> search all enabled representation channels with that original text
+The original question searches bodies. Role views search their question
+channels and, under the default selection policy, also search bodies. Additional
+role-body-only hits join the selection pool but do not seed graph expansion.
+Each representation retains at most top-k owners with candidate multiplier one;
+additional views can enlarge the full union. Question searches allocate three
+times the owner budget before collapsing individual questions to their owners.
 
-RAG_GRAPH_HOP_DEPTH == 1 (default)
-  -> retrieve(query) for seeds
-  -> deterministic NEXT/HOP expansion for the configured depth
-  -> RAG_GRAPH_EDGE_VARIANT selects the full, hop_only, or next_only path
-  -> a matched Q+ paragraph exposes its stored outgoing connections
-  -> HOP_EDGE_FILTER=none retains every activated HOP provenance item
+`retrieval/traversal.py` walks NEXT in both directions and HOP only in its
+stored direction. Under the default `HOP_SEED_POLICY=qplus`, only passages
+matched through Q+ expose HOP links. Owner activation exposes all provenance
+on that passage; `RAG_QPLUS_HOP_ACTIVATION=exact` restricts it to matched Q+ IDs.
+Graph-discovered targets are not expanded again within the one-step pass.
 
-RAG_SOURCE_SELECTION_VARIANT == role_body_list_ranking
-  -> select from the complete candidate union by numbered paragraph IDs
-  -> require exactly min(top_k, candidate_count) distinct IDs from that union
+A graph-only NEXT target inherits its source's total representation score;
+a HOP target inherits its source's Q+ score. Both use path decay 0.5. Direct
+candidates retain their direct score when also reached by a graph path.
+`retrieval/scoring.py` uses query-to-body similarity for direct/NEXT candidates
+and the minimum of body similarity and best source-Q+ similarity for HOP
+candidates. Semantic and representation orders are fused by reciprocal rank.
+The default LLM selector receives all candidates as numbered passages, without
+gold labels, retrieval scores, or path metadata.
 
-empty context
-  -> fixed "Insufficient evidence" result, no synthesis call
+Refinement stops when no new role view or selected passage appears.
+`RAG_QUERY_REFINEMENT_MAX_ROUNDS=0` adds no numeric round cap; a positive value
+limits follow-up generation. The trace records rounds and stop reasons.
+Depth zero disables graph expansion but does not independently disable rewriting
+or selection. Experimental channel, edge, reciprocal-filter, semantic-scoring,
+and linked-continuation switches remain distinct from the primary defaults.
 
-non-empty context
-  -> one shared external synthesis call
-  -> explicit answer boundary attached without rewriting the response
-```
+## Explicit representation ablations
 
-The current operational contract uses string Q−/Q+ questions, full Q−/body/Q+
-retrieval, depth-one full NEXT/HOP traversal, matched-paragraph connection activation, unfiltered
-stored HOP edges, evidence-conditioned iterative role rewriting for questions
-of at most 32 words, and one complete candidate-ordering call. The one-pass,
-rewrite-all, additive-view, `global`, reciprocal-filter, exact-activation,
-edge-variant, channel-variant, and no-graph paths are explicit experimental
-configurations rather than implicit fallbacks.
+`core/prehop_ablation.py` validates `question_full`, `question_body`, and
+`body_body`. All use original queries, all-seed HOP activation, body-only
+semantic scoring, depth one, and the existing final selector. Under all-seed
+activation, HOP targets inherit the source's total representation score.
+These settings are not the historical primary benchmark baseline.
 
-`retrieval/hybrid.py` searches the supplied query text and embedding with vector
-plus Neo4j full-text search for one channel (`body`, `q_minus`, or `q_plus`). Vector and
-full-text branches share one Cypher request per representation; enabled
-representations run concurrently. Their results fuse into one ordered list
-using equal reciprocal ranks `1 / (rank + 1)`. Because Cypher aggregation and
-`UNION ALL` do not guarantee result order, Python explicitly sorts each
-modality by its own raw score (descending) and stable chunk identity before
-assigning ranks. Raw vector and lexical scores never cross modality boundaries,
-and there is no modality weight or query-time fusion constant.
+A/B can read an existing compatible question graph through
+`--reuse-existing-index`. They retain its namespace and exact index-stat
+identity; writes and HOP rebuilds are disallowed for reused indexes. C uses a
+fresh namespace and the frozen reference's per-passage degree budget.
+`scripts/clone_prehop_body.py` can copy body properties and Document/Chunk,
+CONTAINS, and NEXT structure without copying questions or HOP edges, then build
+body links. Clone-only costs are not cold indexing costs.
 
-`retrieval/retrieve.py` searches the body representation with the original
-question. When rewriting is active for a compact question, Q− and Q+ each use
-their generated role-specific views; otherwise they also use the original
-question. The default `role_body_list_ranking` policy additionally searches
-chunk bodies with every Q−/Q+ view. These body hits join the candidate union;
-body-only additions carry zero representation score and do not become Q+
-dependency seeds. Multiple views are fused inside their role first, so Q−, body, and
-Q+ each contribute one ranked list rather than gaining weight from the number
-of generated views. Q- and body hits have the direct-evidence role; Q+ hits
-have the dependency-seed role. Q− and Q+ vector and full-text rows retain the
-exact matched question-node IDs while collapsing to owner chunks, and their
-union is preserved when representation lists merge. Q+ IDs activate the
-established dependency edges; under `linked_v2`, Q− IDs activate grounded
-continuation edges. Enabled representation
-results form a set union. Each owner retains
-`1 / (rank + 1)` evidence from every representation list in which it appears;
-these values define a representation order without mixing backend-specific
-vector or lexical scores. Direction remains expressed by graph role rather
-than a learned or fitted channel weight.
+The launcher prints a plan unless `--execute` is supplied. Its metadata uses
+`prehop-representation-ablation-v1`. See
+[PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md) for commands, controls, and
+permitted interpretations.
 
-- `HYPO_CHANNEL_VARIANT=body_only`: body direct evidence only; this query-time
-  channel control does not require rebuilding the complete index.
-- `qminus_only`: Q- direct evidence only.
-- `qplus_only`: Q+ dependency seeds only.
-- `single_combined`: Q-/Q+ once each, set union, no body.
-- `full`: Q-/body direct evidence plus Q+ dependency seeds.
+## HopRAG indexing and reference checkout
 
-These switches select the representation channels. If role views and a
-role-body selection policy are also enabled, additional body searches still
-run. A channel-only ablation must declare the selection policy as well; the
-channel label alone does not describe the complete candidate path.
+`models/hoprag/native_runtime.py` loads the pinned prepared HopRAG installation.
+The root `third_party/HopRAG` is reference-only and does not define the active
+runtime. The adapter stages the complete corpus as one edge-construction group;
+queries and gold evidence do not determine edge groups. Native generation may
+omit a document when either question list is empty; represented and omitted
+source IDs remain separately recorded.
 
-The searches run concurrently. There is no second Q- support search: a Q-
-hit already identifies its owner evidence chunk, while a Q+ hit reaches target
-Q-/body evidence through the pre-built `HOP_ANSWER` relation. The original-query embedding is reused for original-text searches and final
-scoring. When role views are present, distinct view texts are embedded in a
-batch and each vector search receives its own view's embedding.
+The native constructor scores question pairs with vector dot products and
+keyword Jaccard, then applies native destination selection and trimming.
+Prehop instead resolves each Q+ through an ANN Q− index with source exclusion.
+Both precompute connections; this architectural difference alone establishes
+neither novelty nor a retrieval or cost advantage. The older chunked edge helper
+functions in the adapter are not installed by the active setup.
 
-`retrieval/scoring.py` reuses the body and source-Q+ document embeddings stored
-during indexing and embeds only the user query. Body similarity defines the
-semantic score for direct/NEXT candidates; a HOP candidate uses
-`min(body similarity, best individual source-Q+ similarity)`. Candidates are
-ordered once by this semantic score and once by their retained representation
-evidence. Equal reciprocal ranks from the two orders are summed for final
-selection. `RAG_FINAL_RANK_VARIANT=semantic_only` and
-`representation_only` retain one of those two orders for a declared
-sensitivity analysis; `fused` is the default. HOP semantic evidence can also
-be isolated with `RAG_HOP_SEMANTIC_VARIANT=body_only` or `bridge_only` instead
-of the default `body_bridge_min`. These query-time switches are written to
-benchmark ablation metadata. The default uses rank fusion rather than
-calibrated raw-score interpolation. Role rewriting changes channel queries
-before retrieval. The default selection passes the complete fused candidate
-union to one paragraph-number candidate-selection prompt. The structured-output
-validator requires exactly `min(top_k, candidate_count)` distinct IDs from that union; unknown,
-duplicate, or omitted IDs invalidate the response instead of being repaired or
-supplemented. Publisher, publication time,
-author, and category are included only when present in the source-manifest
-sidecar; no dataset identity, gold label, retrieval path, score, or rank is
-exposed. `global`, `round_robin`, and the body-round policies remain explicit
-query-time ablations.
+<a id="legacy-external-modules"></a>
+The historical external-module anchor resolves here for reference-checkout links.
 
-Each representation retains at most `top_k` owner chunks, so the fused base
-representation pool is bounded by `top_k × active_representation_count`
-under the default candidate multiplier of one. Role-view body searches add up
-to `top_k` owners per view before deduplication, so that bound does not cover
-the complete seed union. Accumulated refinement views can enlarge this union. Vector and full-text search do not have separate tunable width
-knobs. Body nodes use the owner budget as-is. Q−/Q+
-indexes contain at most three questions per owner chunk, so their raw
-question-node searches use exactly three times the owner budget before
-deduplication. This factor is an indexing-schema bound, not a tuned retrieval
-parameter. Each distinct search text uses its own query embedding; identical texts share
-the embedding within that retrieval call.
+## Adapter producer parallelism
 
-`retrieval/traversal.py` treats the complete representation-union pool (not just the
-final top-k) as one frontier and expands it in one Neo4j request per depth. `NEXT` is
-walked in both directions to recover preceding/following document context;
-`HOP_ANSWER` is exposed only by owner chunks actually matched through the Q+
-dependency channel and is walked only in the Q+→answer-evidence direction.
-When a `linked_v2` index is selected and
-`RAG_CONTINUATION_EDGES_ENABLED=true`, the
-`QMinus`→`AnswerAnchor`→`Chunk` path is exposed only by the exact Q− IDs matched
-through the direct-evidence channel. The flag is query-time only, allowing an
-on/off comparison on the identical stored graph.
-Each source retains
-at most the final evidence budget of continuation targets after query-to-body
-cosine ordering inside Neo4j; this is the existing top-k contract rather than
-a separate candidate-width setting. A continuation target inherits the
-source's Q− rank evidence and uses the matched Q− embeddings as its stored
-bridge representation.
-The current operational default uses owner-wide activation: when an owner is
-retrieved through any Q+ node, all stored source-Q+ provenance on that owner's
-outgoing HOP edges is eligible. Exact matched-Q+ intersection remains
-available through `RAG_QPLUS_HOP_ACTIVATION=exact`. Bridge embeddings and
-emitted path provenance follow the selected activation mode.
-The online `RAG_HOP_EDGE_FILTER=reciprocal` ablation leaves every stored
-node, provenance relation, HOP edge, and index unchanged. Inside the same
-frontier request, each activated Q+→Q− provenance pair is retained only when
-the target Q− independently retrieves that exact source Q+ as its highest-ranked
-cross-document Q+ representation. Its ANN pool is the number of Q+ nodes in
-the target document plus one, which is the structural minimum needed to admit
-one foreign-document result after exclusion; there is no acceptance threshold
-or tunable candidate width. The default `none` policy performs no reverse ANN
-and does not filter activated provenance. `reciprocal_offline` applies the
-same reverse rule from materialized edge IDs and performs no query-time reverse
-ANN. Traversal constructs only the selected NEXT/HOP/filter Cypher branches,
-avoiding inactive ablations on the query hot path.
-Main-representation Q−/body-only seeds expose NEXT only, preventing an
-unrelated Q+ attached to a direct-evidence chunk from triggering a HOP. Additional
-role-body-only candidates do not enter the expansion frontier. Graph-discovered
-nodes are not revisited for further expansion within the one-step pass. NEXT and
-HOP paths are ranked separately per expansion step, then fused per target
-chunk. A NEXT target inherits the source's total representation evidence; a
-HOP target inherits only the source's Q+ evidence. In either case the inherited
-value is multiplied by `RAG_GRAPH_PATH_DECAY`, whose default is the reciprocal
-one-edge value `1 / (depth + 1) = 0.5`. Values 0 and 1 are retained only as
-declared propagation sensitivities. This attenuation reduces each inherited
-contribution relative to its source; it does not guarantee the final ordering
-of all source and target candidates. The switch makes the assumption testable.
-The structurally bounded results are retained without a candidate reservoir or
-graph-search floor. HOP candidates compare the query against each indexed
-source Q+ separately, take the best bridge similarity, and use
-`min(body, bridge)` as the semantic score. This penalizes a candidate when
-either similarity is low, without a mixing weight; it does not verify an answer. The default evidence-conditioned rewrite
-repeats retrieval only while newly proposed role questions select at least one
-unseen chunk. Exact normalized question and chunk identities provide the stop
-rule; there is no fitted round count, score gate, hop label, dataset branch,
-per-edge generation, or runtime ANN supplement.
-`RAG_QUERY_REFINEMENT_MAX_ROUNDS=0` leaves that evidence-stability rule
-unchanged. A positive value adds an operational upper bound on follow-up
-generation calls. The executed count, configured cap, and stop reason are
-written to the query-rewrite trace.
-Targets already present in the representation-union pool retain their direct
-rank evidence and semantic inputs; traversal only adds path provenance to
-them. Graph-only targets receive inherited rank evidence and bridge semantics.
+| Method | Producer behavior |
+|---|---|
+| Prehop | Bounded documents, prefetch, and per-document chunk lookahead in `parallel_adapter.py` |
+| Naive RAG | Batched body embeddings; no index-time generation |
+| MS GraphRAG | Native extraction/community request concurrency |
+| LightRAG | Native insertion concurrency separate from LLM request limits |
+| GFM-RAG | Native OpenIE thread producers, then local linking/checkpoint work |
+| LinearRAG | Native local NER/MPNet; QA batches preserve native retrieval |
+| HopRAG | Ten document workers with native per-document chunk worker count one |
 
-`retrieval/text_utils.py` contains only normalization, Lucene sanitization,
-context formatting, node identity/dedup, and RRF helpers.
+LinearRAG batches concurrent questions for a bounded 10 ms collection window,
+up to `RAG_BENCHMARK_CONCURRENCY`, then invokes native `qa(questions)` once.
+Retrieval is native and sequential; answer generation uses its native worker
+pool. Batch failures propagate to all members without an adapter retry.
+The registry sets `iteration_threshold=0.4`, `passage_ratio=2`, and
+`top_k_sentence=3` to match the native entrypoint.
 
-### Diagnostic controls and timing
+## Inference transport
 
-#### Component evaluation contract
+`core/inference_transport.py` owns gateway identity, model aliases, dimensions,
+timeouts, retries, and generation seed semantics. Generation and embedding use
+one OpenAI-compatible LiteLLM base. Paper mode rejects unsupported public
+provider aliases and omits LLM seeds; evaluation/sampling seed 42 is separate.
+Existing result artifacts retain their historical generation settings.
 
-All component analyses use the 2,417-question MuSiQue split and the current
-2,560-dimensional `qwen3-embedding-4b` index. Paired query-stage conditions
-reuse one completed index and hold query IDs, model revisions, seed, top-k,
-prompts, and judge state fixed. Results are joined by immutable query ID and
-paired effects use 10,000 bootstrap resamples with seed 42. Latency is compared
-only within one synchronized fixed-concurrency run; fixed-candidate analyses
-remain separate from complete query-pipeline runs.
-
-| ID | Stage | Intervention | Primary output |
-|---|---|---|---|
-| Ablation 1 | Query: graph expansion | One-step `NEXT` and `HOP_ANSWER` expansion on versus off | Answer, support, and retrieval passes |
-| HOP control | Query: dependency edges | `RAG_GRAPH_EDGE_VARIANT=full` versus `next_only`, depth 1 in both | Answer, support, and HOP-added evidence |
-| Ablation 2 | Query: refinement | Evidence-conditioned follow-up views on versus initial rewrite only | Answer and support |
-| Ablation 3 | Query: candidate selection | Question-role selection versus integrated top 12 | Answer and support |
-| Ablation 4 | Fixed candidates: ranking | Recompute rank signals and graph-distance weights | Support |
-| Robustness | Fixed candidates: input order | Reference order versus deterministic shuffle | Selected-set overlap and support |
-| Timing | Complete query path | Record non-overlapping stage timers | Within-run stage shares |
-
-Ablations 1–3 rerun the complete query path while changing only the named
-query-stage condition. Ablation 4 and the order robustness test reuse identical
-candidate IDs, titles, texts, and annotations; they do not generate new
-answers. The timing analysis separates query refinement, retrieval, graph
-expansion, deterministic scoring, candidate selection, and synthesis.
-
-The HOP control isolates dependency-edge availability while retaining `NEXT`;
-depth 1 versus depth 0 measures their combined effect. Channel-only controls
-can also change seed activation, so they do not isolate representation quality
-from graph use. Fixed-candidate ranking results describe ordering effects, not
-changes in upstream candidate recall. These are planned comparisons, not
-completed empirical findings. Paired intervals use 95% percentile bounds and
-describe the fixed query population; they do not estimate repeated-index or
-repeated-run variance. Multiple component contrasts remain exploratory.
-
-The benchmark records `retrieve_ms`, `rewrite_ms`, `synthesis_ms`, and the
-compatibility aggregate `traversal_ms`. It also splits the latter into
-`graph_expand_ms`, `deterministic_score_ms`, and `candidate_order_ms`.
-This prevents the generation-model list-ordering call from being reported as
-database traversal time.
-
-`RAG_CANDIDATE_ORDER_TRACE_PATH` is a diagnostic-only JSONL sink. When set, each
-candidate-ordering call appends the query, canonical pre-call candidate pool,
-stored source/paragraph identity, semantic and representation rank signals,
-per-channel representation scores, model-returned IDs, and final selected IDs
-under a process lock. The trace is
-used by `scripts/replay_frozen_candidate_order.py` to replay the canonical
-deterministic fused order and a deterministic hash-shuffled order over the
-exact same questions and candidate texts. The replay reports selection stability and MuSiQue supporting-paragraph
-metrics, but does not generate new answers. Duplicate question texts are joined
-through the completed benchmark's stable query IDs and the generated Q−/Q+
-views retained in both traces, not by question string alone. An
-ambiguous assignment with different gold support labels is rejected.
-Checkpointed replay artifacts can be continued
-with `--resume`; their trace path, benchmark path, gold-query path, tested
-orders, and shuffle seed must match. Normal benchmarks do not set this
-variable.
-
-`scripts/analyze_full_frozen_rank_variants.py` reconstructs deterministic rank
-variants from every captured candidate pool and evaluates MuSiQue supporting
-paragraphs. It does not call the answer model and therefore reports no answer
-EM/F1. A result is eligible only when its query count and ID mapping match the
-complete prepared split. When per-channel scores are present, decay 0.5 must
-reproduce the captured graph-only score before decay 0 and 1 are evaluated.
-
-`scripts/analyze_full_stage_profile.py` accepts one complete benchmark executed
-at a declared fixed concurrency. It validates detail/trace alignment and
-summarizes the non-overlapping rewrite, retrieval, graph expansion,
-deterministic scoring, candidate-ordering, and synthesis timers. The
-compatibility `traversal_ms` aggregate is excluded from this sum. Absolute values remain
-specific to the declared concurrency and service load, so only the within-run
-stage decomposition is used for interpretation.
-
-`scripts/analyze_gold_hop_coverage.py` persists both aggregate coverage and a
-query-level structural label. After a complete graph-on/off pair,
-`scripts/analyze_graph_shortcut_effect.py` uses that fixed label to report
-paired effects where gold paragraphs are or are not joined by a stored edge.
-The grouping is retrospective, an edge need not have been activated, and
-generation is rerun separately. The output is therefore a bounded exploratory
-test of a local-shortcut interpretation, not evidence that a complete
-multi-hop route was compressed into one hop.
-`scripts/analyze_presentation_controls.py --exclude-latency` omits latency from
-paired output when compared runs were resumed or did not share a controlled
-load window. This is an analysis-time reporting guard; it does not modify the
-source benchmark artifacts.
-
-## Prompt inventory
-
-Project-owned prompt templates are deliberately limited to:
-
-- `utils/prompts/indexing.py`: indexing-time Q-/Q+ generation.
-- `utils/prompts/query_rewrite.py`: bounded Q−/Q+ retrieval views for compact
-  questions, evidence-conditioned follow-up views, and numbered-paragraph selection of
-  the complete candidate union.
-- `utils/prompts/shared.py`: one dataset-neutral final-answer prompt shared by
-  Prehop, Naive, and the HopRAG adapter. It asks the model to connect required
-  intermediate entities silently, return only the short final answer, and
-  abstain only when a required evidence link is absent. It does not expose or
-  request chain-of-thought.
-- `utils/prompts/evaluation.py`: the offline benchmark judge.
-
-LLM-as-a-judge is disabled for paper targets (`RAG_JUDGE_ENABLED=false`). Paper
-mode prohibits the public OpenAI Batch API and any direct vendor fallback. An
-explicit supplemental judge must use the same typed LiteLLM transport or fail
-closed; incomplete, malformed, or self-judged output never enters primary
-rankings.
-
-Prehop begins rewriting only for questions within the fixed input-length
-limit. It can add evidence-conditioned role views while exact identities keep
-changing, then makes one complete-list selection call. The HopRAG adapter
-retains the native BFS entrypoint with five hops and top-k eight. MS GraphRAG and the other
-primary external methods retain their declared upstream extraction, indexing,
-retrieval, and answer prompts. Those prompts are method behavior, not hidden
-Prehop gates.
-
-## Comparison settings
-
-- Prehop and Naive use the same six-sentence chunks, top-k 12, and final
-  synthesis prompt.
-- MS GraphRAG retains Standard indexing and official LocalSearch context
-  construction.
-- LightRAG retains dual-level mix-mode retrieval and its native answer path.
-- HippoRAG2 retains native retrieval and `rag_qa`, while the adapter preserves
-  source-bearing evidence.
-- GFM-RAG retains its validated checkpoint-defined GNN, local components and
-  native single-pass QA prompt/generation path (top-k 5).
-- LinearRAG retains the official relation-free Tri-Graph path and pinned MPNet
-  embeddings in the primary official-faithful mode. Its controlled Qwen mode
-  is a distinct, currently unadmitted semantic configuration.
-- HopRAG uses native BFS, five hops, top-k eight and the original query prompts;
-  its registered response recovery is an adapter intervention.
-
-Official systems retain their stated search and context budgets, so tables and
-captions state unequal settings. A one-source-one-vector Naive run changes the
-evidence unit and is, if used, a separate chunking sensitivity analysis.
-Removed methods do not supply primary comparison cells.
-
-### Upstream immutability boundary
-
-Pinned external source trees remain clean and immutable. Strategy adapters are
-limited to input normalization, declared producer scheduling, the LiteLLM transport, run-local
-configuration or schema preparation, observational sidecars, validation
-after a native API call, and the registered response-recovery exceptions below. They do not override upstream retrieval, graph
-deduplication, serialization, or answer orchestration. A method-defining
-override is a controlled deviation, receives a different semantic fingerprint,
-and is ineligible for an official-faithful primary cell.
-
-HopRAG and HippoRAG2 have registered response-recovery interventions, described
-in [runtime requirements](RUNTIME_REQUIREMENTS.md#native-output-handling-and-artifact-validation).
-Their repaired runs must carry those profiles rather than claiming native
-response parsing is unchanged. Retrieval, graph construction and answer
-orchestration remain the declared native paths.
+Embedding responses must contain one finite, correctly sized vector per input
+with unique, gap-free response indices. Context-size or HTTP 413 errors allow
+order-preserving bisection; unrelated errors and failing singletons propagate.
+External compatibility aliases are confined to validated native child processes.
 
 ## Evaluation output contract
 
-The benchmark emits deterministic normalized answer EM/F1 as a downstream
-answer signal; benchmark-annotated gold-evidence retrieval is the primary
-effectiveness endpoint. MuSiQue uses answer aliases. The LLM-as-a-judge
-`score` is an optional exploratory semantic-correctness field for aliases and
-equivalent wording;
-`groundedness` and `hallucination` are separate context-directed diagnostics.
-None replaces deterministic answer scoring, and without qualified-human
-validation none enters quantitative submission results or system rankings.
+`cli/benchmark.py` records official MultiHop-RAG retrieval and QA measures,
+MuSiQue answer EM/F1, and separately named global paragraph-support metrics.
+Normalized/fuzzy fact recall is diagnostic and differs from the manuscript's
+literal exact-fact recall. Missing metric applicability is `-1`; evaluated
+nonmatches are zero. Terminal failures receive zero primary quality scores and
+remain visible in failure counts. Integrity failures stop the affected target.
 
-Evidence metrics follow the prepared gold unit for each dataset:
+The default checkpoint interval is ten completed queries. Resume requires an
+`in_progress` deterministic result, the same query/model/index configuration,
+and valid retained identities/traces. It runs missing IDs only, preserving both
+successful and terminal-error rows. A resumed batch is not an uninterrupted
+throughput measurement. The representation-ablation launcher itself does not
+provide resume.
 
-- MultiHop-RAG reports official any-hit Hits@k, MRR@10, and MAP@10 on non-null
-  queries. Normalized/token-overlap `evidence_fact_recall@k` and title-level
-  document precision/recall/F1 remain explicitly diagnostic. Null queries
-  report refusal and attempted-answer hallucination separately and do not
-  enter retrieval denominators.
-- MuSiQue reports supporting-paragraph/title precision, recall, and F1. Its
-  paragraph-level gold evidence is not compared with the Prehop six-sentence
-  fact matcher.
-
-Missing gold units are emitted as `-1`, while an evaluated query with no match
-is zero. The experiment ledger uses exactly `planned`, `canary_passed`,
-`in_progress`, `completed_unadmitted`, `admitted`, and `failed`. A synthetic
-canary is not a complete target. Completion is not admission: final admission
-recomputes exact row order and count, error rows, query and ground-truth
-identities, eligible counts, aggregates, corpus/index coverage, artifact
-inventory, semantic configuration, model revisions, operational metadata,
-exact index-stat bytes/path, runtime freeze/constraints, versioned effective method configuration,
-and post-query retrieval-artifact inventory. Admission verifies the compact JSONL
-projection of full result rows using the separately saved interaction traces,
-including row counts, trace identity and order. Primary source evidence and
-metrics are checked against full main-JSON rows and prepared gold. See
-[Evidence locations](RESULTS.md#evidence-locations).
-Only `admitted` primary artifacts enter quantitative results. Subset and
-removed-method artifacts are development evidence only. Complete-split paired analyses record the evaluated ID
-digest and are interpreted as descriptive diagnostics, because the prepared
-splits were also inspected during configuration development.
-The benchmark JSON keeps the machine execution value
-`status=completed_unadmitted`. A successful per-target verifier writes the separate
-run-level `admission.json` ledger entry with `status=admitted`. This keeps
-execution completion distinct from permission to publish the artifact.
-For query-only ablations, `--expected-ablation-difference` requires the named
-metadata key and no other ablation key to differ. The active-index snapshot,
-models and seed, code provenance, benchmark concurrency, and judge state must
-also be identical. An index-changing paired analysis must opt into
-`--allow-index-variant`; corpus fingerprints and stable query identities
-remain mandatory even under that override.
-`scripts/performance_gate.py` fixes the final effectiveness gate to the four
-official MultiHop-RAG ranking metrics and the five official MuSiQue
-answer/support metrics. It chooses the strongest supplied non-Prehop baseline
-separately for every metric and requires the declared relative gain on all of
-them. It rejects incomplete, fingerprint-mismatched, query-mismatched, and
-non-full artifacts unless an explicitly non-paper exploratory override is
-used.
-Artifact eligibility is maintained in [RESULTS](RESULTS.md); metric denominators
-and cost definitions are maintained in [THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md#final-tables-and-measurement-definitions). This document owns only the implemented
-evaluation behavior and data contract.
-
-The runner checkpoints its result and report artifacts every ten completed
-queries by default and always writes once more at completion. This bounds lost
-work after interruption without rewriting the growing result and trace files
-after every query. `RAG_BENCHMARK_CHECKPOINT_EVERY` can change the interval;
-the chosen value is recorded in the artifact and does not enter measured query
-latency.
-
-`RAG_BENCHMARK_RESUME=true` resumes only an existing `in_progress`
-deterministic benchmark. It rejects an enabled supplemental judge, mismatched
-query identity, configuration, model, corpus/index identity, duplicate or
-foreign query IDs, and missing or misaligned traces. Successful and terminal
-error rows are retained; only missing query IDs are executed. The final artifact records the retained
-and resumed query sets and their code provenance separately. This is query
-execution recovery, not indexing recovery or an orchestration-level retry.
-
-## Run measurements
-
-Every paper run invokes one dataset/strategy target with a unique `RAG_RUN_ID`.
-The run records wall time, service latency, worker-queue delay, end-to-end
-latency, phase timings exposed by the adapter, effective concurrency,
-structural integrity, and failures. Serial defaults use embedding batch 16 and
-concurrency 1; explicit throughput profiles select their recorded limits.
-Current profile v3 uses one shared generation/embedding semaphore; legacy
-v1/v2 profiles retain separate limits only for reproducibility. Cancellation
-cannot leak a queue permit. Official adapters report only timing and token/cost
-fields their upstream implementations expose; unavailable telemetry is marked
-incomplete and never estimated.
-
-The measurement set directly addresses the indexing-time tradeoff: overall
-and Prehop phase latency, index-storage size, document/chunk/question/edge counts,
-Q-/Q+ and Q+-direction coverage, provenance completeness, exact NEXT topology,
-cross-document HOP invariants, and observed endpoint pressure. Retrieval and
-answer-quality attribution remains a separate benchmark/ablation concern; an
-index with valid topology contributes structural statistics; QA effects come
-from the complete query-stage controls.
-Before publishing the corpus snapshot as complete, `cli/index.py` reads the
-live graph and enforces the index-quality contract: embeddings and ownership
-are complete; question representations are non-empty, not source-relative,
-deduplicated, and role-distinct; NEXT is exactly consecutive within each
-document; every HOP is cross-document, channel-consistent, provenance-complete,
-within the schema out-degree bound, and has the expected Q+→Q-→owner
-provenance (or the explicit body-only ablation path); and all search indexes
-are online. Coverage, linkage rate, and graph density remain descriptive and
-do not become dataset-tuned pass thresholds. Held-out retrieval metrics test
-effectiveness separately.
-
-For MS GraphRAG and process-isolated adapters, the stored timing includes the
-official pipeline boundary plus any stage boundaries exposed by the adapter;
-the runner does not infer boundaries that the upstream package does not
-expose. Prehop retains its finer phase timings; Naive reports its aggregate
-pipeline and measurement timing only.
-`scripts/run_paper_target.sh` creates a cold target without deleting shared
-state: it disables the in-repo chunk and embedding caches, gives every
-file-backed official baseline a new run-specific output root, allocates a
-run-specific Neo4j namespace without invoking the global clear operation, and runs the complete prepared split at
-the selected profile concurrency (serial default 1). A dirty tracked worktree is warned and recorded in code
-provenance. A strictly verified completed target is skipped; a compatible
-complete index or deterministic partial benchmark may resume; corrupt or
-incompatible existing artifacts fail closed. The matrix continues after
-independent target failures and exits nonzero if any target failed.
-MS GraphRAG relationship drops caused by missing extracted entities are
-recorded as integrity warnings in the target result rather than silently
-treated as a clean graph.
-
-`index_capacity` records the size of the persisted index that each strategy
-uses during retrieval. Prehop, Naive RAG, and HopRAG retrieve from their
-strategy-scoped Neo4j nodes, relationships, properties, and search indexes.
-Their recorded value is a versioned logical-payload estimate: vector elements,
-list elements, and graph records are counted at eight bytes, with selected text
-property characters added directly. It does not represent the physical Neo4j
-store size and excludes Neo4j record, page, transaction-log, and search-index
-file overhead. MS GraphRAG and the file-backed external methods record the
-physical size and SHA-256 inventory of their local retrieval artifacts,
-excluding copied input, cache, log, and temporary directories. Their completion
-checks derive exact source coverage from stored chunks, passages, document
-nodes, or source sidecars; staged input alone cannot satisfy coverage.
-
-These values share the reporting concept *index-storage size* but not the same
-physical measurement method: the Neo4j values are logical estimates, whereas
-the MS GraphRAG value is an on-disk file total. The measurement method and
-definition version are stored with the value, so reports must retain that
-distinction rather than describe the numbers as directly equivalent database
-sizes. Capacity is measured after `timing_seconds.total_elapsed_seconds` is
-frozen; reporting overhead is therefore excluded from indexing time. A
-capacity-measurement failure marks the indexing run incomplete.
-
-As a HOP-connectivity diagnostic, the runner resolves every full-query
-evidence title against indexed documents, then reports the fraction of fully resolved
-gold queries and gold document pairs connected by at least one `HOP_ANSWER`.
-
-## Campaign process ownership
-
-`paper_campaign.py` owns the ordered gate and full-matrix subprocesses. A frozen
-plan binds effective model configuration, runtime content, the explicit evidence
-contract and target order. Git/source/verifier hashes remain provenance metadata.
-Changing only a commit, comment or document does not invalidate compatible
-evidence. Each executed segment records its actual launch provenance; matching
-settings do not imply that independently launched segments used identical code.
-The default launcher uses actual nohup and setsid with ignored SIGHUP, private
-0600 environment/log files, a verified session leader and Linux child subreaper.
-PID/start/boot and descendant ancestry identify owned processes, including
-children that create their own sessions and are adopted by the subreaper.
-Persisted observed descendants also block restart while they remain alive.
-The optional systemd backend verifies unit ownership and user linger. The shared user
-resource lock is acquired before reading or replacing campaign status; a
-losing launcher cannot overwrite the active owner's state. Native descendants
-left after a stage block later stages. Nohup cleanup sends TERM through verified
-pidfds and waits at most 30 seconds, without KILL; survivors block restart. After
-the direct child exits, stdout/stderr draining waits at most five seconds for
-EOF. Inherited open pipes produce a failed stage with incomplete-stream names,
-unwritten partial-line byte counts, and remaining owned PID/start identities.
-Complete log lines retain redaction; incomplete lines are not emitted.
-New campaign units use `KillMode=control-group`, `SendSIGKILL=no`, and
-`TimeoutStopSec=30`: unit termination sends TERM to its own remaining processes
-without an automatic KILL escalation. Surviving process identities still block
-a subsequent campaign; existing units and other services are not reconfigured.
-
-Atomic status and per-stage exit receipts complement content-bound gate
-validation. Successful process exit is followed by actual evidence validation;
-the final matrix requires all sixteen current admissions. Canonical secret and
-URL values are redacted from logs. The harmless detachment regression proves
-process/status behavior only; the actual selected backend also needs release
-verification. A separate nohup monitor records read-only progress and current
-admission validation every 10,800 seconds, checking terminal state every five
-seconds. Terminal receipts wait for owned cleanup or supervisor exit. Missing
-throughput yields an unavailable ETA, and no automatic chat message is claimed.
-
-### Configuration compatibility maintenance
-
-`core/paper_compatibility.py` resolves each method/dataset from the same typed
-index, query and transport policies used by production validation. Explicit
-runtime/interpreter and artifact paths retain their existing operational binding;
-this contract does not promise relocation across runtime directories.
-`core/generation_profiles.py` supplies the applied temperature/token settings
-to owned consumers and the same values to policy identity. Pinned native
-defaults retain their upstream owner and registered override metadata. Materialized
-prompt and JSON-schema contents are hashed; Python source bytes are not schema
-identity. Per-method semantic versions cover behavior not represented by those
-settings and must be changed deliberately when such behavior changes. This is
-a maintained contract, not automatic proof that arbitrary code edits preserve
-behavior. Evidence protocol versions remain strict. Old admission records
-require current revalidation; matching configuration never replaces corpus,
-query, native artifact, result/detail or dependency checks. Historical query,
-index and evaluation provenance is preserved unchanged.
-
-Console structured JSON diagnostics retain a metadata-only replay manifest in the
-existing failure record: distinct syntax/duplicate-property/nonfinite categories,
-syntax offsets, content size and character-class counts, stopped-choice/usage
-metadata, schema hash, original and transmitted prompt hashes, and the assembled
-SDK request-parameter hash. Indexing also binds source name, document, title and
-chunk hashes plus page and chunk ordinals. To identify one exact replay input,
-read the preserved source, run the recorded parser/chunker, match these hashes,
-and rebuild the unchanged native messages/settings; verify both prompt hashes
-and the request-parameter hash before issuing a request. The manifest stores no
-response text, property names, prompt text, credentials or endpoint address.
-Prehop trace payloads separately retain the original request and response for
-new traced executions, including discarded attempts. Diagnostics do not repair outputs or change schemas or token limits.
-
-Prehop's `prehop-controlled-format-retry-v1` profile discards raw JSON syntax,
-duplicate-property, nonfinite and registered-schema failures, then resubmits the
-identical prompt, schema, model, seed and token cap. It accepts the first valid
-response without comparing content quality. One shared typed transport budget
-allows at most five requests total across transport and format retries; SDK
-automatic retries are disabled inside this scope. Choice-count, non-stop,
-refusal, tool-output and empty-content guards fail immediately. Each discarded
-response records safe metadata, request hash, elapsed time and reported usage.
-All returned responses count toward query and index inference totals; unavailable
-provider costs or failed-transport usage remain explicitly incomplete. Existing
-phase wall times include retries. Only Prehop's method/configuration and chunk
-cache identity change: Naive uses no structured question or ranking call path.
-
+`record_paper_completion.py` records finished execution without final paper-policy
+validation. It emits the legacy `admitted` receipt label with
+`verification=disabled_by_user`; it does not recalculate metrics or certify
+publication eligibility. Runtime and index checks remain separate. Optional
+analysis tools are not automatic completion gates.
 
 ## Complete-index reuse for final benchmarks
 
-The gated final matrix uses version-1 links to complete native indexes produced
-by its one-query matrix. A separate benchmark-first path uses version-2 links
-to full-index supervisor completions; see
-[Reusing index-supervisor completions](#reusing-index-supervisor-completions).
-Version 2 does not attest that the version-1 canary gates passed. The intervening Naive MultiHop-RAG full-target gate still
-builds a fresh index and evaluates the complete query split. A one-query answer,
-result, or admission never supplies a full benchmark row or full admission.
+`core/index_reuse.py` supports links from full-index supervisor completions
+(version 2) and the separate legacy one-query matrix protocol (version 1).
+Both retain original index statistics, corpus identity, method policy, and
+measured construction costs. File-backed methods receive byte-verified query
+copies; service-backed methods retain their source namespace. Copy preparation
+cost is separate from original indexing cost. Query caches do not rewrite the
+bound source index. A canary or index-only artifact cannot supply a full
+benchmark score.
 
-Each version-1 final target creates `data/results/<target>/index_link.json` and an
-exclusive byte-identical snapshot of the source gate ledger. The link binds the
-original index run ID, raw index statistics and digest, complete corpus identity,
-recorded and current method configuration, source one-query evidence, runtime,
-and index namespace. Revalidation checks the original native artifacts and
-current canonical policy. The live campaign ledger can advance without changing
-the preserved gate snapshot. Original source statistics and snapshot metadata
-are neither rewritten nor relabelled.
+## Amortized throughput cost (evidence v3)
 
-Prehop and Naive read their original graph namespace. For each of the six
-external methods, the runner copies the complete native output directory into
-the final target's fresh query workspace. It rejects symlinks and verifies the
-entire original and copied file inventories. The link records both absolute
-runtime roots through repository-relative paths and the explicit copy operation.
-Only the query workspace may accumulate native query caches. Its original
-snapshot metadata remains byte-identical; its origin path is provenance, while
-the configured runtime root selects the actual copied artifacts. Original
-source files remain content-bound and are rechecked before admission.
+`core/execution_profile.py` binds transport and producer settings to provenance.
+Version 3 uses one shared generation/embedding request semaphore in
+`core/inference_queue.py`. Legacy versions remain readable for historical runs.
+Profile limits are request bounds, not evidence of GPU saturation or exclusive
+remote resources.
 
-The benchmark retains the source `RAG_RUN_ID` and index namespace, and uses the
-fresh target ID for `RAG_BENCHMARK_TIMESTAMP` and result output. Bootstrap sets
-these values and the registered paper settings before static configuration
-imports. The result binds its index link; the verifier permits a different index
-run ID only after validating that link. Full query counts, exact prepared query
-records, complete JSON/JSONL row equality, runtime identity, active native
-snapshot, current post-query artifacts, and fresh admission remain mandatory.
-Completed targets are reverified on matrix resume. Partial targets use the
-existing strict benchmark checkpoint gate under the same immutable link.
-
-### Index and query phase costs
-
-Index cost is the original successful index's `timing_seconds`, including its
-method phases and `total_elapsed_seconds`; reuse does not report zero indexing
-cost. Native-copy preparation time is recorded separately. Benchmark wall time
-uses uniquely identified execution segments with PID, process start ticks,
-boot ID and start time. Each checkpoint stores the current segment's cumulative
-elapsed time; resume carries each prior segment once and appends a new segment.
-Repeated checkpoint snapshots are not added together. Wall time covers benchmark
-execution through the latest checkpoint, including initialization, validation,
-retries and checkpoint work before that snapshot. Abruptly interrupted work
-after the last durable checkpoint is not claimed as measured successful time;
-failed attempt logs and supervisor timing retain that operational cost.
-
-`phase_costs.index_plus_benchmark_wall_seconds` adds the original index wall time
-to these unique benchmark segments. Preparation is separate, and index subphases
-are not added again to the index total. `query_latency_sum_seconds` sums retained
-unique query rows' service latency and is not interpreted as parallel wall time.
-Retries within an admitted benchmark remain part of its actual measured phase;
-separate failed runs remain preserved and do not populate successful indexing
-costs or primary effectiveness results.
-
-### Adapter producer parallelism
-
-Prehop contains observation hooks; pinned external source remains unchanged.
-Adapter scheduling controls how much independent native indexing
-work can reach the shared inference queue:
-
-| Method | Native indexing work | Adapter behavior |
-|---|---|---|
-| Prehop | Chunk extraction followed by document and graph writes | Bounds active documents, prefetch and chunk lookahead; retains native assembly order. |
-| Naive RAG | Embedding and document replacement | Applies remote embedding batch and request limits; indexing uses no generation. |
-| MS GraphRAG | Concurrent extraction and community stages | Connects native request concurrency to the shared cap and retains dependency barriers. |
-| LightRAG | Document insertion with a separate LLM gate | Sets native `max_parallel_insert` independently from `llm_model_max_async`. |
-| HippoRAG2 | Parallel OpenIE, then embedding and graph construction | Sets `openie_max_workers` to the generation cap; retains the native encoder and graph stages. |
-| GFM-RAG | Parallel OpenIE, then local entity linking and checkpoint work | Sets constructor `num_processes` to the cap; the native implementation uses threads. |
-| LinearRAG | Local spaCy NER and MPNet batches | Retains the local pipeline. Native `max_workers` does not parallelize `spacy.pipe`. |
-| HopRAG | Independent documents with sequential native chunks | Runs ten document workers; retains native `max_thread_num=1` within each document. |
-
-Prehop uses `models/prehop/parallel_adapter.py` for bounded per-document chunk
-lookahead while retaining original assembly order and the native extractor.
-LightRAG configures its native insertion gate separately from request limits.
-HopRAG's document pool can issue work from ten documents at once. If only one
-long document remains, its native one-worker chunk loop limits request supply.
-A shared request ceiling of 120 does not create additional producers or promise
-GPU saturation. Document completion counters must be checked alongside failure
-records before reporting successfully indexed source coverage.
-
-### Amortized throughput cost (evidence v3)
-
-The content-bound execution profile and measured cost boundaries are specified
-in [THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md). Each profile campaign owns
-a bounded transparent inference queue. The default measurement limit is one
-target; an explicit limit of two to four permits rolling concurrent jobs. Adapter
-producer settings control work within each target.
-Producer behavior is defined in [Adapter producer parallelism](#adapter-producer-parallelism).
-
-`amortized_indexing_cost` divides original index wall time by manifest source
-count. `amortized_query_cost` uses a separate batch-dispatch-to-last-answer wall
-timer through the last answer or terminal failure, divided by the full query
-count. Fully executed batches include failed queries. Partial, integrity-failed
-or resumed batches do not supply continuous-run query throughput. The original benchmark segment timer and
-request latency fields retain their existing meanings. Interleaved evaluation
-or checkpoint work delaying answers is included in the query batch timer.
-
-
-Execution profile v3 admits generation and embedding through one shared
-semaphore in `core/inference_queue.py`. Its `inference_concurrency` is the
-combined active-request bound; per-kind metrics are observational, not separate
-quotas. Legacy profiles retain their original per-kind limits for reproducibility.
-`core/execution_profile.py` resolves both client ceilings to the shared bound
-and verifies the queue's combined limit before execution.
+Index cost uses original successful pipeline wall time. Query batch cost uses
+dispatch through the last answer/failure, distinct from individual response
+latency and cumulative benchmark-segment wall time. Neo4j storage measurements
+are logical-payload estimates; file-backed measurements are physical artifact
+bytes. They are not equivalent physical database sizes. Full definitions belong
+in [the measurement protocol](THROUGHPUT_EXECUTION.md#final-tables-and-measurement-definitions).
 
 ## Prehop tracing
 
-`models/prehop/tracing.py` records Prehop stage inputs and outputs, embedding
-inputs/vectors, Neo4j Cypher calls and returned rows, retrieval
-candidates, graph expansion, scoring, query refinement and final answers.
-`GraphRAG` enables tracing and document intermediate files by default.
-`RAG_PREHOP_TRACE=false` disables it for isolated diagnostics/tests;
-`RAG_PREHOP_TRACE_DIR` overrides the default `data/traces` root.
+`models/prehop/tracing.py` records stage inputs/outputs, embeddings, Cypher,
+candidates, refinement, and answers. Tracing is enabled by default;
+`RAG_PREHOP_TRACE=false` disables it and `RAG_PREHOP_TRACE_DIR` selects storage.
+Each engine reserves `data/traces/<run-id>/prehop/<namespace>/<session-id>/`.
+Ordered `events.jsonl` entries refer to hashed compressed payloads. Index and
+query artifacts retain trace references.
 
-Each engine reserves a fresh session directory under
-`data/traces/<run-id>/prehop/<namespace>/<session-id>/`. `events.jsonl` contains
-ordered sequence numbers, timestamps, span/parent IDs and document or benchmark
-query identity. SHA-256-addressed `payloads/*.json.gz` files hold full payloads.
-Concurrent asyncio tasks retain their own parent and query/document contexts.
-The benchmark adds stable query IDs and indices; indexing includes source names
-and chunk/page hashes and ordinals. Unmatched starts indicate interrupted work;
-a trace file's existence does not establish successful execution.
+Credentials and HTTP headers are not recorded; known secrets are redacted.
+Payloads otherwise contain source and model data and remain private/ignored.
+Trace directories use mode 0700 and files 0600. Writes occur inline and must
+not wait for the executor used by embedding semaphore waiters. Storage errors
+propagate. Trace I/O during a measured phase contributes to its wall time;
+trace storage is excluded from retrieval-index size.
 
-Prehop clients observe HTTP request and response bodies before SDK and schema
-validation, including SDK-internal HTTP retries. Logical calls and explicit
-transport attempts have separate spans. A context-local telemetry observer
-records native structured validation outcomes and discarded-attempt reasons.
-It does not alter parsing, retry budgets, output limits, prompts or decoding.
-Other strategies sharing HTTP connections have no active Prehop trace context.
+## Campaign process ownership
 
-HTTP headers and endpoint credentials are not recorded. Known credential values
-and credential fields are redacted while numeric telemetry is retained. Trace
-payloads otherwise retain inputs and model output, so they remain local and
-ignored, with session directories mode 0700 and files mode 0600. Every event is
-written and the file closed immediately; storage failures propagate. This
-provides process-crash diagnostics, not a guarantee against power loss.
-HTTP hooks persist events inline, as stage spans do. They must not await the
-default thread executor: embedding semaphore waiters can saturate that executor,
-preventing permit holders from recording responses and releasing their permits.
+Persistent supervisors record PID/start/boot identities and own their process
+sessions. Cleanup targets verified descendants, sends TERM with a bounded wait,
+and does not escalate to KILL. Surviving owned processes block restart. Separate
+logs and atomic status files survive the initiating shell; they do not imply
+automatic reboot recovery or chat notifications.
 
-Index statistics and benchmark detail rows contain `prehop_trace` references.
-The index outcome records failures and graph checks; benchmark query outcomes
-include evaluation inputs and results. Traces complement the stored index and
-result artifacts; they do not replace final admission. Inference and stage trace
-I/O during a measured phase contributes to its wall time; post-phase outcome
-reporting remains outside that phase timer. Trace files are excluded from
-retrieval index storage size. Older untraced responses cannot be reconstructed.
-
-### Terminal query failures and target isolation
-
-The benchmark loop records ordinary query exceptions and continues pending
-queries. Primary quality scores are zero for terminal failures; latency and
-available usage remain measured. The same policy applies to aggregation,
-verification and paired bootstrap. Resume retains terminal errors rather than
-retrying them into successful rows. `BenchmarkIntegrityError` crosses the worker
-boundary and stops pending queries for that target; active calls may finish.
-
-The index supervisor writes `outcomes.json` and `outcomes.md` alongside status
-and attempt logs. Failed indexes have unavailable quality; other eligible targets
-continue. See [failure handling](RESULTS.md#failure-handling) for reporting and
-admission rules. Prehop and Naive index construction is unchanged.
-
-### Reusing index-supervisor completions
-
-Index links version 2 accept an immutable full-index `completion.json` from the
-index supervisor. They verify the exact statistics path and hash, canonical
-index policy, current corpus coverage and original measured indexing cost.
-They do not claim the version-1 canary ledger was passed. Query execution still
-verifies the live snapshot before a full benchmark, and publication admission
-still verifies the full query artifacts.
-
-File-based methods receive a byte-identical query copy; the original output
-inventory stays bound. Service-backed methods retain their verified namespace.
-The common index-link validator checks the clone, corpus, configuration and
-original cost for both versions. Failed or smoke-only completion receipts cannot
-supply version-2 links.
-
-
-### LinearRAG native query batching
-
-The external adapter collects concurrent LinearRAG requests for a bounded
-10 ms window and passes at most `RAG_BENCHMARK_CONCURRENCY` questions to one
-persistent worker. The worker invokes the original `qa(questions)` once.
-Retrieval remains native and sequential; answer inference uses the original
-`max_workers` pool. No source files, prompt text, retrieval parameters or native
-retry behavior change. Other external methods retain their existing execution
-path. Trace records include `native_query_batch_size` and adapter queue delay.
-Latency includes native batch execution; batch wall time per query remains the
-throughput measure. Native batch exceptions propagate to every member without
-an adapter retry; integrity exceptions retain target failure scope.
+Index dispatch does not reject edits solely because a source digest changed.
+Running Python processes may retain loaded code; newly launched segments record
+their actual provenance. The separate `paper_campaign.py`/`run_paper_matrix.sh`
+legacy full-matrix path still has an explicit evidence ledger. Its checks must
+not be described as automatic final policy validation or as the rolling
+controller's dispatch policy. See [execution procedures](THROUGHPUT_EXECUTION.md).

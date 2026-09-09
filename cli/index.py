@@ -212,6 +212,13 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: st
                 ),
             }
         )
+        if RAGConfig.HOP_LINK_VARIANT == "body":
+            from core.prehop_ablation import ablation_identity
+            policy.update({
+                "hop_construction": "body_to_body",
+                "body_link_reference_sha256": ablation_identity()["body_link_reference_sha256"],
+                "body_link_degree_policy": "reference_per_node",
+            })
     elif strategy == "browsenet":
         policy.update(
             {
@@ -271,14 +278,6 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: st
                         os.environ.get("RAG_LINEAR_RAG_VECTORIZED", "false"),
                         name="RAG_LINEAR_RAG_VECTORIZED",
                     ),
-                }
-            )
-        elif strategy == "hipporag2":
-            policy.update(
-                {
-                    "retrieval_top_k": int(os.environ.get("RAG_HIPPORAG2_TOP_K", "5")),
-                    "openie_mode": "online",
-                    "vector_store": "local_parquet",
                 }
             )
         elif strategy == "gfm_rag":
@@ -951,13 +950,16 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
     """)
     expected_channels = {"q_minus"} if RAGConfig.ABLATION_Q_MINUS else {"body"}
     expected_edge_type = "qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation"
+    body_links = RAGConfig.HOP_LINK_VARIANT == "body"
+    if body_links:
+        expected_edge_type = "body_to_body"
     invalid_hop_edges = 0
     for row in hop_rows:
         invalid_hop_edges += int(
             row.get("source_document") == row.get("target_document")
             or set(row.get("direct_channels") or []) != expected_channels
-            or not row.get("source_question_ids")
-            or not row.get("source_question_texts")
+            or (not body_links and not row.get("source_question_ids"))
+            or (not body_links and not row.get("source_question_texts"))
             or row.get("edge_type") != expected_edge_type
         )
 
@@ -1053,6 +1055,16 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         "bounded_hop_out_degree": int(degree.get("max_out_degree", 0) or 0) <= RAGConfig.QUESTIONS_PER_DIRECTION,
         "search_indexes_online": bool(index_rows) and all(row.get("state") == "ONLINE" for row in index_rows),
     }
+    if body_links:
+        from collections import Counter
+
+        from models.prehop.indexing.body_links import load_reference
+        reference = load_reference(RAGConfig.BODY_LINK_REFERENCE)
+        actual_degrees = Counter(row["source_id"] for row in hop_rows)
+        checks["matched_reference_degree"] = (
+            set(actual_degrees) <= set(reference["nodes"])
+            and all(actual_degrees[node_id] == item["degree"] for node_id, item in reference["nodes"].items())
+        )
     return {
         "pass": all(checks.values()),
         "checks": checks,
@@ -1212,6 +1224,8 @@ async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> dict |
     """Rebuild HOP and provenance edges without changing chunks or questions."""
     if strategy != "prehop":
         raise ValueError(f"rebuild_hop_edges only supports strategy=prehop (got {strategy})")
+    if RAGConfig.PREHOP_ABLATION_PROFILE:
+        raise ValueError("Ablation graphs are frozen; build a fresh namespace instead of rebuilding HOP")
     engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
     await engine.clear_hop_edges()
     await engine.build_all_hop_edges()
@@ -1260,6 +1274,9 @@ async def run_indexing(
     from core.inference_telemetry import begin, finish
 
     async with _index_run_lock(strategy, corpus_tag or "default"):
+        if RAGConfig.PREHOP_ABLATION_PROFILE:
+            from core.prehop_ablation import require_empty_ablation_namespace
+            await require_empty_ablation_namespace()
         token = begin() if strategy == 'prehop' else None
         try:
             return await _run_indexing_unlocked(

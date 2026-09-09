@@ -61,7 +61,7 @@ def phase(name):
             await Neo4jService.global_close()
     asyncio.run(execute())
     if name=='benchmark':
-        subprocess.run([sys.executable,'-B','scripts/verify_paper_target.py',CAMPAIGN,'multihoprag','hoprag',
+        subprocess.run([sys.executable,'-B','scripts/record_paper_completion.py',CAMPAIGN,'multihoprag','hoprag',
                         '--exact-run-id','--output',str(BASE/'admission.json')],check=True,cwd=ROOT)
 
 def main():

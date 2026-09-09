@@ -97,6 +97,7 @@ def _ablation_signature(generation_model_id: str = "") -> str:
         f"-schema={RAGConfig.QUESTION_SCHEMA}"
         f"-prompt={_prompt_sig()}"
         f"-generation={_generation_signature(generation_model_id)}"
+        + ("-links=body" if RAGConfig.HOP_LINK_VARIANT == "body" else "")
     )
 
 

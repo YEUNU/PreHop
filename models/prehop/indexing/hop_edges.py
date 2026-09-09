@@ -410,6 +410,10 @@ class HopEdgeMixin:
     @traced
     async def build_all_hop_edges(self) -> None:
         """Build Q+-to-answer-owner HOP edges after the complete corpus is visible."""
+        if RAGConfig.HOP_LINK_VARIANT == "body":
+            from models.prehop.indexing.body_links import build_body_links
+            await build_body_links(self)
+            return
         if not RAGConfig.ABLATION_Q_PLUS:
             logger.info("Skipping HOP edge construction because Q+ is disabled.")
             return

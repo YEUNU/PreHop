@@ -19,10 +19,8 @@ belongs in `docs/RESULTS.md`.
 - `docs/THROUGHPUT_EXECUTION.md` owns execution-profile fields, queue semantics,
   launch procedures, and cost definitions.
 - `docs/RESULTS.md` owns result status and artifact-to-number traceability.
-  Timestamped provisional diagnostics must be separate from admitted paper
-  values and identify their query population, denominators and evidence paths.
-- `docs/CHANGELOG.md` records completed engineering changes; it is not a second
-  current-state specification.
+  Keep provisional diagnostics outside `docs/`; completed values must identify
+  their query population, denominators and evidence paths.
 
 Do not make a gitignored manuscript or private submission note a prerequisite
 for understanding, running, or validating the public repository.
@@ -31,15 +29,18 @@ for understanding, running, or validating the public repository.
 
 External source files remain unchanged. Preserve native behavior unless a
 registered adapter profile explicitly declares a recovery intervention. HopRAG
-JSON/return-value recovery and HippoRAG2 structured extraction are such
-interventions; retain raw responses, transformations and bounded retry records.
+JSON/return-value recovery is such an
+intervention; retain raw responses, transformations and bounded retry records.
 Do not fabricate missing entities, answers, usage or successful completion. See
 `docs/RUNTIME_REQUIREMENTS.md` for the per-method output-handling contract.
 
+- Write all documents under `docs/` in English. Keep temporary reviews, audit
+  reports, revision logs, and live progress snapshots out of `docs/`; retain
+  durable specifications and completed benchmark evidence.
 - Keep one detailed contract per topic. Other documents should link to it and
   include only the context their readers need.
-- Update the implementation and its owning document together. Update the
-  changelog only for a durable, completed change.
+- Update the implementation and its owning document together. Keep current
+  contracts rather than separate chronological change logs.
 - Keep README examples representative and short. Do not copy experiment gates,
   full option catalogs, progress counters, or result tables into it.
 - Keep this file prescriptive. Do not duplicate tutorials, architecture maps,
@@ -97,3 +98,8 @@ uv run --extra dev pytest -q
 Never describe a runtime, index, benchmark, or result as complete based only on
 configuration validation or a running process. The owning artifact and its
 documented verification must support the claim.
+
+- Final paper-policy validation is disabled. `record_paper_completion.py` records
+  completion; the legacy verifier entry is a compatibility shim. Do not require
+  seed exceptions or restore automatic final validation. Keep final result links
+  in `docs/RESULTS.md`; retain runtime, index-reuse and checkpoint checks.

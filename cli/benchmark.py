@@ -8,13 +8,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.benchmark_failures import POLICY as FAILURE_POLICY, QUALITY_METRICS, metric_value, BenchmarkIntegrityError
 from core.admission import current_post_query_inventory
+from core.benchmark_failures import POLICY as FAILURE_POLICY
+from core.benchmark_failures import QUALITY_METRICS, BenchmarkIntegrityError, metric_value
 from core.config import RAGConfig
 from core.execution_profile import exclusive_measurement
 from core.index_namespace import index_namespace
 from core.paper_compatibility import method_identity
-from core.paper_policy import structured_query_identity, canonical_query_policy
+from core.paper_policy import canonical_query_policy, structured_query_identity
+from core.prehop_ablation import ablation_identity
 from core.semantic_config import parse_strict_bool
 from core.strategy_registry import EXTERNAL_STRATEGIES, RESEARCH_EXTERNAL_STRATEGIES
 from core.vllm_client import get_llm_client
@@ -208,12 +210,16 @@ def _validate_corpus_index_fingerprint(
         strategy = str(stored_policy.get("strategy") or "")
         if not isinstance(index_manifest.get("index_policy_sha256"), str):
             raise RuntimeError("completed paper index artifact is missing index_policy_sha256")
-        validate_canonical_index_policy(
-            strategy,
-            dataset,
-            stored_policy,
-            index_manifest.get("index_policy_sha256"),
-        )
+        if RAGConfig.PREHOP_ABLATION_PROFILE:
+            from core.prehop_ablation import validate_ablation_index_policy
+            validate_ablation_index_policy(stored_policy, index_manifest.get("index_policy_sha256"), dataset)
+        else:
+            validate_canonical_index_policy(
+                strategy,
+                dataset,
+                stored_policy,
+                index_manifest.get("index_policy_sha256"),
+            )
     return "matched"
 
 
@@ -1084,7 +1090,7 @@ async def run_benchmark(
     if seed is not None:
         from core.strategy_registry import get_strategy
 
-        generation_seed = get_strategy(strategy).paper_generation_seed if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") else int(seed)
+        generation_seed = None if RAGConfig.PREHOP_ABLATION_PROFILE else (get_strategy(strategy).paper_generation_seed if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") else int(seed))
         RAGConfig.LLM_SEED = generation_seed
         if generation_seed is None:
             os.environ["RAG_LLM_SEED"] = ""
@@ -1290,7 +1296,8 @@ async def run_benchmark(
                     "final_rank_variant": RAGConfig.FINAL_RANK_VARIANT,
                     **structured_query_identity(strategy),
                     **method_identity(strategy),
-                    **(canonical_query_policy(strategy) if strategy == "hoprag" else {}),
+                    **(ablation_identity() if strategy == "prehop" else {}),
+                    **(canonical_query_policy(strategy) if strategy in {"hoprag", "linear_rag"} else {}),
                 },
             },
             judge_enabled=judge_enabled,
@@ -1395,7 +1402,8 @@ async def run_benchmark(
                 "final_rank_variant": RAGConfig.FINAL_RANK_VARIANT,
                     **structured_query_identity(strategy),
                     **method_identity(strategy),
-                    **(canonical_query_policy(strategy) if strategy == "hoprag" else {}),
+                    **(ablation_identity() if strategy == "prehop" else {}),
+                    **(canonical_query_policy(strategy) if strategy in {"hoprag", "linear_rag"} else {}),
             },
         }
         if resume_metadata is not None:

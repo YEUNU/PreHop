@@ -128,9 +128,6 @@ install_checkout lightrag "${official_repo[lightrag]}" "${official_revision[ligh
 lightrag_constraints=$(constraint_path lightrag)
 install_source_package lightrag "$lightrag_constraints" --extra "openai==2.8.1"
 
-install_checkout hipporag2 "${official_repo[hipporag2]}" "${official_revision[hipporag2]}" "$(runtime_field hipporag2 python_version)"
-hipporag_constraints=$(constraint_path hipporag2)
-install_source_package hipporag2 "$hipporag_constraints"
 
 install_checkout gfm_rag "${official_repo[gfm_rag]}" "${official_revision[gfm_rag]}" "$(runtime_field gfm_rag python_version)"
 gfm_constraints=$(constraint_path gfm_rag)

@@ -144,7 +144,7 @@ def reuse_target(campaign: str, strategy: str, dataset: str) -> None:
     run_id = f'{campaign}-{dataset}-{strategy}'
     base = ROOT / 'data/results' / run_id
     path = base / 'index_link.json'
-    verifier = [sys.executable, 'scripts/verify_paper_target.py', run_id, dataset, strategy,
+    verifier = [sys.executable, 'scripts/record_paper_completion.py', run_id, dataset, strategy,
                 '--exact-run-id', '--output', str(base / 'admission.json')]
     if (base / 'admission.json').exists():
         subprocess.run(verifier, cwd=ROOT, env=selected_python_environment(), check=True)

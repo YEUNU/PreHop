@@ -133,6 +133,12 @@ def _build_parser() -> argparse.ArgumentParser:
 async def main():
     parser = _build_parser()
     args = parser.parse_args()
+    if RAGConfig.PREHOP_ABLATION_PROFILE:
+        RAGConfig.validate()
+        if os.environ.get("RAG_ABLATION_REUSE_EXISTING_INDEX") == "true" and args.mode != "benchmark":
+            raise ValueError("Existing ablation indexes are benchmark-only")
+        if args.strategy != "prehop" or args.mode not in {"index", "benchmark"} or args.clear_graph:
+            raise ValueError("Representation ablations support only scoped Prehop index/benchmark")
     run_id = _ensure_run_id()
     logger.info("Run ID: %s", run_id)
 

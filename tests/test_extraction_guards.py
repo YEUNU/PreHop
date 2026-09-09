@@ -57,61 +57,8 @@ def test_ms_valid_records_keep_native_content():
     assert validate_records(raw) == ({'A'}, [('A', 'B')])
 
 
-def test_hippo_retry_bypasses_invalid_cache_and_accounts_all_attempts(tmp_path):
-    from models.external_research.drivers.hippo_extraction import install_extraction_adapter
-
-    class Native:
-        calls = 0
-
-        def infer(self, **kwargs):
-            self.calls += 1
-            self.kwargs = kwargs
-            return '{}', {'prompt_tokens': 10, 'completion_tokens': 2, 'total_tokens': 12,
-                          'finish_reason': 'stop'}, False
-
-    def uncached(self, **kwargs):
-        self.calls += 1
-        assert kwargs == self.kwargs
-        return '{"named_entities":[{"entity":"A","label":"Person"}]}', {
-            'prompt_tokens': 10, 'completion_tokens': 7, 'total_tokens': 17, 'finish_reason': 'stop'}
-
-    Native.infer.__wrapped__ = uncached
-    llm = Native()
-    def ner():
-        raw, metadata, cache = openie.llm_model.infer(messages=[], max_new_tokens=512)
-        assert json.loads(raw) == {'named_entities': ['A']}
-        assert not cache and metadata['total_tokens'] == 29
-        return SimpleNamespace(response=raw, metadata=metadata)
-    openie = SimpleNamespace(llm_model=llm, ner_max_tokens=512, triple_max_tokens=2048,
-                             ner=ner, triple_extraction=lambda: None)
-    audit = install_extraction_adapter(openie, tmp_path / 'audit.jsonl', 2)
-    result = openie.ner()
-    assert json.loads(result.response)['named_entities'][0]['entity'] == 'A'
-    assert llm.calls == 2
-    assert llm.kwargs['response_format']['type'] == 'json_schema'
-    rows = [json.loads(line) for line in audit.path.read_text().splitlines()]
-    assert [row['status'] for row in rows] == ['retry', 'accepted']
-    audit.assert_healthy()
 
 
-def test_hippo_exhaustion_is_durable_and_not_admissible(tmp_path):
-    from models.external_research.drivers.hippo_extraction import install_extraction_adapter
-
-    class Native:
-        def infer(self, **kwargs):
-            return '{"triples":[]}', {'finish_reason': 'length'}, False
-
-    Native.infer.__wrapped__ = lambda self, **kwargs: ('{"triples":[]}', {'finish_reason': 'length'})
-    native = Native()
-    openie = SimpleNamespace(llm_model=native, ner_max_tokens=512, triple_max_tokens=2048,
-                             ner=lambda: None, triple_extraction=lambda: None)
-    audit = install_extraction_adapter(openie, tmp_path / 'audit.jsonl', 2)
-    with pytest.raises(ExtractionFormatError):
-        openie.llm_model.infer(messages=[], max_new_tokens=2048)
-    with pytest.raises(RuntimeError, match='exhausted'):
-        audit.assert_healthy()
-    rows = [json.loads(line) for line in audit.path.read_text().splitlines()]
-    assert [r['status'] for r in rows] == ['retry', 'exhausted']
 
 
 def test_audit_concurrent_calls_are_individually_readable(tmp_path):

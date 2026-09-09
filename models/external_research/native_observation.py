@@ -36,27 +36,6 @@ def observed_chat_type(base):
     return ObservedChat
 
 
-def observe_hippo(openie, audit_path, attempts):
-    from .extraction_contract import ExtractionAudit
-    audit = ExtractionAudit(audit_path, profile=PROFILE)
-    native = openie.llm_model
-
-    class ObservedLLM:
-        def __getattr__(self, name):
-            return getattr(native, name)
-
-        def infer(self, messages, **kwargs):
-            try:
-                result = native.infer(messages=messages, **kwargs)
-            except Exception as exc:
-                record(audit, messages, error=exc, request_options=kwargs)
-                raise
-            raw, metadata, cache_hit = result
-            record(audit, messages, raw, metadata=metadata, cache_hit=cache_hit, request_options=kwargs)
-            return result
-
-    openie.llm_model = ObservedLLM()
-    return audit
 
 
 class ObservedYoutuClient:

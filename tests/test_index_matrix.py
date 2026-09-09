@@ -6,8 +6,8 @@ from scripts import index_matrix
 
 def test_primary_index_matrix_is_complete_and_unique():
     rows = index_matrix.targets('campaign')
-    assert len(rows) == 16
-    assert len({row['run_id'] for row in rows}) == 16
+    assert len(rows) == 14
+    assert len({row['run_id'] for row in rows}) == 14
     assert {row['dataset'] for row in rows} == {'multihoprag', 'musique'}
 
 

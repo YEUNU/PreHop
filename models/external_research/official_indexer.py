@@ -28,18 +28,6 @@ def validate_native_generation_profile(strategy: str, stats: dict, policy: dict)
             if not policy.get(field) or stats.get(field) != policy[field]:
                 raise RuntimeError("Youtu effective extraction profile differs from semantic policy")
         return
-    if strategy != "hipporag2":
-        return
-    expected = {
-        "openie_response_format": {"type": policy.get("openie_response_format")},
-        "ner_normalization_profile": policy.get("ner_normalization_profile"),
-        "openie_ner_max_tokens": policy.get("openie_ner_max_tokens"),
-        "openie_triple_max_tokens": policy.get("openie_triple_max_tokens"),
-    }
-    if expected["openie_response_format"] != {"type": "json_object"} or any(
-        stats.get(name) != value for name, value in expected.items()
-    ):
-        raise RuntimeError("HippoRAG2 effective native OpenIE profile differs from the recorded semantic policy")
 
 
 async def run_official_index(

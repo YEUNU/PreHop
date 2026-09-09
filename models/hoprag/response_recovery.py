@@ -31,15 +31,17 @@ def install(tool, audit_path, attempts=3):
         return native_parser(raw)
 
     def completion(*args, **kwargs):
-        keys = kwargs.get('keys')
+        keys = kwargs.get('keys', args[4] if len(args) > 4 else None)
         expected = len(keys) + 1 if keys is not None else 2
         for attempt in range(1, attempts + 1):
             result = native_completion(*args, **kwargs)
             valid = isinstance(result, tuple) and len(result) == expected and isinstance(result[-1], list)
             if valid and keys:
                 for key, value in zip(keys, result[:-1]):
-                    valid = valid and (isinstance(value, str) if key == 'Title' else
-                        isinstance(value, list) and all(isinstance(item, str) for item in value))
+                    if key in {'Title', 'Decision', 'answer', 'Answer'}:
+                        valid = valid and isinstance(value, str)
+                    elif key in {'Question List', 'Subqueries'}:
+                        valid = valid and isinstance(value, list) and all(isinstance(item, str) for item in value)
             row = dict(profile=PROFILE, time=time.time(), attempt=attempt,
                        status='accepted' if valid else 'retry' if attempt < attempts else 'exhausted',
                        keys=keys, result=result)

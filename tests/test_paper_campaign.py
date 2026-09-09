@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_registered_plan_indexes_and_benchmarks_all_targets_in_order():
     steps = campaign.build_steps('fresh', 'a1', sys.executable)
-    assert len([row for row in steps if row['id'].startswith('cold/')]) == 16
-    assert len([row for row in steps if row['id'].startswith('one-query/')]) == 16
+    assert len([row for row in steps if row['id'].startswith('cold/')]) == 14
+    assert len([row for row in steps if row['id'].startswith('one-query/')]) == 14
     names = [row['id'] for row in steps]
     assert names.index('resume_stale_rejection') < names.index('one-query/multihoprag/prehop')
     assert names[-2:] == ['full_target_admitted', 'full_matrix']

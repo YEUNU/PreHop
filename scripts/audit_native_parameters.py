@@ -40,10 +40,6 @@ def audit(home: Path) -> dict:
     assert ModelConfig.model_fields['call_args'].default_factory() == {}
     for name in ('extract_max_tokens', 'query_max_tokens', 'report_max_tokens'):
         check('ms_graphrag', name, None, policy('ms_graphrag')[name], 'graphrag_llm.config.ModelConfig.call_args={}')
-    path = home/'hipporag2/source/src/hipporag/utils/config_utils.py'
-    defaults = dataclass_defaults(path, 'BaseConfig')
-    for field in ('retrieval_top_k', 'qa_top_k', 'openie_ner_max_tokens', 'openie_triple_max_tokens'):
-        check('hipporag2', field, defaults[field], policy('hipporag2')[field], path)
     path = home/'linear_rag/source/src/config.py'
     defaults = dataclass_defaults(path, 'LinearRAGConfig')
     for field, registered in [('retrieval_top_k','retrieval_top_k'),('spacy_model','spacy_model'),('use_vectorized_retrieval','vectorized_retrieval')]:
@@ -72,7 +68,7 @@ def audit(home: Path) -> dict:
             'owned_methods':['prehop','naive'],
             'declared_differences':[
                 'Shared Gemma generation, remote Qwen embeddings where applicable, seed and execution concurrency are controlled experiment settings.',
-                'Hippo/GFM strict response schemas and Youtu structured extraction are adapter format controls; they are not upstream-default wire requests.',
+                'GFM strict response schemas and Youtu structured extraction are adapter format controls; they are not upstream-default wire requests.',
                 'Youtu parallel schema evolution uses an adapter lock and may depend on scheduling; original serial equivalence is not claimed.',
                 'GFM uses the native single-pass qa.py workflow (top_k=5); the optional IRCOT workflow (top_k=10, max_steps=2) is a different variant.',
                 'Native posthoc Youtu LLM evaluation is replaced by the common benchmark metrics after answer generation.',

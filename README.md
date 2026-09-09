@@ -11,7 +11,7 @@ for answer synthesis. The incoming/outgoing question formulation follows
 role-aligned retrieval, refinement, and selection policy.
 
 The primary comparison set is Prehop, Naive RAG, HopRAG, MS GraphRAG,
-LightRAG, HippoRAG2, GFM-RAG, and LinearRAG. Strategy identities and pinned
+LightRAG, GFM-RAG, and LinearRAG. Strategy identities and pinned
 revisions come from `core/strategy_registry.py`. HopRAG uses a separately
 prepared runtime; see [runtime requirements](docs/RUNTIME_REQUIREMENTS.md#hoprag-runtime).
 
@@ -70,11 +70,11 @@ benchmark result.
 - [Architecture](docs/ARCHITECTURE.md): implementation modules and behavior.
 - [Runtime requirements](docs/RUNTIME_REQUIREMENTS.md): external runtimes,
   transport, and validation.
-- [Throughput execution](docs/THROUGHPUT_EXECUTION.md): current and historical
-  profiles, launch procedures, and cost definitions.
+- [Execution and measurement](docs/THROUGHPUT_EXECUTION.md): profiles, launch
+  procedures, recovery, and cost definitions.
 - [Results](docs/RESULTS.md): result status and artifact requirements.
 - [Maintainer policy](CLAUDE.md): repository maintenance rules.
-- [Changelog](docs/CHANGELOG.md): chronological engineering changes.
+- [Representation ablations](docs/PAPER_ABLATION_DESIGN.md): comparisons, controls, and execution commands.
 
 ## Verification
 
@@ -88,3 +88,6 @@ uv run --extra dev pytest -q
 
 MIT. External methods retain their upstream licenses and run in isolated
 environments where required.
+
+Completed benchmark outputs are linked in [RESULTS](docs/RESULTS.md#evidence-locations).
+Final completion records execution status without a separate paper-policy gate.

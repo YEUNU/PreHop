@@ -1,312 +1,184 @@
-# Throughput execution and paper cost protocol
+# Execution and Measurement Protocol
 
-Use this protocol to select request and document concurrency, launch indexing
-or benchmark work, and report comparable per-document and per-query costs.
-The eight primary methods run on both complete prepared datasets. The default
-measurement limit is one target; `RAG_MEASUREMENT_MAX_TARGETS` accepts 1–4.
-Values above one permit shared targets and require the owned queue. The active
-repair controller currently uses three slots while eligible work remains and
-can mix indexing with benchmarks. Four slots are supported but have not been
-validated under the current workload. The shared inference ceiling remains 120.
-Queue admission does not itself change prompts, dependencies or retry behavior.
-Native worker counts and local graph/model work can limit request supply below
-the configured ceiling. GPU utilization is observational; 99% is not an
-admission criterion or a guaranteed operating point.
+Use this guide to launch targets, preserve existing evidence, and report
+comparable costs. Runtime setup belongs in
+[RUNTIME_REQUIREMENTS](RUNTIME_REQUIREMENTS.md); completed numbers belong in
+[RESULTS](RESULTS.md). Keep live counters, queue snapshots, and temporary
+investigations in generated campaign artifacts outside `docs`.
+
+## Completion and continuation
+
+A finished benchmark receives a completion receipt from
+`scripts/record_paper_completion.py`, without final paper-policy validation.
+The legacy verifier entry forwards to that recorder. Runtime readiness,
+index-reuse, corpus integrity, and checkpoint checks remain separate.
+An index-only completion is not a completed query benchmark.
+
+Source edits alone do not block index or rolling dispatch. Loaded Python code
+may remain unchanged in an already-running process; new segments record their
+actual launch provenance. Preserve old results and settings rather than
+relabelling them with current defaults. Paper generation omits the LLM seed;
+evaluation/sampling seed 42 is separate from generation.
 
 ## Execution contract
 
-`core/execution_profile.py` binds the selected settings to index and query
-provenance. `core/inference_queue.py` applies shared upstream request limits
-across native worker processes without changing the approved gateway identity.
-The queue has bounded connection handlers, preserves request bodies and
-streaming responses, and performs no retries. It does not log request bodies
-or credentials.
+`core/execution_profile.py` binds the selected transport and producer settings
+to provenance. Set `RAG_EXECUTION_PROFILE` to an absolute JSON path before Python
+starts. Version 3 uses one combined generation/embedding request pool;
+legacy versions retain their historical per-kind limits.
 
-Evidence contract v3 binds the profile to gate and admission checks. Older
-contexts must be revalidated. Checkpoint recovery can retain effectiveness
-results, but interrupted query runs cannot supply continuous-run throughput.
-For module ownership and producer behavior, see
-[ARCHITECTURE](ARCHITECTURE.md#amortized-throughput-cost-evidence-v3).
-
-## Profiles and pilot
-
-`RAG_EXECUTION_PROFILE` must be an absolute JSON path exported before Python
-starts. Version 3 uses one `inference_concurrency` limit shared by generation
-and embedding requests. It retains embedding batch size, query workers and
-document producer settings; it has no per-kind request quotas. Client ceilings
-resolve to the shared limit so an old embedding ceiling of two cannot prevent
-use of the pool. Native dependencies and producer counts still bound demand.
-
-Legacy version 1 declares four transport settings. Version 2 additionally
-binds active document workers, document prefetch, LightRAG insertion workers
-and the historical Youtu worker field, with optional bounded Prehop chunk lookahead
-(`prehop_chunk_concurrency`, default 1). Adapter producer settings supersede ambient
-defaults. The retained `youtu_document_concurrency` field is inactive after
-Youtu removal; it remains in existing profile files to preserve their recorded
-identities. The profile's canonical JSON hash enters both
-index and query provenance, gate context, and admission. The included
-`configs/execution_profiles/throughput-pilot.json` (generation 30, embedding
-16/2, queries 8) is an unvalidated starting point, not a measured optimum.
-Without a profile, the registry's existing defaults remain available. See
-[Adapter producer parallelism](ARCHITECTURE.md#adapter-producer-parallelism)
-for per-method behavior.
+`core/inference_queue.py` limits upstream requests across child processes,
+forwards request bodies and streaming responses, and does not add retries.
+The default measurement limit is one target. `RAG_MEASUREMENT_MAX_TARGETS`
+accepts 1–4; multiple targets require the owned queue and imply shared-resource
+measurement. Local ownership locks cannot establish exclusivity against remote
+clients or other users.
 
 ### Shared indexing profile
 
-`configs/execution_profiles/index-shared-120.json` sets a combined limit of
-120 active inference requests. Generation and embedding compete for the same
-semaphore, with no reserved slots for either kind. For example, 90 generation
-requests leave room for 30 embedding requests; either kind alone can use all
-120 slots. Requests above the active limit wait within the bounded handler
-capacity. This does not promise FIFO ordering or 120 GPU sequences.
+`configs/execution_profiles/index-shared-120.json` contains:
 
-Embedding batches remain at 16 inputs and producer settings retain the values
-below. Queue snapshots expose `limits.shared` and aggregate `metrics.shared`,
-alongside per-kind observational metrics. The aggregate peak is measured
-directly; do not add the two per-kind peaks or add aggregate counts to their
-components. Protocol-level concurrency tests do not establish the best remote
-throughput. Gateway and client probes verify the selected embedding response
-contract, and matrix preflight verifies runtime/configuration readiness. Neither
-check builds full indexes or establishes sustained throughput for every method.
-Validate sustained load separately before treating an execution profile as optimal.
+| Field | Value |
+|---|---:|
+| `inference_concurrency` | 120 |
+| `embedding_batch_size` | 16 |
+| `benchmark_concurrency` | 8 |
+| `index_document_concurrency` | 60 |
+| `index_prefetch_documents` | 120 |
+| `prehop_chunk_concurrency` | 8 |
+| `lightrag_document_concurrency` | 32 |
+| `youtu_document_concurrency` | 60, inactive compatibility field |
 
-### Previous indexing profile
+Generation and embedding compete for the same 120 slots, with no per-kind
+reservation. Queue snapshots expose the measured aggregate peak plus per-kind
+observations; do not add peaks measured at different times. These settings
+specify request bounds, not GPU capacity, sustained utilization, or an optimum.
+Native producers and local graph/model work can limit demand.
 
-`configs/execution_profiles/index-throughput-tested.json` contains the tested
-indexing configuration:
+Without an execution profile, registry transport defaults are generation
+concurrency 30, embedding batch/concurrency 16/1, and benchmark concurrency one.
+Changing the profile requires compatible new timing evidence. A small pilot
+can check integration and request throughput but does not establish full-run
+quality, batch invariance, or optimal query concurrency.
 
-| Profile field | Value | Meaning |
-|---|---:|---|
-| `generation_concurrency` | 60 | Shared active generation request limit |
-| `embedding_batch_size` | 16 | Remote embedding inputs per batch |
-| `embedding_concurrency` | 2 | Shared active embedding request limit |
-| `benchmark_concurrency` | 8 | Query worker bound; separate validation remains required |
-| `index_document_concurrency` | 60 | Active Prehop document limit |
-| `index_prefetch_documents` | 120 | Prehop document scheduling window |
-| `prehop_chunk_concurrency` | 8 | Prehop per-document chunk lookahead |
-| `lightrag_document_concurrency` | 32 | Native LightRAG insertion limit |
-| `youtu_document_concurrency` | 60 | Historical field; no current Youtu producer |
+## Foreground target
 
-Indexing pilots and native smoke builds validate execution at these settings.
-They do not establish a global optimum, query throughput, downstream quality
-equivalence, or publication admission. Embedding limits remain conservative.
-Prehop trace I/O is enabled by default and contributes to measured phase wall
-time; record its trace reference when comparing costs.
-For the reported server sequence limits, see
-[Serving capacity](RUNTIME_REQUIREMENTS.md#serving-capacity).
-
-### Compare candidate profiles
-
-Capture a small, fixed representative request workload without gold answers as
-JSONL rows with `endpoint` (`chat/completions` or `embeddings`) and the original
-`body`. Use the configured remote models and non-streaming responses for pilot
-replay. Avoid confidential material in files intended for publication. Give
-candidate profiles the same workload, resource budget and tuning opportunities.
-
-```bash
-.venv/bin/python scripts/pilot_inference_queue.py \
-  --requests /absolute/path/representative-requests.jsonl \
-  --profiles /absolute/path/profile-4.json /absolute/path/profile-8.json \
-  --output /absolute/path/pilot-results.json \
-  --selected-profile /absolute/path/selected-profile.json
-```
-
-The pilot chooses the highest successful request throughput among candidates
-with no HTTP/envelope failures. It preserves the workload hash and all candidate
-measurements, not the request bodies. Repeat with reversed candidate order to
-assess warmup/cache effects. Separately compare low/high load extraction validity,
-output changes, failure/retry rates and downstream metrics. Envelope success is
-not proof of algorithmic correctness or batch invariance. Request replay does
-not tune native query worker concurrency: use end-to-end small canaries for that.
-Freeze the chosen profile before full runs and repeat the ordered gates.
-
-### Validate before full indexing
-
-1. Test profile binding, bounded scheduling, assembly order and failure
-   propagation. Distinguish completed tasks from successful source documents.
-2. Run relevant tests with the main and actual pinned native interpreters.
-   Verify original source hashes and checkout integrity before and after.
-3. Run fixed real-document pilots for changed producer paths. Record coverage,
-   elapsed time, errors, retries and achieved concurrency. Small synthetic
-   smoke builds establish integration, not saturation or an optimum.
-4. Retain each target's executed code, run ID, original costs and effective
-   settings. Source edits do not block dispatch; a changed measurement profile
-   still needs compatible new evidence.
-
-Local model work and dependent graph stages can leave the remote LLM idle.
-Validate query concurrency separately: native query workers can duplicate model
-and index memory. Indexing pilots do not establish downstream quality or query
-throughput.
-
-## Execution
-
-For a foreground target after its prerequisites are ready:
-
-```bash
-.venv/bin/python scripts/run_with_inference_queue.py \
-  --profile /absolute/path/selected-profile.json \
-  --metrics /absolute/path/fresh-queue-metrics.json \
-  -- bash scripts/run_paper_target.sh multihoprag prehop fresh-target-id
-```
-
-The wrapper waits for the child and owns the queue until it exits. Do not put a
-background-launch command inside this wrapper. For persistent campaigns instead
-export `RAG_EXECUTION_PROFILE` before creating a new plan and use the
-[paper campaign plan/launch workflow](RUNTIME_REQUIREMENTS.md#durable-campaign-ownership). The supervisor starts its own queue,
-passes the private route to native children, writes `inference-queue-*.json`
-after stages and on shutdown, drains outstanding requests before the next stage,
-and retains its existing sequential gate protocol.
-Use the same selected profile for later read-only admission/verification.
-
-Local locks reject concurrent queue owners and targets beyond the configured
-measurement limit. They cannot establish exclusivity against other users or remote clients.
-Queue metrics record request/error counts, peak active requests, summed upstream
-and queue seconds. Summed request seconds are not campaign wall time. Client
-connection/worker limits may restrict actual concurrency below the configured cap.
-
-## Final tables and measurement definitions
-
-MultiHop-RAG: Hits@4, Hits@10, MRR@10 and MAP@10 use its 2,255 answerable
-retrieval questions; 301 null questions remain separate diagnostics. Cost uses
-all 2,556 processed questions and all 609 source documents. MuSiQue uses Answer
-EM/F1 and Support precision/recall/F1 over 2,417 questions; cost normalizes by
-21,099 manifest source documents. Keep datasets in separate tables.
-
-- `amortized_indexing_cost`: existing index-pipeline wall seconds divided by
-  manifest source count, including internal waiting/retries and native work.
-  Existing adapter boundaries remain explicit; storage/reporting measurements
-  after the frozen timer are excluded. Record total time alongside s/doc.
-- `amortized_query_cost`: wall seconds from dispatching the complete query batch
-  through the last answer or terminal query failure, divided by the full query count. Internal
-  queues, retry time, and any interleaved evaluation/checkpoint work that delays
-  later answers are included. Initialization and trailing report generation are
-  excluded. This is inverse throughput, not mean response latency.
-- Incomplete or integrity-failed runs have null normalized performance values.
-  Fully executed batches include terminal query failures in measured query cost. Resumed query
-  runs retain separate segment timing but have null s/query and throughput:
-  they are not uninterrupted performance measurements. A fresh benchmark on the
-  same immutable index can supply query cost without repeating indexing.
-- Reused indexes retain the original complete index's measured time and profile;
-  source costs are not replaced by clone/reuse preparation time.
-- Keep request latency, queue waiting and stage shares separately labeled. A
-  single execution supplies no estimate of run-to-run performance variance.
-- Storage is method-labeled: Neo4j logical payload estimate versus physical
-  retrieval-file bytes. Do not rank them as equivalent physical database sizes.
-- Missing native token or monetary telemetry stays unavailable. Record failed
-  attempts and pilot budget separately from the successful target's cost.
-
-MuSiQue graph/refinement/selection controls reuse the same immutable index and
-profile. Fixed-candidate ranking/order controls remain separate analyses. Paired
-bootstrap uses 10,000 resamples and seed 42; query resampling does not measure
-LLM/index-build variability. Broader comparative latency claims require a
-separate, declared fixed-load measurement.
-
-## Index-only batch
-
-After testing a profile and validating all runtimes, select the prepared main
-environment and launch with a fresh campaign ID from the repository root:
+Prepare `.env`, full corpus/query manifests, and the required runtimes first.
+Use a fresh target ID and the selected main interpreter:
 
 ```bash
 export PYTHON_BIN=/absolute/path/to/prepared/main-venv/bin/python
 export UV_PROJECT_ENVIRONMENT=/absolute/path/to/prepared/main-venv
+
+"$PYTHON_BIN" scripts/run_with_inference_queue.py \
+  --profile "$PWD/configs/execution_profiles/index-shared-120.json" \
+  --metrics /absolute/path/fresh-queue-metrics.json \
+  -- bash scripts/run_paper_target.sh multihoprag prehop fresh-target-id
+```
+
+The wrapper owns the queue until its foreground child exits. Do not put a
+background launcher inside it. `run_paper_target.sh ... --check` performs
+readiness checks without launching the target. The real target uses fresh
+run-scoped storage and disables in-repository generation/embedding caches.
+It never invokes the global graph clear operation.
+
+A compatible completed index can be reused; a compatible partial deterministic
+benchmark can resume missing queries. Completed benchmark status is recorded
+without another final policy check. Existing incompatible artifacts are
+preserved and require a fresh run ID. Source and query provenance remain bound
+to the actual execution.
+
+## Index-only batch
+
+With a prepared environment and a selected profile:
+
+```bash
 export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/index-shared-120.json"
 "$PYTHON_BIN" scripts/index_matrix.py launch indexing-01
 ```
 
-The launcher returns a receipt with the supervisor PID, plan path and status
-path. The supervisor owns a nohup session, first performs a small native smoke build for each planned target (sixteen
-in the default matrix), then processes the
-complete corpora for targets whose smoke build passed. Failed targets are
-recorded independently; unrelated targets continue. The run writes
-`data/results/<campaign>/index-supervisor/{plan,status,queue-metrics}.json`
-and per-stage logs. Full source indexes use `<campaign>-index-<dataset>-<strategy>`
-run IDs, so a later exact-target benchmark can use their original indexing
-artifacts. Source/configuration differences from the original plan are recorded
-without blocking dispatch. Existing artifacts are never overwritten; a repaired
-retry uses a fresh run ID. The index-only runner does not retry failed attempts
-implicitly. A separate rolling controller may explicitly enqueue those retries.
+The supervisor owns a detached session and writes
+`data/results/<campaign>/index-supervisor/{plan,status,queue-metrics}.json`.
+It performs smoke builds and full indexes for the registry's seven methods on
+two datasets: 14 default targets. Smoke failure isolates that target; unrelated
+targets continue. It reports completion only when every planned full index
+succeeds and does not itself run full query benchmarks.
 
-Read the status file to verify the active `stage`, per-target outcomes and
-supervisor state. `smoke/...` identifies a bounded integration build;
-`index/...` identifies full-corpus indexing. `index_complete` describes one
-index. The supervisor reports `completed` only when every target in the frozen plan completes its full index;
-otherwise it reports `failed`. These process states are separate from the
-publication ledger in [RESULTS](RESULTS.md).
+Full index IDs use `<campaign>-index-<dataset>-<strategy>`. Failed attempts and
+original phase costs remain recorded. The index-only runner does not implicitly
+retry failed attempts; a rolling controller may enqueue explicit retries with
+fresh IDs. A later benchmark can use a version-2 index-reuse link to a complete
+index-supervisor receipt without repeating index construction.
 
-### Check progress and stalls
+## Persistent ownership and recovery
 
-Read `status.json` and the per-stage log paths it names. A fresh supervisor
-heartbeat proves that the supervisor is alive; it does not prove that the child
-is completing documents. Compare successive `Indexing progress` records and,
-for Prehop, the trace event timestamps. Check the modification time of `queue-metrics.json`: some runners write only
-at stage boundaries, while the active shared queue updates its snapshot
-periodically. A stale snapshot is not a live utilization reading.
+Read generated status and the named stage logs to identify the owning process
+and actual target outcome. A supervisor heartbeat proves liveness, not source
+completion. Stage-boundary queue snapshots are not live utilization readings.
+Low inference activity can reflect parsing, local models, graph writes, or
+other dependent stages; it does not by itself justify increasing concurrency.
 
-Low remote GPU utilization can be expected during parsing, local model work,
-graph writes, and final graph construction. If document counts and trace events
-also stop advancing, investigate the child instead of increasing the queue
-limit or extrapolating an ETA. Prehop HTTP trace writes must remain independent
-of the default executor used by embedding permit waiters; see the
-[tracing contract](ARCHITECTURE.md#prehop-tracing).
+Supervisors use identity-bound process ownership and retain status after the
+initiating shell exits. Cleanup targets their own verified descendants with
+TERM and a bounded wait, without KILL escalation. Surviving owned processes
+block restart. Reboot recovery and automatic chat notifications are not claimed.
 
-Preserve interrupted logs and traces as diagnostic evidence. A corrected build
-uses a fresh campaign ID and repeats validation; an interrupted index cannot
-supply continuous-run indexing cost. Keep current run IDs and status pointers
-in local run artifacts rather than copying them into this guide.
+`paper_campaign.py` and `run_paper_matrix.sh` also retain a separate legacy
+full-matrix evidence-ledger workflow. Its explicit prerequisites are distinct
+from the index-only and rolling dispatcher, and its legacy stage names do not
+change the registry's target count. It is not an automatic final validation step.
 
-The process continues after the initiating shell or task exits. This runner
-does not start the separate paper campaign monitor or send chat notifications,
-and it does not provide automatic reboot recovery. It writes
-`benchmark_admitted: false`; publication still requires the complete query
-benchmark and applicable independent review, live gates and admission checks.
+### Cancelling queued work
 
-## Documentation during an active campaign
+Supported clients attach `X-Prehop-Run-ID`. An authenticated
+`POST /v1/queue-cancel` for that ID removes waiting requests and rejects later
+requests for it. Forwarded requests keep their slot until the upstream response
+or timeout; cancellation does not prove the upstream model stopped inference.
+Use a new run ID when restarting. If queues are layered, their counters overlap
+and must not be summed as independent work.
 
-Source/configuration change gates were removed from index dispatch and the
-active rolling controller on 2026-09-09. Editing code no longer blocks the next
-job solely because its source digest differs from the original plan. Already
-running Python processes can retain loaded code and settings; edits are not a
-retroactive update of their execution. Preserve original evidence and use the
-new code/settings for newly launched jobs. Runtime integrity, source coverage,
-artifact hashes, semantic reuse checks and admission remain independent.
-The separate full paper-gate ledger still validates its own evidence and
-freshness; it is not the active rolling dispatcher.
+## Final tables and measurement definitions
 
-New paper generation requests omit the LLM seed and ignore stale ambient
-`RAG_LLM_SEED` values at the transport boundary. Dataset order, sampling and
-bootstrap seeds remain separate. Existing indexes keep their historical seed
-in provenance; changing the launch default does not rewrite them.
+Report datasets separately and state each metric's population.
 
-Record timestamped progress and provisional metrics in the
-[result evidence register](RESULTS.md). Keep the exact query
-population, metric denominator and admission state visible. Do not copy live
-counters into setup instructions, implementation contracts or manuscript claims.
-A verifier failure and a query failure are different states; completed query
-artifacts must remain available for verification after a verifier repair.
+| Dataset | Quality population and measures | Cost normalization |
+|---|---|---|
+| MultiHop-RAG | 2,255 non-null queries: official Hits@4/10, MRR@10, MAP@10; all 2,556 queries: official QA Accuracy | 609 source documents; 2,556 queries |
+| MuSiQue-Ans dev | 2,417 queries: official answer EM/F1 scoring; global paragraph Support P/R/F1 as a task adaptation | 21,099 prepared source files; 2,417 queries |
 
+The 301 MultiHop-RAG null questions are excluded from successful retrieval
+rows. Terminal failures have zero quality scores; failed null rows can alter
+the failure-inclusive retrieval denominator and must be reported separately.
+Global MuSiQue support must not be labelled as the official question-local
+candidate protocol. AllFacts and literal fact recall are additional diagnostics,
+not official leaderboard metrics.
 
-## LinearRAG query batches
+- **Index wall time:** original successful index-pipeline wall seconds, including
+  waiting, retries, and native work. `amortized_indexing_cost` divides this by
+  manifest source count. Post-timer capacity/reporting work is separate.
+- **Query batch wall time:** dispatch of the full batch through the last answer
+  or terminal failure. `amortized_query_cost` divides this by full query count.
+  It includes delays from queues, retries, and interleaved checkpoint work but
+  excludes initialization and trailing reports. It is inverse throughput.
+- **Query latency:** individual query response time, including applicable
+  worker/queue waits and synthesis. It is not batch wall time divided by queries.
+- **Benchmark segment wall time:** cumulative checkpointed execution segments,
+  including setup and checkpoint work. Resume retains each segment once.
+  It is distinct from the continuous query-batch timer.
+- **Reuse/clone preparation:** separate from original index construction.
+  Copying body vectors or a native index does not establish cold indexing cost.
+- **Storage:** Neo4j values are logical-payload estimates; file-backed values
+  are physical artifact bytes. Label the method and do not rank them as equal
+  physical database-size measurements.
 
-With benchmark concurrency eight, the adapter submits up to eight questions to
-the original batch QA API. This permits concurrent generation after the native
-retrieval phase. It does not change native parameters or promise continuous
-GPU saturation: MPNet and graph retrieval use local resources. The shared
-inference limit remains 120. Record actual batch sizes and report batch wall
-time/query separately from request latency. Restart interrupted serial runs
-under a fresh ID when switching to this execution path.
+Partial, integrity-failed, or resumed query batches do not supply uninterrupted
+throughput. Fully executed batches include terminal failures. Missing native
+usage and monetary costs remain unavailable. Preserve failed-attempt costs
+separately from successful index costs. Prehop tracing contributes to measured
+phase wall time; trace files are excluded from retrieval-index storage size.
 
-## Cancelling queued work
-
-Updated GFM-RAG QA and HopRAG generation/embedding clients attach
-`X-Prehop-Run-ID`. An authenticated `POST /v1/queue-cancel` with that header
-marks the run cancelled. Waiting requests are removed before forwarding; later
-requests for that ID are rejected. Disconnected waiting clients are also
-removed. Use a new run ID when restarting. Already forwarded requests retain
-their slot until the upstream response or timeout; cancellation does not prove
-that LiteLLM stopped inference.
-
-The current migration keeps the original queue serving MS GraphRAG and routes
-new MultiHop-RAG jobs through a cancellable front queue into that original
-queue. The original shared ceiling of 120 still bounds total upstream work.
-Old requests have no cancellation support and must drain. Front-queue and
-original-queue counters overlap and must not be added together.
+Paired quality analyses require matched query IDs and explicit method controls.
+Query bootstrap intervals do not capture generation/index-build variability or
+selection bias. Latency comparisons require a declared common serving/load
+window. The [ablation specification](PAPER_ABLATION_DESIGN.md) defines the two
+representation comparisons and their unequal initial search budgets.

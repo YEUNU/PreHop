@@ -102,12 +102,12 @@ def test_build_artifacts_cannot_be_placed_under_checkout(tmp_path):
 
 def test_alternate_runtime_home_is_shared_by_source_and_python(tmp_path, monkeypatch):
     from models.official_baseline_runtime import official_python, official_root
-    monkeypatch.delenv('RAG_HIPPORAG2_ROOT', raising=False)
-    monkeypatch.delenv('RAG_HIPPORAG2_PYTHON', raising=False)
+    monkeypatch.delenv('RAG_LIGHTRAG_ROOT', raising=False)
+    monkeypatch.delenv('RAG_LIGHTRAG_PYTHON', raising=False)
     home = tmp_path / 'fresh-runtime'
     monkeypatch.setenv('RAG_OFFICIAL_BASELINE_HOME', str(home))
-    assert official_root('hipporag2') == home / 'hipporag2/source'
-    assert official_python('hipporag2') == home / 'hipporag2/venv/bin/python'
+    assert official_root('lightrag') == home / 'lightrag/source'
+    assert official_python('lightrag') == home / 'lightrag/venv/bin/python'
 
 
 def test_relative_installer_paths_remain_absolute_without_resolving_venv_symlink(tmp_path, monkeypatch):

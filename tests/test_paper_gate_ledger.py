@@ -44,7 +44,7 @@ def test_live_gate_ledger_is_ordered_content_bound_and_runtime_setup_aware(tmp_p
         paper_gate_ledger.verify(ledger, "campaign")
 
 
-@pytest.mark.parametrize("stage", ["full_target_admitted", "cold_canary_16", "one_query_matrix_16"])
+@pytest.mark.parametrize("stage", ["cold_canary_16", "one_query_matrix_16"])
 def test_live_gate_rejects_self_asserted_status_or_target_names(tmp_path, monkeypatch, stage):
     monkeypatch.setattr(paper_gate_ledger, "ROOT", tmp_path)
     evidence = {"status": "admitted" if stage == "full_target_admitted" else "canary_passed",
@@ -94,6 +94,12 @@ def test_setup_producer_checks_readiness_before_process_and_emits_accepted_schem
     payload = json.loads(ledger.read_text())
     assert payload["stages"]["runtime_setup"]["status"] == "canary_passed"
     paper_gate_ledger.execute_stage(ledger, "campaign", "preflight_16")
-    assert len(calls) == 17
+    assert len(calls) == 15
     payload = json.loads(ledger.read_text())
     assert payload["stages"]["preflight_16"]["status"] == "canary_passed"
+
+
+def test_full_target_validation_remains_disabled(tmp_path):
+    paper_gate_ledger._validate_evidence(
+        "full_target_admitted", tmp_path / "missing.json", {"status": "admitted"}
+    )

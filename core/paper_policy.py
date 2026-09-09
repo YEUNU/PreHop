@@ -20,7 +20,7 @@ PAPER_EMBEDDING_MAX_INPUT_TOKENS = PAPER_TRANSPORT.embedding_max_input_tokens
 _METHOD_PREFIXES = {
     "hoprag": ("RAG_HOP_",),
     "ms_graphrag": ("RAG_MS_",), "lightrag": ("RAG_LIGHTRAG_",),
-    "hipporag2": ("RAG_HIPPORAG2_",), "gfm_rag": ("RAG_GFM_RAG_",),
+    "gfm_rag": ("RAG_GFM_RAG_",),
     "linear_rag": ("RAG_LINEAR_RAG_",),
 }
 

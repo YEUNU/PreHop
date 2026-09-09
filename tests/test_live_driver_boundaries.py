@@ -36,7 +36,7 @@ def _canonical_child(monkeypatch, strategy):
                        'RAG_LLM_SEED': '',
                        'EMBEDDING_QUERY_INSTRUCTION': '',
                        }.items():
-        if name == 'EMBEDDING_QUERY_INSTRUCTION' and strategy != 'hipporag2':
+        if name == 'EMBEDDING_QUERY_INSTRUCTION':
             monkeypatch.delenv(name, raising=False)
         else:
             monkeypatch.setenv(name, value)
@@ -45,8 +45,7 @@ def _canonical_child(monkeypatch, strategy):
     return _runtime_env(strategy)
 
 
-@pytest.mark.parametrize(('strategy', 'native_import'), [('hipporag2', 'import numpy as np\nfrom hipporag import HippoRAG\nfrom hipporag.embedding_model.OpenAI import OpenAIEmbeddingModel\nfrom hipporag.utils.config_utils import BaseConfig'),
-                                                        ('gfm_rag', 'from gfmrag import GFMRetriever\nfrom hydra import compose, initialize_config_module\nfrom hydra.utils import instantiate\nfrom langchain_openai import ChatOpenAI')])
+@pytest.mark.parametrize(('strategy', 'native_import'), [('gfm_rag', 'from gfmrag import GFMRetriever\nfrom hydra import compose, initialize_config_module\nfrom hydra.utils import instantiate\nfrom langchain_openai import ChatOpenAI')])
 def test_actual_pinned_imports_cannot_repopulate_synthetic_dotenv_aliases(tmp_path, monkeypatch, strategy, native_import):
     runtime = _runtime(strategy)
     staged = stage_source(runtime / 'source', get_strategy(strategy).revision, tmp_path / 'exports')
@@ -56,16 +55,15 @@ def test_actual_pinned_imports_cannot_repopulate_synthetic_dotenv_aliases(tmp_pa
                                   'OPENAI_PROVIDER=azure\nOPENAI_BASE_URL=http://bypass.invalid/v1\n'
                                   'RAG_INFERENCE_TIMEOUT=1\nEMBEDDING_QUERY_INSTRUCTION=poison\nRAG_LLM_SEED=41\n')
     environment = _canonical_child(monkeypatch, strategy)
-    import_root = staged / 'src' if strategy == 'hipporag2' else staged
-    module_name = 'hipporag' if strategy == 'hipporag2' else 'gfmrag'
+    import_root = staged
+    module_name = 'gfmrag'
     command = f'''
 import hashlib,os,sys
 from pathlib import Path
 sys.path[:0] = [{str(import_root)!r}, {str(ROOT)!r}]
 {native_import}
 assert Path(sys.modules[{module_name!r}].__file__).is_relative_to(Path({str(staged)!r}))
-# Hippo's LiteLLM dotenv is disabled by supported PRODUCTION mode; GFM
-# still runs its own dotenv loader, whose aliases must remain shielded.
+# GFM's native dotenv aliases must remain shielded.
 assert os.environ.get('PREHOP_TEST_DOTENV_MARKER')=={('loaded' if strategy == 'gfm_rag' else None)!r}
 import core.inference_transport as transport
 transport._approved_gateway_identity=lambda: hashlib.sha256(b"http://litellm.test/v1").hexdigest()
@@ -73,7 +71,7 @@ assert all(os.environ.get(name)=="" for name in transport._FORBIDDEN_AMBIENT_PRO
 effective=transport.InferenceTransport.resolve({strategy!r})
 assert effective.timeout_seconds==600
 assert effective.generation_seed==42
-assert effective.embedding_query_instruction==({strategy!r} != "hipporag2" and transport.PAPER_TRANSPORT.query_instruction or "")
+assert effective.embedding_query_instruction==transport.PAPER_TRANSPORT.query_instruction
 print("native_import_and_transport_ok")
 '''
     result = subprocess.run([str(runtime / 'venv/bin/python'), '-c', command], cwd=tmp_path,

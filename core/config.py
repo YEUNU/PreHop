@@ -4,6 +4,11 @@ from core.semantic_config import parse_strict_bool
 
 
 class RAGConfig:
+    PREHOP_ABLATION_PROFILE = os.environ.get("RAG_PREHOP_ABLATION_PROFILE", "").strip()
+    HOP_SEED_POLICY = os.environ.get("RAG_HOP_SEED_POLICY", "qplus").strip()
+    HOP_LINK_VARIANT = os.environ.get("RAG_HOP_LINK_VARIANT", "question").strip()
+    BODY_LINK_REFERENCE = os.environ.get("RAG_BODY_LINK_REFERENCE", "").strip()
+
     # --- Infrastructure (Actual ports identified) ---
     # Required external OpenAI-compatible endpoints. There is intentionally no
     # localhost fallback: missing configuration must fail before inference.
@@ -136,7 +141,8 @@ class RAGConfig:
     # ABLATION_Q_MINUS / ABLATION_Q_PLUS gate whether the Q-/Q+ channels
     # participate in indexing (embedding storage) and retrieval (channel use).
     # Disabling Q+ also disables offline HOP edge construction, since HOP
-    # selection is anchored on Q+ embeddings.
+    # selection is anchored on Q+ embeddings. The explicit body-link profile
+    # instead constructs body-to-body edges with both question channels off.
     ABLATION_Q_MINUS = parse_strict_bool(
         os.environ.get("RAG_ABLATION_Q_MINUS", "true"), name="RAG_ABLATION_Q_MINUS"
     )
@@ -177,6 +183,8 @@ class RAGConfig:
 
     @classmethod
     def validate(cls) -> None:
+        from core.prehop_ablation import validate_profile
+        validate_profile(cls)
         positive = {
             "RETRY_COUNT": cls.RETRY_COUNT,
             "MAX_CONCURRENT_LLM_CALLS": cls.MAX_CONCURRENT_LLM_CALLS,
