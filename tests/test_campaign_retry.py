@@ -82,7 +82,7 @@ def test_aggregate_uses_same_attempt_map_for_actual_file_references(previous, mo
     monkeypatch.setattr(gate, 'ready', lambda *a: None)
     recorded = []
     monkeypatch.setattr(gate, 'record', lambda ledger, name, path: recorded.append(json.loads(path.read_text())))
-    for dataset in ('multihoprag', 'musique'):
+    for dataset in ('multihoprag', 'hotpotqa'):
         for method in PRIMARY_STRATEGIES:
             attempt = 'a2' if f'cold/{dataset}/{method}' == failed else 'a1'
             path = c.ROOT / 'data/results/fixture/cold_v2' / attempt / dataset / method / 'evidence.json'

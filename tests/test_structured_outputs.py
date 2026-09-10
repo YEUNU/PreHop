@@ -12,13 +12,15 @@ from core.structured_outputs import StructuredOutputError, question_contract, ra
 from core.vllm_client import VLLMClient
 
 
-@pytest.mark.parametrize('stage', ['index', 'rewrite', 'refine'])
+@pytest.mark.parametrize('stage', ['index'])
 def test_question_contract_is_recursive_strict_and_preserves_empty_directions(stage):
     contract = question_contract(stage)
+    if stage == 'index':
+        with pytest.raises(StructuredOutputError):
+            contract.validate({'q_minus': ['a'] * 4, 'q_plus': []})
     assert contract.validate({'q_minus': [], 'q_plus': []}) == {'q_minus': [], 'q_plus': []}
     for invalid in ({'q_minus': [3], 'q_plus': []}, {'q_minus': [' '], 'q_plus': []},
-                    {'q_minus': [], 'q_plus': [], 'extra': True}, {'q_minus': []},
-                    {'q_minus': ['a'] * 4, 'q_plus': []}):
+                    {'q_minus': [], 'q_plus': [], 'extra': True}, {'q_minus': []}):
         with pytest.raises(StructuredOutputError):
             contract.validate(invalid)
 
@@ -79,7 +81,7 @@ async def test_real_sdk_strict_raw_response_has_no_repair_or_downgrade(monkeypat
         return await sdk.chat.completions.create(**params)
     monkeypatch.setattr(client, '_create_generation_request', create)
     token = begin()
-    contract = question_contract('rewrite')
+    contract = question_contract('index')
     try:
         if valid:
             assert await client.generate_json([{'role': 'user', 'content': 'rewrite'}], structured_contract=contract) == {'q_minus': ['Who?'], 'q_plus': []}
@@ -92,7 +94,6 @@ async def test_real_sdk_strict_raw_response_has_no_repair_or_downgrade(monkeypat
                 assert metadata['finish_reasons'] == [finish_reason]
                 assert metadata['effective_max_tokens'] == 512
                 assert metadata['requested_max_tokens'] is None
-                assert metadata['schema_name'] == 'prehop_rewrite_legacy_v1'
                 assert len(metadata['schema_sha256']) == 64
                 assert metadata['usage'] == {'prompt_tokens': 123, 'completion_tokens': 512,
                                              'total_tokens': 635, 'reasoning_tokens': 7}
@@ -110,22 +111,21 @@ def test_policy_and_cache_bind_structured_factory(monkeypatch):
     digest = structured_bundle_sha256()
     for strategy in ('prehop', 'naive'):
         assert canonical_query_policy(strategy)['structured_schema_bundle_sha256'] == digest
-        assert canonical_semantic_index_policy(strategy, 'musique')['structured_schema_bundle_sha256'] == digest
+        from core.structured_outputs import structured_index_bundle_sha256
+        assert canonical_semantic_index_policy(strategy, 'hotpotqa')['structured_schema_bundle_sha256'] == structured_index_bundle_sha256()
     before = _generation_signature('gemma-4-31b-it')
-    monkeypatch.setattr('core.structured_outputs.structured_bundle_sha256', lambda: 'different schema')
+    monkeypatch.setattr('core.structured_outputs.structured_index_bundle_sha256', lambda: 'different schema')
     assert _generation_signature('gemma-4-31b-it') != before
 
 
 @pytest.mark.asyncio
-async def test_four_production_paths_supply_their_contract_and_valid_json_examples(monkeypatch):
+async def test_two_production_paths_supply_their_contract_and_valid_json_examples(monkeypatch):
     from unittest.mock import AsyncMock
 
     from core.config import RAGConfig
     from models.prehop.graphrag import GraphRAG
 
     monkeypatch.setattr(RAGConfig, 'QUESTION_SCHEMA', 'legacy')
-    monkeypatch.setattr(RAGConfig, 'QUERY_REWRITE_VARIANT', 'role_aligned_evidence_iterative')
-    monkeypatch.setattr(RAGConfig, 'QUERY_REWRITE_MAX_WORDS', 0)
     rag = GraphRAG(strategy='prehop')
     rag.llm = AsyncMock()
     rag.indexing_llm = AsyncMock()
@@ -136,10 +136,6 @@ async def test_four_production_paths_supply_their_contract_and_valid_json_exampl
     # Native format example is a JSON object, not its escaped template spelling.
     assert '{{' not in call.args[0][-1]['content']
     rag.llm.generate_json.return_value = {'q_minus': ['Who visited?'], 'q_plus': []}
-    await rag._rewrite_query_roles('Who visited?')
-    assert rag.llm.generate_json.await_args.kwargs['structured_contract'].name == 'prehop_rewrite_legacy_v1'
-    await rag._refine_query_roles('Who visited?', 'Ada visited.', [])
-    assert rag.llm.generate_json.await_args.kwargs['structured_contract'].name == 'prehop_refine_legacy_v1'
     rag.llm.generate_json.return_value = {'ranking': ['C000']}
     await rag._role_body_list_ranking('Who visited?', [{'id': 'Ada', 'text': 'Ada visited.'}], 1)
     contract = rag.llm.generate_json.await_args.kwargs['structured_contract']
@@ -149,7 +145,7 @@ async def test_four_production_paths_supply_their_contract_and_valid_json_exampl
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('index_schema', ['legacy', 'grounded_v1', 'linked_v2'])
-async def test_actual_four_paths_through_typed_transport_and_sdk(monkeypatch, index_schema):
+async def test_actual_two_paths_through_typed_transport_and_sdk(monkeypatch, index_schema):
     import hashlib
     import os
 
@@ -170,8 +166,6 @@ async def test_actual_four_paths_through_typed_transport_and_sdk(monkeypatch, in
                         lambda: hashlib.sha256(b'http://litellm.test/v1').hexdigest())
     monkeypatch.setattr(RAGConfig, 'LLM_SEED', None)  # module import preceded late environment resolution
     monkeypatch.setattr(RAGConfig, 'QUESTION_SCHEMA', index_schema)
-    monkeypatch.setattr(RAGConfig, 'QUERY_REWRITE_VARIANT', 'role_aligned_evidence_iterative')
-    monkeypatch.setattr(RAGConfig, 'QUERY_REWRITE_MAX_WORDS', 0)
     requests = []
     def respond(request):
         payload = json.loads(request.content)
@@ -189,14 +183,12 @@ async def test_actual_four_paths_through_typed_transport_and_sdk(monkeypatch, in
     rag.llm = rag.indexing_llm = client
     try:
         await rag.extract_hoprag_queries('Ada visited London.', 'Ada')
-        await rag._rewrite_query_roles('Who visited?')
-        await rag._refine_query_roles('Who visited?', 'Ada visited.', [])
         await rag._role_body_list_ranking('Who visited?', [{'id': 'Ada', 'text': 'Ada visited.'}], 1)
         assert [p['response_format']['json_schema']['name'] for p in requests] == [
-            f'prehop_index_{index_schema}_v1', 'prehop_rewrite_legacy_v1', 'prehop_refine_legacy_v1', 'prehop_ranking_v1']
+            f'prehop_index_{index_schema}_v1', 'prehop_ranking_v1']
         assert all('seed' not in p and p['model'] == 'gemma-4-31b-it' for p in requests)
         from core.generation_profiles import request_settings
-        for request, consumer in zip(requests, ('question_index', 'rewrite', 'refine', 'ranking'), strict=True):
+        for request, consumer in zip(requests, ('question_index', 'ranking'), strict=True):
             assert all(request[key] == value for key, value in request_settings(consumer).items())
         assert all(p['response_format']['json_schema']['strict'] is True for p in requests)
         assert await client.generate_response([{'role': 'user', 'content': 'answer'}]) == 'Plain answer'
@@ -270,7 +262,7 @@ def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity
     from core import structured_outputs
     from models.prehop.indexing.chunking import _generation_signature
     assert structured_outputs.PREHOP_STRUCTURED_PROFILE == 'prehop-json-schema-v3'
-    assert canonical_semantic_index_policy('prehop', 'musique')['method_contract'] == 'paper-method-v4'
+    assert canonical_semantic_index_policy('prehop', 'hotpotqa')['method_contract'] == 'paper-method-v4'
     current = structured_bundle_sha256()
     cache = _generation_signature('gemma-4-31b-it')
     monkeypatch.setattr(structured_outputs, 'PREHOP_STRUCTURED_PROFILE', 'prehop-json-schema-v1')
@@ -281,7 +273,6 @@ def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity
 def test_every_materialized_schema_uses_reviewed_wire_keywords():
     from core.structured_outputs import validate_wire_schema
     contracts = [question_contract('index', mode) for mode in ('legacy', 'grounded_v1', 'linked_v2')]
-    contracts += [question_contract(stage) for stage in ('rewrite', 'refine')]
     contracts += [ranking_contract(['A'], 1), ranking_contract(['A', 'B', 'C'], 2)]
     for contract in contracts:
         schema = contract.response_format()['json_schema']['schema']

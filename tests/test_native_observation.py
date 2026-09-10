@@ -46,8 +46,6 @@ def test_native_exception_is_rethrown_once_and_does_not_override_native_fallback
     with pytest.raises(ValueError): validate_audit_evidence(evidence)
 
 
-
-
 @pytest.mark.parametrize('asynchronous', [False, True])
 @pytest.mark.asyncio
 async def test_ms_observer_keeps_preamble_truncation_and_cache(monkeypatch, tmp_path, asynchronous):

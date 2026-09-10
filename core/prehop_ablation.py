@@ -17,8 +17,6 @@ COMMON = {
     "HOP_EDGE_FILTER": "none",
     "QPLUS_HOP_ACTIVATION": "owner",
     "HOP_SEMANTIC_VARIANT": "body_only",
-    "QUERY_REWRITE_VARIANT": "none",
-    "QUERY_REFINEMENT_MAX_ROUNDS": 0,
     "CONTINUATION_EDGES_ENABLED": False,
     "QUESTION_SCHEMA": "legacy",
     "SOURCE_SELECTION_VARIANT": "role_body_list_ranking",
@@ -31,6 +29,11 @@ COMMON = {
 
 def validate_profile(config):
     profile = config.PREHOP_ABLATION_PROFILE
+    timing = getattr(config, "CONNECTION_TIMING_MODE", "")
+    if timing and (timing not in {"online", "precomputed"} or profile != "question_full"):
+        raise ValueError("Connection timing requires question_full and an explicit online/precomputed arm")
+    if timing and not Path(config.CONNECTION_TIMING_STORE).is_file():
+        raise ValueError("Both timing arms require the same completed precomputed-link snapshot")
     if not profile:
         if config.HOP_LINK_VARIANT != "question" or config.HOP_SEED_POLICY != "qplus":
             raise ValueError("New representation controls require RAG_PREHOP_ABLATION_PROFILE")
@@ -81,12 +84,16 @@ def ablation_identity(config=None):
         "hop_link_variant": config.HOP_LINK_VARIANT,
         "comparison_scope": "ablation_only",
     }
+    if getattr(config, "CONNECTION_TIMING_MODE", ""):
+        from core.admission import sha256_file
+        identity.update(connection_timing_contract="prehop-connection-timing-v1",
+                        connection_timing_arm=config.CONNECTION_TIMING_MODE,
+                        connection_timing_store_sha256=sha256_file(Path(config.CONNECTION_TIMING_STORE)),
+                        destination_memoization=False)
     if config.HOP_LINK_VARIANT == "body":
-        import hashlib
+        from core.admission import sha256_file
 
-        identity["body_link_reference_sha256"] = hashlib.sha256(
-            Path(config.BODY_LINK_REFERENCE).read_bytes()
-        ).hexdigest()
+        identity["body_link_reference_sha256"] = sha256_file(Path(config.BODY_LINK_REFERENCE))
     return identity
 
 

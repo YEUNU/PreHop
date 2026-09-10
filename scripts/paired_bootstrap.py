@@ -1,5 +1,5 @@
 """Query-level paired bootstrap: prehop vs each baseline, on the active
-multi-hop datasets (MultiHop-RAG / MuSiQue).
+multi-hop datasets (MultiHop-RAG / HotpotQA).
 
 This script pairs per-query scores by stable query ID, computes the paired
 difference (prehop - baseline) per query, and bootstraps the mean diff to a
@@ -9,11 +9,11 @@ difference (prehop - baseline) per query, and bootstraps the mean diff to a
   Pass ``--include-judge`` to emit a clearly labelled supplemental analysis;
   judged rows only (sentinel -1 dropped), and hallucination is lower-is-better.
 - Dataset-specific metrics are selected from the result artifact: official
-  MultiHop-RAG ranking/custom fact recall or MuSiQue answer/support metrics.
+  MultiHop-RAG ranking/custom fact recall or HotpotQA answer/support metrics.
   A query with no gold evidence (e.g. MultiHop-RAG's null_query category) is
   excluded from retrieval comparisons. Gold-lessness is detected from the row's
   `expected_sources` (docs/facts) rather than a dataset-specific category
-  name, so this works for the active datasets (every MuSiQue query carries gold
+  name, so this works for the active datasets (every HotpotQA query carries gold
   evidence, so the exclusion never fires there). Terminal query failures count
   as zero for primary quality metrics. Unjudged supplemental metrics remain excluded.
 
@@ -54,24 +54,14 @@ MULTIHOPRAG_METRICS = [
     "official_hits@10",
     "evidence_fact_recall@4",
     "evidence_fact_recall@10",
+    "exact_fact_recall@10",
+    "all_facts@10",
     "evidence_doc_precision",
     "evidence_doc_recall",
     "evidence_doc_f1",
 ]
-MUSIQUE_METRICS = [
-    "answer_em",
-    "answer_f1",
-    "official_answer_em",
-    "official_answer_f1",
-    "paragraph_support_precision",
-    "paragraph_support_recall",
-    "paragraph_support_f1",
-    "evidence_doc_precision",
-    "evidence_doc_recall",
-    "evidence_doc_f1",
-]
-RETRIEVAL_METRICS = set(MULTIHOPRAG_METRICS[3:] + MUSIQUE_METRICS[4:])
-LOWER_IS_BETTER = {"hallucination"}
+RETRIEVAL_METRICS = set(MULTIHOPRAG_METRICS[3:])
+LOWER_IS_BETTER = {"hallucination", "latency"}
 N_BOOT = 10000
 SEED = 42
 
@@ -195,7 +185,7 @@ def _validate_artifact_pair(
 
 def _has_gold(row: dict) -> bool:
     expected = row.get("expected_sources") or {}
-    return bool(expected.get("docs")) or bool(expected.get("facts")) or bool(expected.get("paragraph_ids"))
+    return bool(expected.get("docs")) or bool(expected.get("facts")) or bool(expected.get("supporting_facts"))
 
 
 def _paired(prehop: dict[str, dict], base: dict[str, dict], metric: str) -> np.ndarray:
@@ -216,7 +206,7 @@ def _paired(prehop: dict[str, dict], base: dict[str, dict], metric: str) -> np.n
         except (TypeError, ValueError):
             continue
         # Every negative value is an ineligible sentinel, irrespective of
-        # metric family.  This prevents MuSiQue's N/A retrieval fields from
+        # metric family.  This prevents HotpotQA's N/A retrieval fields from
         # becoming a spurious all-zero paired sample.
         if pv < 0 or bv < 0:
             continue
@@ -330,9 +320,10 @@ def main() -> None:
 
     dataset_marker = _dataset_marker(treatment_artifact, corpus_tag)
     if dataset_marker == "multihoprag":
-        metrics = MULTIHOPRAG_METRICS
-    elif dataset_marker == "musique":
-        metrics = MUSIQUE_METRICS
+        metrics = MULTIHOPRAG_METRICS + ["latency"]
+    elif dataset_marker == "hotpotqa":
+        from utils.hotpotqa import METRICS
+        metrics = ["hotpot_" + key for key in METRICS] + ["latency"]
     else:
         # Unknown artifacts are still safely processed, but no dataset-only
         # metric is silently claimed to be applicable.
@@ -420,8 +411,6 @@ def _plot(results: dict, metrics: list[str], fig_path: Path, treatment_strat: st
         "naive": "#888888",
         "hoprag": "#4C72B0",
         "ms_graphrag": "#DD8452",
-        "browsenet": "#55A868",
-        "proprag": "#C44E52",
     }
     ncol = len(metrics)
     fig, axes = plt.subplots(1, ncol, figsize=(3.0 * ncol, 3.4), sharey=True)

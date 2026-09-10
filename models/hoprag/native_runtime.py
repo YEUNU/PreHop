@@ -1,5 +1,6 @@
 """Infrastructure bindings for the unchanged, pinned upstream HopRAG runtime."""
 from __future__ import annotations
+
 import contextlib
 import contextvars
 import importlib
@@ -41,7 +42,6 @@ def observe_usage(kind,payload):
         else:_usage['token_usage_complete']=False
         if isinstance(response_cost,(int,float)):_usage['reported_cost']+=response_cost
         else:_usage['cost_complete']=False
-
 
 
 def validate_runtime():
@@ -124,9 +124,9 @@ def setup(corpus_tag):
         if _setup_tag != corpus_tag:raise RuntimeError('HopRAG runtime cannot mix corpus namespaces')
         return
     validate_runtime()
-    from core.inference_transport import InferenceTransport
     from core.execution_profile import require_queue
     from core.index_namespace import index_namespace
+    from core.inference_transport import InferenceTransport
     transport=InferenceTransport.resolve('hoprag');require_queue('hoprag')
     _install_import_bridges()
     sys.path.insert(0,str(UPSTREAM))
@@ -164,8 +164,8 @@ def setup(corpus_tag):
             for old,new in sorted(replacements.items(),key=lambda x:-len(x[0])):value=value.replace(old,new)
             setattr(config,name,value)
     tool=importlib.import_module('tool')
-    from openai import OpenAI
     import httpx
+    from openai import OpenAI
     class ObservedOpenAI(OpenAI):
         def __init__(self,*args,**kwargs):
             kwargs['default_headers']={**kwargs.get('default_headers', {}), 'X-Prehop-Run-ID': os.environ.get('RAG_BENCHMARK_TIMESTAMP', '')}

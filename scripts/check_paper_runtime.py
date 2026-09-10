@@ -179,17 +179,29 @@ def _check_approved_constraints(requirement: dict[str, Any]) -> None:
 
 
 def check(strategy: str, dataset: str | None = None) -> None:
+    if strategy == "hoprag":
+        from core.runtime_requirements import method_main_python
+        executable = method_main_python(strategy)
+        prefix = Path(executable).parent.parent
+        if Path(sys.prefix).resolve() != prefix.resolve():
+            if dataset not in {"multihoprag", "hotpotqa"}:
+                raise RuntimeError("paper runtime preflight requires an explicit supported dataset")
+            environment = os.environ.copy()
+            environment.update(PYTHON_BIN=executable, UV_PROJECT_ENVIRONMENT=str(prefix))
+            subprocess.run([executable, str(Path(__file__).resolve()), "--strategy", strategy, "--dataset", dataset],
+                           cwd=ROOT, env=environment, check=True)
+            return
     spec = get_strategy(strategy)
     requirements = load_runtime_requirements()
     requirement = requirements.get(strategy)
     from core.paper_policy import validate_paper_semantic_environment
 
-    if dataset not in {"multihoprag", "musique"}:
+    if dataset not in {"multihoprag", "hotpotqa"}:
         raise RuntimeError("paper runtime preflight requires an explicit supported dataset")
     validate_paper_semantic_environment(strategy, dataset)
     if strategy == 'hoprag':
-        from models.hoprag.native_runtime import validate_runtime
-        validate_runtime()
+        from models.hoprag.native_runtime import validate_runtime as validate_hoprag_runtime
+        validate_hoprag_runtime()
     else:
         _check_main_runtime()
     if strategy in {"prehop", "naive"}:
@@ -266,21 +278,11 @@ def check(strategy: str, dataset: str | None = None) -> None:
         if not path.is_file() or _sha256(path) != _required_sha(str(sha_env)):
             raise RuntimeError(f"{strategy} {filename} is missing or has the wrong digest")
 
-    if strategy == "youtu_graphrag":
-        from core.paper_policy import approved_youtu_schema
-
-        if dataset not in {"multihoprag", "musique"}:
-            raise RuntimeError("Youtu preflight requires a supported dataset for schema approval")
-        schema = approved_youtu_schema(dataset)
-        path = official_root(strategy) / schema["path"]
-        if not path.is_file() or _sha256(path) != schema["sha256"]:
-            raise RuntimeError(f"{strategy} checkout does not contain the approved schema for {dataset}")
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--strategy", choices=PRIMARY_STRATEGIES, required=True)
-    parser.add_argument("--dataset", choices=("multihoprag", "musique"))
+    parser.add_argument("--dataset", choices=("multihoprag", "hotpotqa"))
     args = parser.parse_args()
     _load_runner_environment()
     _check_transport(args.strategy)

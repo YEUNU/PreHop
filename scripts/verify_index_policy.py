@@ -30,7 +30,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("path", type=Path)
     parser.add_argument("strategy", choices=PRIMARY_STRATEGIES)
-    parser.add_argument("dataset", choices=("multihoprag", "musique"))
+    parser.add_argument("dataset", choices=("multihoprag", "hotpotqa"))
     parser.add_argument("run_id")
     args = parser.parse_args()
     try:

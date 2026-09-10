@@ -12,6 +12,7 @@ If any of these break, the README and implementation drift apart.
 """
 
 import importlib
+import os
 import re
 from pathlib import Path
 
@@ -28,15 +29,11 @@ _IGNORED_SOURCE_DIRS = {
 
 
 def _all_python_sources():
-    for path in REPO_ROOT.rglob("*.py"):
-        relative_parts = path.relative_to(REPO_ROOT).parts
-        if any(part in _IGNORED_SOURCE_DIRS for part in relative_parts[:-1]):
-            continue
-        if path.name == "test_smoke.py":
-            # Skip self — this file legitimately mentions hyporeflect /
-            # AgentService while testing their absence.
-            continue
-        yield path
+    for root, dirs, files in os.walk(REPO_ROOT):
+        dirs[:] = [name for name in dirs if name not in _IGNORED_SOURCE_DIRS]
+        for name in files:
+            if name.endswith('.py') and name != 'test_smoke.py':
+                yield Path(root) / name
 
 
 # ---------------------------------------------------------------------------

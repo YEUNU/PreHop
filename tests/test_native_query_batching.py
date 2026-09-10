@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from core.benchmark_failures import BenchmarkIntegrityError
-from models.external_research.query_batching import NativeQueryBatcher
 from models.external_research.drivers.linear_rag import LinearRAGDriver
+from models.external_research.query_batching import NativeQueryBatcher
 
 
 def test_coalesces_duplicate_questions_and_flushes_partial_batch(monkeypatch):
@@ -59,8 +59,8 @@ def test_pinned_native_qa_runs_eight_inferences_concurrently():
     """Execute the pinned method itself with deterministic transport/retrieval doubles."""
     import ast
     import threading
-    from pathlib import Path
     from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
     path = Path('data/official_baselines/linear_rag/source/src/LinearRAG.py')
     if not path.exists():
         pytest.skip('pinned native checkout not installed')
@@ -68,7 +68,7 @@ def test_pinned_native_qa_runs_eight_inferences_concurrently():
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'LinearRAG')
     method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == 'qa')
     scope = {'ThreadPoolExecutor': ThreadPoolExecutor, 'tqdm': lambda iterable, **kwargs: iterable}
-    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), scope)
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), scope)  # noqa: S102 - execute the pinned upstream function for parity testing
     barrier = threading.Barrier(8)
     def infer(messages):
         barrier.wait(timeout=5)
@@ -118,6 +118,7 @@ def test_lightrag_native_async_queries_overlap_and_keep_individual_failure():
 
 def test_gfm_native_answer_pool_preserves_retrieval_seriality_and_order():
     import threading
+
     from models.external_research.drivers.gfm_rag import GFMRAGDriver
     driver = GFMRAGDriver.__new__(GFMRAGDriver)
     driver.native_qa_max_workers = 5

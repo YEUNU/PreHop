@@ -68,13 +68,13 @@ def build_steps(campaign: str, attempt: str, python: str, target_attempts: dict 
         steps.append({'id': name, 'argv': [python, 'scripts/paper_gate_ledger.py', 'execute', '--ledger', ledger,
                                           '--campaign', campaign, '--stage', name]})
     for method in PRIMARY_STRATEGIES:
-        for dataset in ('multihoprag', 'musique'):
+        for dataset in ('multihoprag', 'hotpotqa'):
             steps.append({'id': f'cold/{dataset}/{method}', 'argv': [python, 'scripts/paper_cold_canary.py', campaign,
                           method, dataset, '--attempt', selected_attempt(attempt, target_attempts, f'cold/{dataset}/{method}')]})
     steps.extend([{'id': 'cold_canary_16', 'argv': [*stage, 'cold-aggregate', campaign, '--attempt', attempt, *matrix_args]},
                   {'id': 'resume_stale_rejection', 'argv': [*stage, 'recovery', campaign, '--attempt', attempt]}])
     for method in PRIMARY_STRATEGIES:
-        for dataset in ('multihoprag', 'musique'):
+        for dataset in ('multihoprag', 'hotpotqa'):
             steps.append({'id': f'one-query/{dataset}/{method}', 'argv': [*stage, 'one-query', campaign,
                           '--strategy', method, '--dataset', dataset, '--attempt', selected_attempt(attempt, target_attempts, f'one-query/{dataset}/{method}')]})
     steps.extend([{'id': 'one_query_matrix_16', 'argv': [*stage, 'one-query-aggregate', campaign, '--attempt', attempt, *matrix_args]},
@@ -85,14 +85,12 @@ def build_steps(campaign: str, attempt: str, python: str, target_attempts: dict 
 
 
 def check_plan(plan: dict) -> None:
-    from scripts.paper_gate_ledger import _context
     from scripts.paper_stage_runner import selected_python_environment, validate_name
     validate_name(plan['campaign'])
     validate_name(plan['attempt'])
     selected = selected_python_environment()
     if plan.get('python') != selected['PYTHON_BIN'] or plan.get('python_prefix') != selected['UV_PROJECT_ENVIRONMENT']:
         raise RuntimeError('Campaign selected main runtime changed')
-    context = _context()
     # A plan records its original context; new stages record their current context.
     # Source/configuration edits do not block dispatch.
     if plan.get('steps') != build_steps(plan['campaign'], plan['attempt'], plan['python'], plan.get('target_attempts')):
@@ -364,7 +362,7 @@ def admission_statuses(campaign: str) -> list[dict]:
     from scripts.paper_stage_runner import reference
     statuses = []
     for method in PRIMARY_STRATEGIES:
-        for dataset in ('multihoprag', 'musique'):
+        for dataset in ('multihoprag', 'hotpotqa'):
             path = ROOT / 'data/results' / f'{campaign}-{dataset}-{method}' / 'admission.json'
             row = {'target': f'{dataset}/{method}', 'status': 'missing'}
             if path.is_file():
@@ -387,7 +385,7 @@ def final_admissions(campaign: str) -> list[dict]:
 def checkpoint_progress(campaign: str) -> list[dict]:
     """Read only actual benchmark checkpoints; indexing progress remains in logs."""
     from core.strategy_registry import PRIMARY_STRATEGIES
-    names = {f'{method}_{dataset}.json' for method in PRIMARY_STRATEGIES for dataset in ('multihoprag', 'musique')}
+    names = {f'{method}_{dataset}.json' for method in PRIMARY_STRATEGIES for dataset in ('multihoprag', 'hotpotqa')}
     rows = []
     for folder in (ROOT / 'data/results').glob(campaign + '-*'):
         for path in folder.rglob('*.json'):

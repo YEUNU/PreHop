@@ -54,7 +54,7 @@ def linked(tmp_path, monkeypatch):
     monkeypatch.setattr(reuse, 'current_corpus_identity', lambda _: {'fingerprint': 'complete'})
     config = {'method': 'canonical', 'schema': 'v3'}
     monkeypatch.setattr(paper_compatibility, 'target_configuration', lambda *_: dict(config))
-    strategy, dataset, source, target = 'lightrag', 'musique', 'source', 'campaign-musique-lightrag'
+    strategy, dataset, source, target = 'lightrag', 'hotpotqa', 'source', 'campaign-hotpotqa-lightrag'
     spec = get_strategy(strategy)
     def configure(method, corpus, run):
         assert (method, corpus) == (strategy, dataset)
@@ -69,7 +69,7 @@ def linked(tmp_path, monkeypatch):
     (original / dataset / 'index_snapshot_metadata.json').write_text('{"source_path":"unchanged"}')
     clone = tmp_path / spec.output_default / 'runs' / target
     shutil.copytree(original, clone)
-    stats = {'path': 'data/index_stats/lightrag_musique_source.json', 'sha256': 'original-raw'}
+    stats = {'path': 'data/index_stats/lightrag_hotpotqa_source.json', 'sha256': 'original-raw'}
     index = {'run_id': source, 'native_index_stats': stats}
     raw = {'timing_seconds': {'total_elapsed_seconds': 1234, 'official_pipeline_seconds': 1200}}
     monkeypatch.setattr(reuse, 'source_evidence', lambda *_: (index, raw))
@@ -106,7 +106,7 @@ def test_validated_clone_keeps_source_identity_and_fresh_result(linked):
     reuse.validate(path, link['target_run_id'], link['strategy'], link['dataset'], pristine_clone=True)
     assert os.environ['RAG_RUN_ID'] == 'source'
     assert os.environ['RAG_BENCHMARK_TIMESTAMP'] == link['target_run_id']
-    assert os.environ['RAG_INDEX_NAMESPACE'] == 'musique_source'
+    assert os.environ['RAG_INDEX_NAMESPACE'] == 'hotpotqa_source'
     assert reuse.inventory(original) == before == reuse.inventory(clone)
     # Native query cache writes belong to the clone; original snapshots stay valid.
     (clone / 'query.cache').write_text('new query')
@@ -136,7 +136,7 @@ def test_reuse_rejects_stale_identity_or_source_mutation(linked, mutation):
         (clone / 'escape').symlink_to(original)
     path.write_text(json.dumps(link))
     with pytest.raises(RuntimeError):
-        reuse.validate(path, 'campaign-musique-lightrag', 'lightrag', 'musique')
+        reuse.validate(path, 'campaign-hotpotqa-lightrag', 'lightrag', 'hotpotqa')
 
 
 def test_content_reference_rejects_changed_bytes(tmp_path, monkeypatch):
@@ -177,7 +177,7 @@ def test_prepare_copies_native_bytes_after_full_gate_and_preserves_source(linked
     calls = []
     monkeypatch.setattr(paper_gate_ledger, 'verify', lambda path, campaign: calls.append((path, campaign)))
     monkeypatch.setattr(paper_cold_canary, 'ROOT', reuse.ROOT)
-    prepared = reuse.prepare('campaign', 'lightrag', 'musique')
+    prepared = reuse.prepare('campaign', 'lightrag', 'hotpotqa')
     assert calls == [(campaign_ledger, 'campaign')]
     assert prepared == path
     assert reuse.inventory(original) == before == reuse.inventory(clone)
@@ -187,9 +187,9 @@ def test_prepare_copies_native_bytes_after_full_gate_and_preserves_source(linked
     assert produced['clone']['operation'] == 'byte_identical_copy_without_metadata_rebinding'
     # Later live-ledger advancement cannot invalidate the immutable source snapshot.
     campaign_ledger.write_text(json.dumps({**ledger, 'status': 'admitted'}))
-    reuse.validate(prepared, link['target_run_id'], 'lightrag', 'musique')
+    reuse.validate(prepared, link['target_run_id'], 'lightrag', 'hotpotqa')
     with pytest.raises(FileExistsError):
-        reuse.prepare('campaign', 'lightrag', 'musique')
+        reuse.prepare('campaign', 'lightrag', 'hotpotqa')
 
 
 def test_partial_canary_cannot_become_full_result_even_with_valid_reuse(monkeypatch, tmp_path):
@@ -200,14 +200,14 @@ def test_partial_canary_cannot_become_full_result_even_with_valid_reuse(monkeypa
     monkeypatch.setattr(reuse, 'bound', lambda _: (tmp_path / 'link.json', {}))
     monkeypatch.setattr(reuse, 'validate', lambda *_: {'source_run_id': 'source'})
     monkeypatch.setattr(reuse, 'validate_costs', lambda *_: None)
-    payload = {'strategy': 'naive', 'corpus_tag': 'musique', 'status': 'completed_unadmitted',
+    payload = {'strategy': 'naive', 'corpus_tag': 'multihoprag', 'status': 'completed_unadmitted',
                'evaluation_scope': 'full_benchmark', 'details': [], 'index_reuse': {},
                'evaluated_queries_count': 1, 'queries_count': 1, 'total_queries': 1}
     errors = verifier._validate_artifact(
-        tmp_path.relative_to(tmp_path) / 'data/results/fresh/naive/musique/seed_42/naive_musique.json',
-        payload, dataset='musique', strategy='naive', expected_count=2417)
-    assert any('queries_count=1, expected 2417' in error for error in errors)
-    assert any('details has 0 rows, expected 2417' in error for error in errors)
+        tmp_path.relative_to(tmp_path) / 'data/results/fresh/naive/multihoprag/seed_42/naive_multihoprag.json',
+        payload, dataset='multihoprag', strategy='naive', expected_count=2556)
+    assert any('queries_count=1, expected 2556' in error for error in errors)
+    assert any('details has 0 rows, expected 2556' in error for error in errors)
 
 
 def test_fresh_interpreter_binds_cli_and_all_native_query_paths_before_import(tmp_path, monkeypatch):
@@ -226,9 +226,9 @@ clone=str(Path(spec.output_default)/'runs'/target)
 path=reuse.ROOT/'data/results'/target/'index_link.json'
 path.parent.mkdir(parents=True)
 path.write_text(json.dumps({'target_run_id':target,'source_run_id':'original-index',
-    'strategy':method,'dataset':'musique','clone':{'query_output_root':clone}}))
+    'strategy':method,'dataset':'hotpotqa','clone':{'query_output_root':clone}}))
 os.environ.update(RAG_JUDGE_ENABLED='true',RAG_JUDGE_BATCH='true')
-reuse.bootstrap_benchmark(path,target,method,'musique')
+reuse.bootstrap_benchmark(path,target,method,'hotpotqa')
 assert 'core.config' not in sys.modules
 from cli.benchmark import RAGConfig
 assert RAGConfig.JUDGE_ENABLED is False and RAGConfig.JUDGE_BATCH is False
@@ -236,13 +236,13 @@ assert RAGConfig.LLM_SEED == spec.paper_generation_seed
 assert int(os.environ['RAG_BENCHMARK_CONCURRENCY']) == PAPER_TRANSPORT.benchmark_concurrency
 assert os.environ['RAG_RUN_ID']=='original-index'
 assert os.environ['RAG_BENCHMARK_TIMESTAMP']==target
-expected=(reuse.ROOT/clone/'musique').resolve()
+expected=(reuse.ROOT/clone/'hotpotqa').resolve()
 if method=='ms_graphrag':
     from models.ms_graphrag.official_indexer import output_dir_for
-    assert output_dir_for('musique')==expected
+    assert output_dir_for('hotpotqa')==expected
 else:
     from models.official_baseline_runtime import _command
-    command=_command(method,'musique','serve')
+    command=_command(method,'hotpotqa','serve')
     assert command[command.index('--output-dir')+1]==str(expected)
 print('query_path_and_static_config_passed')
 '''
@@ -262,8 +262,8 @@ print('query_path_and_static_config_passed')
 
 @pytest.mark.parametrize('mutation', ['none','failed','smoke','digest','coverage','cost'])
 def test_completed_receipt_reuse_requires_full_bound_success(tmp_path, monkeypatch, mutation):
-    from core.amortized_cost import indexing_cost
     from core import paper_policy
+    from core.amortized_cost import indexing_cost
     monkeypatch.setattr(reuse,'ROOT',tmp_path)
     monkeypatch.setattr(reuse,'current_corpus_identity',lambda _:{'fingerprint':'corpus','paragraph_count':2})
     monkeypatch.setattr(paper_policy,'validate_canonical_index_policy',lambda *a:None)

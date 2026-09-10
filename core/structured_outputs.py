@@ -50,12 +50,10 @@ class StructuredContract:
 
 
 def question_contract(stage: str, question_schema: str = 'legacy', limit: int = 3) -> StructuredContract:
-    if stage not in {'index', 'rewrite', 'refine'} or question_schema not in {'legacy', 'grounded_v1', 'linked_v2'}:
+    if stage != 'index' or question_schema not in {'legacy', 'grounded_v1', 'linked_v2'}:
         raise ValueError('unknown structured question contract')
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError('question limit must be positive')
-    if stage != 'index' and question_schema != 'legacy':
-        raise ValueError('query rewrites require the string question contract')
     name = f'prehop_{stage}_{question_schema}_v1'
     minus: Any = Nonempty
     plus: Any = Nonempty
@@ -88,7 +86,6 @@ def ranking_contract(candidate_ids: list[str], top_k: int) -> StructuredContract
 def structured_bundle_sha256() -> str:
     """Bind materialized schema contents and explicit validation semantics."""
     schemas = [question_contract('index', mode).schema() for mode in ('legacy', 'grounded_v1', 'linked_v2')]
-    schemas += [question_contract(stage).schema() for stage in ('rewrite', 'refine')]
     schemas.append(ranking_contract(['C000', 'C001'], 1).schema())
     bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas,
               'validation_contract': 'strict-json-schema-local-unique-v2'}
@@ -114,3 +111,10 @@ def validate_wire_schema(schema: dict[str, Any]) -> None:
         child = schema.get(key)
         if isinstance(child, dict):
             validate_wire_schema(child)
+
+
+def structured_index_bundle_sha256() -> str:
+    schemas = [question_contract('index', mode).schema() for mode in ('legacy', 'grounded_v1', 'linked_v2')]
+    bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas,
+              'validation_contract': 'strict-json-schema-local-unique-v2'}
+    return hashlib.sha256(json.dumps(bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()

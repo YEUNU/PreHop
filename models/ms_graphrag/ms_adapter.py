@@ -250,7 +250,7 @@ class MSGraphRAGAdapter:
             doc_id = short_id_map[unit_id]
             # In GraphRAG, document_id is an opaque content hash; the
             # staged filename lives in documents.title.  Never use the opaque
-            # id as the source identity, or MuSiQue paragraph provenance
+            # id as the source identity, or source provenance
             # becomes dependent on the diagnostic ``doc`` fallback.
             if doc_id not in doc_map:
                 raise RuntimeError(f"MS GraphRAG source {unit_id!r} references unknown document id {doc_id!r}")

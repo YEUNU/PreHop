@@ -22,13 +22,6 @@ OFFICIAL_METRICS = {
         "MRR@10": "avg_official_mrr@10",
         "MAP@10": "avg_official_map@10",
     },
-    "musique": {
-        "Answer EM": "avg_official_answer_em",
-        "Answer F1": "avg_official_answer_f1",
-        "Support precision": "avg_paragraph_support_precision",
-        "Support recall": "avg_paragraph_support_recall",
-        "Support F1": "avg_paragraph_support_f1",
-    },
 }
 
 
@@ -50,8 +43,6 @@ def _dataset_key(artifact: dict[str, Any]) -> str:
     )
     if marker == "multihoprag":
         return "multihoprag"
-    if marker == "musique":
-        return "musique"
     raise ValueError(f"Unsupported benchmark dataset identity: {marker!r}")
 
 

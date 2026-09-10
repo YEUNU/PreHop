@@ -108,15 +108,15 @@ def test_target_verifier_observes_run_environment_before_reuse(tmp_path, strateg
         shutil.copy2(ROOT / relative, tmp_path / relative)
     shutil.copytree(ROOT / 'core', tmp_path / 'core', dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__'))
     (tmp_path / '.env').write_text('# synthetic test fixture only\n')
-    (tmp_path / 'data/musique_corpus').mkdir(parents=True)
-    (tmp_path / 'data/musique_corpus/corpus_manifest.json').write_text('{}')
-    (tmp_path / 'data/musique_queries.json').write_text('[]')
+    (tmp_path / 'data/hotpotqa_corpus').mkdir(parents=True)
+    (tmp_path / 'data/hotpotqa_corpus/corpus_manifest.json').write_text('{}')
+    (tmp_path / 'data/hotpotqa_queries.json').write_text('[]')
     run_id = 'arbitrary-safe-id'
     if existing == 'result':
         (tmp_path / f'data/results/{run_id}').mkdir(parents=True)
     else:
         (tmp_path / 'data/index_stats').mkdir()
-        (tmp_path / f'data/index_stats/{strategy}_musique_{run_id}.json').write_text('{}')
+        (tmp_path / f'data/index_stats/{strategy}_hotpotqa_{run_id}.json').write_text('{}')
     uv = tmp_path / 'bin/uv'
     uv.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
                   'if sys.argv[1] == "-c": os.execv(sys.executable,[sys.executable,*sys.argv[1:]])\n'
@@ -129,7 +129,7 @@ def test_target_verifier_observes_run_environment_before_reuse(tmp_path, strateg
            'PYTHON_BIN': str(uv), 'TRACE': str(tmp_path / 'trace.jsonl'), 'RAG_SKIP_PROJECT_ENV': 'true',
            'RAG_INFERENCE_BASE_URL': 'http://litellm.test/v1', 'RAG_INFERENCE_API_KEY': 'synthetic',
            'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b'}
-    result = subprocess.run(['bash', 'scripts/run_paper_target.sh', 'musique', strategy, run_id, '--check'],
+    result = subprocess.run(['bash', 'scripts/run_paper_target.sh', 'hotpotqa', strategy, run_id, '--check'],
                             cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     calls = [json.loads(line) for line in (tmp_path / 'trace.jsonl').read_text().splitlines()]
@@ -137,11 +137,11 @@ def test_target_verifier_observes_run_environment_before_reuse(tmp_path, strateg
     call = calls[1]
     assert call['env']['RAG_RUN_ID'] == run_id
     assert call['env']['RAG_LLM_SEED'] == ''
-    assert call['env']['RAG_INDEX_NAMESPACE'] == f'musique_{run_id}'
-    assert call['env']['RAG_INDEX_STATS_PATH'] == f'data/index_stats/{strategy}_musique_{run_id}.json'
+    assert call['env']['RAG_INDEX_NAMESPACE'] == f'hotpotqa_{run_id}'
+    assert call['env']['RAG_INDEX_STATS_PATH'] == f'data/index_stats/{strategy}_hotpotqa_{run_id}.json'
     assert call['env'][get_strategy(strategy).output_env] == f'{get_strategy(strategy).output_default}/runs/{run_id}'
     if existing == 'result':
-        assert call['argv'][1:5] == [run_id, 'musique', strategy, '--exact-run-id']
+        assert call['argv'][1:5] == [run_id, 'hotpotqa', strategy, '--exact-run-id']
 
 
 def test_current_corpus_revalidates_manifest_and_actual_source_bytes(tmp_path, monkeypatch):
@@ -200,7 +200,7 @@ def test_target_empty_seed_and_native_instruction_survive_dotenv_reload(tmp_path
     _transport(monkeypatch, 'lightrag')
     fixture = tmp_path / 'synthetic.env'
     fixture.write_text('RAG_LLM_SEED=42\nEMBEDDING_QUERY_INSTRUCTION=shared_default\n')
-    configure_target_environment('lightrag', 'musique', 'run')
+    configure_target_environment('lightrag', 'hotpotqa', 'run')
     load_dotenv(fixture, override=False)
     assert InferenceTransport.resolve('lightrag').generation_seed is None
 
@@ -250,7 +250,7 @@ def test_submission_verifier_resolves_and_restores_each_target(tmp_path, monkeyp
     before = os.environ.copy()
     verifier.verify('campaign', check_documents=False, check_presentations=False)
     assert os.environ == before
-    assert len(observed) == 4
+    assert len(observed) == len(verifier.DATASETS) * len(verifier.STRATEGIES)
     for strategy, dataset, run_id, seed, instruction, output in observed:
         assert run_id == f'campaign-{dataset}-{strategy}'
         assert output.endswith('/runs/' + run_id)

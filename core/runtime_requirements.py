@@ -3,12 +3,38 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 import sys
 from importlib import metadata
 from pathlib import Path
 from typing import Any
 
 PATH = Path(__file__).resolve().parents[1] / "configs/paper_runtime_requirements.json"
+
+
+def method_main_python(strategy: str, default: str | None = None) -> str:
+    """Select the prepared coordinator runtime without resolving venv symlinks."""
+    if strategy == "hoprag":
+        from models.hoprag.native_runtime import RUNTIME_HOME
+        executable = RUNTIME_HOME / "main-env/bin/python"
+        if not executable.is_file():
+            raise FileNotFoundError("Prepare the pinned HopRAG main runtime first")
+        return str(executable.absolute())
+    return os.path.abspath(default or sys.executable)
+
+
+def ensure_method_runtime(strategy: str) -> None:
+    """Re-enter a model-specific CLI in its pinned interpreter before execution."""
+    if strategy != "hoprag":
+        return
+    executable = method_main_python(strategy)
+    prefix = Path(executable).parent.parent
+    if Path(sys.prefix).resolve() == prefix.resolve():
+        return
+    environment = os.environ.copy()
+    environment.update(PYTHON_BIN=executable, UV_PROJECT_ENVIRONMENT=str(prefix), PYTHONUNBUFFERED="1")
+    os.execve(executable, [executable, *sys.argv], environment)
 
 
 def load_runtime_requirements() -> dict[str, Any]:
@@ -28,6 +54,16 @@ def runtime_requirement(strategy: str) -> dict[str, Any]:
 def runtime_identity(strategy: str) -> dict[str, Any]:
     """Return current non-secret lock/constraint byte identities."""
     root = PATH.parents[1]
+    if strategy == "hoprag":
+        executable = method_main_python(strategy)
+        prefix = Path(executable).parent.parent
+        if Path(sys.prefix).resolve() != prefix.resolve():
+            environment = os.environ.copy()
+            environment.update(PYTHON_BIN=executable, UV_PROJECT_ENVIRONMENT=str(prefix))
+            raw = subprocess.check_output([executable, "-c",
+                "import json; from core.runtime_requirements import runtime_identity; print(json.dumps(runtime_identity('hoprag')))"],
+                cwd=root, env=environment, text=True)
+            return json.loads(raw)
     requirement = load_runtime_requirements().get(strategy, {})
     constraints = requirement.get("constraints_file") if isinstance(requirement, dict) else None
     constraints_path = (root / constraints).resolve() if isinstance(constraints, str) else None

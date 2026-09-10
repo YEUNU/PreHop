@@ -9,6 +9,7 @@ only. All structurally bounded results are retained until final
 indexed-embedding selection, so traversal has no reservoir multiplier.
 """
 
+import os
 import time
 from collections import defaultdict
 from typing import Any
@@ -18,6 +19,19 @@ from models.prehop.tracing import traced
 
 
 class TraversalMixin:
+    def _trace_link_usefulness(self, direct, expanded, selected, starts=()):
+        if not RAGConfig.PREHOP_ABLATION_PROFILE or getattr(self, "trace_recorder", None) is None:
+            return
+        from models.prehop.tracing import _IDENTITY
+        def evidence(node):
+            return {k: node.get(k) for k in ("id", "source", "title", "text", "paragraph_id", "path_type", "source_id")}
+        self.trace_recorder.emit("ablation_link_usefulness", {
+            "direct": [evidence(n) for n in direct],
+            "expanded": [evidence(n) for n in expanded],
+            "selected": [evidence(n) for n in selected],
+            "starts": sorted(set(starts)),
+        }, identity=dict(_IDENTITY.get() or {}))
+
     @traced
     async def graph_search(
         self,
@@ -25,7 +39,6 @@ class TraversalMixin:
         depth: int,
         top_k: int,
         excluded_chunk_ids: set[str] | None = None,
-        channel_queries: dict[str, list[str]] | None = None,
         selection_variant: str | None = None,
     ) -> tuple:
         """Retrieve evidence through level-batched, duplicate-free graph expansion."""
@@ -33,6 +46,7 @@ class TraversalMixin:
         normalized_entities = [normalized for entity in entities if (normalized := self._normalize_entity_term(entity))]
         seed_query = " ".join(normalized_entities).strip() or " ".join(entities).strip()
         if not seed_query:
+            self._trace_link_usefulness([], [], [])
             return "", [], {"retrieve_ms": 0.0, "traversal_ms": 0.0}
 
         if int(depth) != 1:
@@ -47,7 +61,6 @@ class TraversalMixin:
             seed_query,
             top_k=top_k,
             query_embedding=query_embedding,
-            channel_queries=channel_queries,
             select_final=False,
             selection_variant=selection_variant,
         )
@@ -67,6 +80,7 @@ class TraversalMixin:
 
         base_candidates = [node for node in base_candidates if self._node_identity(node) not in excluded_ids]
         if not base_candidates:
+            self._trace_link_usefulness([], [], [])
             return "", [], timing()
         collected = {
             self._node_identity(node): dict(node)
@@ -188,6 +202,7 @@ class TraversalMixin:
             **score_kwargs,
         )
         output_nodes = [self._without_transient_retrieval_scores(node) for node in nodes]
+        self._trace_link_usefulness(base_candidates, rows, output_nodes, frontier_ids)
         if not output_nodes:
             return "", [], timing()
         return self._build_context_from_nodes(output_nodes), output_nodes, timing()
@@ -214,7 +229,7 @@ class TraversalMixin:
                            null AS activated_question_ids
                 """
             )
-        if RAGConfig.GRAPH_EDGE_VARIANT in {"full", "hop_only"}:
+        if RAGConfig.GRAPH_EDGE_VARIANT in {"full", "hop_only"} and not RAGConfig.CONNECTION_TIMING_MODE:
             if RAGConfig.QUESTION_SCHEMA == "linked_v2" and RAGConfig.CONTINUATION_EDGES_ENABLED:
                 continuation_branch = f"""
                     MATCH (src)-[:HAS_Q_MINUS]->(matched_q:{self.q_minus_label})
@@ -354,7 +369,19 @@ class TraversalMixin:
                     "url_property": "url",
                 },
             )
-            return [dict(record) async for record in result]
+            rows = [dict(record) async for record in result]
+        if RAGConfig.CONNECTION_TIMING_MODE:
+            from models.prehop.connection_timing import expand
+            hop_rows, measurement = await expand(
+                self, sorted(hop_source_question_ids), excluded_ids,
+                RAGConfig.CONNECTION_TIMING_MODE, RAGConfig.CONNECTION_TIMING_STORE,
+                os.environ["RAG_INDEX_NAMESPACE"])
+            recorder = getattr(self, "trace_recorder", None)
+            if recorder is not None:
+                from models.prehop.tracing import _IDENTITY
+                recorder.emit("connection_timing", measurement, identity=dict(_IDENTITY.get() or {}))
+            rows.extend(hop_rows)
+        return sorted(rows, key=lambda r: (str(r.get("source_id")), str(r.get("path_type")), str(r.get("id"))))
 
     @staticmethod
     def _rank_frontier_rows(

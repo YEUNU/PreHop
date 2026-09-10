@@ -206,7 +206,7 @@ def test_index_policy_checks_reject_cross_profile_reuse(monkeypatch, reference):
 
 
 @pytest.mark.asyncio
-async def test_body_search_does_not_leak_question_views(monkeypatch):
+async def test_body_search_uses_only_original_query(monkeypatch):
     configure(monkeypatch, "question_body")
     rag = GraphRAG(strategy="prehop")
     rag.llm.get_embeddings = AsyncMock(return_value=[[1.0, 0.0]])
@@ -216,11 +216,11 @@ async def test_body_search_does_not_leak_question_views(monkeypatch):
         12,
         query_embedding=[1.0, 0.0],
         select_final=False,
-        channel_queries={"body": ["query"], "q_minus": ["answer rewrite"], "q_plus": ["bridge rewrite"]},
     )
     assert rag._hybrid_rrf_candidates.await_count == 1
     assert rag._hybrid_rrf_candidates.await_args.kwargs["channel"] == "body"
-    assert rag.llm.get_embeddings.await_args.args[0] == ["query"]
+    assert rag._hybrid_rrf_candidates.await_args.args[0] == "query"
+    rag.llm.get_embeddings.assert_not_awaited()
 
 
 @pytest.mark.asyncio

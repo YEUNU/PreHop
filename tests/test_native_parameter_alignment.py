@@ -24,8 +24,6 @@ def test_ms_native_models_do_not_set_an_output_cap():
         assert 'temperature' not in request_settings(consumer)
 
 
-
-
 def test_gfm_driver_uses_native_prompt_and_answer_without_shared_synthesis():
     from unittest.mock import Mock
 

@@ -18,7 +18,7 @@ dependencies = [
     "requests",
     "tiktoken",
     "pyarrow",  # parses HuggingFace parquet dataset exports
-    "spacy",  # sentence/entity splitting for the hoprag baseline's official indexer
+    "spacy",  # NLP dependency of the official MS GraphRAG runtime
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
     "pandas",  # third_party/HopRAG/HopBuilder.py (official hoprag baseline);
                # also a dep of the ms_graphrag baseline
@@ -27,9 +27,8 @@ dependencies = [
                  # submodules those files import
     "litellm",  # ms_graphrag baseline routes generation through a LiteLLM Router
                 # (models/ms_graphrag/official_indexer.py, ms_adapter.py)
-    # paddlenlp is not needed: the HopRAG adapter installs an import sentinel
-    # and replaces its tagger with spaCy. Local model/reranker loaders were
-    # removed; all inference must use the configured external endpoints.
+    # HopRAG uses native PaddleNLP POS tagging in its isolated pinned runtime.
+    # Generation and embeddings use the configured external endpoints.
 ]
 
 [project.optional-dependencies]

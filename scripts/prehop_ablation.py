@@ -52,6 +52,14 @@ def plan(args):
             "RAG_ABLATION_REUSE_EXISTING_INDEX": str(reuse).lower(),
         }
     )
+    timing = getattr(args, "connection_timing", None)
+    if timing:
+        if args.mode != "benchmark" or args.profile != "question_full" or not getattr(args, "timing_store", None):
+            raise ValueError("Connection timing requires question_full benchmark and --timing-store")
+        env.update(RAG_CONNECTION_TIMING_MODE=timing,
+                   RAG_CONNECTION_TIMING_STORE=str(Path(args.timing_store).resolve()))
+    else:
+        env.update(RAG_CONNECTION_TIMING_MODE="", RAG_CONNECTION_TIMING_STORE="")
     if args.reference:
         env["RAG_BODY_LINK_REFERENCE"] = str(Path(args.reference).resolve())
     if args.index_stats:
@@ -147,11 +155,13 @@ def main():
     parser.add_argument("--mode", choices=("index", "benchmark", "export-reference"), required=True)
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--run-id")
-    parser.add_argument("--corpus-tag", choices=("multihoprag", "musique"))
+    parser.add_argument("--corpus-tag", choices=("multihoprag", "hotpotqa"))
     parser.add_argument("--dataset")
     parser.add_argument("--queries")
     parser.add_argument("--index-stats")
     parser.add_argument("--reference")
+    parser.add_argument("--connection-timing", choices=("precomputed", "online"))
+    parser.add_argument("--timing-store", help="Newly built matched destination snapshot shared by timing arms")
     parser.add_argument("--clone-body-from", help="Completed question index statistics; copy stored bodies without inference")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--reuse-existing-index", action="store_true", help="Read an existing question index for A/B benchmarks only")

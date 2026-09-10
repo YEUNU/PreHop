@@ -54,11 +54,12 @@ def test_lightrag_adapter_joins_native_background_workers():
     async def worker():
         try: await asyncio.Event().wait()
         finally: closed.append('worker')
-    driver.loop.create_task(worker())
+    task = driver.loop.create_task(worker())
     driver.loop.run_until_complete(asyncio.sleep(0))
     driver.close()
     driver.close()
     assert closed == ['storage', 'worker']
+    assert task.done()
     assert driver.loop.is_closed()
 
 

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from core.benchmark_failures import BenchmarkIntegrityError
-
 import hashlib
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
+from core.benchmark_failures import BenchmarkIntegrityError
 from core.generation_profiles import request_settings
 
 from .base import canonical_semantic_env, load_rows, positive_env
@@ -77,7 +76,6 @@ class GFMRAGDriver:
         )
         generation_model = transport.generation_model
         from models.external_research.extraction_contract import ExtractionAudit
-
         from models.external_research.native_observation import observed_chat_type as guarded_chat_type
 
         self.extraction_audit = ExtractionAudit(output_dir / "artifacts" / "extraction_audit.jsonl", profile="native-observation-v1")
@@ -168,14 +166,14 @@ class GFMRAGDriver:
         for question in questions:
             try:
                 prepared.append(self._prepare_query(question))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - report native failures without repair
                 prepared.append(exc)
         def answer(item):
             if isinstance(item, Exception):
                 return item
             try:
                 return self._answer_prepared(item)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - report native failures without repair
                 return exc
         # Match the native qa.py ThreadPool; retrieval remains sequential.
         with ThreadPool(self.native_qa_max_workers) as pool:
@@ -208,7 +206,7 @@ class GFMRAGDriver:
         if isinstance(answer, Exception):
             raise answer
         if not isinstance(answer, str):
-            raise RuntimeError('Native GFM QA returned no answer')
+            raise RuntimeError('Native GFM QA returned no answer')  # noqa: TRY004 - native execution failure contract
         return {'documents': documents, 'answer': answer}
 
     def close(self) -> None:

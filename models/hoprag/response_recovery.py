@@ -20,7 +20,7 @@ def install(tool, audit_path, attempts=3):
         if isinstance(raw, str):
             text = raw.strip()
             if text.startswith('```'):
-                text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.I)
+                text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.IGNORECASE)
                 text = re.sub(r'\s*```$', '', text)
             try:
                 value = json.loads(text)
@@ -42,9 +42,9 @@ def install(tool, audit_path, attempts=3):
                         valid = valid and isinstance(value, str)
                     elif key in {'Question List', 'Subqueries'}:
                         valid = valid and isinstance(value, list) and all(isinstance(item, str) for item in value)
-            row = dict(profile=PROFILE, time=time.time(), attempt=attempt,
-                       status='accepted' if valid else 'retry' if attempt < attempts else 'exhausted',
-                       keys=keys, result=result)
+            row = {'profile': PROFILE, 'time': time.time(), 'attempt': attempt,
+                       'status': 'accepted' if valid else 'retry' if attempt < attempts else 'exhausted',
+                       'keys': keys, 'result': result}
             with lock:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with path.open('a') as stream:

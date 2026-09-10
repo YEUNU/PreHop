@@ -20,11 +20,11 @@ def test_stage_corpus_removes_only_transport_headers(tmp_path, monkeypatch):
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "source.one.txt").write_text(
-        "Title: Human title\nParagraph-ID: musique:abc\n\nBody sentence.\nSecond line.", encoding="utf-8"
+        "Title: Human title\nParagraph-ID: hotpotqa:abc\n\nBody sentence.\nSecond line.", encoding="utf-8"
     )
     monkeypatch.setenv("RAG_LIGHTRAG_OUTPUT_ROOT", str(tmp_path / "output"))
 
-    rows, target = stage_corpus("lightrag", corpus, "musique")
+    rows, target = stage_corpus("lightrag", corpus, "hotpotqa")
 
     assert rows == [
         {
@@ -61,7 +61,7 @@ def test_external_snapshot_verification_is_fail_closed(tmp_path, monkeypatch):
     monkeypatch.setenv("RAG_LIGHTRAG_OUTPUT_ROOT", str(tmp_path / "output"))
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "test-embedding")
     monkeypatch.setenv("RAG_EMBEDDING_REVISION", "test-revision")
-    target = tmp_path / "output" / "musique"
+    target = tmp_path / "output" / "hotpotqa"
     target.mkdir(parents=True)
     (target / "artifacts").mkdir()
     (target / "artifacts/index.bin").write_bytes(b"index")
@@ -81,8 +81,8 @@ def test_external_snapshot_verification_is_fail_closed(tmp_path, monkeypatch):
         ),
         "corpus_manifest_fingerprint": "fingerprint",
     }
-    from models.official_baseline_runtime import artifact_inventory
     from core.semantic_config import semantic_config_sha256
+    from models.official_baseline_runtime import artifact_inventory
     semantic = {"embedding_model": "test-embedding", "embedding_revision": "test-revision"}
     metadata.update(semantic_config_id="lightrag-paper-v1", semantic_config=semantic,
                     semantic_config_sha256=semantic_config_sha256(semantic))
@@ -99,22 +99,22 @@ def test_external_snapshot_verification_is_fail_closed(tmp_path, monkeypatch):
     )
     (target / "index_snapshot_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 
-    assert verify_snapshot("lightrag", "musique", ["b", "a"], {"fingerprint": "fingerprint"}) == metadata
+    assert verify_snapshot("lightrag", "hotpotqa", ["b", "a"], {"fingerprint": "fingerprint"}) == metadata
     with pytest.raises(RuntimeError, match="source set"):
-        verify_snapshot("lightrag", "musique", ["a", "c"], {"fingerprint": "fingerprint"})
+        verify_snapshot("lightrag", "hotpotqa", ["a", "c"], {"fingerprint": "fingerprint"})
     with pytest.raises(RuntimeError, match="fingerprint"):
-        verify_snapshot("lightrag", "musique", ["a", "b"], {"fingerprint": "changed"})
+        verify_snapshot("lightrag", "hotpotqa", ["a", "b"], {"fingerprint": "changed"})
     metadata["embedding_revision"] = "changed-revision"
     (target / "index_snapshot_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     with pytest.raises(RuntimeError, match="embedding revision"):
-        verify_snapshot("lightrag", "musique", ["a", "b"], {"fingerprint": "fingerprint"})
+        verify_snapshot("lightrag", "hotpotqa", ["a", "b"], {"fingerprint": "fingerprint"})
 
 
 def test_research_snapshot_requires_valid_semantic_config_hash(tmp_path, monkeypatch):
     from core.semantic_config import semantic_config_sha256
 
     monkeypatch.setenv("RAG_LIGHTRAG_OUTPUT_ROOT", str(tmp_path / "output"))
-    target = tmp_path / "output" / "musique"
+    target = tmp_path / "output" / "hotpotqa"
     (target / "input").mkdir(parents=True)
     (target / "artifacts").mkdir()
     (target / "artifacts/index.bin").write_bytes(b"index")
@@ -135,11 +135,11 @@ def test_research_snapshot_requires_valid_semantic_config_hash(tmp_path, monkeyp
     metadata["artifact_inventory"] = artifact_inventory(target)
     snapshot = target / "index_snapshot_metadata.json"
     snapshot.write_text(json.dumps(metadata), encoding="utf-8")
-    assert verify_snapshot("lightrag", "musique", ["a"], {"fingerprint": "fingerprint"}) == metadata
+    assert verify_snapshot("lightrag", "hotpotqa", ["a"], {"fingerprint": "fingerprint"}) == metadata
     metadata["semantic_config_sha256"] = "0" * 64
     snapshot.write_text(json.dumps(metadata), encoding="utf-8")
     with pytest.raises(RuntimeError, match="semantic config"):
-        verify_snapshot("lightrag", "musique", ["a"], {"fingerprint": "fingerprint"})
+        verify_snapshot("lightrag", "hotpotqa", ["a"], {"fingerprint": "fingerprint"})
 
 
 @pytest.mark.asyncio
@@ -149,13 +149,13 @@ async def test_external_capacity_excludes_staged_input(tmp_path, monkeypatch, st
 
     root = tmp_path / strategy
     monkeypatch.setenv(f"RAG_{strategy.upper()}_OUTPUT_ROOT", str(root))
-    target = root / "musique"
+    target = root / "hotpotqa"
     (target / "input").mkdir(parents=True)
     (target / "artifacts").mkdir()
     (target / "input" / "corpus.json").write_bytes(b"x" * 100)
     (target / "artifacts" / "graph.bin").write_bytes(b"y" * 17)
 
-    capacity = await _collect_index_capacity(strategy, "musique")
+    capacity = await _collect_index_capacity(strategy, "hotpotqa")
 
     assert capacity["bytes"] == 17
 

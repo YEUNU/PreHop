@@ -44,11 +44,6 @@ def audit(home: Path) -> dict:
     defaults = dataclass_defaults(path, 'LinearRAGConfig')
     for field, registered in [('retrieval_top_k','retrieval_top_k'),('spacy_model','spacy_model'),('use_vectorized_retrieval','vectorized_retrieval')]:
         check('linear_rag', field, defaults[field], policy('linear_rag')[registered], path)
-    path = home/'youtu_graphrag/source/config/base_config.yaml'
-    defaults = yaml.safe_load(path.read_text())
-    for field, native in [('query_mode',defaults['triggers']['mode']),('construction_mode',defaults['construction']['mode']),
-                          ('retrieval_top_k',defaults['retrieval']['top_k']),('retrieval_top_k_filter',defaults['retrieval']['top_k_filter'])]:
-        check('youtu_graphrag', field, native, policy('youtu_graphrag')[field], path)
     path = home/'gfm_rag/source/gfmrag/workflow/config/gfm_rag/qa_inference.yaml'
     defaults = yaml.safe_load(path.read_text())
     check('gfm_rag','retrieval_top_k',defaults['test']['top_k'],policy('gfm_rag')['retrieval_top_k'],path)
@@ -68,10 +63,7 @@ def audit(home: Path) -> dict:
             'owned_methods':['prehop','naive'],
             'declared_differences':[
                 'Shared Gemma generation, remote Qwen embeddings where applicable, seed and execution concurrency are controlled experiment settings.',
-                'GFM strict response schemas and Youtu structured extraction are adapter format controls; they are not upstream-default wire requests.',
-                'Youtu parallel schema evolution uses an adapter lock and may depend on scheduling; original serial equivalence is not claimed.',
                 'GFM uses the native single-pass qa.py workflow (top_k=5); the optional IRCOT workflow (top_k=10, max_steps=2) is a different variant.',
-                'Native posthoc Youtu LLM evaluation is replaced by the common benchmark metrics after answer generation.',
                 'Omitted MS output caps leave the effective server limit provider-controlled; omission is not unlimited output.'
             ]}
 

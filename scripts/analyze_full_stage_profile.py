@@ -13,14 +13,111 @@ import json
 from pathlib import Path
 from typing import Any
 
-from scripts.analyze_refinement_caps import (
-    _load,
-    _point_estimates,
-    _trace_summary,
-)
+import numpy as np
+
+ROW_METRICS = {
+    "answer_em": ("answer_em", 1.0),
+    "answer_f1": ("answer_f1", 1.0),
+    "latency_seconds": ("latency", 1.0),
+    "retrieve_seconds": ("retrieve_ms", 0.001),
+    "graph_expand_seconds": ("graph_expand_ms", 0.001),
+    "deterministic_score_seconds": ("deterministic_score_ms", 0.001),
+    "candidate_order_seconds": ("candidate_order_ms", 0.001),
+    "synthesis_seconds": ("synthesis_ms", 0.001),
+}
+
+
+ZERO_IF_MISSING = {field for field, scale in ROW_METRICS.values() if scale == 0.001}
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line_number, raw_line in enumerate(path.read_text().splitlines(), 1):
+        if not raw_line.strip():
+            continue
+        row = json.loads(raw_line)
+        if not isinstance(row, dict):
+            raise TypeError(f"{path}:{line_number}: expected an object")
+        rows.append(row)
+    return rows
+
+
+def _load(path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    artifact = json.loads(path.read_text())
+    details = artifact.get("details") or []
+    traces_path = path.with_name(f"{path.stem}.traces.jsonl")
+    traces = _read_jsonl(traces_path)
+    if len(details) != len(traces):
+        raise ValueError(f"Detail/trace count mismatch for {path}: {len(details)} != {len(traces)}")
+    rows: dict[str, dict[str, Any]] = {}
+    trace_by_id: dict[str, dict[str, Any]] = {}
+    for position, (row, trace) in enumerate(zip(details, traces, strict=True), 1):
+        query_id = str(row.get("query_id") or "")
+        if not query_id or query_id in rows:
+            raise ValueError(f"Missing or duplicate query ID at {path}:{position}")
+        if int(trace.get("idx", -1)) != position or trace.get("query") != row.get("query"):
+            raise ValueError(f"Detail/trace ordering mismatch for {query_id} in {path}")
+        rows[query_id] = row
+        trace_by_id[query_id] = trace
+    return artifact, rows, trace_by_id
+
+
+def _row_values(rows: dict[str, dict[str, Any]], query_ids: list[str], label: str) -> np.ndarray:
+    field, scale = ROW_METRICS[label]
+    return np.array(
+        [
+            float(rows[query_id].get(field, 0.0) if field in ZERO_IF_MISSING else rows[query_id][field]) * scale
+            for query_id in query_ids
+        ]
+    )
+
+
+def _point_estimates(rows: dict[str, dict[str, Any]], query_ids: list[str]) -> dict[str, dict[str, float]]:
+    estimates: dict[str, dict[str, float]] = {}
+    for label in ROW_METRICS:
+        values = _row_values(rows, query_ids, label)
+        estimates[label] = {
+            "mean": float(values.mean()),
+            "p50": float(np.percentile(values, 50)),
+            "p95": float(np.percentile(values, 95)),
+        }
+    accounted = sum(
+        (
+            _row_values(rows, query_ids, label)
+            for label in (
+                "retrieve_seconds",
+                "graph_expand_seconds",
+                "deterministic_score_seconds",
+                "candidate_order_seconds",
+                "synthesis_seconds",
+            )
+        ),
+        start=np.zeros(len(query_ids)),
+    )
+    generation = sum(
+        (
+            _row_values(rows, query_ids, label)
+            for label in (
+                "candidate_order_seconds",
+                "synthesis_seconds",
+            )
+        ),
+        start=np.zeros(len(query_ids)),
+    )
+    estimates["accounted_stage_seconds"] = {
+        "mean": float(accounted.mean()),
+        "p50": float(np.percentile(accounted, 50)),
+        "p95": float(np.percentile(accounted, 95)),
+    }
+    estimates["generation_stage_seconds"] = {
+        "mean": float(generation.mean()),
+        "p50": float(np.percentile(generation, 50)),
+        "p95": float(np.percentile(generation, 95)),
+    }
+    return estimates
+
 
 STAGE_TIMER_FIELDS = (
-    "rewrite_ms",
     "retrieve_ms",
     "graph_expand_ms",
     "deterministic_score_ms",
@@ -41,9 +138,6 @@ def _rows_with_trace_timers(
             field: [float(step[field]) for step in interaction if field in step]
             for field in STAGE_TIMER_FIELDS
         }
-        has_rewrite_step = any(step.get("step") == "query_rewrite" for step in interaction)
-        if not timer_values["rewrite_ms"] and not has_rewrite_step:
-            timer_values["rewrite_ms"] = [0.0]
         missing = [field for field, values in timer_values.items() if not values]
         if missing:
             raise ValueError(f"Missing separated stage timers for {query_id}: {missing}")
@@ -89,7 +183,6 @@ def main() -> None:
         by_category[category] = {
             "queries": len(category_ids),
             "point_estimates": _point_estimates(profile_rows, category_ids),
-            "trace_summary": _trace_summary(traces, category_ids),
         }
     profile: dict[str, Any] = {
         "scope": "complete_split_fixed_concurrency_stage_profile",
@@ -109,7 +202,6 @@ def main() -> None:
         "mean_generation_share_of_accounted_stages": (
             generation_seconds / accounted_seconds if accounted_seconds else 0.0
         ),
-        "trace_summary": _trace_summary(traces, query_ids),
         "by_category": by_category,
         "ablation": artifact.get("ablation"),
     }

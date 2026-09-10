@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from core.generation_profiles import request_settings
 from core.benchmark_failures import BenchmarkIntegrityError
+from core.generation_profiles import request_settings
 from core.vllm_client import get_llm_client
 from models.official_baseline_runtime import OfficialQueryWorker, verify_snapshot
 from utils.prompts.shared import build_answer_prompt, mark_answer_boundary
@@ -61,7 +61,7 @@ class ExternalResearchAdapter:
         )
         answer = native_answer
         if answer is None:
-            if self.strategy in {"lightrag", "linear_rag", "youtu_graphrag", "gfm_rag"}:
+            if self.strategy in {"lightrag", "linear_rag", "gfm_rag"}:
                 raise ValueError(f"{self.strategy} native query omitted its required answer")
             if self.llm is None:
                 self.llm = get_llm_client(self.model_id)

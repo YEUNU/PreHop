@@ -582,8 +582,8 @@ def build_config(corpus_tag: str, staged_input_dir: Path):
     _install_litellm_router_for_gen()
     _register_query_embedding_model()
     from models.external_research.extraction_contract import ExtractionAudit
-    from models.ms_graphrag.extraction_guard import PROVIDER
     from models.external_research.native_observation import register_ms_observer as register_guard
+    from models.ms_graphrag.extraction_guard import PROVIDER
 
     global _EXTRACTION_AUDIT
     _EXTRACTION_AUDIT = ExtractionAudit(output_dir_for(corpus_tag) / "extraction_audit.jsonl", profile="native-observation-v1")

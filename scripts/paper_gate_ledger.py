@@ -30,7 +30,7 @@ STAGES = (
     "one_query_matrix_16",
     "full_target_admitted",
 )
-DATASETS = ("multihoprag", "musique")
+DATASETS = ("multihoprag", "hotpotqa")
 MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 

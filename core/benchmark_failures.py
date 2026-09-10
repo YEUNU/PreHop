@@ -1,6 +1,6 @@
 """Versioned scoring of terminal query failures, distinct from integrity failures."""
 POLICY = 'terminal-query-failure-zero-v1'
-QUALITY_METRICS = frozenset('answer_em answer_f1 answer_precision answer_recall official_answer_em official_answer_f1 official_qa_accuracy null_refusal doc_match official_mrr@10 official_map@10 official_hits@4 official_hits@10 evidence_fact_recall@4 evidence_fact_recall@10 evidence_doc_recall evidence_doc_precision evidence_doc_f1 paragraph_support_precision paragraph_support_recall paragraph_support_f1 primary_answer_score'.split())
+QUALITY_METRICS = frozenset(['answer_em', 'answer_f1', 'answer_precision', 'answer_recall', 'official_answer_em', 'official_answer_f1', 'official_qa_accuracy', 'null_refusal', 'doc_match', 'official_mrr@10', 'official_map@10', 'official_hits@4', 'official_hits@10', 'evidence_fact_recall@4', 'evidence_fact_recall@10', 'evidence_doc_recall', 'evidence_doc_precision', 'evidence_doc_f1', 'primary_answer_score'])
 
 
 class BenchmarkIntegrityError(RuntimeError):
@@ -14,3 +14,9 @@ def metric_value(row, key):
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
         return float(value)
     return None
+
+# Official HotpotQA metrics use the same terminal-failure denominator.
+from utils.hotpotqa import METRICS as HOTPOT_METRICS
+
+QUALITY_METRICS = QUALITY_METRICS | frozenset("hotpot_" + key for key in HOTPOT_METRICS)
+QUALITY_METRICS = QUALITY_METRICS | {"exact_fact_recall@10", "all_facts@10"}

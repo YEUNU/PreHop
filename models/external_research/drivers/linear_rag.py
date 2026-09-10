@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from core.benchmark_failures import BenchmarkIntegrityError
-
 import sys
 from pathlib import Path
 from typing import Any
 
+from core.benchmark_failures import BenchmarkIntegrityError
 from core.generation_profiles import request_settings
 
 from .base import canonical_semantic_env, load_rows, positive_env
@@ -81,7 +80,7 @@ class LinearRAGDriver:
         self.passages = [f"{i}:{r['title']}\n{r['text']}" for i, r in enumerate(self.rows)]
         self.by_index = {i: r for i, r in enumerate(self.rows)}
         class ValidatedSentenceTransformer(SentenceTransformer):
-            def encode(inner, sentences, *args, **kwargs):
+            def encode(self, sentences, *args, **kwargs):
                 import numpy as np
 
                 vectors = super().encode(sentences, *args, **kwargs)

@@ -44,7 +44,6 @@ def validate_records(raw):
     return entities, edges
 
 
-
 def normalize_glean_preamble(raw):
     """Remove only unstructured leading commentary before a complete native tuple.
 

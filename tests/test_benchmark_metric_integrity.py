@@ -20,23 +20,20 @@ from cli.benchmark import (
     _recompute_aggregates,
     _resume_benchmark_rows,
     _update_summary_status,
-    _validate_benchmark_data,
     _validate_corpus_index_fingerprint,
     _verify_active_index_snapshot,
 )
 from cli.index import (
     _load_corpus_manifest,
     _load_source_metadata,
-    _validate_staged_snapshot,
     _verify_and_publish_neo4j_snapshot,
 )
 from models.hoprag import official_indexer as hop_official_indexer
 from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
-from scripts.datasets import prepare_multihoprag, prepare_musique, refresh_sample_records
+from scripts.datasets import prepare_multihoprag, refresh_sample_records
 from scripts.paired_bootstrap import (
     MULTIHOPRAG_METRICS,
-    MUSIQUE_METRICS,
     _dataset_marker,
     _load,
     _load_excluded_query_ids,
@@ -45,14 +42,10 @@ from scripts.paired_bootstrap import (
 )
 
 
-def test_musique_preparation_defaults_to_the_full_split():
-    assert prepare_musique.DEFAULT_LIMIT == 0
-
-
 def test_refresh_sample_records_preserves_ids_and_uses_current_annotations():
     full = [
-        {"_id": "q1", "query": "new one", "evidence_paragraph_ids": ["p1"]},
-        {"_id": "q2", "query": "new two", "evidence_paragraph_ids": ["p2"]},
+        {"_id": "q1", "query": "new one", "evidence_docs": ["p1"]},
+        {"_id": "q2", "query": "new two", "evidence_docs": ["p2"]},
     ]
     sample = [{"_id": "q2", "query": "old two"}, {"_id": "q1", "query": "old one"}]
 
@@ -60,7 +53,7 @@ def test_refresh_sample_records_preserves_ids_and_uses_current_annotations():
 
     assert [row["_id"] for row in refreshed] == ["q2", "q1"]
     assert refreshed[0]["query"] == "new two"
-    assert refreshed[0]["evidence_paragraph_ids"] == ["p2"]
+    assert refreshed[0]["evidence_docs"] == ["p2"]
 
 
 def test_multihoprag_manifest_binds_corpus_and_query_content(tmp_path):
@@ -267,7 +260,6 @@ def test_benchmark_resume_migrates_behavior_equivalent_candidate_order_metadata(
             "ablation": {
                 "graph_hop_depth": 0,
                 "graph_path_decay": 0.5,
-                "query_refinement_max_rounds": 0,
                 "candidate_order_input_order": "search",
                 "candidate_order_shuffle_seed": 0,
                 "final_rank_variant": "fused",
@@ -283,40 +275,40 @@ def test_evaluation_scope_uses_actual_evaluated_count_before_filename():
     assert _evaluation_scope(
         "multihoprag", 2556, "custom_sample_name.json", OFFICIAL_QUERY_ID_DIGESTS["multihoprag"]
     ) == ("full_benchmark", 2556)
-    assert _evaluation_scope("musique", 200, "musique_sample200_queries.json", "subset") == (
+    assert _evaluation_scope("hotpotqa", 200, "hotpotqa_sample200_queries.json", "subset") == (
         "sample_exploratory",
-        2417,
+        7405,
     )
-    assert _evaluation_scope("musique", 200, "musique_queries.json", "subset") == ("subset_exploratory", 2417)
+    assert _evaluation_scope("hotpotqa", 200, "hotpotqa_queries.json", "subset") == ("subset_exploratory", 7405)
     with pytest.raises(ValueError, match="query-id digest"):
-        _evaluation_scope("musique", 2417, "musique_queries.json", "wrong")
+        _evaluation_scope("hotpotqa", 7405, "hotpotqa_queries.json", "wrong")
 
 
 def test_corpus_manifest_is_optional_but_full_benchmark_requires_matching_index(tmp_path, monkeypatch):
     from core.paper_policy import canonical_operational_policy, canonical_semantic_index_policy
     from core.semantic_config import semantic_config_sha256
 
-    corpus_dir = tmp_path / "musique_corpus"
+    corpus_dir = tmp_path / "hotpotqa_corpus"
     corpus_dir.mkdir()
-    query_digest = OFFICIAL_QUERY_ID_DIGESTS["musique"]
+    query_digest = OFFICIAL_QUERY_ID_DIGESTS["hotpotqa"]
     manifest_payload = {
         "fingerprint": "corpus-fingerprint",
         "paragraph_count": 2,
         "query_ids_sha256": query_digest,
     }
     (corpus_dir / "corpus_manifest.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
-    queries_path = tmp_path / "musique_queries.json"
+    queries_path = tmp_path / "hotpotqa_queries.json"
     queries_path.write_text("[]", encoding="utf-8")
     stats_dir = tmp_path / "index_stats"
     stats_dir.mkdir()
-    stats_path = stats_dir / "prehop_musique_run.json"
+    stats_path = stats_dir / "prehop_hotpotqa_run.json"
     monkeypatch.setenv("RAG_INFERENCE_BASE_URL", "http://litellm.test/v1")
     monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
     monkeypatch.setenv("RAG_GENERATION_MODEL", "gemma-4-31b-it")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-4b")
     monkeypatch.setenv("RAG_LLM_SEED", "42")
     policy = {
-        **canonical_semantic_index_policy("prehop", "musique"),
+        **canonical_semantic_index_policy("prehop", "hotpotqa"),
         "operational_config": canonical_operational_policy("prehop"),
     }
     stats_path.write_text(
@@ -324,7 +316,7 @@ def test_corpus_manifest_is_optional_but_full_benchmark_requires_matching_index(
             {
                 "status": "complete",
                 "strategy": "prehop",
-                "corpus_tag": "musique",
+                "corpus_tag": "hotpotqa",
                 "corpus_manifest_fingerprint": "corpus-fingerprint",
                 "corpus_manifest_paragraph_count": 2,
                     "index_policy": policy,
@@ -334,23 +326,23 @@ def test_corpus_manifest_is_optional_but_full_benchmark_requires_matching_index(
         encoding="utf-8",
     )
 
-    corpus_manifest = _load_benchmark_corpus_manifest("musique", queries_path)
+    corpus_manifest = _load_benchmark_corpus_manifest("hotpotqa", queries_path)
     assert _load_corpus_manifest(corpus_dir) == {
         "fingerprint": "corpus-fingerprint",
         "paragraph_count": 2,
     }
-    index_manifest = _latest_index_manifest_metadata("prehop", "musique", stats_dir)
+    index_manifest = _latest_index_manifest_metadata("prehop", "hotpotqa", stats_dir)
     assert (
-        _validate_corpus_index_fingerprint("musique", "full_benchmark", corpus_manifest, index_manifest, query_digest)
+        _validate_corpus_index_fingerprint("hotpotqa", "full_benchmark", corpus_manifest, index_manifest, query_digest)
         == "matched"
     )
     bad_manifest = {**corpus_manifest, "query_ids_sha256": "wrong"}
     with pytest.raises(RuntimeError, match="query-id digest"):
-        _validate_corpus_index_fingerprint("musique", "full_benchmark", bad_manifest, index_manifest, query_digest)
+        _validate_corpus_index_fingerprint("hotpotqa", "full_benchmark", bad_manifest, index_manifest, query_digest)
     with pytest.raises(RuntimeError, match="requires corpus_manifest"):
         _validate_corpus_index_fingerprint("multihoprag", "full_benchmark", None, None, query_digest)
     with pytest.raises(RuntimeError, match="requires corpus_manifest"):
-        _validate_corpus_index_fingerprint("musique", "full_benchmark", None, None, query_digest)
+        _validate_corpus_index_fingerprint("hotpotqa", "full_benchmark", None, None, query_digest)
 
     stats_path.write_text(
         json.dumps(
@@ -358,20 +350,20 @@ def test_corpus_manifest_is_optional_but_full_benchmark_requires_matching_index(
         ),
         encoding="utf-8",
     )
-    stale_index = _latest_index_manifest_metadata("prehop", "musique", stats_dir)
+    stale_index = _latest_index_manifest_metadata("prehop", "hotpotqa", stats_dir)
     with pytest.raises(RuntimeError, match="does not match"):
-        _validate_corpus_index_fingerprint("musique", "full_benchmark", corpus_manifest, stale_index, query_digest)
+        _validate_corpus_index_fingerprint("hotpotqa", "full_benchmark", corpus_manifest, stale_index, query_digest)
     assert (
         _validate_corpus_index_fingerprint(
-            "musique", "subset_exploratory", corpus_manifest, stale_index, "subset-digest"
+            "hotpotqa", "subset_exploratory", corpus_manifest, stale_index, "subset-digest"
         )
         == "mismatch_exploratory"
     )
 
 
 def test_index_artifact_selection_uses_exact_run_id_not_mtime(tmp_path, monkeypatch):
-    completed = tmp_path / "prehop_musique_completed.json"
-    failed = tmp_path / "prehop_musique_failed.json"
+    completed = tmp_path / "prehop_hotpotqa_completed.json"
+    failed = tmp_path / "prehop_hotpotqa_failed.json"
     completed.write_text(
         json.dumps({"run_id": "completed", "status": "complete", "corpus_manifest_fingerprint": "old"}),
         encoding="utf-8",
@@ -384,16 +376,16 @@ def test_index_artifact_selection_uses_exact_run_id_not_mtime(tmp_path, monkeypa
     os.utime(failed, (2, 2))
 
     monkeypatch.setenv("RAG_RUN_ID", "failed")
-    selected = _latest_index_manifest_metadata("prehop", "musique", tmp_path)
+    selected = _latest_index_manifest_metadata("prehop", "hotpotqa", tmp_path)
 
     assert selected["status"] == "failed"
     with pytest.raises(RuntimeError, match="completed index artifact"):
         _validate_corpus_index_fingerprint(
-            "musique",
+            "hotpotqa",
             "full_benchmark",
-            {"fingerprint": "new", "query_ids_sha256": OFFICIAL_QUERY_ID_DIGESTS["musique"]},
+            {"fingerprint": "new", "query_ids_sha256": OFFICIAL_QUERY_ID_DIGESTS["hotpotqa"]},
             selected,
-            OFFICIAL_QUERY_ID_DIGESTS["musique"],
+            OFFICIAL_QUERY_ID_DIGESTS["hotpotqa"],
         )
 
 
@@ -403,11 +395,11 @@ def test_index_artifact_selection_honors_explicit_path_and_run_identity(tmp_path
     monkeypatch.setenv("RAG_RUN_ID", "target")
     monkeypatch.setenv("RAG_INDEX_STATS_PATH", str(selected_path))
 
-    selected = _latest_index_manifest_metadata("prehop", "musique", tmp_path)
+    selected = _latest_index_manifest_metadata("prehop", "hotpotqa", tmp_path)
     assert selected["path"] == str(selected_path)
 
     monkeypatch.setenv("RAG_RUN_ID", "other")
-    assert _latest_index_manifest_metadata("prehop", "musique", tmp_path)["status"] == "invalid"
+    assert _latest_index_manifest_metadata("prehop", "hotpotqa", tmp_path)["status"] == "invalid"
 
 
 def test_index_manifest_selection_does_not_cross_prefixing_corpus_tags(tmp_path):
@@ -436,19 +428,19 @@ async def test_neo4j_snapshot_metadata_is_published_only_after_live_source_set_m
     class Neo4j:
         async def execute_query(self, query, parameters=None):
             if "RETURN DISTINCT c.source" in query:
-                return [{"source": "musique_alpha.txt"}, {"source": "musique_beta.txt"}]
+                return [{"source": "hotpotqa_alpha.txt"}, {"source": "hotpotqa_beta.txt"}]
             writes.append((query, parameters))
             return []
 
     class Engine:
-        chunk_label = "PR_musique_Chunk"
+        chunk_label = "PR_hotpotqa_Chunk"
         neo4j = Neo4j()
 
     metadata = await _verify_and_publish_neo4j_snapshot(
         Engine(),
         "prehop",
-        "musique",
-        ["musique_alpha", "musique_beta"],
+        "hotpotqa",
+        ["hotpotqa_alpha", "hotpotqa_beta"],
         {"fingerprint": "fp", "paragraph_count": 2},
     )
 
@@ -465,20 +457,20 @@ async def test_neo4j_snapshot_mismatch_never_publishes_complete_metadata():
     class Neo4j:
         async def execute_query(self, query, parameters=None):
             if "RETURN DISTINCT c.source" in query:
-                return [{"source": "musique_alpha.txt"}]
+                return [{"source": "hotpotqa_alpha.txt"}]
             writes.append((query, parameters))
             return []
 
     class Engine:
-        chunk_label = "PR_musique_Chunk"
+        chunk_label = "PR_hotpotqa_Chunk"
         neo4j = Neo4j()
 
     with pytest.raises(RuntimeError, match="does not match"):
         await _verify_and_publish_neo4j_snapshot(
             Engine(),
             "prehop",
-            "musique",
-            ["musique_alpha", "musique_beta"],
+            "hotpotqa",
+            ["hotpotqa_alpha", "hotpotqa_beta"],
             {"fingerprint": "fp", "paragraph_count": 2},
         )
     assert not writes
@@ -486,14 +478,14 @@ async def test_neo4j_snapshot_mismatch_never_publishes_complete_metadata():
 
 @pytest.mark.asyncio
 async def test_full_active_snapshot_gate_checks_metadata_and_live_sources(tmp_path):
-    corpus_dir = tmp_path / "musique_corpus"
+    corpus_dir = tmp_path / "hotpotqa_corpus"
     corpus_dir.mkdir()
-    (corpus_dir / "musique_alpha.txt").write_text("x", encoding="utf-8")
-    (corpus_dir / "musique_beta.txt").write_text("x", encoding="utf-8")
+    (corpus_dir / "hotpotqa_alpha.txt").write_text("x", encoding="utf-8")
+    (corpus_dir / "hotpotqa_beta.txt").write_text("x", encoding="utf-8")
     manifest_path = corpus_dir / "corpus_manifest.json"
     manifest_path.write_text(json.dumps({"fingerprint": "fp", "paragraph_count": 2}), encoding="utf-8")
     manifest = {"path": str(manifest_path), "fingerprint": "fp", "paragraph_count": 2}
-    digest = hashlib.sha256(b"musique_alpha\nmusique_beta").hexdigest()
+    digest = hashlib.sha256(b"hotpotqa_alpha\nhotpotqa_beta").hexdigest()
 
     class Neo4j:
         async def execute_query(self, query, parameters=None):
@@ -508,28 +500,28 @@ async def test_full_active_snapshot_gate_checks_metadata_and_live_sources(tmp_pa
                         "snapshot_version": 1,
                     }
                 ]
-            return [{"source": "musique_alpha.txt"}, {"source": "musique_beta.txt"}]
+            return [{"source": "hotpotqa_alpha.txt"}, {"source": "hotpotqa_beta.txt"}]
 
     class Engine:
-        chunk_label = "PR_musique_Chunk"
+        chunk_label = "PR_hotpotqa_Chunk"
         neo4j = Neo4j()
 
-    verified = await _verify_active_index_snapshot(Engine(), "prehop", "musique", manifest, strict=True)
+    verified = await _verify_active_index_snapshot(Engine(), "prehop", "hotpotqa", manifest, strict=True)
     assert verified["status"] == "matched"
 
     class BadNeo4j(Neo4j):
         async def execute_query(self, query, parameters=None):
             if "RAGIndexSnapshot" in query:
                 return await super().execute_query(query, parameters)
-            return [{"source": "musique_alpha.txt"}]
+            return [{"source": "hotpotqa_alpha.txt"}]
 
     class BadEngine:
-        chunk_label = "PR_musique_Chunk"
+        chunk_label = "PR_hotpotqa_Chunk"
         neo4j = BadNeo4j()
 
     with pytest.raises(RuntimeError, match="Active index integrity gate failed"):
-        await _verify_active_index_snapshot(BadEngine(), "prehop", "musique", manifest, strict=True)
-    exploratory = await _verify_active_index_snapshot(BadEngine(), "prehop", "musique", manifest, strict=False)
+        await _verify_active_index_snapshot(BadEngine(), "prehop", "hotpotqa", manifest, strict=True)
+    exploratory = await _verify_active_index_snapshot(BadEngine(), "prehop", "hotpotqa", manifest, strict=False)
     assert exploratory["status"] == "mismatch_exploratory"
 
 
@@ -574,11 +566,11 @@ async def test_hoprag_active_readback_preserves_periods_in_stored_stems(tmp_path
 
 @pytest.mark.asyncio
 async def test_hoprag_active_snapshot_records_officially_skipped_sources(tmp_path):
-    represented = "musique_alpha"
-    omitted = "musique_beta"
+    represented = "hotpotqa_alpha"
+    omitted = "hotpotqa_beta"
     represented_digest = hashlib.sha256(represented.encode("utf-8")).hexdigest()
     omitted_digest = hashlib.sha256(omitted.encode("utf-8")).hexdigest()
-    corpus_dir = tmp_path / "musique_corpus"
+    corpus_dir = tmp_path / "hotpotqa_corpus"
     corpus_dir.mkdir()
     (corpus_dir / f"{represented}.txt").write_text("alpha", encoding="utf-8")
     (corpus_dir / f"{omitted}.txt").write_text("beta", encoding="utf-8")
@@ -605,10 +597,10 @@ async def test_hoprag_active_snapshot_records_officially_skipped_sources(tmp_pat
             return [{"source": represented}]
 
     class Engine:
-        chunk_label = "HO_musique"
+        chunk_label = "HO_hotpotqa"
         neo4j = Neo4j()
 
-    verified = await _verify_active_index_snapshot(Engine(), "hoprag", "musique", manifest, strict=True)
+    verified = await _verify_active_index_snapshot(Engine(), "hoprag", "hotpotqa", manifest, strict=True)
 
     assert verified["status"] == "matched"
     assert verified["input_source_count"] == 2
@@ -618,22 +610,22 @@ async def test_hoprag_active_snapshot_records_officially_skipped_sources(tmp_pat
 
 def test_ms_snapshot_metadata_is_sidecar_and_requires_actual_document_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(ms_official_indexer, "_OUTPUT_ROOT", tmp_path)
-    output_dir = ms_official_indexer.output_dir_for("musique")
+    output_dir = ms_official_indexer.output_dir_for("hotpotqa")
     output_dir.mkdir(parents=True)
     monkeypatch.setattr(
         "pandas.read_parquet",
-        lambda _path: pd.DataFrame({"title": ["musique_alpha.txt", "musique_beta.txt"]}),
+        lambda _path: pd.DataFrame({"title": ["hotpotqa_alpha.txt", "hotpotqa_beta.txt"]}),
     )
 
     payload = ms_official_indexer._verify_and_publish_snapshot(
-        "musique",
-        ["musique_alpha", "musique_beta"],
+        "hotpotqa",
+        ["hotpotqa_alpha", "hotpotqa_beta"],
         {"fingerprint": "fp", "paragraph_count": 2},
-        {"musique_alpha": "Alpha", "musique_beta": "Beta"},
+        {"hotpotqa_alpha": "Alpha", "hotpotqa_beta": "Beta"},
     )
 
     assert payload["status"] == "complete"
-    persisted = json.loads(ms_official_indexer.snapshot_metadata_path("musique").read_text(encoding="utf-8"))
+    persisted = json.loads(ms_official_indexer.snapshot_metadata_path("hotpotqa").read_text(encoding="utf-8"))
     assert persisted["source_set_sha256"] == payload["source_set_sha256"]
     assert persisted["source_titles_sha256"] == payload["source_titles_sha256"]
 
@@ -675,94 +667,6 @@ def test_hoprag_snapshot_preserves_periods_in_stored_source_ids():
     assert payload["omitted_source_count"] == 0
 
 
-def test_musique_corpus_keeps_same_title_distinct_paragraphs(tmp_path, monkeypatch):
-    monkeypatch.setattr(prepare_musique, "CORPUS_DIR", tmp_path / "corpus")
-    rows = [
-        {
-            "id": "2hop__corpus",
-            "paragraphs": [
-                {"title": "Repeated", "paragraph_text": "first body"},
-                {"title": "Repeated", "paragraph_text": "second body"},
-            ],
-        }
-    ]
-
-    mapping = prepare_musique.build_corpus(rows)
-
-    assert len(mapping) == 2
-    files = list((tmp_path / "corpus").glob("*.txt"))
-    assert len(files) == 2
-    assert all("Paragraph-ID: musique:" in path.read_text(encoding="utf-8") for path in files)
-
-
-def test_musique_corpus_publish_is_verified_and_reproducibly_manifested(tmp_path, monkeypatch):
-    corpus_dir = tmp_path / "musique_corpus"
-    monkeypatch.setattr(prepare_musique, "CORPUS_DIR", corpus_dir)
-    rows = [
-        {
-            "id": "2hop__manifest",
-            "answerable": True,
-            "paragraphs": [
-                {"title": "Repeated", "paragraph_text": "first", "is_supporting": True},
-                {"title": "Repeated", "paragraph_text": "second", "is_supporting": True},
-            ],
-        }
-    ]
-
-    mapping = prepare_musique.build_corpus(rows)
-    manifest = json.loads((corpus_dir / prepare_musique.CORPUS_MANIFEST_FILENAME).read_text(encoding="utf-8"))
-
-    assert manifest["paragraph_count"] == 2
-    assert manifest["gold_supporting_paragraph_count"] == 2
-    assert manifest["gold_supporting_paragraph_coverage"] == 1.0
-    assert manifest["schema_version"] == 2
-    assert manifest["query_ids_sha256"] == prepare_musique.query_ids_sha256(rows)
-    paragraph_ids = sorted(mapping)
-    source_ids = sorted(mapping.values())
-    assert manifest["paragraph_ids_sha256"] == hashlib.sha256("\n".join(paragraph_ids).encode()).hexdigest()
-    assert manifest["source_ids_sha256"] == hashlib.sha256("\n".join(source_ids).encode()).hexdigest()
-    assert manifest["paragraph_ids_sha256"] != manifest["source_ids_sha256"]
-    assert len(manifest["corpus_records_sha256"]) == 64
-    assert len(manifest["corpus_files_sha256"]) == 64
-    assert manifest == prepare_musique.build_corpus_integrity(rows, mapping, corpus_dir)
-
-    loaded = _load_corpus_manifest(corpus_dir)
-    files = sorted(path.name for path in corpus_dir.glob("*.txt"))
-    assert loaded["source_ids_sha256"] == manifest["source_ids_sha256"]
-    assert _validate_staged_snapshot(files, loaded, corpus_dir) == source_ids
-    queries_path = tmp_path / "musique_queries.json"
-    queries_path.write_text("[]", encoding="utf-8")
-    benchmark_manifest = _load_benchmark_corpus_manifest("musique", queries_path)
-    assert benchmark_manifest["corpus_records_sha256"] == manifest["corpus_records_sha256"]
-
-    first_file = corpus_dir / files[0]
-    first_file.write_text(first_file.read_text(encoding="utf-8") + "tampered", encoding="utf-8")
-    with pytest.raises(ValueError, match="content digest"):
-        _validate_staged_snapshot(files, loaded, corpus_dir)
-
-
-def test_musique_schema1_manifest_safely_migrates_source_identity(tmp_path):
-    paragraph_id = prepare_musique.paragraph_identity("Title", "Body")
-    source_id = f"musique_{paragraph_id.removeprefix('musique:')}"
-    (tmp_path / f"{source_id}.txt").write_text(f"Title: Title\nParagraph-ID: {paragraph_id}\n\nBody", encoding="utf-8")
-    payload = {
-        "schema_version": 1,
-        "paragraph_count": 1,
-        "paragraph_ids_sha256": hashlib.sha256(paragraph_id.encode()).hexdigest(),
-        "query_ids_sha256": hashlib.sha256(b"q1").hexdigest(),
-    }
-    payload["fingerprint"] = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    (tmp_path / "corpus_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
-
-    loaded = _load_corpus_manifest(tmp_path)
-
-    assert loaded["schema_version"] == 1
-    assert loaded["paragraph_ids_sha256"] == payload["paragraph_ids_sha256"]
-    assert loaded["source_ids_sha256"] == hashlib.sha256(source_id.encode()).hexdigest()
-
-
 def test_paper_mode_rejects_schema1_manifest_before_indexing(tmp_path, monkeypatch):
     payload = {"schema_version": 1, "paragraph_count": 0}
     payload["fingerprint"] = hashlib.sha256(
@@ -774,38 +678,23 @@ def test_paper_mode_rejects_schema1_manifest_before_indexing(tmp_path, monkeypat
         _load_corpus_manifest(tmp_path)
 
 
-def test_musique_corpus_failed_validation_preserves_existing_target(tmp_path, monkeypatch):
-    corpus_dir = tmp_path / "corpus"
-    corpus_dir.mkdir()
-    existing = corpus_dir / "existing.txt"
-    existing.write_text("do not replace", encoding="utf-8")
-    monkeypatch.setattr(prepare_musique, "CORPUS_DIR", corpus_dir)
-    rows = [{"answerable": True, "paragraphs": [{"title": "", "paragraph_text": "gold", "is_supporting": True}]}]
-
-    with pytest.raises(ValueError, match="gold paragraph"):
-        prepare_musique.build_corpus(rows)
-
-    assert existing.read_text(encoding="utf-8") == "do not replace"
-    assert not list(tmp_path.glob(".corpus.tmp-*"))
-
-
 def test_paired_bootstrap_retains_runtime_failure_as_zero():
     prehop = {
-        "valid": {"paragraph_support_f1": 1.0, "expected_sources": {"paragraph_ids": ["p"]}},
-        "sentinel": {"paragraph_support_f1": -1.0, "expected_sources": {"paragraph_ids": ["p"]}},
-        "failed": {"paragraph_support_f1": 0.0, "error": "boom", "expected_sources": {"paragraph_ids": ["p"]}},
+        "valid": {"evidence_doc_f1": 1.0, "expected_sources": {"docs": ["p"]}},
+        "sentinel": {"evidence_doc_f1": -1.0, "expected_sources": {"docs": ["p"]}},
+        "failed": {"evidence_doc_f1": 0.0, "error": "boom", "expected_sources": {"docs": ["p"]}},
     }
     baseline = {
-        "valid": {"paragraph_support_f1": 0.5, "expected_sources": {"paragraph_ids": ["p"]}},
-        "sentinel": {"paragraph_support_f1": -1.0, "expected_sources": {"paragraph_ids": ["p"]}},
-        "failed": {"paragraph_support_f1": 1.0, "expected_sources": {"paragraph_ids": ["p"]}},
+        "valid": {"evidence_doc_f1": 0.5, "expected_sources": {"docs": ["p"]}},
+        "sentinel": {"evidence_doc_f1": -1.0, "expected_sources": {"docs": ["p"]}},
+        "failed": {"evidence_doc_f1": 1.0, "expected_sources": {"docs": ["p"]}},
     }
 
-    assert _paired(prehop, baseline, "paragraph_support_f1").tolist() == [0.5, -1.0]
+    assert _paired(prehop, baseline, "evidence_doc_f1").tolist() == [0.5, -1.0]
 
 
 def test_paired_bootstrap_reports_all_document_diagnostics():
-    for metrics in (MULTIHOPRAG_METRICS, MUSIQUE_METRICS):
+    for metrics in (MULTIHOPRAG_METRICS,):
         assert "evidence_doc_precision" in metrics
         assert "evidence_doc_recall" in metrics
         assert "evidence_doc_f1" in metrics
@@ -838,58 +727,19 @@ def test_aggregates_include_runtime_errors_as_zero():
     assert summary["category_summaries"]["2hop"]["eligible_answer_em_count"] == 2
 
 
-def test_musique_identity_is_content_stable_and_title_sensitive():
-    same = prepare_musique.paragraph_identity("Title", "Body")
-    assert same == prepare_musique.paragraph_identity("Title", "Body")
-    assert same != prepare_musique.paragraph_identity("Title", "Other body")
-    assert same != prepare_musique.paragraph_identity("Other title", "Body")
-
-
-def test_musique_query_preserves_local_idx_to_global_identity_mapping(tmp_path, monkeypatch):
-    monkeypatch.setattr(prepare_musique, "QUERIES_PATH", tmp_path / "queries.json")
-    rows = [
-        {
-            "id": "2hop__example",
-            "answer": "answer",
-            "question": "question",
-            "answerable": True,
-            "paragraphs": [
-                {"idx": 3, "title": "Repeated", "paragraph_text": "first", "is_supporting": True},
-                {"idx": 7, "title": "Repeated", "paragraph_text": "second", "is_supporting": True},
-            ],
-        }
-    ]
-
-    query = prepare_musique.build_queries(rows)[0]
-
-    assert query["evidence_paragraph_indices"] == [3, 7]
-    assert len(query["evidence_paragraph_ids"]) == 2
-    assert query["evidence_paragraphs"] == [
-        {"idx": 3, "paragraph_id": prepare_musique.paragraph_identity("Repeated", "first")},
-        {"idx": 7, "paragraph_id": prepare_musique.paragraph_identity("Repeated", "second")},
-    ]
-
-
 def test_paragraph_identity_header_is_not_indexed_as_evidence_text():
     parsed = parse_pages_offline(
-        "musique_aabbccddeeff0011.txt",
-        "Title: Repeated\nParagraph-ID: musique:aabbccddeeff0011\n\nActual evidence.",
+        "hotpotqa_aabbccddeeff0011.txt",
+        "Title: Repeated\nParagraph-ID: hotpotqa:aabbccddeeff0011\n\nActual evidence.",
     )
 
-    assert parsed["paragraph_id"] == "musique:aabbccddeeff0011"
+    assert parsed["paragraph_id"] == "hotpotqa:aabbccddeeff0011"
     assert parsed["pages"] == [{"num": 1, "content": "Actual evidence."}]
-
-
-def test_stale_musique_manifest_fails_before_benchmark_execution():
-    stale = [{"_id": "musique_stale", "dataset": "musique", "query": "q", "ground_truth": "a"}]
-
-    with pytest.raises(ValueError, match="evidence_paragraph_ids"):
-        _validate_benchmark_data(stale, "stale.json")
 
 
 def test_judge_disabled_does_not_block_deterministic_completion(tmp_path):
     summary = {
-        "dataset": "MuSiQue",
+        "dataset": "HotpotQA",
         "judge_enabled": False,
         "total_queries": 1,
         "details": [
@@ -910,21 +760,6 @@ def test_judge_disabled_does_not_block_deterministic_completion(tmp_path):
     assert summary["status"] == "completed_unadmitted"
     assert summary["correct_rate"] == 1.0
     _assert_benchmark_complete(summary, tmp_path / "result.json")
-
-
-def test_full_musique_requires_support_eligibility_and_gold_ids(tmp_path):
-    summary = {
-        "dataset": "MuSiQue",
-        "judge_enabled": False,
-        "evaluation_scope": "full_benchmark",
-        "official_split_expected_queries": 1,
-        "eligible_primary_answer_score_count": 1,
-        "eligible_paragraph_support_f1_count": 0,
-        "details": [{"expected_sources": {"paragraph_ids": []}}],
-    }
-
-    with pytest.raises(RuntimeError, match="MuSiQue"):
-        _assert_benchmark_complete(summary, tmp_path / "result.json")
 
 
 def test_multi_seed_aggregate_excludes_ineligible_seeds_and_all_ineligible_metrics():
@@ -984,8 +819,8 @@ def test_self_judge_requires_explicit_debug_override():
 def _artifact(strategy: str, *, query_id: str = "q-1") -> dict:
     return {
         "strategy": strategy,
-        "dataset": "MuSiQue",
-        "corpus_tag": "musique",
+        "dataset": "HotpotQA",
+        "corpus_tag": "hotpotqa",
         "evaluation_scope": "full_benchmark",
         "status": "completed_unadmitted",
         "corpus_manifest_fingerprint": "corpus-fp",
@@ -1076,7 +911,7 @@ def test_paired_bootstrap_enforces_query_only_ablation_contract():
 def test_paired_bootstrap_requires_explicit_index_variant_override():
     treatment = _artifact("prehop")
     baseline = _artifact("prehop")
-    baseline["corpus_tag"] = "musique_linked_v2"
+    baseline["corpus_tag"] = "hotpotqa_linked_v2"
 
     with pytest.raises(ValueError, match="corpus_tag"):
         _validate_artifact_pair(treatment, baseline)

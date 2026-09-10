@@ -70,28 +70,28 @@ def test_transport_rejects_invalid_timeout_and_parses_seed(monkeypatch):
 def test_paper_common_semantic_overrides_fail_closed(monkeypatch):
     monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "ambient drift")
     with pytest.raises(RuntimeError, match="EMBEDDING_QUERY_INSTRUCTION"):
-        validate_paper_semantic_environment("lightrag", "musique")
+        validate_paper_semantic_environment("lightrag", "hotpotqa")
     monkeypatch.delenv("EMBEDDING_QUERY_INSTRUCTION")
     monkeypatch.setenv("MAX_EMBEDDING_LENGTH", "8192")
     with pytest.raises(RuntimeError, match="MAX_EMBEDDING_LENGTH"):
-        validate_paper_semantic_environment("prehop", "musique")
+        validate_paper_semantic_environment("prehop", "hotpotqa")
     monkeypatch.setenv("MAX_EMBEDDING_LENGTH", "32768")
     monkeypatch.setenv("RAG_MS_REPORT_MAX_TOKENS", "2048")
     with pytest.raises(RuntimeError, match="RAG_MS_REPORT_MAX_TOKENS"):
-        validate_paper_semantic_environment("ms_graphrag", "musique")
+        validate_paper_semantic_environment("ms_graphrag", "hotpotqa")
     monkeypatch.delenv("RAG_MS_REPORT_MAX_TOKENS")
     # The superseded 0.6B width must be rejected by the current 4B contract.
     monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "1024")
     with pytest.raises(RuntimeError, match="NEO4J_VECTOR_DIMENSIONS"):
-        validate_paper_semantic_environment("lightrag", "musique")
+        validate_paper_semantic_environment("lightrag", "hotpotqa")
     monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "2560")
     monkeypatch.setenv("RAG_MAX_CONTEXT_LENGTH", "16384")
     with pytest.raises(RuntimeError, match="RAG_MAX_CONTEXT_LENGTH"):
-        validate_paper_semantic_environment("prehop", "musique")
+        validate_paper_semantic_environment("prehop", "hotpotqa")
     monkeypatch.setenv("RAG_MAX_CONTEXT_LENGTH", "262144")
     monkeypatch.setenv("RAG_EMBEDDING_TOKEN_RESERVE", "128")
     with pytest.raises(RuntimeError, match="RAG_EMBEDDING_TOKEN_RESERVE"):
-        validate_paper_semantic_environment("prehop", "musique")
+        validate_paper_semantic_environment("prehop", "hotpotqa")
 
 
 @pytest.mark.parametrize(
@@ -110,9 +110,6 @@ def test_paper_common_semantic_overrides_fail_closed(monkeypatch):
         ("RAG_CONTINUATION_EDGES_ENABLED", "true"),
         ("RAG_CONTINUATION_ANCHOR_POLICY", "all_grounded"),
         ("RAG_HOP_SEMANTIC_VARIANT", "bridge_only"),
-        ("RAG_QUERY_REWRITE_VARIANT", "none"),
-        ("RAG_QUERY_REWRITE_MAX_WORDS", "16"),
-        ("RAG_QUERY_REFINEMENT_MAX_ROUNDS", "1"),
         ("RAG_CANDIDATE_POOL_MULTIPLIER", "2"),
         ("RAG_HYPO_CHANNEL_VARIANT", "body_only"),
         ("RAG_SOURCE_SELECTION_VARIANT", "global"),
@@ -124,9 +121,9 @@ def test_paper_common_semantic_overrides_fail_closed(monkeypatch):
 def test_core_method_semantic_overrides_fail_closed(monkeypatch, name, value):
     monkeypatch.setenv(name, value)
     with pytest.raises(RuntimeError, match=name):
-        validate_paper_semantic_environment("prehop", "musique")
+        validate_paper_semantic_environment("prehop", "hotpotqa")
     with pytest.raises(RuntimeError, match=name):
-        validate_paper_semantic_environment("naive", "musique")
+        validate_paper_semantic_environment("naive", "hotpotqa")
 
 
 def test_typed_transport_rejects_ambient_embedding_semantic_drift(monkeypatch):
@@ -166,13 +163,13 @@ def test_paper_transport_rejects_legacy_alias_even_with_canonical_gateway(monkey
 def test_paper_semantic_boolean_parser_rejects_unknown_value(monkeypatch):
     monkeypatch.setenv("RAG_LINEAR_RAG_VECTORIZED", "maybe")
     with pytest.raises(RuntimeError, match="invalid boolean"):
-        validate_paper_semantic_environment("linear_rag", "musique")
+        validate_paper_semantic_environment("linear_rag", "hotpotqa")
 
 
 def test_unknown_method_semantic_override_fails_closed(monkeypatch):
     monkeypatch.setenv("RAG_LIGHTRAG_UNREGISTERED_MODE", "native-ish")
     with pytest.raises(RuntimeError, match="unknown paper method environment override"):
-        validate_paper_semantic_environment("lightrag", "musique")
+        validate_paper_semantic_environment("lightrag", "hotpotqa")
 
 
 def test_preflight_rejects_transport_model_drift(monkeypatch):
@@ -186,12 +183,12 @@ def test_preflight_rejects_transport_model_drift(monkeypatch):
 
 
 def test_canonical_policy_records_shared_dimensions_context_and_reserve():
-    policy = canonical_semantic_index_policy("prehop", "musique")
+    policy = canonical_semantic_index_policy("prehop", "hotpotqa")
     assert policy["embedding_dimensions"] == 2560
     assert policy["embedding_max_input_tokens"] == 32768
     assert policy["embedding_token_reserve"] == 0
     assert policy["generation_max_context_tokens"] == 262144
-    naive = canonical_semantic_index_policy("naive", "musique")
+    naive = canonical_semantic_index_policy("naive", "hotpotqa")
     assert naive["question_schema"] == "legacy"
     assert naive["q_minus_enabled"] is naive["q_plus_enabled"] is True
     assert naive["precompute_reciprocal_hops"] is True
@@ -206,9 +203,9 @@ def test_paper_index_builder_emits_registry_canonical_semantics(monkeypatch, str
 
     monkeypatch.setenv("RAG_PAPER_MODE", "true")
     _canonical_transport(monkeypatch, strategy)
-    observed = semantic_index_policy(_resolved_index_policy(strategy, "default", "musique"))
+    observed = semantic_index_policy(_resolved_index_policy(strategy, "default", "hotpotqa"))
     assert observed == {
-        **canonical_semantic_index_policy(strategy, "musique"),
+        **canonical_semantic_index_policy(strategy, "hotpotqa"),
         "operational_config": canonical_operational_policy(strategy),
     }
 
@@ -243,27 +240,27 @@ def test_preflight_main_uses_runner_environment_and_typed_transport():
 
 
 def test_index_reuse_rejects_policy_mutation(tmp_path, monkeypatch):
-    policy = _complete_policy(monkeypatch, "prehop", "musique")
+    policy = _complete_policy(monkeypatch, "prehop", "hotpotqa")
     stats = tmp_path / "index.json"
     payload = {
         "status": "complete",
         "strategy": "prehop",
-        "corpus_tag": "musique",
+        "corpus_tag": "hotpotqa",
         "run_id": "run",
         "index_policy": policy,
         "index_policy_sha256": semantic_config_sha256(policy),
     }
     stats.write_text(json.dumps(payload), encoding="utf-8")
-    verify_index_policy(stats, "prehop", "musique", "run")
+    verify_index_policy(stats, "prehop", "hotpotqa", "run")
     payload["index_policy"] = {**policy, "default_top_k": 8}
     payload["index_policy_sha256"] = semantic_config_sha256(payload["index_policy"])
     stats.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RuntimeError, match="checked-in paper policy"):
-        verify_index_policy(stats, "prehop", "musique", "run")
+        verify_index_policy(stats, "prehop", "hotpotqa", "run")
 
 
 def test_index_reuse_rejects_stale_incomplete_effective_policy(tmp_path, monkeypatch):
-    policy = _complete_policy(monkeypatch, "prehop", "musique")
+    policy = _complete_policy(monkeypatch, "prehop", "hotpotqa")
     policy.pop("embedding_dimensions")
     stats = tmp_path / "index.json"
     stats.write_text(
@@ -271,7 +268,7 @@ def test_index_reuse_rejects_stale_incomplete_effective_policy(tmp_path, monkeyp
             {
                 "status": "complete",
                 "strategy": "prehop",
-                "corpus_tag": "musique",
+                "corpus_tag": "hotpotqa",
                 "run_id": "run",
                 "index_policy": policy,
                 "index_policy_sha256": semantic_config_sha256(policy),
@@ -280,7 +277,7 @@ def test_index_reuse_rejects_stale_incomplete_effective_policy(tmp_path, monkeyp
         encoding="utf-8",
     )
     with pytest.raises(RuntimeError, match="checked-in paper policy"):
-        verify_index_policy(stats, "prehop", "musique", "run")
+        verify_index_policy(stats, "prehop", "hotpotqa", "run")
 
 
 def test_admission_bindings_change_with_result_or_details(tmp_path):
@@ -318,7 +315,6 @@ def test_code_provenance_excludes_failed_and_generated_output_roots_without_read
         "configs/runtime_constraints/lightrag.txt",
         "configs/runtime_constraints/gfm_rag.txt",
         "configs/runtime_constraints/linear_rag.txt",
-        "configs/runtime_constraints/lightrag.txt",
     } <= {path.relative_to(Path.cwd()).as_posix() for path in verifier_sources()}
 
 
@@ -390,3 +386,43 @@ def test_paper_generation_omits_ambient_seed(monkeypatch, seed):
     monkeypatch.setenv("RAG_PAPER_MODE", "true")
     monkeypatch.setenv("RAG_LLM_SEED", seed)
     assert InferenceTransport.resolve("prehop").generation_seed is None
+
+
+def test_hoprag_cli_selects_its_pinned_runtime_without_resolving_launcher(tmp_path, monkeypatch):
+    import sys
+
+    from core import runtime_requirements as runtime
+    from models.hoprag import native_runtime
+    runtime_home = tmp_path / "hoprag"
+    launcher = runtime_home / "main-env/bin/python"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(sys.executable)
+    monkeypatch.setattr(native_runtime, "RUNTIME_HOME", runtime_home)
+    argv = ["scripts/paper_cold_canary.py", "fixture", "hoprag", "hotpotqa", "--attempt", "a1"]
+    monkeypatch.setattr(sys, "argv", argv)
+    captured = {}
+    def execute(path, args, env):
+        captured.update(path=path, args=args, env=env)
+    monkeypatch.setattr(runtime.os, "execve", execute)
+    runtime.ensure_method_runtime("hoprag")
+    assert captured["path"] == str(launcher)
+    assert captured["args"] == [str(launcher), *argv]
+    assert captured["env"]["PYTHON_BIN"] == str(launcher)
+    assert captured["env"]["UV_PROJECT_ENVIRONMENT"] == str(runtime_home / "main-env")
+    captured.clear()
+    runtime.ensure_method_runtime("prehop")
+    assert captured == {}
+
+
+def test_prehop_graph_controls_are_not_hoprag_adapter_overrides(monkeypatch):
+    from core.paper_policy import validate_paper_semantic_environment
+    _canonical_transport(monkeypatch, "hoprag")
+    monkeypatch.setenv("RAG_HOP_DOC_WORKERS", "10")
+    monkeypatch.setenv("RAG_HOP_GATHER_WAVE", "64")
+    monkeypatch.setenv("RAG_HOP_BUILD_CONCURRENCY", "4")
+    monkeypatch.setenv("RAG_HOP_SEMANTIC_VARIANT", "body_bridge_min")
+    monkeypatch.setenv("RAG_HOP_EDGE_FILTER", "none")
+    validate_paper_semantic_environment("hoprag", "hotpotqa")
+    monkeypatch.setenv("RAG_HOP_DOC_WORKERS", "30")
+    with pytest.raises(RuntimeError, match="RAG_HOP_DOC_WORKERS"):
+        validate_paper_semantic_environment("hoprag", "hotpotqa")

@@ -1,5 +1,12 @@
 # Result Evidence Register
 
+The revised Prehop design removes initial query rewriting and evidence-conditioned
+query regeneration/re-search. The original query searches all three channels at
+every input length. This single-pass policy is implemented. Earlier Prehop
+results are excluded from the current paper and this register. New result cells
+remain unmeasured until compatible full-run evidence is complete. Original
+artifacts retain their recorded settings.
+
 This register preserves completed benchmark evidence, dataset identities, and
 measurement definitions. Live counters and queue state belong in generated
 campaign artifacts, not this document.
@@ -10,19 +17,21 @@ Each row contains all 2,556 MultiHop-RAG queries with zero terminal query
 failures. Retrieval metrics use the same 2,255 eligible questions; official QA
 accuracy and mean query latency use all 2,556 questions. Scores below are
 percentages. Existing runs retain their original execution settings and evidence.
-The first four runs record generation seed 42; the GFM-RAG query run omits
-the generation seed and retains checkpoint-defined local retrieval components.
-All five use benchmark concurrency eight. Completion does not imply identical
+Naive RAG, MS GraphRAG, and LightRAG record generation seed 42; GFM-RAG and LinearRAG omit the generation seed and retain their method-specific
+local retrieval components.
+All five use benchmark concurrency eight. The replacement LinearRAG run uses
+the restored native query parameters (0.4 expansion threshold, passage weight 2,
+and three expansion sentences). Completion does not imply identical
 backbones, decoding settings, or native answer prompts. QA is preserved here
 as recorded evidence, not as an isolated retrieval-quality comparison.
 
 | Method | Hits@4 | Hits@10 | MRR@10 | MAP@10 | Official QA accuracy | Mean query latency (s) |
 |---|---:|---:|---:|---:|---:|---:|
 | Naive RAG | 69.36 | 83.90 | 55.20 | 26.35 | 28.91 | 3.1811 |
-| Prehop | 92.42 | 94.90 | 82.00 | 45.22 | 34.23 | 35.1713 |
 | MS GraphRAG | 58.27 | 62.48 | 37.82 | 18.68 | 37.56 | 22.8464 |
 | LightRAG | 72.73 | 87.54 | 63.65 | 30.39 | 11.19 | 97.8781 |
 | GFM-RAG | 49.62 | 55.65 | 35.97 | 18.92 | 22.46 | 37.7325 |
+| LinearRAG | 84.48 | 87.49 | 64.57 | 33.67 | 56.81 | 32.3950 |
 
 ### Recorded indexing and query costs
 
@@ -30,13 +39,12 @@ Index times cover each original successful 609-document index. Query batch
 wall time covers the full 2,556-query batch. Wall time per unit is inverse
 throughput; it is distinct from mean individual query latency. These are
 recorded execution costs, not controlled estimates of isolated serving latency.
-Prehop includes enabled trace I/O; local method backbones remain declared.
+Local method backbones remain declared.
 
 | Method | Index wall (s) | Index wall / document (s) | Query batch wall (s) | Batch wall / query (s) |
 |---|---:|---:|---:|---:|
 | Naive RAG | 119.1448 | 0.1956 | 1047.6934 | 0.4099 |
-| Prehop | 2504.8409 | 4.1130 | 11309.8792 | 4.4248 |
-| LinearRAG (index only) | 638.5990 | 1.0486 | — | — |
+| LinearRAG | 638.5990 | 1.0486 | 10583.7005 | 4.1407 |
 | MS GraphRAG | 6861.4718 | 11.2668 | 7617.4921 | 2.9802 |
 | LightRAG | 6562.6064 | 10.7760 | 31578.0235 | 12.3545 |
 | GFM-RAG | 1033.6809 | 1.6973 | 12300.5139 | 4.8124 |
@@ -47,23 +55,44 @@ These links open the final result JSON directly. Detail rows, traces and index
 cost evidence remain alongside each run. No seed-exception record is required.
 
 - [Naive RAG](../data/results/multihop-benchmark-first-20260908-multihoprag-naive/naive/multihoprag/seed_42/naive_multihoprag.json)
-- [Prehop](../data/results/multihop-benchmark-first-20260908-multihoprag-prehop/prehop/multihoprag/seed_42/prehop_multihoprag.json)
 - [MS GraphRAG](../data/results/rolling-two-models-20260908-multihoprag-ms_graphrag/ms_graphrag/multihoprag/seed_42/ms_graphrag_multihoprag.json)
 - [LightRAG](../data/results/rolling-two-models-20260908-multihoprag-lightrag/lightrag/multihoprag/seed_42/lightrag_multihoprag.json)
 - [GFM-RAG](../data/results/benchmark-first-two-20260909-multihoprag-gfm_rag/gfm_rag/multihoprag/seed_42/gfm_rag_multihoprag.json)
+- [LinearRAG](../data/results/benchmark-first-two-20260909-multihoprag-linear_rag/linear_rag/multihoprag/seed_42/linear_rag_multihoprag.json)
+
 
 ## Derived evidence
 
-The manuscript's four-system retained-output analysis uses Prehop, Naive RAG,
-LightRAG, and MS GraphRAG. Its input hashes and per-query data are recorded in
-`artifacts/paper_revision_20260909/analysis.json` and `*.per_query.jsonl`.
-`coverage_partition.json` records complete, partial, and absent fact coverage.
-These are analyses of saved outputs, not new retrieval runs.
+The manuscript's output-size, literal-coverage, evidence-count, and QA-group
+analyses cover the five completed comparators, including the replacement LinearRAG
+run. Their source paths, SHA-256 hashes,
+calculation definitions, and derived values are recorded in
+[completed metrics](../artifacts/paper_revision_20260909/completed_metrics.json).
+These are calculations from saved outputs, not new retrieval runs.
 
-Retrieval diagnostics use 2,255 evidence-bearing questions. Exact-fact recall
-and AllFacts use the official case-sensitive, space/newline-stripped matcher;
-they are additional measures, not official leaderboard metrics. Normalized/fuzzy
-recall is a separate matching-rule sensitivity analysis. These diagnostics do not establish reasoning correctness.
+| Method | Records: min / median / max | Median words | Exact-fact Recall@10 (%) | AllFacts@10 (%) |
+|---|---|---|---|---|
+| Naive RAG | 12 / 12 / 12 | 1,632.5 | 50.16 | 20.22 |
+| LightRAG | 4 / 12 / 20 | 9,205.5 | 54.19 | 20.75 |
+| MS GraphRAG | 1 / 5 / 8 | 4,139.5 | 34.07 | 10.78 |
+| GFM-RAG | 5 / 5 / 5 | 8,275.5 | 32.42 | 13.75 |
+| LinearRAG | 5 / 5 / 5 | 7,930.0 | 55.28 | 25.14 |
+
+Size statistics use all 2,556 questions. Retrieval diagnostics use the same
+2,255 evidence-bearing questions and the official case-sensitive,
+space/newline-stripped matcher. These coverage measures are additional metrics,
+not official leaderboard metrics or assessments of reasoning correctness.
+
+Earlier Prehop-derived differences and coverage partitions are excluded from
+current reporting. Retained analysis files are historical artifacts, not a
+source for filling pending Prehop cells.
+
+## HotpotQA fullwiki
+
+No completed HotpotQA fullwiki results are recorded here. Table 4 in the manuscript reserves all seven
+system rows for official Answer EM/F1, Supporting Fact EM/F1, Joint EM/F1, and
+query latency. Corpus coverage, evaluation split, model settings, and full-run
+artifacts must be verified before filling these cells.
 
 ## Primary matrix
 
@@ -84,7 +113,7 @@ compatible evidence.
 | Dataset | Source documents | Full queries | Corpus fingerprint |
 |---|---:|---:|---|
 | MultiHop-RAG | 609 | 2,556 | `c11b84f626c08d06d6dbc938512275824567aaffdc77a0f0b5424ad94f13a8ee` |
-| MuSiQue answerable dev | 21,099 | 2,417 | `63562ceaf17343507b305b152af93245959f458412be321662cfbc8fde9f2a34` |
+| HotpotQA fullwiki | 5,233,329 | 7,405 | `5bb3fa2a5091b88594fbca7885a69c065c88a167fa8fda777f77330fc51bcfb0` |
 
 ## Evaluation configuration
 
@@ -132,8 +161,8 @@ zero-score observations. Successful rows retain metric applicability filtering.
 The current `metric_value` helper gives failed quality rows zero even when a
 successful null query would be ineligible for retrieval metrics. Report failed
 null-query counts separately so this failure-inclusive denominator is visible.
-The admitted Naive/Prehop pair has no terminal failures, so its retrieval
-denominator remains 2,255 in both columns.
+The five retained comparator runs have no terminal query failures; their
+retrieval denominator is 2,255.
 
 A batch that executed every query can complete with query failures. Source
 mapping/integrity errors stop subsequent queries for that target and block
@@ -177,3 +206,17 @@ supply a full benchmark result.
 Prehop phase wall time includes its enabled trace I/O. Retain the trace reference
 with the result and disclose instrumentation when comparing costs. Diagnostic
 trace files are excluded from retrieval-index storage measurements.
+
+## Manuscript and presentation mapping
+
+The manuscript reports MultiHop-RAG retrieval in Table 2, MultiHop-RAG costs
+in Table 3, and unmeasured HotpotQA fullwiki outcomes in Table 4. Table 5 defines A/B/C; Tables 6–7 contain unmeasured result slots.
+Tables 8–10 contain fact-count, answer-type, and returned-length diagnostics.
+Each system table includes the seven primary methods, with `—` for missing
+outcomes. This register's completed-result tables include only finished runs.
+
+The Markdown manuscript is the source for reported claims and result tables.
+The existing PDF and 27-slide presentation predate the latest prepared-corpus
+text update and require export synchronization before distribution. Its figures
+illustrate the method and do not provide additional measured evidence.
+Figure and export checks are maintained in [the checklist](PAPER_CHECKLIST.md).

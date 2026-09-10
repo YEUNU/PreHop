@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import logging
-import re
 
 from core.config import RAGConfig
 from core.index_namespace import index_namespace
@@ -30,11 +29,6 @@ class NaiveRAG:
         self._lock = asyncio.Lock()
         self._index_setup_lock = asyncio.Lock()
 
-    @staticmethod
-    def _safe_token(value: str) -> str:
-        token = re.sub(r"[^A-Za-z0-9_]", "_", str(value))
-        token = re.sub(r"_+", "_", token).strip("_")
-        return token or "default"
 
     async def setup_index(self):
         try:
@@ -267,7 +261,7 @@ class NaiveRAG:
         if not str(answer or "").strip():
             raise ValueError("Answer synthesis returned an empty response")
         answer = mark_answer_boundary(answer)
-        # Preserve source filename as an opaque identity; MuSiQue uses it to
+        # Preserve source filename as an opaque identity; evaluation uses it to
         # distinguish different paragraphs with the same Wikipedia title.
         trace = [
             {

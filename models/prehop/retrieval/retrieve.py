@@ -22,21 +22,6 @@ class RetrieveMixin:
         output_nodes = [self._without_transient_retrieval_scores(node) for node in selected_nodes]
         return self._build_context_from_nodes(output_nodes), output_nodes
 
-    async def retrieve_with_views(
-        self,
-        query: str,
-        top_k: int,
-        channel_queries: dict[str, list[str]],
-        selection_variant: str | None = None,
-    ) -> tuple:
-        selected_nodes, _ = await self._retrieve_with_candidate_pool(
-            query,
-            top_k,
-            channel_queries=channel_queries,
-            selection_variant=selection_variant,
-        )
-        output_nodes = [self._without_transient_retrieval_scores(node) for node in selected_nodes]
-        return self._build_context_from_nodes(output_nodes), output_nodes
 
     @traced
     async def _retrieve_with_candidate_pool(
@@ -44,7 +29,6 @@ class RetrieveMixin:
         query: str,
         top_k: int,
         query_embedding: list[float] | None = None,
-        channel_queries: dict[str, list[str]] | None = None,
         select_final: bool = True,
         selection_variant: str | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -77,41 +61,12 @@ class RetrieveMixin:
         # fourth evidence role. Fuse it with chunk-body retrieval before the
         # Q-/body/Q+ union so a chunk cannot gain an extra representation vote
         # merely because the same text matched at two granularities.
-        search_specs: list[tuple[str, str, str, int | None]] = []
+        search_specs: list[tuple[str, str, str]] = []
         for channel in channels:
-            views = (channel_queries or {}).get(channel) or [query]
-            search_specs.extend((channel, channel, view, None) for view in views)
+            search_specs.append((channel, channel, query))
             if channel == "body" and RAGConfig.SENTENCE_CHANNEL_ENABLED:
-                search_specs.append(("body", "sentence", query, None))
-        if channel_queries and active_selection_variant in {
-            "role_body_owners",
-            "role_body_rounds",
-            "role_body_list_ranking",
-        }:
-            owner_order = 0
-            for role in ("q_minus", "q_plus"):
-                if RAGConfig.PREHOP_ABLATION_PROFILE and role not in channels:
-                    continue
-                for view in channel_queries.get(role) or []:
-                    search_specs.append(("role_body_owner", "body", view, owner_order))
-                    owner_order += 1
-        if channel_queries:
-            texts_to_embed = list(
-                dict.fromkeys(
-                    [
-                        *([] if query_embedding else [query]),
-                        *(view for _role, _index_channel, view, _owner_order in search_specs),
-                    ]
-                )
-            )
-            embeddings = await self.llm.get_embeddings(texts_to_embed, encoding_type="query")
-            if len(embeddings) != len(texts_to_embed) or any(not embedding for embedding in embeddings):
-                raise ValueError("Role-aligned retrieval received an invalid query-embedding batch")
-            embedding_by_text = dict(zip(texts_to_embed, embeddings))
-            query_embedding = query_embedding or embedding_by_text[query]
-        else:
-            query_embedding = query_embedding or await self.llm.get_embedding(query)
-            embedding_by_text = {query: query_embedding}
+                search_specs.append(("body", "sentence", query))
+        query_embedding = query_embedding or await self.llm.get_embedding(query)
         if not query_embedding:
             raise ValueError(f"Retrieval received an empty query embedding for query={query!r}")
 
@@ -119,56 +74,21 @@ class RetrieveMixin:
             *[
                 self._hybrid_rrf_candidates(
                     view,
-                    query_embedding=embedding_by_text[view],
+                    query_embedding=query_embedding,
                     limit=candidate_k,
                     channel=channel,
                 )
-                for _role, channel, view, _owner_order in search_specs
+                for _role, channel, view in search_specs
             ]
         )
 
         # Fuse multiple query views inside their role before roles are fused
         # together. Without this boundary, a channel with three rewritten
         # views receives three times the reciprocal-rank mass of the unchanged
-        # body channel. A single-view channel is bit-for-bit the established
-        # ordering; multi-view channels still contribute exactly one ranked
-        # list to the later Q-/body/Q+ union.
+        # body channel before the Q-/body/Q+ union. Each role searches the
+        # same original query.
         per_channel: dict[str, dict[str, dict[str, Any]]] = {}
-        body_owners: dict[str, dict[str, Any]] = {}
-        for (role, index_channel, view, owner_order), nodes in zip(search_specs, searches, strict=True):
-            if owner_order is not None:
-                retained_nodes = (
-                    nodes if active_selection_variant in {"role_body_rounds", "role_body_list_ranking"} else nodes[:1]
-                )
-                for rank, node in enumerate(retained_nodes):
-                    node_id = self._node_identity(node)
-                    candidate = body_owners.setdefault(node_id, dict(node))
-                    if active_selection_variant in {
-                        "role_body_rounds",
-                        "role_body_list_ranking",
-                    }:
-                        entry = {
-                            "view_order": owner_order,
-                            "rank": rank,
-                            "score": float(node.get("rrf_score", 0.0)),
-                        }
-                        entries = candidate.setdefault("role_body_round_entries", [])
-                        if entry not in entries:
-                            entries.append(entry)
-                    else:
-                        orders = {int(order) for order in (candidate.get("role_body_owner_orders") or [])}
-                        orders.add(owner_order)
-                        candidate["role_body_owner_orders"] = sorted(orders)
-                    direct_path = {
-                        "kind": "direct",
-                        "channel": index_channel,
-                        "query_view": view,
-                        "depth": 0,
-                    }
-                    paths = candidate.setdefault("retrieval_paths", [])
-                    if direct_path not in paths:
-                        paths.append(direct_path)
-                continue
+        for (role, index_channel, view), nodes in zip(search_specs, searches, strict=True):
             for rank, node in enumerate(nodes):
                 node_id = self._node_identity(node)
                 candidate = per_channel.setdefault(role, {}).setdefault(node_id, dict(node))
@@ -255,25 +175,6 @@ class RetrieveMixin:
                 for path in node.get("retrieval_paths") or []:
                     if path not in paths:
                         paths.append(path)
-        for node_id, owner in body_owners.items():
-            owner_only = node_id not in merged
-            candidate = merged.setdefault(node_id, dict(owner))
-            if owner.get("role_body_owner_orders"):
-                orders = {int(order) for order in (candidate.get("role_body_owner_orders") or [])}
-                orders.update(owner.get("role_body_owner_orders") or [])
-                candidate["role_body_owner_orders"] = sorted(orders)
-            if owner.get("role_body_round_entries"):
-                entries = candidate.setdefault("role_body_round_entries", [])
-                for entry in owner.get("role_body_round_entries") or []:
-                    if entry not in entries:
-                        entries.append(entry)
-            paths = candidate.setdefault("retrieval_paths", [])
-            for path in owner.get("retrieval_paths") or []:
-                if path not in paths:
-                    paths.append(path)
-            if owner_only:
-                candidate["role_body_owner_only"] = True
-                candidate["representation_score"] = 0.0
         for node in merged.values():
             node.setdefault("dependency_seed", False)
             node.setdefault("continuation_seed", False)

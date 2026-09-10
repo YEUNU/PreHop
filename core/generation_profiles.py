@@ -24,8 +24,6 @@ def request_settings(consumer: str) -> dict:
         return {'max_tokens': cap} if cap is not None else {}
     settings = {
         'question_index': {'temperature': 0.0, 'max_tokens': RAGConfig.MAX_OUTPUT_TOKENS},
-        'rewrite': {'temperature': 0.0, 'max_tokens': 512},
-        'refine': {'temperature': 0.0, 'max_tokens': 512},
         'ranking': {'temperature': 0.0, 'max_tokens': 1024},
         'answer': {'temperature': 0.0, 'max_tokens': RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS},
         'linear_native_qa': {'temperature': 0, 'max_tokens': 2000},
@@ -39,7 +37,7 @@ def generation_profiles(strategy: str) -> dict:
     spec = get_strategy(strategy)
     profiles = {}
     if strategy in {'prehop', 'naive'}:
-        profiles = {key: request_settings(key) for key in ('question_index', 'rewrite', 'refine', 'ranking', 'answer')}
+        profiles = {key: request_settings(key) for key in ('question_index', 'ranking', 'answer')}
         if strategy == 'prehop':
             profiles['structured_format_retry'] = structured_retry_profile()
     elif strategy == 'hoprag':
@@ -57,7 +55,4 @@ def generation_profiles(strategy: str) -> dict:
     if spec.external:
         profiles['native_defaults'] = {'owner': 'pinned_upstream', 'revision': spec.revision,
                                       'registered_overrides': dict(spec.paper_index_policy)}
-    if strategy == 'youtu_graphrag':
-        profiles['construction'] = {'temperature': 0.3, 'max_tokens': None, 'seed': None,
-                                    'response_format': 'native-call-unchanged'}
     return profiles

@@ -57,7 +57,7 @@ async def ensure_fresh_namespace(strategy: str, dataset: str) -> None:
 async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, full_corpus: bool = False) -> None:
     from core.paper_policy import configure_target_environment
     from core.strategy_registry import PRIMARY_STRATEGIES
-    if strategy not in PRIMARY_STRATEGIES or dataset not in {'multihoprag', 'musique'}:
+    if strategy not in PRIMARY_STRATEGIES or dataset not in {'multihoprag', 'hotpotqa'}:
         raise ValueError('Unknown primary target')
     if any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', value) for value in (campaign, attempt)):
         raise ValueError('Campaign and attempt must be safe nonempty identifiers')
@@ -109,6 +109,9 @@ async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, 
         elif strategy == 'naive':
             from models.naive.naive_rag import NaiveRAG
             engine = NaiveRAG(strategy=strategy, corpus_tag=dataset)
+        elif strategy == 'hoprag':
+            from models.hoprag.hoprag_adapter import HopRAGAdapter
+            engine = HopRAGAdapter(corpus_tag=dataset)
         else:
             from models.external_research.adapter import ExternalResearchAdapter
             engine = ExternalResearchAdapter(strategy, corpus_tag=dataset)
@@ -127,7 +130,7 @@ async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, 
         index_path = base / 'index_evidence.json'
         index_ref = save(index_path, index)
         answer, sources, _trace = await engine.run_workflow(row['query'])
-        documents = [{'source_id': Path(item['source']).stem, 'native_source': item['source'],
+        documents = [{'source_id': item['source'] if strategy == 'hoprag' else Path(item['source']).stem, 'native_source': item['source'],
                       'title': item['doc'], 'text': item['text']} for item in sources]
         if not isinstance(answer, str) or not answer.strip() or not documents:
             raise RuntimeError('Cold query requires nonempty answer and native evidence')
@@ -150,9 +153,9 @@ async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, 
             'admission': admission_ref, 'invocation': invocation_ref})
         print(f'cold_native_canary_passed strategy={strategy} dataset={dataset}', flush=True)
     finally:
-        if engine is not None and strategy not in {'prehop', 'naive', 'ms_graphrag'}:
+        if engine is not None and hasattr(engine, 'close'):
             engine.close()
-        if strategy in {'prehop', 'naive'}:
+        if strategy in {'prehop', 'naive', 'hoprag'}:
             from core.neo4j_service import Neo4jService
             await Neo4jService.global_close()
 
@@ -164,6 +167,8 @@ def main() -> None:
     parser.add_argument('dataset')
     parser.add_argument('--attempt', required=True, help='Fresh attempt namespace; existing attempts are never overwritten')
     args = parser.parse_args()
+    from core.runtime_requirements import ensure_method_runtime
+    ensure_method_runtime(args.strategy)
     from scripts.check_paper_runtime import _load_runner_environment
     _load_runner_environment()
     asyncio.run(workflow(args.campaign, args.strategy, args.dataset, args.attempt))

@@ -213,23 +213,6 @@ def test_offline_reciprocal_filter_requires_precomputed_index_contract(monkeypat
         RAGConfig.validate()
 
 
-def test_config_rejects_unknown_query_rewrite_variant(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_VARIANT", "typo")
-    with pytest.raises(ValueError, match="QUERY_REWRITE_VARIANT"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_negative_query_refinement_cap(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "QUERY_REFINEMENT_MAX_ROUNDS", -1)
-
-    with pytest.raises(ValueError, match="RAG_QUERY_REFINEMENT_MAX_ROUNDS"):
-        RAGConfig.validate()
-
-
 def test_continuation_query_branch_requires_linked_schema(monkeypatch):
     from core.config import RAGConfig
 
@@ -253,14 +236,6 @@ def test_config_rejects_unknown_continuation_anchor_policy(monkeypatch):
 
     monkeypatch.setattr(RAGConfig, "CONTINUATION_ANCHOR_POLICY", "frequency_tuned")
     with pytest.raises(ValueError, match="CONTINUATION_ANCHOR_POLICY"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_negative_query_rewrite_word_limit(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "QUERY_REWRITE_MAX_WORDS", -1)
-    with pytest.raises(ValueError, match="QUERY_REWRITE_MAX_WORDS"):
         RAGConfig.validate()
 
 
@@ -373,7 +348,6 @@ async def test_json_guard_rejects_truthy_wrong_schema():
             llm,
             [{"role": "user", "content": "prompt"}],
             "Q-/Q+ generation",
-            required_fields={"q_minus": list},
             structured_contract=question_contract("index"),
         )
 
@@ -677,16 +651,6 @@ async def test_hoprag_official_failure_is_not_replaced_by_vector_search():
 
     with pytest.raises(RuntimeError, match="official traversal failed"):
         await adapter._run_official_retrieval("query")
-
-
-def test_hoprag_question_list_validation_rejects_empty_generation():
-    from models.hoprag.official_indexer import _validated_question_list
-
-    with pytest.raises(ValueError, match="empty question list"):
-        _validated_question_list(([], []))
-    with pytest.raises(ValueError, match="blank item"):
-        _validated_question_list((["valid?", ""], []))
-    assert _validated_question_list((["valid?"], [])) == ["valid?"]
 
 
 def test_cli_has_no_domain_gate():

@@ -10,7 +10,10 @@ upstream revisions, and paper policies. Experimental controls are specified in
 ## Strategy dispatch and indexing branches
 
 The primary order is Prehop, Naive RAG, HopRAG, MS GraphRAG, LightRAG, GFM-RAG,
-and LinearRAG. The two supported paper datasets are MultiHop-RAG and MuSiQue.
+and LinearRAG. The paper targets MultiHop-RAG and HotpotQA fullwiki. HotpotQA uses
+the official introductory-paragraph corpus and complete development split, with
+source and sentence identities preserved. Preparation and evaluation are defined
+in [HOTPOTQA_FULLWIKI](HOTPOTQA_FULLWIKI.md).
 Removed methods do not supply primary comparison cells.
 
 `cli/index.py::run_indexing` acquires a strategy/corpus lock in the working
@@ -45,8 +48,8 @@ response interventions.
   indexing units; equal rank cutoffs do not imply equal passage sizes.
 
 Prepared `corpus_manifest.json` files bind source IDs, file and corpus-record
-hashes, query IDs, counts, and query-record hashes. MuSiQue paragraph IDs and
-filename-derived source IDs are distinct. Full benchmarks require a completed
+hashes, query IDs, counts, and query-record hashes. HotpotQA evaluation requires
+preserving original article titles and sentence indices through preparation. Full benchmarks require a completed
 index with matching corpus identity and verify the active source snapshot.
 Gold evidence is used for evaluation, not index construction or retrieval.
 
@@ -100,17 +103,18 @@ the default query policy does not filter edges by reciprocity.
 
 The `linked_v2` experiment also stores normalized answer anchors and exact
 cross-source mentions. These optional relations do not change the legacy
-primary graph. Prepared MuSiQue paragraphs are individual source files, so
-cross-source exclusion need not imply different article titles.
+primary graph. Source-file exclusion is defined by prepared file identity; it
+does not by itself guarantee that linked passages have different article titles.
 
 ## Structured generation contracts
 
-`core/structured_outputs.py` defines schemas for question generation, role
-rewriting, refinement, and candidate selection. Requests use strict JSON-schema
-response formats through the common gateway. Validators reject extra fields,
-wrong types, duplicate keys, malformed JSON, refusals, and incomplete responses.
-Ranking requires exactly the requested number of distinct IDs from the supplied
-candidate pool; it does not fill missing IDs or repair rankings.
+`core/structured_outputs.py` defines schemas for index question generation and
+candidate selection. Requests use strict JSON-schema response formats through
+the common gateway. Validators reject extra fields, wrong types, duplicate
+keys, malformed JSON, refusals, and incomplete responses. Ranking requires
+exactly the requested number of distinct IDs from the supplied candidate pool.
+Initial question rewriting and document-conditioned refinement, including their
+schemas, prompts, length gates and configuration fields, have been removed.
 
 `prehop-json-schema-v3` omits unsupported wire keywords such as `uniqueItems`
 while enforcing uniqueness locally. Materialized schema and prompt digests are
@@ -123,29 +127,27 @@ not select among valid outputs by quality. Final synthesis remains text output.
 
 The primary settings use depth one, full NEXT/HOP expansion, Q−/body/Q+ search,
 Q+-owner activation, unfiltered stored links, and final LLM evidence selection.
-Questions of at most 32 words receive role-aligned rewriting and iterative
-refinement; longer questions use their original text on all enabled channels.
+Prehop uses the original query on every enabled channel at every input length.
+Retrieval executes once. Retrieved evidence does not generate further questions
+or trigger re-search. This query change reuses the existing index; construction
+identity hashes cover index prompts and schemas independently of query prompts.
 
 1. Search each enabled representation with vector and full-text search.
 2. Merge representation hits into owner passages while retaining question IDs.
 3. Expand stored NEXT and activated HOP links from the starting-passage pool.
 4. Score the complete candidate union and select up to 12 passages by LLM.
-5. For refinement-eligible inputs, repeat while new views select new evidence.
-6. Synthesize a short answer from selected evidence, or return the fixed
+5. Synthesize a short answer from selected evidence, or return the fixed
    insufficient-evidence response for empty context.
 
 `retrieval/hybrid.py` sorts vector and lexical results independently by raw
 score and stable identity, then combines reciprocal ranks `1 / (rank + 1)`.
-Raw scores are not mixed across modalities. `retrieval/retrieve.py` fuses views
-within each role before fusing roles, avoiding extra weight merely from having
-more rewrites. The complete owner union becomes the base candidate pool.
-
-The original question searches bodies. Role views search their question
-channels and, under the default selection policy, also search bodies. Additional
-role-body-only hits join the selection pool but do not seed graph expansion.
-Each representation retains at most top-k owners with candidate multiplier one;
-additional views can enlarge the full union. Question searches allocate three
-times the owner budget before collapsing individual questions to their owners.
+Raw scores are not mixed across modalities. `retrieval/retrieve.py` sends the
+original query once to each enabled role (body, Q−, and Q+), using the same
+query embedding. Body and sentence hits are fused before owner aggregation.
+The complete owner union becomes the base candidate pool.
+Each representation retains at most top-k owners with candidate multiplier one.
+Question searches allocate three times the owner budget before collapsing
+individual questions to their owners.
 
 `retrieval/traversal.py` walks NEXT in both directions and HOP only in its
 stored direction. Under the default `HOP_SEED_POLICY=qplus`, only passages
@@ -162,12 +164,9 @@ candidates. Semantic and representation orders are fused by reciprocal rank.
 The default LLM selector receives all candidates as numbered passages, without
 gold labels, retrieval scores, or path metadata.
 
-Refinement stops when no new role view or selected passage appears.
-`RAG_QUERY_REFINEMENT_MAX_ROUNDS=0` adds no numeric round cap; a positive value
-limits follow-up generation. The trace records rounds and stop reasons.
-Depth zero disables graph expansion but does not independently disable rewriting
-or selection. Experimental channel, edge, reciprocal-filter, semantic-scoring,
-and linked-continuation switches remain distinct from the primary defaults.
+Depth zero disables graph expansion while preserving passage selection.
+Experimental channel, edge, reciprocal-filter, semantic-scoring, and
+linked-continuation switches remain distinct from the primary defaults.
 
 ## Explicit representation ablations
 
@@ -203,8 +202,10 @@ The native constructor scores question pairs with vector dot products and
 keyword Jaccard, then applies native destination selection and trimming.
 Prehop instead resolves each Q+ through an ANN Q− index with source exclusion.
 Both precompute connections; this architectural difference alone establishes
-neither novelty nor a retrieval or cost advantage. The older chunked edge helper
-functions in the adapter are not installed by the active setup.
+neither novelty nor a retrieval or cost advantage. Large edge groups use
+`models/hoprag/exact_edges.py` to score all candidate pairs in bounded blocks
+and retain native selection rules. The older approximate dense-top-k helper
+remains unused. Small groups use the native constructor.
 
 <a id="legacy-external-modules"></a>
 The historical external-module anchor resolves here for reference-checkout links.
@@ -244,7 +245,10 @@ External compatibility aliases are confined to validated native child processes.
 ## Evaluation output contract
 
 `cli/benchmark.py` records official MultiHop-RAG retrieval and QA measures,
-MuSiQue answer EM/F1, and separately named global paragraph-support metrics.
+with legacy dataset metrics retained in code. The HotpotQA adapter projects complete returned corpus sentences to title/index pairs via
+`utils/hotpotqa.py`, then applies Answer, Supporting Fact, and Joint scoring
+rules. The projection is gold-independent and shared across systems. Official
+scorer parity is tested; completed fullwiki experiments remain outstanding.
 Normalized/fuzzy fact recall is diagnostic and differs from the manuscript's
 literal exact-fact recall. Missing metric applicability is `-1`; evaluated
 nonmatches are zero. Terminal failures receive zero primary quality scores and
@@ -261,7 +265,9 @@ provide resume.
 validation. It emits the legacy `admitted` receipt label with
 `verification=disabled_by_user`; it does not recalculate metrics or certify
 publication eligibility. Runtime and index checks remain separate. Optional
-analysis tools are not automatic completion gates.
+analysis tools are not automatic completion gates. The synchronous benchmark
+entrypoint finishes after query evaluation and resource cleanup; it does not
+submit or reconcile an asynchronous Batch judge job.
 
 ## Complete-index reuse for final benchmarks
 
@@ -292,7 +298,7 @@ in [the measurement protocol](THROUGHPUT_EXECUTION.md#final-tables-and-measureme
 ## Prehop tracing
 
 `models/prehop/tracing.py` records stage inputs/outputs, embeddings, Cypher,
-candidates, refinement, and answers. Tracing is enabled by default;
+candidates and answers. Tracing is enabled by default;
 `RAG_PREHOP_TRACE=false` disables it and `RAG_PREHOP_TRACE_DIR` selects storage.
 Each engine reserves `data/traces/<run-id>/prehop/<namespace>/<session-id>/`.
 Ordered `events.jsonl` entries refer to hashed compressed payloads. Index and
@@ -319,3 +325,31 @@ their actual provenance. The separate `paper_campaign.py`/`run_paper_matrix.sh`
 legacy full-matrix path still has an explicit evidence ledger. Its checks must
 not be described as automatic final policy validation or as the rolling
 controller's dispatch policy. See [execution procedures](THROUGHPUT_EXECUTION.md).
+
+## Research diagrams
+
+The [manuscript](prehop_paper.md) uses three editable diagrams:
+[overview](../fig/prehop_paper_overview.svg),
+[query retrieval](../fig/prehop_paper_retrieval.svg), and
+[passage-link example](../fig/prehop_paper_links.svg).
+They describe the current single-pass paper design. HOP links come from
+question matching; NEXT links come from within-source passage order. Original-
+query retrieval and stored-link traversal contribute to a deduplicated candidate
+set before selection. There is no input-length branch or query rewriting. A/B/C conditions
+use the separate controls in [the ablation specification](PAPER_ABLATION_DESIGN.md).
+Unreferenced legacy SVG/drawio schematics are retained under `fig/archive/`;
+they document superseded designs and must not be used as current paper figures.
+Export and target-display checks are tracked in [the manuscript checklist](PAPER_CHECKLIST.md#figures-and-export-stability).
+
+### Direct retrieval and stored-link traversal
+
+The query diagram distinguishes two routes into one candidate set. The original
+query searches body, Q−, and Q+ representations; question hits map to owner
+passages before rank fusion. All direct candidates remain in the pool. In the
+primary policy, Q+-matched starting passages expose stored outgoing HOP links;
+NEXT supplies previous and next passages from retrieved starts. Both edge types
+are written during indexing. Query-time traversal reads destinations, without
+new link construction. Merge candidates by passage identity before final
+selection; a passage can occur on both routes. Candidate membership is distinct
+from inclusion in the final answer evidence. The timing ablation deliberately
+changes when HOP destinations are resolved and is not the primary query flow.

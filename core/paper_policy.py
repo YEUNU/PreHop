@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import string
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +23,10 @@ _METHOD_PREFIXES = {
     "linear_rag": ("RAG_LINEAR_RAG_",),
 }
 
+# These configure Prehop graph traversal/building, not the HopRAG adapter.
+_PREHOP_HOP_ENVIRONMENT = {"RAG_HOP_GATHER_WAVE", "RAG_HOP_BUILD_CONCURRENCY",
+                           "RAG_HOP_SEMANTIC_VARIANT", "RAG_HOP_EDGE_FILTER"}
+
 
 def method_environment_defaults(env_path: Path | None = None) -> dict[str, str]:
     """Freeze registry defaults and unknown dotenv method keys without reading values."""
@@ -35,6 +38,7 @@ def method_environment_defaults(env_path: Path | None = None) -> dict[str, str]:
             defaults[name] = str(value).lower() if isinstance(value, bool) else str(value)
         allowed.update({spec.output_env, f"RAG_{strategy.upper()}_ROOT", f"RAG_{strategy.upper()}_PYTHON"})
     allowed.update(defaults)
+    allowed.update(_PREHOP_HOP_ENVIRONMENT)
     path = env_path if env_path is not None else Path(__file__).resolve().parents[1] / ".env"
     prefixes = tuple(prefix for values in _METHOD_PREFIXES.values() for prefix in values)
     if path.is_file():
@@ -100,6 +104,8 @@ def validate_paper_semantic_environment(strategy: str, dataset: str) -> None:
                 _strict_env_value(name, expected)
     method_prefixes = _METHOD_PREFIXES.get(strategy, ())
     allowed = set(mappings)
+    if strategy == "hoprag":
+        allowed.update(_PREHOP_HOP_ENVIRONMENT)
     allowed.update(
         {
             spec.output_env,
@@ -154,28 +160,12 @@ def structured_query_identity(strategy: str) -> dict[str, str]:
 def canonical_query_policy(strategy: str) -> dict[str, Any]:
     """Return the sole checked-in benchmark policy for a core strategy."""
     policy = {field: value for field, _environment, value in get_strategy(strategy).paper_query_policy}
+    if strategy == "prehop":
+        policy["query_execution"] = "original-question-single-retrieval-v1"
     policy.update(structured_query_identity(strategy))
     from core.paper_compatibility import method_identity
     policy.update(method_identity(strategy))
     return policy
-
-
-def native_dataset_name(strategy: str, dataset: str) -> str:
-    aliases = dict(get_strategy(strategy).dataset_aliases)
-    return aliases.get(dataset, dataset)
-
-
-def approved_youtu_schema(dataset: str) -> dict[str, str]:
-    native = native_dataset_name("youtu_graphrag", dataset)
-    schemas = runtime_requirement("youtu_graphrag").get("approved_schemas")
-    if not isinstance(schemas, dict) or not isinstance(schemas.get(native), dict):
-        raise TypeError(f"Youtu has no approved schema for dataset alias {dataset!r} -> {native!r}")
-    schema = schemas[native]
-    path = str(schema.get("path") or "")
-    digest = str(schema.get("sha256") or "").lower()
-    if not path or len(digest) != 64 or any(char not in string.hexdigits.lower() for char in digest):
-        raise RuntimeError(f"Youtu approved schema manifest is malformed for {native}")
-    return {"native_dataset": native, "path": path, "sha256": digest}
 
 
 def canonical_semantic_index_policy(strategy: str, dataset: str) -> dict[str, Any]:
@@ -202,10 +192,13 @@ def canonical_semantic_index_policy(strategy: str, dataset: str) -> dict[str, An
     }
     if spec.revision is not None:
         policy["official_revision"] = spec.revision
-    from core.paper_compatibility import method_identity
-    policy.update(method_identity(strategy))
+    from core.paper_compatibility import index_method_identity
+    policy.update(index_method_identity(strategy))
     policy.update(dict(spec.paper_index_policy))
-    policy.update(structured_query_identity(strategy))
+    if strategy in {"prehop", "naive"}:
+        from core.structured_outputs import PREHOP_STRUCTURED_PROFILE, structured_index_bundle_sha256
+        policy.update(structured_output_profile=PREHOP_STRUCTURED_PROFILE,
+                      structured_schema_bundle_sha256=structured_index_bundle_sha256())
     if strategy == "gfm_rag":
         approved = runtime_requirement("gfm_rag").get("checkpoint_file_sha256", {})
         if not isinstance(approved, dict):
@@ -214,18 +207,6 @@ def canonical_semantic_index_policy(strategy: str, dataset: str) -> dict[str, An
             {
                 "gfm_checkpoint_sha256": approved.get("model.pth"),
                 "gfm_config_sha256": approved.get("config.json"),
-            }
-        )
-    if strategy == "youtu_graphrag":
-        from core.native_structured_profile import native_youtu_profile_sha256 as youtu_profile_sha256
-        policy["extraction_schema_sha256"] = youtu_profile_sha256()
-        schema = approved_youtu_schema(dataset)
-        policy.update(
-            {
-                "dataset_alias": schema["native_dataset"],
-                "no_chunk": schema["native_dataset"] in {"hotpot", "musique"},
-                "schema_sha256": schema["sha256"],
-                "schema_expected_sha256": schema["sha256"],
             }
         )
     return policy
@@ -251,13 +232,6 @@ def validate_canonical_index_policy(
     observed_digest = semantic_config_sha256(policy)
     if recorded_sha256 is not None and recorded_sha256 != observed_digest:
         raise RuntimeError("stored index policy digest does not match its policy content")
-    if strategy == "youtu_graphrag":
-        schema_path = str(raw_policy.get("schema_path", "") or "")
-        if schema_path:
-            approved_parts = Path(approved_youtu_schema(dataset)["path"]).parts
-            observed_parts = Path(schema_path).parts
-            if len(observed_parts) < len(approved_parts) or observed_parts[-len(approved_parts) :] != approved_parts:
-                raise RuntimeError("Youtu canonical policy has an invalid runtime schema_path")
     expected = canonical_semantic_index_policy(strategy, dataset)
     expected["operational_config"] = canonical_operational_policy(strategy)
     # Historical indexes keep their measured generation seed; changing the
@@ -266,6 +240,16 @@ def validate_canonical_index_policy(
         expected['generation_seed'] = observed['generation_seed']
     if 'generation_seed' in observed.get('operational_config', {}):
         expected['operational_config']['generation_seed'] = observed['operational_config']['generation_seed']
+    from core.paper_compatibility import preserve_legacy_core_index_identity
+    preserve_legacy_core_index_identity(strategy, observed, expected)
+    # Historical core indexes used one bundle for index and query schemas.
+    # Its index schemas are unchanged; the removed query schemas do not affect
+    # materialized nodes or links. Recognize only this verified bundle pair.
+    if strategy in {"prehop", "naive"} and (
+        observed.get("structured_schema_bundle_sha256") == "2b09963a5ecad5f62071b66d2252338c19f7cd91548c87430cdfb83eaf42ad90"
+        and expected.get("structured_schema_bundle_sha256") == "ffce0eb4e429829a49ee0e47308d58c01d8c6ab5ebcb90f421ab566baf1ad03d"
+    ):
+        expected["structured_schema_bundle_sha256"] = observed["structured_schema_bundle_sha256"]
     if observed != expected:
         missing = sorted(set(expected) - set(observed))
         extra = sorted(set(observed) - set(expected))

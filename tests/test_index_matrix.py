@@ -8,7 +8,7 @@ def test_primary_index_matrix_is_complete_and_unique():
     rows = index_matrix.targets('campaign')
     assert len(rows) == 14
     assert len({row['run_id'] for row in rows}) == 14
-    assert {row['dataset'] for row in rows} == {'multihoprag', 'musique'}
+    assert {row['dataset'] for row in rows} == {'multihoprag', 'hotpotqa'}
 
 
 def test_source_digest_detects_execution_edits(tmp_path, monkeypatch):
@@ -39,7 +39,7 @@ def test_smoke_failure_blocks_only_its_target_and_never_claims_admission(tmp_pat
     calls = []
     def run(command, *args):
         calls.append(command)
-        return int(command[-1] == 'smoke' and command[command.index('--dataset')+1] == 'musique')
+        return int(command[-1] == 'smoke' and command[command.index('--dataset')+1] == 'hotpotqa')
     monkeypatch.setattr(paper_campaign, 'run_child', run)
     class Queue:
         def __init__(self, _): pass
@@ -53,6 +53,6 @@ def test_smoke_failure_blocks_only_its_target_and_never_claims_admission(tmp_pat
     assert status['complete_indexes'] == 1
     assert status['benchmark_admitted'] is False
     assert status['targets']['multihoprag/prehop']['state'] == 'index_complete'
-    assert status['targets']['musique/prehop']['state'] == 'blocked_by_smoke_failure'
+    assert status['targets']['hotpotqa/prehop']['state'] == 'blocked_by_smoke_failure'
     assert len(calls) == 3
     assert status['owned_cleanup_complete'] is True

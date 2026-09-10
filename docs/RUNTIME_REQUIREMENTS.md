@@ -1,5 +1,10 @@
 # Runtime Requirements
 
+The revised Prehop design removes initial query rewriting and evidence-conditioned
+query regeneration/re-search. The original query searches all three channels at
+every input length. The runtime uses this single-pass policy. Earlier Prehop scores and costs have been removed from paper reporting. New
+results are pending and require separate compatible full-run artifacts.
+
 `core/strategy_registry.py` defines supported methods, pinned upstream revisions,
 and paper policies. `configs/paper_runtime_requirements.json` defines required
 Python versions, packages, local model revisions, and content hashes. This guide
@@ -155,6 +160,15 @@ edit. Client waiting may include the queue; a timeout does not prove upstream
 inference was cancelled. Selected native parameter parity does not imply fully
 upstream-identical execution after shared model/transport adaptations.
 
+### Original-question retrieval
+
+Prehop sends the original question to its enabled search channels and retrieves
+once. Initial rewriting and evidence-conditioned refinement have been removed,
+including their response schemas and 32-word condition. Existing indexes remain
+reusable when their construction settings match. Historical combined prompt
+hashes are recognized only for the exact unchanged construction contracts;
+source index records retain their original provenance.
+
 ## Completion and campaign scope
 
 `record_paper_completion.py` records finished execution without final paper-policy
@@ -193,3 +207,46 @@ ignored. Ignoring a file is not permission to delete evidence referenced by a
 retained or active run. `.env` stays private; public examples contain no secrets.
 Prehop trace and intermediate-output storage must be writable. See
 [Prehop tracing](ARCHITECTURE.md#prehop-tracing) for its data and timing contract.
+
+
+### HopRAG edge recovery
+
+Runtime validation dispatches to the selected method's own validator. Start new
+index attempts in fresh campaign namespaces; directories from failed readiness
+checks do not establish reusable indexes.
+
+Large HopRAG edge groups use bounded exhaustive scoring in the adapter. All
+answerable candidates are scored; no dense-only top-k prefilter is used. Native
+document-pair sparse scores, duplicate-question grouping, tie order and final
+edge selection are retained. Twenty-four fixtures matched native edge outputs
+under the pinned pandas 2 runtime, including tied scores. This is validation of
+those fixtures, not a guarantee of every possible numerical boundary case.
+Cached nodes are reused; recovery costs retain prior attempt time separately.
+
+The cached recovery launcher, `scripts/resume_hoprag_cached.py`, applies the
+registered `RAG_HOP_DOC_WORKERS=10` before runtime validation. It removes the
+retired `RAG_HOP_MAX_THREADS`, `RAG_HOP_GATHER_WAVE`,
+`RAG_HOP_BUILD_CONCURRENCY`, `RAG_HOP_SEMANTIC_VARIANT`, and
+`RAG_HOP_EDGE_FILTER` launch overrides. The launcher validates the actual
+HopRAG runtime before reuse; passing preflight does not establish completed
+edge construction.
+The pinned upstream source is unchanged.
+
+## Paper benchmark scope
+
+The paper targets MultiHop-RAG and HotpotQA fullwiki. Runtime preflight has been
+checked for all seven primary methods, including their public shell entrypoints.
+The 5,233,329-paragraph corpus and all 7,405 development queries passed complete
+archive, file, provenance and sentence-store verification; official scorer parity
+is tested. One upstream unavailable sentence label is preserved as documented in
+[HOTPOTQA_FULLWIKI](HOTPOTQA_FULLWIKI.md). Fullwiki model indexes and benchmark
+results remain unmeasured. The shared projection predicts complete original sentences present in
+returned passages without using gold support labels. Repository-owned launchers and evaluation code support only these two datasets;
+additional dataset support in pinned upstream packages is outside the paper.
+
+Model-specific shell and Python launchers select HopRAG's pinned main runtime
+instead of the common main interpreter. Its observed runtime identity is read
+from that interpreter. The HopRAG document worker setting is 10. Prehop's shared
+`RAG_HOP_GATHER_WAVE`, `RAG_HOP_BUILD_CONCURRENCY`, `RAG_HOP_SEMANTIC_VARIANT` and
+`RAG_HOP_EDGE_FILTER` settings do not configure HopRAG and are not treated as
+unknown HopRAG overrides. Native upstream files remain unchanged.

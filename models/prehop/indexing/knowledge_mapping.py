@@ -234,7 +234,6 @@ class KnowledgeMappingMixin:
                     messages,
                     "Q-/Q+ generation",
                     f"title={title!r}",
-                    required_fields={"q_minus": list, "q_plus": list},
                     structured_contract=question_contract("index", question_schema, RAGConfig.QUESTIONS_PER_DIRECTION),
                     **request_settings("question_index"),
                 )

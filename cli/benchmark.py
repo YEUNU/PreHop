@@ -32,12 +32,12 @@ logger = logging.getLogger("Prehop")
 # Expected row counts for the exact official splits prepared by this
 # repository.  Scope is determined from the rows actually evaluated, never
 # merely from a filename.
-OFFICIAL_SPLIT_QUERY_COUNTS = {"multihoprag": 2556, "musique": 2417}
+OFFICIAL_SPLIT_QUERY_COUNTS = {"multihoprag": 2556, "hotpotqa": 7405}
 # Canonical official prepared-manifest identity.  Each value is
 # SHA256("\n".join(sorted(row["_id"] for row in official_rows))).
 OFFICIAL_QUERY_ID_DIGESTS = {
+    "hotpotqa": "8f1a1b80b352ff578988c4dfb320f44dc7c08c5e4d4b86ef132598271a0adb00",
     "multihoprag": "e683a5bf5807edf5f06612066f2ad5fa0b0b08f61a726a71ec28afd8e66177b0",
-    "musique": "a66b2c776f9b9777123da3bb2317a29cd5d30e4085e6c758142187d83c23a8bc",
 }
 CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
 INDEX_STATS_DIR = Path("data/index_stats")
@@ -76,6 +76,7 @@ def _load_benchmark_corpus_manifest(dataset: str, queries_file: str | Path) -> d
         "paragraph_count": paragraph_count,
         "query_ids_sha256": query_digest,
         "query_records_sha256": query_records_digest,
+        **{k: manifest[k] for k in ("protocol", "sentence_store_sha256", "official_archive_verified") if k in manifest},
     }
     if manifest.get("schema_version") == 2:
         # A v2 manifest is content-bound. Verify its persisted bytes and the
@@ -89,7 +90,6 @@ def _load_benchmark_corpus_manifest(dataset: str, queries_file: str | Path) -> d
         loaded.update(
             {
                 "schema_version": 2,
-                "paragraph_ids_sha256": validated.get("paragraph_ids_sha256"),
                 "source_ids_sha256": validated.get("source_ids_sha256"),
                 "corpus_records_sha256": validated.get("corpus_records_sha256"),
                 "corpus_files_sha256": validated.get("corpus_files_sha256"),
@@ -177,7 +177,7 @@ def _validate_corpus_index_fingerprint(
 ) -> str:
     """Protect full benchmarks from corpus, index, or query identity mismatch."""
     if corpus_manifest is None:
-        if evaluation_scope == "full_benchmark" and dataset in {"multihoprag", "musique"}:
+        if evaluation_scope == "full_benchmark" and dataset in {"multihoprag", "hotpotqa"}:
             raise RuntimeError(f"Full {dataset} benchmark requires corpus_manifest.json")
         return "manifest_absent"
     if evaluation_scope == "full_benchmark" and corpus_manifest.get("query_ids_sha256") != evaluated_query_ids_sha256:
@@ -201,7 +201,7 @@ def _validate_corpus_index_fingerprint(
         if evaluation_scope == "full_benchmark":
             raise RuntimeError("Corpus manifest fingerprint does not match completed index artifact")
         return "mismatch_exploratory"
-    if evaluation_scope == "full_benchmark" and dataset in {"multihoprag", "musique"}:
+    if evaluation_scope == "full_benchmark" and dataset in {"multihoprag", "hotpotqa"}:
         from core.paper_policy import validate_canonical_index_policy
 
         stored_policy = index_manifest.get("index_policy")
@@ -473,7 +473,7 @@ def _apply_judge_label(result_item: dict[str, Any]) -> None:
     result_item["final_answer_extracted"] = final_answer[:300]
 
     # The headline correctness/label is deterministic.  A null query uses its
-    # explicit refusal metric; other rows use EM (MuSiQue's EM is alias-aware).
+    # explicit refusal metric; other rows use EM.
     primary = (
         result_item.get("null_refusal")
         if result_item.get("question_type") == "null_query"
@@ -616,12 +616,7 @@ def _assert_benchmark_complete(summary: dict[str, Any], result_file: Path) -> No
         if summary.get("eligible_primary_answer_score_count") != len(rows):
             failures.append("not every full-scope row has an eligible deterministic primary answer score")
         dataset = str(summary.get("dataset", "")).lower()
-        if dataset == "musique":
-            if any(not (row.get("expected_sources") or {}).get("paragraph_ids") for row in rows):
-                failures.append("MuSiQue row(s) missing evidence_paragraph_ids")
-            if summary.get("eligible_paragraph_support_f1_count") != len(rows):
-                failures.append("MuSiQue paragraph support is ineligible for one or more rows")
-        elif dataset == "multihop-rag":
+        if dataset == "multihop-rag":
             for row in rows:
                 facts = (row.get("expected_sources") or {}).get("facts") or []
                 if facts and _safe_float(row.get("official_mrr@10"), -1.0) < 0:
@@ -636,7 +631,7 @@ def _validate_benchmark_data(benchmark_data: Any, source: str) -> list[dict[str,
         raise TypeError(f"Benchmark file must contain a JSON list: {source}")
     if not benchmark_data:
         raise ValueError(f"Benchmark file contains no queries: {source}")
-    supported = {"multihoprag", "musique"}
+    supported = {"multihoprag", "hotpotqa"}
     validated: list[dict[str, Any]] = []
     dataset_markers: set[str] = set()
     query_ids: set[str] = set()
@@ -661,17 +656,12 @@ def _validate_benchmark_data(benchmark_data: Any, source: str) -> list[dict[str,
         ground_truth = item.get("ground_truth")
         if not isinstance(ground_truth, str) or not ground_truth.strip():
             raise ValueError(f"Benchmark row {idx} has no non-empty 'ground_truth'")
-        if marker.strip().lower() == "musique":
-            paragraph_ids = item.get("evidence_paragraph_ids")
-            if (
-                not isinstance(paragraph_ids, list)
-                or not paragraph_ids
-                or any(not isinstance(v, str) or not v.strip() for v in paragraph_ids)
-            ):
-                raise ValueError(
-                    f"MuSiQue row {idx} lacks non-empty evidence_paragraph_ids; "
-                    "regenerate with scripts/datasets/prepare_musique.py and reindex"
-                )
+        if marker.strip().lower() == "hotpotqa":
+            facts = item.get("supporting_facts")
+            if item.get("protocol") != "hotpotqa-fullwiki-dev-v1" or not isinstance(facts, list) or not facts:
+                raise ValueError("HotpotQA requires fullwiki protocol and sentence-level supporting facts")
+            if any(not isinstance(f, list) or len(f) != 2 or not isinstance(f[0], str) or type(f[1]) is not int or f[1] < 0 for f in facts):
+                raise ValueError("Invalid HotpotQA supporting-fact identity")
         else:
             for field in ("evidence_facts", "evidence_docs"):
                 if not isinstance(item.get(field), list):
@@ -779,7 +769,6 @@ def _resume_benchmark_rows(
             if "candidate_order_shuffle_seed" not in observed and "rerank_shuffle_seed" in observed:
                 observed["candidate_order_shuffle_seed"] = observed.pop("rerank_shuffle_seed")
             observed.setdefault("graph_path_decay", 0.5)
-            observed.setdefault("query_refinement_max_rounds", 0)
             observed.setdefault("final_rank_variant", "fused")
         if observed != expected:
             raise RuntimeError(
@@ -864,179 +853,6 @@ def _order_benchmark_rows(rows: list[dict[str, Any]]) -> None:
     rows.sort(key=lambda row: int(row["idx"]))
 
 
-def _result_json_in_seed_dir(seed_dir: Path) -> Path:
-    candidates = [
-        path
-        for path in seed_dir.glob("*.json")
-        if not path.name.endswith(
-            (
-                ".summary.json",
-                ".stage_diagnostics.json",
-                ".pending_judge.json",
-            )
-        )
-        and path.name != "seeds_aggregate.json"
-    ]
-    if len(candidates) != 1:
-        raise RuntimeError(f"Expected one benchmark result in {seed_dir}, found {len(candidates)}")
-    return candidates[0]
-
-
-def _refresh_seed_aggregate(seeds_root: Path) -> None:
-    """Rebuild a multi-seed aggregate after every seed's judge has resolved."""
-    aggregate_file = seeds_root / "seeds_aggregate.json"
-    if not aggregate_file.exists():
-        return
-
-    prior = _read_json_file(aggregate_file)
-    seeds = prior.get("seeds") or []
-    summaries: list[dict[str, Any]] = []
-    for seed in seeds:
-        result_file = _result_json_in_seed_dir(seeds_root / f"seed_{int(seed)}")
-        summary = _read_json_file(result_file)
-        if summary.get("status") != "completed_unadmitted":
-            prior["status"] = "failed"
-            prior["aggregate"] = {}
-            _write_json(aggregate_file, prior)
-            return
-        _assert_benchmark_complete(summary, result_file)
-        summaries.append(summary)
-
-    prior.update(
-        {
-            "n_seeds": len(summaries),
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "status": "completed_unadmitted",
-            "aggregate": _aggregate_seed_summaries(summaries),
-        }
-    )
-    _write_json(aggregate_file, prior)
-
-
-async def reconcile_pending_judges(run_dir: Path) -> int:
-    """Resolve and atomically apply all pending OpenAI judge batches.
-
-    All expected custom IDs must be present before a result is changed. A
-    failed or partial batch therefore leaves its manifest and unjudged result
-    intact for inspection or retry instead of publishing a partial metric.
-    """
-    _ = run_dir
-    raise RuntimeError("Public OpenAI Batch judge jobs are disabled; use the declared LiteLLM gateway synchronously")
-
-    from utils.batch_judge import resolve_batches
-    from utils.metrics import _resolve_judge_fields
-
-    run_dir = Path(run_dir).resolve()
-    manifests = sorted(run_dir.rglob("*.pending_judge.json"))
-    if not manifests:
-        return 0
-    if not RAGConfig.OPENAI_API_KEY:
-        raise RuntimeError(f"{len(manifests)} judge batch(es) are pending but OPENAI_API_KEY is missing")
-
-    loaded: list[tuple[Path, dict[str, Any], Path]] = []
-    errors: list[str] = []
-    for manifest_path in manifests:
-        try:
-            manifest = _read_json_file(manifest_path)
-            batch_id = str(manifest.get("batch_id", "")).strip()
-            result_file = Path(str(manifest.get("result_file", ""))).resolve()
-            if not batch_id:
-                raise ValueError("batch_id is empty")
-            if not result_file.is_relative_to(run_dir):
-                raise ValueError(f"result_file escapes run directory: {result_file}")
-            if not result_file.is_file():
-                raise FileNotFoundError(f"result file not found: {result_file}")
-            loaded.append((manifest_path, manifest, result_file))
-        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            errors.append(f"{manifest_path}: {exc}")
-
-    if errors:
-        raise RuntimeError("Invalid judge manifest(s): " + "; ".join(errors))
-
-    batch_ids = [str(manifest["batch_id"]) for _, manifest, _ in loaded]
-    logger.info("Resolving %d OpenAI judge batch(es) in parallel", len(batch_ids))
-    resolved = await asyncio.to_thread(
-        resolve_batches,
-        RAGConfig.OPENAI_API_KEY,
-        batch_ids,
-        RAGConfig.JUDGE_BATCH_POLL_SECONDS,
-    )
-
-    patched_files = 0
-    seed_roots: set[Path] = set()
-    unresolved: list[str] = []
-    for manifest_path, manifest, result_file in loaded:
-        batch_id = str(manifest["batch_id"])
-        payloads = resolved.get(batch_id) or {}
-        summary = _read_json_file(result_file)
-        rows = summary.get("details") or []
-        expected_ids = {
-            str(row["judge_custom_id"])
-            for row in rows
-            if row.get("judge_custom_id") is not None and _safe_float(row.get("llm_judge_score"), -1.0) < 0
-        }
-        submitted = int(manifest.get("submitted", 0) or 0)
-        if submitted != len(expected_ids):
-            unresolved.append(f"{batch_id}: manifest submitted={submitted}, deferred rows={len(expected_ids)}")
-            continue
-        missing = sorted(custom_id for custom_id in expected_ids if payloads.get(custom_id) is None)
-        if not expected_ids:
-            unresolved.append(f"{batch_id}: result has no deferred judge rows")
-            continue
-        if missing:
-            unresolved.append(f"{batch_id}: missing {len(missing)}/{len(expected_ids)} result payload(s)")
-            continue
-
-        judge_model = str(manifest.get("judge_model", ""))
-        invalid_payloads = []
-        for row in rows:
-            custom_id = row.get("judge_custom_id")
-            if custom_id is None or str(custom_id) not in expected_ids:
-                continue
-            resolved_fields = _resolve_judge_fields(
-                payloads[str(custom_id)],
-                # Use a substantive sentinel so abstention rules cannot mask
-                # missing explicit context-axis fields during validation.
-                "substantive answer",
-                judge_model,
-            )
-            if resolved_fields["llm_judge_score"] < 0 or resolved_fields["groundedness"] < 0:
-                invalid_payloads.append(str(custom_id))
-        if invalid_payloads:
-            unresolved.append(
-                f"{batch_id}: {len(invalid_payloads)}/{len(expected_ids)} payload(s) "
-                "missing valid score or groundedness"
-            )
-            continue
-
-        for row in rows:
-            custom_id = row.get("judge_custom_id")
-            if custom_id is None or str(custom_id) not in expected_ids:
-                continue
-            row.update(_resolve_judge_fields(payloads[str(custom_id)], row.get("answer", ""), judge_model))
-            row.pop("_deferred_judge", None)
-            _apply_judge_label(row)
-
-        _recompute_aggregates(summary)
-        _update_summary_status(summary)
-        _write_slim_main(summary, result_file)
-        _write_model_report_artifacts(summary, result_file, preserve_trace_artifacts=True)
-        manifest_path.unlink()
-        patched_files += 1
-        try:
-            _assert_benchmark_complete(summary, result_file)
-        except RuntimeError as exc:
-            unresolved.append(str(exc))
-        if result_file.parent.name.startswith("seed_"):
-            seed_roots.add(result_file.parent.parent)
-
-    for seeds_root in seed_roots:
-        _refresh_seed_aggregate(seeds_root)
-    if unresolved:
-        raise RuntimeError("Judge reconciliation incomplete: " + "; ".join(unresolved))
-    return patched_files
-
-
 @exclusive_measurement
 async def run_benchmark(
     queries_file: str,
@@ -1062,7 +878,7 @@ async def run_benchmark(
         raise FileNotFoundError(f"Queries file not found: {queries_file}")
 
     # Validate the immutable evaluation manifest before creating engines or
-    # contacting inference services. This makes stale MuSiQue manifests fail
+    # contacting inference services. This makes stale corpus manifests fail
     # immediately instead of consuming a benchmark run with ineligible rows.
     benchmark_data = _validate_benchmark_data(
         await asyncio.to_thread(_read_json_file, queries_file),
@@ -1108,13 +924,13 @@ async def run_benchmark(
     manifest_query_records_sha256 = _query_records_sha256(benchmark_data)
 
     # Dataset dispatch via the per-query `dataset` marker. MultiHop-RAG and
-    # MuSiQue share one query schema, but their evidence
+    # HotpotQA share one query schema, but their evidence
     # units differ. The evaluator keeps deterministic answer EM/F1 primary,
     # uses title-level evidence P/R/F1 across datasets, and only runs
     # sentence/fact ranking metrics where the gold unit is aligned.
     _MULTIHOP_DATASET_NAMES = {
         "multihoprag": "MultiHop-RAG",
-        "musique": "MuSiQue",
+        "hotpotqa": "HotpotQA",
     }
     dataset_marker = (benchmark_data[0].get("dataset", "") if benchmark_data else "").strip().lower()
     if dataset_marker not in _MULTIHOP_DATASET_NAMES:
@@ -1131,6 +947,14 @@ async def run_benchmark(
         evaluated_query_ids_sha256,
     )
     corpus_manifest = _load_benchmark_corpus_manifest(dataset_marker, queries_file)
+    if dataset_marker == "hotpotqa":
+        sentence_store = Path(queries_file).parent / "hotpotqa_corpus/sentences.sqlite3"
+        if not corpus_manifest or corpus_manifest.get("protocol") != "hotpotqa-fullwiki-dev-v1":
+            raise BenchmarkIntegrityError("HotpotQA requires the official fullwiki corpus manifest")
+        if not sentence_store.is_file() or not corpus_manifest.get("sentence_store_sha256"):
+            raise BenchmarkIntegrityError("HotpotQA sentence mapping does not match the prepared corpus")
+        if evaluation_scope == "full_benchmark" and corpus_manifest.get("official_archive_verified") is not True:
+            raise BenchmarkIntegrityError("Full HotpotQA evaluation requires verified official corpus preparation")
     index_manifest = _latest_index_manifest_metadata(strategy, corpus_tag)
     benchmark_code = code_provenance()
     corpus_index_fingerprint_status = _validate_corpus_index_fingerprint(
@@ -1146,6 +970,11 @@ async def run_benchmark(
     try:
         if strategy == "prehop":
             engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
+            if RAGConfig.CONNECTION_TIMING_MODE:
+                from models.prehop.connection_timing import graph_fingerprint, metadata
+                timing_metadata = metadata(RAGConfig.CONNECTION_TIMING_STORE, os.environ["RAG_INDEX_NAMESPACE"])
+                if timing_metadata.get("graph_fingerprint") != await graph_fingerprint(engine):
+                    raise BenchmarkIntegrityError("Timing links and frozen representations differ")
         elif strategy == "naive":
             engine = NaiveRAG(strategy=strategy, corpus_tag=corpus_tag)
         elif strategy == "hoprag":
@@ -1208,7 +1037,6 @@ async def run_benchmark(
     result_file = output_results_dir / f"{strategy}_{corpus_tag}.json"
     summary: dict[str, Any] = {}
 
-    batch_collector = None
     if judge_enabled and RAGConfig.JUDGE_BATCH:
         raise RuntimeError("RAG_JUDGE_BATCH is disabled; supplemental judging must use the LiteLLM gateway")
     elif judge_enabled:
@@ -1283,9 +1111,6 @@ async def run_benchmark(
                     "hop_semantic_variant": RAGConfig.HOP_SEMANTIC_VARIANT,
                     "question_schema": RAGConfig.QUESTION_SCHEMA,
                     "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
-                    "query_rewrite_variant": RAGConfig.QUERY_REWRITE_VARIANT,
-                    "query_rewrite_max_words": RAGConfig.QUERY_REWRITE_MAX_WORDS,
-                    "query_refinement_max_rounds": RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS,
                     "default_top_k": RAGConfig.DEFAULT_TOP_K,
                     "candidate_pool_multiplier": RAGConfig.CANDIDATE_POOL_MULTIPLIER,
                     "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
@@ -1297,7 +1122,7 @@ async def run_benchmark(
                     **structured_query_identity(strategy),
                     **method_identity(strategy),
                     **(ablation_identity() if strategy == "prehop" else {}),
-                    **(canonical_query_policy(strategy) if strategy in {"hoprag", "linear_rag"} else {}),
+                    **(canonical_query_policy(strategy) if strategy in {"prehop", "hoprag", "linear_rag"} else {}),
                 },
             },
             judge_enabled=judge_enabled,
@@ -1389,9 +1214,6 @@ async def run_benchmark(
                 "hop_semantic_variant": RAGConfig.HOP_SEMANTIC_VARIANT,
                 "question_schema": RAGConfig.QUESTION_SCHEMA,
                 "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
-                "query_rewrite_variant": RAGConfig.QUERY_REWRITE_VARIANT,
-                "query_rewrite_max_words": RAGConfig.QUERY_REWRITE_MAX_WORDS,
-                "query_refinement_max_rounds": RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS,
                 "default_top_k": RAGConfig.DEFAULT_TOP_K,
                 "candidate_pool_multiplier": RAGConfig.CANDIDATE_POOL_MULTIPLIER,
                 "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
@@ -1403,7 +1225,7 @@ async def run_benchmark(
                     **structured_query_identity(strategy),
                     **method_identity(strategy),
                     **(ablation_identity() if strategy == "prehop" else {}),
-                    **(canonical_query_policy(strategy) if strategy in {"hoprag", "linear_rag"} else {}),
+                    **(canonical_query_policy(strategy) if strategy in {"prehop", "hoprag", "linear_rag"} else {}),
             },
         }
         if resume_metadata is not None:
@@ -1504,19 +1326,18 @@ async def run_benchmark(
                     retrieved_sources=retrieved_sources,
                     evidence_facts=item.get("evidence_facts", []),
                     evidence_docs=item.get("evidence_docs", []),
-                    evidence_paragraph_ids=item.get("evidence_paragraph_ids", []),
                     question_type=item.get("question_type", ""),
                     dataset=dataset_marker,
                     answer_aliases=item.get("answer_aliases", []),
                     vllm_client=vllm,
-                    batch_collector=batch_collector,
-                    custom_id=str(idx),
                     judge_enabled=judge_enabled,
+                    supporting_facts=item.get("supporting_facts"),
+                    hotpot_sentence_store=str(sentence_store) if dataset_marker == "hotpotqa" else None,
                 )
                 expected_sources = {
                     "docs": item.get("evidence_docs", []),
                     "facts": item.get("evidence_facts", []),
-                    "paragraph_ids": item.get("evidence_paragraph_ids", []),
+                    "supporting_facts": item.get("supporting_facts", []),
                 }
                 result_item = {
                     "idx": idx + 1,
@@ -1572,15 +1393,12 @@ async def run_benchmark(
                     "evidence_doc_recall": -1.0,
                     "evidence_doc_precision": -1.0,
                     "evidence_doc_f1": -1.0,
-                    "paragraph_support_precision": -1.0,
-                    "paragraph_support_recall": -1.0,
-                    "paragraph_support_f1": -1.0,
                 }
                 metrics.update({key: 0.0 for key in QUALITY_METRICS})
                 expected_sources = {
                     "docs": item.get("evidence_docs", []),
                     "facts": item.get("evidence_facts", []),
-                    "paragraph_ids": item.get("evidence_paragraph_ids", []),
+                    "supporting_facts": item.get("supporting_facts", []),
                 }
                 result_item = {
                     "idx": idx + 1,
@@ -1665,30 +1483,6 @@ async def run_benchmark(
     # resume, or a non-divisible checkpoint interval, cannot leave stale
     # aggregate metadata behind.
     summary = _recompute_and_persist()
-
-    if batch_collector is not None and batch_collector.count > 0:
-        pending_path = output_results_dir / f"{strategy}_{corpus_tag}.pending_judge.json"
-
-        def _persist_manifest(batch_id: str) -> None:
-            _write_json(
-                pending_path,
-                {
-                    "batch_id": batch_id,
-                    "judge_model": str(RAGConfig.EVAL_MODEL or ""),
-                    "result_file": str(result_file.resolve()),
-                    "strategy": strategy,
-                    "corpus_tag": corpus_tag,
-                    "dataset": dataset_name,
-                    "submitted": batch_collector.count,
-                    "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                },
-            )
-
-        batch_id = await batch_collector.submit(on_submitted=_persist_manifest)
-        if not batch_id:
-            raise RuntimeError("Judge batch contained requests but submission returned no batch ID")
-        summary = _recompute_and_persist()
-        logger.info("Judge batch %s submitted; pending manifest: %s", batch_id, pending_path)
 
     try:
         _write_model_report_artifacts(summary, result_file)

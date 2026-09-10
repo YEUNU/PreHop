@@ -71,13 +71,13 @@ def _prompt_sig() -> str:
 
 def _generation_signature(generation_model_id: str) -> str:
     from core.paper_compatibility import method_identity
-    from core.structured_outputs import PREHOP_STRUCTURED_PROFILE, structured_bundle_sha256
+    from core.structured_outputs import PREHOP_STRUCTURED_PROFILE, structured_index_bundle_sha256
 
     payload = "|".join(
         (
             str(generation_model_id or ""),
             PREHOP_STRUCTURED_PROFILE,
-            structured_bundle_sha256(),
+            structured_index_bundle_sha256(),
             json.dumps(method_identity("prehop"), sort_keys=True),
             os.environ.get("RAG_GENERATION_REVISION", "").strip(),
             os.environ.get("RAG_LLM_SEED", "").strip(),
@@ -208,7 +208,7 @@ def parse_pages_offline(filename: str, content: str) -> dict[str, Any]:
     if lines and lines[0].startswith("Title: "):
         title = lines[0].replace("Title: ", "").strip()
 
-    # MuSiQue preparation writes a stable paragraph identity for evaluation.
+    # Corpus preparation writes a stable paragraph identity for evaluation.
     # It is source metadata, not evidence text: remove it before splitting,
     # embedding, or prompting while retaining it for callers that need audit
     # metadata. Every benchmark adapter exposes the filename identity instead.

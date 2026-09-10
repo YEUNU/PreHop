@@ -64,7 +64,7 @@ def aggregate(campaign: str, stage: str, attempt: str, target_attempts: dict | N
     branch = 'cold_v2' if stage == 'cold_canary_16' else 'one_query'
     base = ROOT / 'data/results' / campaign / branch / validate_name(attempt)
     targets = {f'{dataset}/{strategy}': reference(ROOT / 'data/results' / campaign / branch / selected_attempt(attempt, target_attempts, f'{phase}/{dataset}/{strategy}') / dataset / strategy / 'evidence.json')
-               for dataset in ('multihoprag', 'musique') for strategy in PRIMARY_STRATEGIES}
+               for dataset in ('multihoprag', 'hotpotqa') for strategy in PRIMARY_STRATEGIES}
     path = base / 'matrix_evidence.json'
     save(path, {'schema_version': 1, 'stage': stage, 'status': 'canary_passed', 'targets': targets})
     record(ledger, stage, path)
@@ -323,9 +323,12 @@ def main() -> None:
     parser.add_argument('--attempt', default='a1')
     parser.add_argument('--target-attempts-json', default='{}')
     parser.add_argument('--strategy', default='naive')
-    parser.add_argument('--dataset', choices=['multihoprag', 'musique'], default='multihoprag')
+    parser.add_argument('--dataset', choices=['multihoprag', 'hotpotqa'], default='multihoprag')
     parser.add_argument('--mode', choices=['interrupt', 'resume'])
     args = parser.parse_args()
+    if args.action in {'one-query', 'full-target', 'reuse-target', '_reuse_benchmark'}:
+        from core.runtime_requirements import ensure_method_runtime
+        ensure_method_runtime(args.strategy)
     from scripts.check_paper_runtime import _load_runner_environment
     _load_runner_environment()
     validate_name(args.campaign)

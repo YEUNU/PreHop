@@ -85,7 +85,7 @@ async def test_transport_and_format_share_five_wire_attempts_and_disable_sdk_ret
     try:
         with pytest.raises(InternalServerError):
             await client.generate_json([{'role': 'user', 'content': 'unchanged'}],
-                                       structured_contract=question_contract('rewrite'), max_tokens=512)
+                                       structured_contract=question_contract('index'), max_tokens=512)
         totals = finish(token)
         assert len(requests) == totals['generation_calls'] == 5
         assert all(row == requests[0] for row in requests)

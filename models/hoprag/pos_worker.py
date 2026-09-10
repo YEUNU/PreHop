@@ -1,6 +1,13 @@
 """JSON-lines transport to PaddleNLP's native CPU POS task."""
-import contextlib,hashlib,json,os,shutil,sys,tempfile
+import contextlib
+import hashlib
+import json
+import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
+
 root=Path(__file__).resolve().parents[2]
 runtime=root/'data/runtime_envs/hoprag-paper-20260908'
 output=Path(os.environ['RAG_HOP_OUTPUT_ROOT']);output.mkdir(parents=True,exist_ok=True)
@@ -15,6 +22,6 @@ for line in sys.stdin:
     try:
         with contextlib.redirect_stdout(sys.stderr):result=task(json.loads(line))
         value={'result':result}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - report native failures without repair
         value={'error':f'{type(exc).__name__}: {exc}'}
     print(json.dumps(value,ensure_ascii=False),flush=True)

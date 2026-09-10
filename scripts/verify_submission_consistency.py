@@ -31,16 +31,6 @@ DATASETS = {
             "avg_official_map@10",
         ),
     },
-    "musique": {
-        "count": 2417,
-        "metrics": (
-            "avg_official_answer_em",
-            "avg_official_answer_f1",
-            "avg_paragraph_support_precision",
-            "avg_paragraph_support_recall",
-            "avg_paragraph_support_f1",
-        ),
-    },
 }
 
 STRATEGIES = PRIMARY_STRATEGIES
@@ -48,8 +38,6 @@ STRATEGIES = PRIMARY_STRATEGIES
 def _validate_primary_row(row: dict, expected: dict, dataset: str) -> list[str]:
     """Recompute primary scores from predictions and authoritative gold data."""
     from utils.metrics import (
-        calculate_answer_metrics,
-        calculate_musique_support_metrics,
         calculate_retrieval_ranking_metrics,
     )
 
@@ -61,19 +49,11 @@ def _validate_primary_row(row: dict, expected: dict, dataset: str) -> list[str]:
     gold_sources = {
         "docs": expected.get("evidence_docs", []),
         "facts": expected.get("evidence_facts", []),
-        "paragraph_ids": expected.get("evidence_paragraph_ids", []),
     }
-    if row.get("expected_sources") != gold_sources:
+    observed_sources = row.get("expected_sources") or {}
+    if {key: observed_sources.get(key, []) for key in gold_sources} != gold_sources:
         errors.append("expected_sources differs from current query manifest")
-    if dataset == "multihoprag":
-        scores = calculate_retrieval_ranking_metrics(sources, gold_sources["facts"])
-    else:
-        scores = calculate_answer_metrics(
-            answer, expected.get("ground_truth", ""),
-            answer_aliases=expected.get("answer_aliases", []),
-            question_type=expected.get("question_type", ""),
-        )
-        scores.update(calculate_musique_support_metrics(sources, gold_sources["paragraph_ids"]))
+    scores = calculate_retrieval_ranking_metrics(sources, gold_sources["facts"])
     if row.get("error"):
         scores = {key.removeprefix("avg_"): 0.0 for key in DATASETS[dataset]["metrics"]}
     for summary_key in DATASETS[dataset]["metrics"]:
@@ -107,9 +87,6 @@ def _semantic_model_config(payload: dict[str, Any], strategy: str | None = None)
     policy = dict(payload.get("index_provenance", {}).get("policy", {}))
     policy.pop("index_namespace", None)
     policy.pop("operational_config", None)
-    if strategy == "youtu_graphrag":
-        for field in ("dataset_alias", "schema_path", "schema_sha256", "schema_expected_sha256"):
-            policy.pop(field, None)
     return {
         "models": payload.get("models", {}),
         "index_policy": policy,
@@ -245,6 +222,7 @@ def _validate_detail_projection(details, compact, traces):
 
 def _validate_average_metrics(path, payload, details):
     import math
+
     from core.benchmark_failures import metric_value
 
     errors = []
@@ -453,12 +431,6 @@ def _validate_artifact(
         errors.append(f"{path}: GFM-RAG checkpoint SHA-256 provenance is missing")
     if strategy == "gfm_rag" and len(str(policy.get("gfm_config_sha256") or "")) != 64:
         errors.append(f"{path}: GFM-RAG config SHA-256 provenance is missing")
-    if strategy == "youtu_graphrag" and not str(policy.get("schema_path") or "").strip():
-        errors.append(f"{path}: Youtu schema provenance is missing")
-    if strategy == "youtu_graphrag" and len(str(policy.get("schema_sha256") or "")) != 64:
-        errors.append(f"{path}: Youtu schema SHA-256 provenance is missing")
-    if strategy == "youtu_graphrag" and policy.get("schema_expected_sha256") != policy.get("schema_sha256"):
-        errors.append(f"{path}: Youtu schema digest differs from the approved expected digest")
     if policy.get("embedding_model") != expected_embedding:
         errors.append(
             f"{path}: index embedding_model={policy.get('embedding_model')!r}, expected {expected_embedding!r}"
@@ -584,24 +556,6 @@ def _validate_artifact(
         except (OSError, ValueError, TypeError, KeyError) as exc:
             errors.append(f"{path}: extraction evidence failed verification: {exc}")
 
-    if strategy == "youtu_graphrag":
-        official_stats = payload.get("active_index_snapshot", {}).get("official_stats")
-        required_youtu_metrics = {
-            "staged_input_evidence_sha256",
-            "staged_input_coverage_complete",
-            "native_extraction_evidence_sha256",
-            "native_extraction_success_complete",
-            "native_source_reachability_evidence_sha256",
-            "native_source_reachability_observational",
-        }
-        if not isinstance(official_stats, dict) or not required_youtu_metrics.issubset(official_stats):
-            errors.append(f"{path}: Youtu observational provenance metrics are missing")
-        elif (
-            official_stats.get("staged_input_coverage_complete") is not True
-            or not isinstance(official_stats.get("native_extraction_success_complete"), bool)
-            or official_stats.get("native_source_reachability_observational") is not True
-        ):
-            errors.append(f"{path}: Youtu observational provenance metrics are invalid")
 
     for metric in DATASETS[dataset]["metrics"]:
         value = payload.get(metric)

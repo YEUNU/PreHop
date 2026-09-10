@@ -19,7 +19,6 @@ export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 export RAG_BENCHMARK_TIMESTAMP="${RAG_BENCHMARK_TIMESTAMP:-$RAG_RUN_ID}"
 
-PYTHON_BIN="$(resolve_python "$SCRIPT_DIR")" || exit 1
 
 # Default values
 QUERIES_FILE="data/multihoprag_queries.json"
@@ -41,6 +40,10 @@ while [ $# -gt 0 ]; do
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+PYTHON_BIN="$(resolve_method_python "$SCRIPT_DIR" "$MODEL")" || exit 1
+export PYTHON_BIN
+if [ "$MODEL" = "hoprag" ]; then export UV_PROJECT_ENVIRONMENT="$(dirname "$(dirname "$PYTHON_BIN")")"; fi
 
 SAFE_RUN_ID="${RAG_RUN_ID//[^A-Za-z0-9_.-]/_}"
 LOG_DATASET="${CORPUS_TAG:-${QUERIES_FILE##*/}}"

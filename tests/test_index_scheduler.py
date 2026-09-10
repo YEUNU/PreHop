@@ -79,7 +79,7 @@ async def test_prehop_capacity_uses_fixed_logical_payload_formula():
 @pytest.mark.asyncio
 async def test_ms_graphrag_capacity_excludes_nonretrieval_directories(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    root = tmp_path / "data" / "ms_graphrag_output" / "musique"
+    root = tmp_path / "data" / "ms_graphrag_output" / "hotpotqa"
     (root / "artifacts").mkdir(parents=True)
     (root / "_cache").mkdir()
     (root / "_logs").mkdir()
@@ -90,7 +90,7 @@ async def test_ms_graphrag_capacity_excludes_nonretrieval_directories(tmp_path, 
     (root / "_logs" / "run.log").write_bytes(b"x" * 100)
     (root / "_input" / "docs.json").write_bytes(b"x" * 100)
 
-    capacity = await _collect_index_capacity("ms_graphrag", "musique")
+    capacity = await _collect_index_capacity("ms_graphrag", "hotpotqa")
 
     assert capacity["measurement"] == "physical_retrieval_artifact_size"
     assert capacity["bytes"] == 8

@@ -51,7 +51,7 @@ class NativeQueryBatcher:
                                 "worker_queue_seconds": started - queued + float(response.get("worker_queue_seconds", 0.0)),
                                 "native_query_batch_size": len(batch),
                                 "native_qa_max_workers": response.get("native_qa_max_workers")})
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - report native failures without repair
                     # Preserve native batch failure; no repair or per-query retry.
                     for _, future, _ in batch:
                         if not future.done():

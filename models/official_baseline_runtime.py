@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from core.benchmark_failures import BenchmarkIntegrityError
-
 import fcntl
 import hashlib
 import json
@@ -18,6 +16,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from core.benchmark_failures import BenchmarkIntegrityError
 from core.embedding_policy import EmbeddingOperationalConfig
 from core.strategy_registry import BY_NAME, EXTERNAL_STRATEGIES, get_strategy
 from utils.io import _write_json
@@ -258,12 +257,6 @@ def _runtime_env(strategy: str) -> dict[str, str]:
             "VLLM_SERVED_EMBED_MODEL_NAME": transport.embedding_model,
             "OPENAI_BASE_URL": transport.generation_base_url,
         })
-    if strategy == "youtu_graphrag":
-        # Youtu's official client uses LLM_* names. Preserve the caller's
-        # credential in the child environment without logging it.
-        env["LLM_BASE_URL"] = transport.generation_base_url
-        env["LLM_MODEL"] = transport.generation_model
-        env["LLM_API_KEY"] = transport.api_key
     return env
 
 

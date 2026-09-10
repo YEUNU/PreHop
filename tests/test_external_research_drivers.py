@@ -171,6 +171,7 @@ def test_linear_resolves_pinned_snapshot_before_old_sentence_transformer(tmp_pat
 
 def test_linear_constructor_uses_published_runner_query_defaults(monkeypatch, tmp_path):
     import ast
+
     from core.strategy_registry import get_strategy
     from models.external_research.drivers import linear_rag as driver
     captured = {}

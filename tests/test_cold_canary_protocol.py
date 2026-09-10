@@ -43,7 +43,7 @@ def test_dataset_aliases_share_exact_sources_and_question(tmp_path):
 
 @pytest.mark.parametrize('mutation', ['source', 'query', 'identity', 'extra_source'])
 def test_fixed_fixture_rejects_content_changes(tmp_path, mutation):
-    corpus, _, row = fixture.stage_fixture(tmp_path / 'fixture', 'musique')
+    corpus, _, row = fixture.stage_fixture(tmp_path / 'fixture', 'hotpotqa')
     identity = fixture.fixture_identity()
     if mutation == 'source':
         next(corpus.glob('*.txt')).write_text('altered source')
@@ -54,7 +54,7 @@ def test_fixed_fixture_rejects_content_changes(tmp_path, mutation):
     else:
         (corpus / 'extra.txt').write_text('third source')
     with pytest.raises(RuntimeError):
-        fixture.validate_fixture(corpus, 'musique', row, identity)
+        fixture.validate_fixture(corpus, 'hotpotqa', row, identity)
 
 
 def test_subprocess_import_and_help_do_not_execute_workflow():
@@ -70,14 +70,14 @@ def test_executor_missing_prerequisite_stops_before_staging(tmp_path, monkeypatc
     monkeypatch.setattr(gate, 'ready', lambda *args: (_ for _ in ()).throw(RuntimeError('prerequisite missing')))
     # No endpoint/native constructor is installed: an early gate is essential.
     with pytest.raises(RuntimeError, match='prerequisite missing'):
-        asyncio.run(executor.workflow('no-live-test', 'naive', 'musique', 'new'))
+        asyncio.run(executor.workflow('no-live-test', 'naive', 'hotpotqa', 'new'))
 
 
 def test_cold_artifacts_cannot_supply_real_one_query_evidence(tmp_path, monkeypatch):
     from core import admission, paper_policy, runtime_requirements
     from scripts import check_paper_runtime, verify_index_policy
     from scripts import paper_gate_ledger as gate
-    corpus, manifest, row = fixture.stage_fixture(tmp_path / 'fixture', 'musique')
+    corpus, manifest, row = fixture.stage_fixture(tmp_path / 'fixture', 'hotpotqa')
     record_path = tmp_path / 'query_record.json'
     record_path.write_text(json.dumps(row))
     index_path = tmp_path / 'index.json'
@@ -96,7 +96,7 @@ def test_cold_artifacts_cannot_supply_real_one_query_evidence(tmp_path, monkeypa
     index = {'run_id': 'test', 'source_manifest': ref(corpus / 'corpus_manifest.json'),
              'corpus_manifest_fingerprint': manifest['fingerprint'], 'cold_fixture': fixture.fixture_identity()}
     with pytest.raises(RuntimeError, match='Synthetic cold fixtures'):
-        gate._validate_canary_artifacts('one_query_matrix_16', 'naive', 'musique', index_path, query, index)
+        gate._validate_canary_artifacts('one_query_matrix_16', 'naive', 'hotpotqa', index_path, query, index)
 
 
 def test_subprocess_main_loads_project_environment_before_workflow(tmp_path):
@@ -113,7 +113,7 @@ async def observed(*args):
     assert asyncio.get_running_loop().is_running()
     print('loader-before-workflow')
 paper_cold_canary.workflow = observed
-sys.argv = ['paper_cold_canary.py', 'campaign', 'naive', 'musique', '--attempt', 'new']
+sys.argv = ['paper_cold_canary.py', 'campaign', 'naive', 'hotpotqa', '--attempt', 'new']
 paper_cold_canary.main()
 '''
     result = subprocess.run([sys.executable, '-c', script, str(tmp_path)], cwd=fixture.ROOT,
@@ -137,5 +137,5 @@ def test_fresh_namespace_rejects_each_existing_database_artifact(monkeypatch, co
     monkeypatch.setattr(neo4j_service, 'Neo4jService', ReadOnlyService)
     monkeypatch.setattr(index_namespace, 'index_namespace', lambda dataset: 'run-test')
     with pytest.raises(RuntimeError, match='already has'):
-        asyncio.run(executor.ensure_fresh_namespace('naive', 'musique'))
+        asyncio.run(executor.ensure_fresh_namespace('naive', 'hotpotqa'))
     assert len(seen_loops) == 3 and len(set(seen_loops)) == 1

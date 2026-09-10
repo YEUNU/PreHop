@@ -7,8 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATH = ROOT / 'configs/cold_canary/museum_rich_entities_v2.json'
-FIXTURE_SHA256 = 'ce4cfea5eb2f6eb784afaa669c762ec82e5869c98144b9512ac85e3b6fcb841a'
-DATASETS = ('multihoprag', 'musique')
+FIXTURE_SHA256 = 'a65014e5b2045a702d3cc5b6eb2a47f437c91a52a9bb27e25375f3204dad3b7b'
+DATASETS = ('multihoprag', 'hotpotqa')
 
 
 def digest(value: object) -> str:
@@ -36,10 +36,10 @@ def query_record(dataset: str) -> dict:
         raise ValueError('Unsupported cold fixture dataset alias')
     fixture = load_fixture()
     row = fixture['query'] | {'dataset': dataset, 'cold_fixture': fixture_identity()}
-    if dataset == 'musique':
-        row['evidence_paragraph_ids'] = ['musique:synthetic_cold_v2_1', 'musique:synthetic_cold_v2_2']
-    else:
-        row['evidence_docs'] = ['Meridian collection register 1', 'Meridian collection register 2']
+    row['evidence_docs'] = ['Meridian collection register 1', 'Meridian collection register 2']
+    if dataset == 'hotpotqa':
+        row.update(protocol='hotpotqa-fullwiki-dev-v1', ground_truth=row['answer'],
+                   supporting_facts=[['Meridian collection register 1', 0]])
     return row
 
 
@@ -56,17 +56,21 @@ def stage_fixture(base: Path, dataset: str) -> tuple[Path, dict, dict]:
     files = sorted(document['filename'] for document in fixture['documents'])
     hashes = {name: hashlib.sha256((corpus / name).read_bytes()).hexdigest() for name in files}
     records = [{'source_id': Path(name).stem, 'filename': name, 'content_sha256': hashes[name]} for name in files]
-    if dataset == 'musique':
-        for record in records:
-            record['paragraph_id'] = 'musique:' + record['source_id'].removeprefix('musique_')
     manifest = {'schema_version': 2, 'paragraph_count': 2,
                 'source_ids_sha256': lines_digest([Path(name).stem for name in files]),
                 'corpus_records_sha256': digest(records),
                 'corpus_files_sha256': lines_digest([name + '\0' + hashes[name] for name in files]),
                 'query_ids_sha256': lines_digest([row['_id']]),
                 'query_records_sha256': lines_digest([json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(',', ':'))])}
-    if dataset == 'musique':
-        manifest['paragraph_ids_sha256'] = lines_digest(sorted(record['paragraph_id'] for record in records))
+    if dataset == 'hotpotqa':
+        import sqlite3
+        with sqlite3.connect(corpus / 'sentences.sqlite3') as db:
+            db.execute('CREATE TABLE paragraphs (source_id TEXT PRIMARY KEY, title TEXT UNIQUE, sentences TEXT, content_sha256 TEXT)')
+            for document, title in zip(fixture['documents'], row['evidence_docs']):
+                db.execute('INSERT INTO paragraphs VALUES (?,?,?,?)',
+                           (Path(document['filename']).stem, title, json.dumps([document['text']]), hashes[document['filename']]))
+        manifest.update(protocol='hotpotqa-fullwiki-dev-v1', official_archive_verified=False,
+                        sentence_store_sha256=hashlib.sha256((corpus / 'sentences.sqlite3').read_bytes()).hexdigest())
     manifest['fingerprint'] = digest(manifest)
     with (corpus / 'corpus_manifest.json').open('x', encoding='utf-8') as stream:
         json.dump(manifest, stream, ensure_ascii=False, sort_keys=True)

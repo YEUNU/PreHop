@@ -68,7 +68,7 @@ def test_index_logs_are_separated_by_dataset_and_strategy(tmp_path):
             "--dataset",
             "data/other",
             "--corpus-tag",
-            "musique",
+            "hotpotqa",
         ],
         cwd=ROOT,
         env=env,
@@ -79,9 +79,9 @@ def test_index_logs_are_separated_by_dataset_and_strategy(tmp_path):
 
     assert "<data/corpus with spaces>" in first.stdout
     assert (tmp_path / "logs/index/shared-run/multihoprag/prehop.log").is_file()
-    assert (tmp_path / "logs/index/shared-run/musique/naive.log").is_file()
+    assert (tmp_path / "logs/index/shared-run/hotpotqa/naive.log").is_file()
     assert "multihoprag/prehop.log" in first.stdout
-    assert "musique/naive.log" in second.stdout
+    assert "hotpotqa/naive.log" in second.stdout
 
 
 def test_benchmark_logs_are_separated_by_dataset_and_strategy(tmp_path):
@@ -217,9 +217,9 @@ def test_ms_graphrag_internal_log_is_dataset_scoped(tmp_path, monkeypatch):
     monkeypatch.setattr(official_indexer, "_EMBED_MODEL_NAME", "embedding")
     monkeypatch.setattr(official_indexer, "_GEN_API_KEY", "test-key")
 
-    config = official_indexer.build_config("musique", tmp_path / "input")
+    config = official_indexer.build_config("hotpotqa", tmp_path / "input")
 
-    assert Path(config.reporting.base_dir) == tmp_path / "ms-output/musique/_logs/internal"
+    assert Path(config.reporting.base_dir) == tmp_path / "ms-output/hotpotqa/_logs/internal"
 
 
 def test_multihoprag_wrapper_runs_exactly_one_strategy(tmp_path):
@@ -241,7 +241,7 @@ def test_multihoprag_wrapper_runs_exactly_one_strategy(tmp_path):
 def test_dataset_wrapper_rejects_multi_strategy_mode(tmp_path):
     env = _entrypoint_env(tmp_path)
     completed = subprocess.run(
-        ["./run_dataset.sh", "musique", "index", "--model", "all", "--skip-server"],
+        ["./run_dataset.sh", "hotpotqa", "index", "--model", "all", "--skip-server"],
         cwd=ROOT,
         env=env,
         check=False,

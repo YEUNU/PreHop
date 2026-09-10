@@ -67,7 +67,6 @@ class StrategySpec:
     # Keeping all three together prevents preflight and admission from
     # drifting into separate, partial method-policy lists.
     paper_query_policy: tuple[tuple[str, str | None, Any], ...] = ()
-    dataset_aliases: tuple[tuple[str, str], ...] = ()
 
 
 def _external(
@@ -88,7 +87,6 @@ def _external(
     paper_index_policy: tuple[tuple[str, Any], ...] = (),
     paper_index_environment: tuple[tuple[str, str, Any], ...] = (),
     paper_query_policy: tuple[tuple[str, str | None, Any], ...] = (),
-    dataset_aliases: tuple[tuple[str, str], ...] = (),
 ) -> StrategySpec:
     return StrategySpec(
         name=name,
@@ -110,7 +108,6 @@ def _external(
         paper_index_policy=paper_index_policy,
         paper_index_environment=paper_index_environment,
         paper_query_policy=paper_query_policy,
-        dataset_aliases=dataset_aliases,
     )
 
 
@@ -130,9 +127,6 @@ _CORE_QUERY_POLICY: tuple[tuple[str, str | None, Any], ...] = (
     ("hop_semantic_variant", "RAG_HOP_SEMANTIC_VARIANT", "body_bridge_min"),
     ("question_schema", "RAG_QUESTION_SCHEMA", "legacy"),
     ("precompute_reciprocal_hops", "RAG_PRECOMPUTE_RECIPROCAL_HOPS", True),
-    ("query_rewrite_variant", "RAG_QUERY_REWRITE_VARIANT", "role_aligned_evidence_iterative"),
-    ("query_rewrite_max_words", "RAG_QUERY_REWRITE_MAX_WORDS", 32),
-    ("query_refinement_max_rounds", "RAG_QUERY_REFINEMENT_MAX_ROUNDS", 0),
     ("default_top_k", None, 12),
     ("candidate_pool_multiplier", "RAG_CANDIDATE_POOL_MULTIPLIER", 1),
     ("fulltext_analyzer", "NEO4J_FULLTEXT_ANALYZER", "english"),

@@ -69,18 +69,3 @@ class TextUtilsMixin:
         if node_id:
             return node_id
         return f"{node.get('title', '')}:{node.get('source', '')}:{node.get('page', 0)}:{node.get('sent_id', -1)}"
-
-    @staticmethod
-    def _dedupe_preserve_order(values: list[str]) -> list[str]:
-        unique: list[str] = []
-        seen: set[str] = set()
-        for raw in values:
-            text = str(raw or "").strip()
-            if not text:
-                continue
-            normalized = re.sub(r"\s+", " ", text.lower()).strip()
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            unique.append(text)
-        return unique

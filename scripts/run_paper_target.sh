@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <multihoprag|musique> <primary-strategy> <run-id> [--check]" >&2
+    echo "Usage: $0 <multihoprag|hotpotqa> <primary-strategy> <run-id> [--check]" >&2
     exit 2
 }
 
@@ -17,7 +17,7 @@ if [ "$#" -eq 4 ]; then
 fi
 
 case "$dataset" in
-    multihoprag|musique) ;;
+    multihoprag|hotpotqa) ;;
     *) usage ;;
 esac
 if ! python3 "$(dirname "$0")/../core/strategy_registry.py" --is-primary "$strategy"; then
@@ -34,8 +34,9 @@ repo_root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_root"
 . "$repo_root/scripts/lib.sh"
 load_project_env "$repo_root/.env"
-PYTHON_BIN=$(resolve_python "$repo_root") || exit 1
+PYTHON_BIN=$(resolve_method_python "$repo_root" "$strategy") || exit 1
 export PYTHON_BIN
+if [ "$strategy" = "hoprag" ]; then export UV_PROJECT_ENVIRONMENT="$(dirname "$(dirname "$PYTHON_BIN")")"; fi
 
 if [ ! -f .env ]; then
     echo "Missing .env; copy .env.example and configure the required endpoints first." >&2
@@ -163,14 +164,6 @@ if [ "$reuse_index" = false ] && [ -n "${strategy_output:-}" ] && [ -e "$strateg
 fi
 
 
-# PropRAG performs long-form extraction during indexing and fans requests out
-# across the full corpus.  Keep that strategy serial so a slow generation
-# provider cannot turn one target into a timeout/retry storm.  Other strategies
-# retain their existing indexing and benchmark concurrency.
-if [ "$strategy" = proprag ]; then
-    export RAG_PROPRAG_CONCURRENT_REQUESTS="${RAG_PROPRAG_CONCURRENT_REQUESTS:-1}"
-    export RAG_PROPRAG_MAX_NEW_TOKENS="${RAG_PROPRAG_MAX_NEW_TOKENS:-2048}"
-fi
 if [ "$check_only" = true ]; then
     echo "Ready: dataset=$dataset strategy=$strategy run_id=$run_id concurrency=$RAG_BENCHMARK_CONCURRENCY embedding_batch=$RAG_EMBEDDING_BATCH_SIZE embedding_concurrency=$RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS judge=false"
     exit 0
@@ -183,7 +176,7 @@ if [ "$dataset" = multihoprag ]; then
 else
     stage=all
     [ "$reuse_index" = true ] && stage=benchmark
-    ./run_dataset.sh musique "$stage" --model "$strategy" --queries full
+    ./run_dataset.sh "$dataset" "$stage" --model "$strategy" --queries full
 fi
 
 "$PYTHON_BIN" scripts/record_paper_completion.py "$run_id" "$dataset" "$strategy" --exact-run-id \

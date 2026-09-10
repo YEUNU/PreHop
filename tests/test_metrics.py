@@ -3,7 +3,6 @@ from utils.metrics import (
     _resolve_judge_fields,
     calculate_answer_metrics,
     calculate_evidence_doc_metrics,
-    calculate_musique_support_metrics,
     calculate_retrieval_ranking_metrics,
     evaluate_multihoprag_response,
     extract_final_answer,
@@ -62,8 +61,7 @@ def test_judge_prompt_receives_official_aliases():
             ground_truth="Canonical",
             answer_aliases=["Alias", "Other Alias"],
             retrieved_sources=[{"text": "Alias"}],
-            dataset="musique",
-            evidence_paragraph_ids=["musique:aabbccddeeff0011"],
+            dataset="multihoprag",
             vllm_client=judge,
             judge_enabled=True,
         )
@@ -180,49 +178,6 @@ def test_multihoprag_official_map_counts_new_facts_at_their_rank():
 
     assert metrics["official_mrr@10"] == 1.0
     assert metrics["official_map@10"] == (1 / 1 + 1 / 3) / 2
-
-
-def test_musique_support_uses_paragraph_identity_not_title():
-    metrics = calculate_musique_support_metrics(
-        [
-            {"doc": "Repeated title", "source": "musique_aabbccddeeff0011.txt"},
-            {"doc": "Repeated title", "source": "musique_1122334455667788.txt"},
-        ],
-        ["musique:aabbccddeeff0011", "musique:deadbeefdeadbeef"],
-    )
-
-    assert metrics["paragraph_support_precision"] == 0.5
-    assert metrics["paragraph_support_recall"] == 0.5
-    assert metrics["paragraph_support_f1"] == 0.5
-
-
-def test_official_metric_fields_are_dataset_applicable_only():
-    async def evaluate():
-        multihop = await evaluate_multihoprag_response(
-            query="q",
-            response="alpha",
-            ground_truth="alpha",
-            retrieved_sources=[{"text": "alpha"}],
-            evidence_facts=["alpha"],
-            dataset="multihoprag",
-        )
-        musique = await evaluate_multihoprag_response(
-            query="q",
-            response="alias",
-            ground_truth="answer",
-            answer_aliases=["alias"],
-            retrieved_sources=[{"source": "musique_aabbccddeeff0011.txt"}],
-            evidence_paragraph_ids=["musique:aabbccddeeff0011"],
-            dataset="musique",
-        )
-        return multihop, musique
-
-    multihop, musique = asyncio.run(evaluate())
-
-    assert multihop["official_qa_accuracy"] == 1.0
-    assert multihop["official_answer_em"] == UNJUDGED_SCORE
-    assert musique["official_answer_em"] == 1.0
-    assert musique["official_qa_accuracy"] == UNJUDGED_SCORE
 
 
 def test_evidence_doc_metrics_deduplicate_retrieved_chunks():

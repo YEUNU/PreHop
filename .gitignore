@@ -225,7 +225,8 @@ data/enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2
 .claude/
 # Regenerable corpora, caches, intermediate records, and index statistics.
 data/multihoprag_corpus/
-data/musique_corpus/
+data/hotpotqa_corpus/
+data/hotpotqa_raw/
 data/debug/
 # Full request/response and graph payloads may contain private source text.
 data/traces/
@@ -269,8 +270,6 @@ data/MultiHopRAG.json
 data/multihoprag_queries.json
 data/hotpotqa_distractor_validation.parquet
 data/hotpotqa_queries.json
-data/musique_ans_v1.0_dev.jsonl
-data/musique_queries.json
 
 # Session-scratch orchestration scripts (hardcoded PIDs; not part of the repo).
 run_mhr_finish.sh

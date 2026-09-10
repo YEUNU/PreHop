@@ -382,42 +382,6 @@ async def test_global_source_selection_is_an_explicit_ablation(monkeypatch):
     assert [node["id"] for node in selected] == ["a1", "a2"]
 
 
-@pytest.mark.asyncio
-async def test_role_body_owner_selection_searches_bodies_without_representation_vote(monkeypatch):
-    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "single_combined")
-    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "role_body_owners")
-    rag = GraphRAG(strategy="prehop")
-    rag.llm.get_embeddings = AsyncMock(return_value=[[1.0], [0.9], [0.8]])
-
-    async def candidates(view, *, query_embedding, limit, channel):
-        _ = query_embedding, limit
-        if channel == "body":
-            return [{"id": f"body-{view}", "embedding": [1.0]}]
-        return [{"id": f"regular-{channel}", "embedding": [1.0]}]
-
-    rag._hybrid_rrf_candidates = AsyncMock(side_effect=candidates)  # type: ignore[method-assign]
-
-    _selected, pool = await rag._retrieve_with_candidate_pool(
-        "original",
-        top_k=12,
-        channel_queries={"q_minus": ["minus"], "q_plus": ["plus"]},
-        select_final=False,
-    )
-
-    assert [(call.args[0], call.kwargs["channel"]) for call in rag._hybrid_rrf_candidates.await_args_list] == [
-        ("minus", "q_minus"),
-        ("plus", "q_plus"),
-        ("minus", "body"),
-        ("plus", "body"),
-    ]
-    minus_owner = next(node for node in pool if node["id"] == "body-minus")
-    plus_owner = next(node for node in pool if node["id"] == "body-plus")
-    assert minus_owner["role_body_owner_orders"] == [0]
-    assert plus_owner["role_body_owner_orders"] == [1]
-    assert minus_owner["role_body_owner_only"] is True
-    assert minus_owner["representation_score"] == 0.0
-
-
 def test_role_body_owner_selection_deduplicates_and_fills_global_order():
     ordered = [
         {"id": "global-first"},
@@ -434,45 +398,6 @@ def test_role_body_owner_selection_deduplicates_and_fills_global_order():
         "global-first",
         "global-last",
     ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "selection_variant",
-    ["role_body_rounds", "role_body_list_ranking"],
-)
-async def test_role_body_rank_variants_retain_all_auxiliary_body_ranks(
-    monkeypatch,
-    selection_variant,
-):
-    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "single_combined")
-    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", selection_variant)
-    rag = GraphRAG(strategy="prehop")
-    rag.llm.get_embeddings = AsyncMock(return_value=[[1.0], [0.9]])
-
-    async def candidates(view, *, query_embedding, limit, channel):
-        _ = query_embedding, limit
-        if channel == "body":
-            return [
-                {"id": f"body-{view}-1", "embedding": [1.0], "rrf_score": 1.0},
-                {"id": f"body-{view}-2", "embedding": [1.0], "rrf_score": 0.5},
-            ]
-        return [{"id": f"regular-{channel}", "embedding": [1.0]}]
-
-    rag._hybrid_rrf_candidates = AsyncMock(side_effect=candidates)  # type: ignore[method-assign]
-
-    _selected, pool = await rag._retrieve_with_candidate_pool(
-        "original",
-        top_k=12,
-        channel_queries={"q_minus": ["minus"], "q_plus": []},
-        select_final=False,
-    )
-
-    first = next(node for node in pool if node["id"] == "body-minus-1")
-    second = next(node for node in pool if node["id"] == "body-minus-2")
-    assert first["role_body_round_entries"] == [{"view_order": 0, "rank": 0, "score": 1.0}]
-    assert second["role_body_round_entries"] == [{"view_order": 0, "rank": 1, "score": 0.5}]
-    assert first["role_body_owner_only"] is True
 
 
 @pytest.mark.asyncio
@@ -684,28 +609,6 @@ async def test_retrieval_embeds_query_once_before_parallel_channels():
         "q_plus",
     ]
     assert all(call.kwargs["query_embedding"] == [1.0, 0.0] for call in rag._hybrid_rrf_candidates.await_args_list)
-
-
-@pytest.mark.asyncio
-async def test_sentence_channel_uses_original_query_and_collapses_to_chunk_role(monkeypatch):
-    monkeypatch.setattr(RAGConfig, "SENTENCE_CHANNEL_ENABLED", True)
-    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "global")
-    rag = GraphRAG(strategy="prehop")
-    rag.llm.get_embeddings = AsyncMock(return_value=[[1.0], [0.9], [0.8]])
-    rag._hybrid_rrf_candidates = AsyncMock(return_value=[])  # type: ignore[method-assign]
-
-    await rag._retrieve_with_candidate_pool(
-        "original",
-        top_k=12,
-        channel_queries={"q_minus": ["minus"], "q_plus": ["plus"]},
-    )
-
-    assert [(call.args[0], call.kwargs["channel"]) for call in rag._hybrid_rrf_candidates.await_args_list] == [
-        ("minus", "q_minus"),
-        ("original", "body"),
-        ("original", "sentence"),
-        ("plus", "q_plus"),
-    ]
 
 
 @pytest.mark.asyncio
@@ -939,65 +842,6 @@ async def test_direct_target_keeps_score_and_records_graph_path():
             "depth": 1,
             "edge_rank": 0,
         }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_role_aligned_views_search_only_their_matching_channels(monkeypatch):
-    rag = GraphRAG(strategy="prehop")
-    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "single_combined")
-    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "global")
-    rag.llm.get_embeddings = AsyncMock(return_value=[[1.0], [0.9], [0.8], [0.7]])
-    rag._hybrid_rrf_candidates = AsyncMock(return_value=[])  # type: ignore[method-assign]
-
-    await rag._retrieve_with_candidate_pool(
-        "original",
-        top_k=12,
-        channel_queries={"q_minus": ["minus one", "minus two"], "q_plus": ["plus one"]},
-    )
-
-    assert rag.llm.get_embeddings.await_args.args[0] == ["original", "minus one", "minus two", "plus one"]
-    assert [(call.args[0], call.kwargs["channel"]) for call in rag._hybrid_rrf_candidates.await_args_list] == [
-        ("minus one", "q_minus"),
-        ("minus two", "q_minus"),
-        ("plus one", "q_plus"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_query_views_fuse_once_inside_each_role(monkeypatch):
-    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "single_combined")
-    monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "global")
-    rag = GraphRAG(strategy="prehop")
-    rag.llm.get_embeddings = AsyncMock(return_value=[[1.0], [0.9], [0.8], [0.7]])
-
-    async def candidates(view, *, query_embedding, limit, channel):
-        _ = query_embedding, limit
-        if channel == "q_minus":
-            return [{"id": "shared", "text": view, "embedding": [1.0]}]
-        return [
-            {
-                "id": "shared",
-                "text": view,
-                "embedding": [1.0],
-                "matched_qplus_ids": ["qp"],
-            }
-        ]
-
-    rag._hybrid_rrf_candidates = AsyncMock(side_effect=candidates)  # type: ignore[method-assign]
-
-    _selected, pool = await rag._retrieve_with_candidate_pool(
-        "original",
-        top_k=12,
-        channel_queries={"q_minus": ["minus one", "minus two"], "q_plus": ["plus one"]},
-    )
-
-    assert pool[0]["representation_scores"] == {"q_minus": 1.0, "q_plus": 1.0}
-    assert pool[0]["representation_score"] == 2.0
-    assert [path["query_view"] for path in pool[0]["retrieval_paths"]] == [
-        "minus one",
-        "minus two",
-        "plus one",
     ]
 
 

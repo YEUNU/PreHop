@@ -12,14 +12,13 @@ from models.ms_graphrag.official_indexer import (
     _ms_query_embedding_text,
     _with_ms_embedding_slot_async,
 )
-from utils.metrics import _source_paragraph_identity
 
 
 def _adapter_with_document_maps() -> MSGraphRAGAdapter:
     adapter = object.__new__(MSGraphRAGAdapter)
     adapter._short_id_to_doc_id = {"7": "opaque-document-hash"}
     adapter._doc_id_to_title = {
-        "opaque-document-hash": "musique_aabbccddeeff00112233445566778899.txt",
+        "opaque-document-hash": "hotpotqa_aabbccddeeff00112233445566778899.txt",
     }
     return adapter
 
@@ -31,7 +30,7 @@ def test_ms_sources_keep_staged_filename_as_identity_and_header_as_display_title
             [
                 {
                     "id": 7,
-                    "text": "Title: Repeated Wikipedia Title\nParagraph-ID: musique:aabbccddeeff00112233445566778899\n\nEvidence.",
+                    "text": "Title: Repeated Wikipedia Title\nParagraph-ID: hotpotqa:aabbccddeeff00112233445566778899\n\nEvidence.",
                 }
             ]
         )
@@ -42,17 +41,16 @@ def test_ms_sources_keep_staged_filename_as_identity_and_header_as_display_title
     assert sources == [
         {
             "doc": "Repeated Wikipedia Title",
-            "source": "musique_aabbccddeeff00112233445566778899.txt",
-            "source_filename": "musique_aabbccddeeff00112233445566778899.txt",
+            "source": "hotpotqa_aabbccddeeff00112233445566778899.txt",
+            "source_filename": "hotpotqa_aabbccddeeff00112233445566778899.txt",
             "document_id": "opaque-document-hash",
             "page": 0,
-            "text": "Title: Repeated Wikipedia Title\nParagraph-ID: musique:aabbccddeeff00112233445566778899\n\nEvidence.",
+            "text": "Title: Repeated Wikipedia Title\nParagraph-ID: hotpotqa:aabbccddeeff00112233445566778899\n\nEvidence.",
             "sent_id": 0,
         }
     ]
     # The primary ``source`` field, not the display title, now carries the
-    # stable filename used by MuSiQue paragraph-support evaluation.
-    assert _source_paragraph_identity(sources[0]) == "musique:aabbccddeeff00112233445566778899"
+    # stable filename used by HotpotQA paragraph-support evaluation.
 
 
 def test_ms_source_without_title_header_uses_filename_as_display_fallback():
@@ -61,15 +59,15 @@ def test_ms_source_without_title_header_uses_filename_as_display_fallback():
 
     source = adapter._extract_sources(context_data)[0]
 
-    assert source["doc"] == "musique_aabbccddeeff00112233445566778899"
-    assert source["source"] == "musique_aabbccddeeff00112233445566778899.txt"
+    assert source["doc"] == "hotpotqa_aabbccddeeff00112233445566778899"
+    assert source["source"] == "hotpotqa_aabbccddeeff00112233445566778899.txt"
 
 
 @pytest.mark.parametrize(
     ("content", "expected_title", "expected_body"),
     [
         (
-            "Title: Display\nParagraph-ID: musique:abc\n\n--- Page 1 ---\nFirst.\n\n--- Page 2 ---\nSecond.",
+            "Title: Display\nParagraph-ID: hotpotqa:abc\n\n--- Page 1 ---\nFirst.\n\n--- Page 2 ---\nSecond.",
             "Display",
             "First.\n\nSecond.",
         ),
@@ -81,7 +79,7 @@ def test_ms_parser_separates_display_metadata_from_evidence(content, expected_ti
     assert _ms_indexable_text("doc.txt", content) == (expected_title, expected_body)
 
 
-@pytest.mark.parametrize("content", ["", "Title: Only", "Title: Only\nParagraph-ID: musique:abc"])
+@pytest.mark.parametrize("content", ["", "Title: Only", "Title: Only\nParagraph-ID: hotpotqa:abc"])
 def test_ms_parser_rejects_metadata_only_documents(content):
     with pytest.raises(ValueError, match="no evidence text"):
         _ms_indexable_text("doc.txt", content)
@@ -91,7 +89,7 @@ def test_ms_staging_writes_clean_body_and_keeps_title_sidecar(tmp_path, monkeypa
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "alpha.txt").write_text(
-        "Title: Alpha Display\nParagraph-ID: musique:alpha\n\nEvidence A.", encoding="utf-8"
+        "Title: Alpha Display\nParagraph-ID: hotpotqa:alpha\n\nEvidence A.", encoding="utf-8"
     )
     (corpus / "beta.md").write_text("Title: Beta Display\n\nEvidence B.", encoding="utf-8")
     monkeypatch.setattr(ms_official_indexer, "_OUTPUT_ROOT", tmp_path / "output")
@@ -157,7 +155,7 @@ def test_ms_config_separates_query_embedding_from_index_embeddings(tmp_path, mon
     monkeypatch.setattr(ms_official_indexer, "_EMBED_MODEL_NAME", "embedding")
     monkeypatch.setattr(ms_official_indexer, "_GEN_API_KEY", "test-key")
 
-    config = ms_official_indexer.build_config("musique", tmp_path / "input")
+    config = ms_official_indexer.build_config("hotpotqa", tmp_path / "input")
 
     assert config.local_search.embedding_model_id == "query_embedding_model"
     assert config.extract_graph.completion_model_id == "extraction_completion_model"
@@ -196,7 +194,7 @@ def test_ms_config_registers_typed_default_caps_when_optional_env_is_absent(tmp_
     monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
     monkeypatch.setenv("RAG_GENERATION_MODEL", "generation")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding")
-    config = ms_official_indexer.build_config("musique", tmp_path / "input")
+    config = ms_official_indexer.build_config("hotpotqa", tmp_path / "input")
     assert config.concurrent_requests == 30
     assert config.embed_text.batch_size == 16
     assert all(schema.vector_size == 2560 for schema in config.vector_store.index_schema.values())
@@ -326,7 +324,7 @@ def test_ms_extract_sources_rejects_unknown_or_incomplete_provenance():
 
 def test_ms_source_uses_integrity_sidecar_title_after_header_removal():
     adapter = _adapter_with_document_maps()
-    adapter._source_id_to_display_title = {"musique_aabbccddeeff00112233445566778899": "Mapped Display Title"}
+    adapter._source_id_to_display_title = {"hotpotqa_aabbccddeeff00112233445566778899": "Mapped Display Title"}
 
     source = adapter._extract_sources({"sources": pd.DataFrame([{"id": 7, "text": "Clean evidence."}])})[0]
 

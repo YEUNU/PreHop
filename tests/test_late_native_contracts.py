@@ -29,7 +29,7 @@ def test_method_sentinels_are_generic_and_preserve_explicit_overrides(tmp_path):
 
     from core.paper_policy import validate_paper_semantic_environment
     with patch.dict(os.environ, env, clear=True), pytest.raises(RuntimeError, match='unknown paper method'):
-        validate_paper_semantic_environment('ms_graphrag', 'musique')
+        validate_paper_semantic_environment('ms_graphrag', 'hotpotqa')
 
 
 def _runtime(strategy):

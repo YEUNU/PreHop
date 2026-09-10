@@ -29,7 +29,7 @@ def source_digest():
 def targets(campaign):
     from core.strategy_registry import PRIMARY_STRATEGIES
     return [{'strategy': strategy, 'dataset': dataset, 'run_id': f'{campaign}-index-{dataset}-{strategy}'}
-            for strategy in PRIMARY_STRATEGIES for dataset in ('multihoprag', 'musique')]
+            for strategy in PRIMARY_STRATEGIES for dataset in ('multihoprag', 'hotpotqa')]
 
 
 def child(campaign, strategy, dataset, phase):
@@ -83,7 +83,6 @@ def child(campaign, strategy, dataset, phase):
 
 def supervise(plan_path):
     from core.inference_queue import OwnedQueue
-    from core.paper_compatibility import context_configuration
     from scripts.paper_campaign import atomic_json, identity, lock, resource_lock_path, run_child, safe_environment
     from scripts.paper_detached_runtime import register_owner, session_processes, terminate_owned
     plan = json.loads(plan_path.read_text())
@@ -110,7 +109,7 @@ def supervise(plan_path):
     signal.signal(signal.SIGTERM, stopped)
     signal.signal(signal.SIGINT, stopped)
     try:
-        logging.info('Execution source: %s', source_digest())
+        logging.getLogger(__name__).info('Execution source: %s', source_digest())
         queue.start()
         env = safe_environment()
         update({'state': 'running'})
@@ -123,7 +122,7 @@ def supervise(plan_path):
                     current_target['state'] = 'blocked_by_smoke_failure'
                     update({})
                     continue
-                logging.info('Execution source: %s', source_digest())
+                logging.getLogger(__name__).info('Execution source: %s', source_digest())
                 log = base / f'{phase}-{row["dataset"]}-{row["strategy"]}'
                 current_target.update(state=f'{phase}_running', started_at=time.time())
                 update({'stage': f'{phase}/{key}', 'stdout_log': str(log.with_suffix('.stdout.log')),
@@ -200,9 +199,12 @@ def main():
     parser.add_argument('action', choices=('launch', 'supervise', 'child'))
     parser.add_argument('target')
     parser.add_argument('--strategy')
-    parser.add_argument('--dataset', choices=('multihoprag', 'musique'))
+    parser.add_argument('--dataset', choices=('multihoprag', 'hotpotqa'))
     parser.add_argument('--phase', choices=('smoke', 'pilot', 'pilot-wide', 'index'))
     args = parser.parse_args()
+    if args.action == 'child':
+        from core.runtime_requirements import ensure_method_runtime
+        ensure_method_runtime(args.strategy)
     from dotenv import load_dotenv
     if os.environ.get('RAG_SKIP_PROJECT_ENV') != 'true':
         load_dotenv(ROOT / '.env', override=False)

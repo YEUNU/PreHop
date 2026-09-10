@@ -10,8 +10,7 @@ belongs in `docs/RESULTS.md`.
 
 - `core/strategy_registry.py` owns strategy identity, primary order, upstream
   revision, runtime worker, output root, transport profile, and legacy status.
-  The primary set includes HopRAG and MS GraphRAG. BrowseNet, PropRAG, and
-  Youtu have been removed from the strategy registry.
+  Do not restore retired strategy branches outside the registered comparison set.
 - `core/config.py` and checked-in configuration files own runtime defaults and
   semantic settings. Documentation must describe them, not redefine them.
 - `docs/ARCHITECTURE.md` owns module boundaries and indexing/query behavior.
@@ -37,6 +36,9 @@ Do not fabricate missing entities, answers, usage or successful completion. See
 - Write all documents under `docs/` in English. Keep temporary reviews, audit
   reports, revision logs, and live progress snapshots out of `docs/`; retain
   durable specifications and completed benchmark evidence.
+- Use technical-writing guidance for runtime and developer documentation, and
+  paper-writing guidance for manuscript claims and experiment specifications.
+  Keep the checklist limited to evidenced checks and outstanding requirements.
 - Keep one detailed contract per topic. Other documents should link to it and
   include only the context their readers need.
 - Update the implementation and its owning document together. Keep current
@@ -64,7 +66,7 @@ Do not fabricate missing entities, answers, usage or successful completion. See
 - A model, revision, vector dimension, corpus fingerprint, semantic setting, or
   execution profile change requires compatible new evidence. Never relabel an
   old artifact as current.
-- Preserve dataset-specific units and denominators. MultiHop-RAG and MuSiQue
+- Preserve dataset-specific units and denominators. MultiHop-RAG and HotpotQA
   results are not interchangeable.
 
 ## Execution and repository hygiene

@@ -20,7 +20,6 @@ export MAX_EMBEDDING_LENGTH="${MAX_EMBEDDING_LENGTH:-32768}"
 export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 
-PYTHON_BIN="$(resolve_python "$SCRIPT_DIR")" || exit 1
 SAFE_RUN_ID="${RAG_RUN_ID//[^A-Za-z0-9_.-]/_}"
 
 # Default values
@@ -45,6 +44,10 @@ while [ $# -gt 0 ]; do
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+PYTHON_BIN="$(resolve_method_python "$SCRIPT_DIR" "$MODEL")" || exit 1
+export PYTHON_BIN
+if [ "$MODEL" = "hoprag" ]; then export UV_PROJECT_ENVIRONMENT="$(dirname "$(dirname "$PYTHON_BIN")")"; fi
 
 LOG_DATASET="${CORPUS_TAG:-${DATASET##*/}}"
 LOG_DATASET="${LOG_DATASET:-default}"

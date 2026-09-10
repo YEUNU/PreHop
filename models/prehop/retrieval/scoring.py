@@ -14,7 +14,7 @@ from core.generation_profiles import request_settings
 from core.structured_outputs import ranking_contract
 from models.prehop.llm_json import generate_json_or_raise
 from models.prehop.tracing import traced
-from utils.prompts.query_rewrite import build_evidence_ranking_prompt
+from utils.prompts.evidence_ranking import build_evidence_ranking_prompt
 from utils.similarity import cosine_similarity
 
 _CANDIDATE_ORDER_TRACE_LOCK = asyncio.Lock()
@@ -220,7 +220,6 @@ class SimilarityScoringMixin:
             [{"role": "user", "content": prompt}],
             "evidence ranking",
             f"query={query_text!r}",
-            required_fields={"ranking": list},
             structured_contract=contract,
             **request_settings("ranking"),
         )

@@ -6,93 +6,16 @@ This keeps the benchmark interface while delegating traversal logic to
 """
 
 import asyncio
-import importlib
 import logging
-import os
-import sys
-import threading
-import types
-from pathlib import Path
 from typing import Any
 
-from core.config import RAGConfig
 from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
-from core.vllm_client import VLLMClient, get_llm_client
 from utils.formatters import format_context_from_nodes
-from utils.prompts.shared import build_answer_prompt, mark_answer_boundary
+from utils.prompts.shared import mark_answer_boundary
 
 logger = logging.getLogger(__name__)
-_SYNC_LOOP_STATE = threading.local()
-
-
-# Match the pinned public HopGenerator CLI default.
 OFFICIAL_HOPRAG_TOP_K = 8
-
-
-def _run_coro_sync(coro):
-    """Run async coroutines from synchronous official HopRAG hooks.
-
-    A hard timeout guards against a wedged HTTP connection hanging the whole
-    benchmark forever (the loop-bound httpx read timeout does not fire when a
-    pooled connection is reused across event loops). On timeout the coroutine
-    is cancelled and TimeoutError propagates to the caller's try/except.
-    """
-    from core.config import RAGConfig
-
-    base = RAGConfig.LLM_REQUEST_TIMEOUT or 300
-    hard_timeout = base + 60
-
-    async def _guarded():
-        return await asyncio.wait_for(coro, timeout=hard_timeout)
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        # Official HopRetriever invokes this hook repeatedly from a stable
-        # asyncio.to_thread worker. Creating a fresh loop for every node
-        # judgement leaves cached AsyncOpenAI transports attached to hundreds
-        # of dead loops and eventually exhausts file descriptors. Reuse one
-        # loop per worker thread; this changes only adapter resource ownership,
-        # not the upstream call sequence or responses.
-        loop = getattr(_SYNC_LOOP_STATE, "loop", None)
-        if loop is None or loop.is_closed():
-            loop = asyncio.new_event_loop()
-            _SYNC_LOOP_STATE.loop = loop
-        return loop.run_until_complete(_guarded())
-
-    holder: dict[str, Any] = {}
-    errors: dict[str, BaseException] = {}
-
-    def _runner():
-        try:
-            holder["value"] = asyncio.run(_guarded())
-        except BaseException as e:  # noqa: BLE001  # pragma: no cover - propagate thread cancellation/system exits
-            errors["error"] = e
-
-    t = threading.Thread(target=_runner, daemon=True)
-    t.start()
-    t.join()
-    if "error" in errors:
-        raise errors["error"]
-    return holder.get("value")
-
-
-def _install_missing_hoprag_stubs() -> None:
-    """Install tiny import-time stubs for optional upstream dependencies."""
-
-    def _unavailable(name: str):
-        def _raise(*_args, **_kwargs):
-            raise RuntimeError(
-                f"HopRAG optional dependency '{name}' was unexpectedly used; the local runtime hook was not installed"
-            )
-
-        return _raise
-
-    if "paddlenlp" not in sys.modules:
-        paddlenlp = types.ModuleType("paddlenlp")
-        paddlenlp.Taskflow = _unavailable("paddlenlp")  # type: ignore[attr-defined]
-        sys.modules["paddlenlp"] = paddlenlp
 
 
 class HopRAGAdapter:
@@ -100,10 +23,10 @@ class HopRAGAdapter:
     HopRAG benchmark adapter that executes the official HopRetriever traversal.
     """
 
-    def __init__(self, model_id="default", max_hop=5, top_k=8, corpus_tag="default"):
-        if (max_hop, top_k) != (5, 8):
+    def __init__(self, model_id="default", max_hop=5, top_k=OFFICIAL_HOPRAG_TOP_K, corpus_tag="default"):
+        if (max_hop, top_k) != (5, OFFICIAL_HOPRAG_TOP_K):
             raise ValueError("Paper HopRAG requires native CLI defaults: max_hop=5, topk=8")
-        from models.hoprag.native_runtime import setup, native_pipeline
+        from models.hoprag.native_runtime import native_pipeline, setup
         setup(corpus_tag)
         self.model_id, self.corpus_tag = model_id, corpus_tag
         self.max_hop, self.top_k = max_hop, top_k

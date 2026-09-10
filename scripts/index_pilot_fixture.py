@@ -11,7 +11,6 @@ from scripts.cold_canary_fixture import digest, lines_digest
 
 
 def stage_index_pilot(base: Path, dataset: str, count: int = 32) -> Path:
-    from cli.index import _musique_corpus_records
     source = Path(__file__).resolve().parents[1] / 'data' / f'{dataset}_corpus'
     candidates = sorted(p.name for p in source.iterdir() if p.suffix in {'.txt', '.md'})
     names = sorted(random.Random(42).sample(candidates, min(count, len(candidates))))
@@ -22,13 +21,11 @@ def stage_index_pilot(base: Path, dataset: str, count: int = 32) -> Path:
         shutil.copyfile(source / name, corpus / name)
     hashes = {name: hashlib.sha256((corpus / name).read_bytes()).hexdigest() for name in names}
     records = ([{'source_id': Path(name).stem, 'filename': name, 'content_sha256': hashes[name]}
-                for name in names] if dataset != 'musique' else _musique_corpus_records(corpus, names))
+                for name in names])
     manifest = {'schema_version': 2, 'paragraph_count': len(names),
                 'source_ids_sha256': lines_digest(sorted(Path(name).stem for name in names)),
                 'corpus_records_sha256': digest(records),
                 'corpus_files_sha256': lines_digest([name + '\0' + hashes[name] for name in names])}
-    if dataset == 'musique':
-        manifest['paragraph_ids_sha256'] = lines_digest(sorted(r['paragraph_id'] for r in records))
     manifest['fingerprint'] = digest(manifest)
     (corpus / 'corpus_manifest.json').write_text(json.dumps(manifest, sort_keys=True) + '\n')
     metadata = source / 'source_metadata.json'

@@ -1,10 +1,18 @@
 # Execution and Measurement Protocol
 
+The revised Prehop design removes initial query rewriting and evidence-conditioned
+query regeneration/re-search. The original query searches all three channels at
+every input length. The runtime uses this single-pass policy. Earlier Prehop scores and costs have been removed from paper reporting. New
+results are pending and require separate compatible full-run artifacts.
+
 Use this guide to launch targets, preserve existing evidence, and report
 comparable costs. Runtime setup belongs in
 [RUNTIME_REQUIREMENTS](RUNTIME_REQUIREMENTS.md); completed numbers belong in
 [RESULTS](RESULTS.md). Keep live counters, queue snapshots, and temporary
 investigations in generated campaign artifacts outside `docs`.
+
+HotpotQA fullwiki preparation and its sentence-output evaluation policy are
+documented in [HOTPOTQA_FULLWIKI](HOTPOTQA_FULLWIKI.md).
 
 ## Completion and continuation
 
@@ -13,6 +21,11 @@ A finished benchmark receives a completion receipt from
 The legacy verifier entry forwards to that recorder. Runtime readiness,
 index-reuse, corpus integrity, and checkpoint checks remain separate.
 An index-only completion is not a completed query benchmark.
+
+LLM judging is disabled in the paper configuration. If explicitly enabled for
+a separate run, judging is synchronous. `RAG_JUDGE_BATCH=true` is rejected when
+judging is enabled; asynchronous Batch submission and reconciliation are not
+supported. Unjudged fields remain unavailable, not quality scores.
 
 Source edits alone do not block index or rolling dispatch. Loaded Python code
 may remain unchanged in an already-running process; new segments record their
@@ -144,13 +157,15 @@ Report datasets separately and state each metric's population.
 | Dataset | Quality population and measures | Cost normalization |
 |---|---|---|
 | MultiHop-RAG | 2,255 non-null queries: official Hits@4/10, MRR@10, MAP@10; all 2,556 queries: official QA Accuracy | 609 source documents; 2,556 queries |
-| MuSiQue-Ans dev | 2,417 queries: official answer EM/F1 scoring; global paragraph Support P/R/F1 as a task adaptation | 21,099 prepared source files; 2,417 queries |
+| HotpotQA fullwiki | All 7,405 dev queries: official answer, supporting-fact and joint EM/F1/precision/recall; results unmeasured | 5,233,329 source paragraphs; 7,405 queries; prepared artifacts verified |
 
 The 301 MultiHop-RAG null questions are excluded from successful retrieval
 rows. Terminal failures have zero quality scores; failed null rows can alter
 the failure-inclusive retrieval denominator and must be reported separately.
-Global MuSiQue support must not be labelled as the official question-local
-candidate protocol. AllFacts and literal fact recall are additional diagnostics,
+HotpotQA supporting-fact scores use a shared, gold-independent projection of
+complete returned corpus sentences to original title/index pairs. Report mapping
+coverage; distinguish these predictions from native sentence selection and from
+additional passage-coverage diagnostics. AllFacts and literal fact recall are additional diagnostics,
 not official leaderboard metrics.
 
 - **Index wall time:** original successful index-pipeline wall seconds, including

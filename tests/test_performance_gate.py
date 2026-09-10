@@ -25,16 +25,6 @@ def _artifact(strategy: str, dataset: str, scope: str = "full_benchmark") -> dic
                 "avg_official_map@10": 0.3,
             }
         )
-    else:
-        artifact.update(
-            {
-                "avg_official_answer_em": 0.2,
-                "avg_official_answer_f1": 0.3,
-                "avg_paragraph_support_precision": 0.1,
-                "avg_paragraph_support_recall": 0.6,
-                "avg_paragraph_support_f1": 0.17,
-            }
-        )
     return artifact
 
 
@@ -63,15 +53,14 @@ def test_performance_gate_uses_strongest_baseline_per_metric():
 
 
 def test_performance_gate_fails_when_one_official_metric_misses_margin():
-    prehop = _artifact("prehop", "MuSiQue")
-    baseline = _artifact("hoprag", "MuSiQue")
+    prehop = _artifact("prehop", "MultiHop-RAG")
+    baseline = _artifact("hoprag", "MultiHop-RAG")
     prehop.update(
         {
-            "avg_official_answer_em": 0.22,
-            "avg_official_answer_f1": 0.33,
-            "avg_paragraph_support_precision": 0.11,
-            "avg_paragraph_support_recall": 0.659,
-            "avg_paragraph_support_f1": 0.187,
+            "avg_official_hits@4": 0.55,
+            "avg_official_mrr@10": 0.44,
+            "avg_official_hits@10": 0.659,
+            "avg_official_map@10": 0.33,
         }
     )
 
@@ -79,12 +68,12 @@ def test_performance_gate_fails_when_one_official_metric_misses_margin():
 
     assert report["pass"] is False
     failed = [row["metric"] for row in report["metrics"] if not row["pass"]]
-    assert failed == ["Support recall"]
+    assert failed == ["Hits@10"]
 
 
 def test_performance_gate_rejects_exploratory_or_incompatible_artifacts():
-    prehop = _artifact("prehop", "MuSiQue", scope="sample_exploratory")
-    baseline = _artifact("hoprag", "MuSiQue", scope="sample_exploratory")
+    prehop = _artifact("prehop", "MultiHop-RAG", scope="sample_exploratory")
+    baseline = _artifact("hoprag", "MultiHop-RAG", scope="sample_exploratory")
 
     with pytest.raises(ValueError, match="full_benchmark"):
         evaluate_gate(prehop, [baseline])

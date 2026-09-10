@@ -3,17 +3,17 @@
 # run_dataset.sh — run a multi-hop QA dataset end to end.
 #
 # Generalized version of run_multihoprag.sh's wrapper pattern for datasets
-# added after MultiHop-RAG (MuSiQue) — same corpus/tag/queries
+# added after MultiHop-RAG (HotpotQA) — same corpus/tag/queries
 # convention, one script instead of two near-duplicates. MultiHop-RAG keeps
 # its own dedicated run_multihoprag.sh (unchanged, already documented).
 # All are plain text, so there is no OCR stage.
 #
 # Usage:
-#   ./run_dataset.sh musique all --model prehop              # index + benchmark, one strategy
+#   ./run_dataset.sh hotpotqa all --model prehop              # index + benchmark, one strategy
 #
 # Options:
-#   --model   {prehop|naive|hoprag|ms_graphrag|browsenet|proprag} default: prehop
-#   --queries {sample200|full}                                default: sample200
+#   --model   {prehop|naive|hoprag|ms_graphrag|lightrag|gfm_rag|linear_rag} default: prehop
+#   --queries {sample200|full}                                default: full
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
 set -e
@@ -25,6 +25,7 @@ DATASET="$1"; shift || true
 STAGE="${1:-all}"; shift || true
 MODEL="prehop"
 QUERIES="sample200"
+if [ "$DATASET" = "hotpotqa" ]; then QUERIES="full"; fi
 COMMON_PASS=()
 INDEX_PASS=()
 BENCH_PASS=()
@@ -39,8 +40,8 @@ while [ $# -gt 0 ]; do
 done
 
 case "$DATASET" in
-    musique) ;;
-    *) echo "Unknown dataset '$DATASET' (use musique)"; exit 1 ;;
+    hotpotqa) ;;
+    *) echo "Unknown dataset '$DATASET' (use hotpotqa)"; exit 1 ;;
 esac
 
 CORPUS_DIR="data/${DATASET}_corpus"
@@ -77,5 +78,5 @@ case "$STAGE" in
     index)           do_index ;;
     benchmark|bench) do_benchmark ;;
     all)             do_index; do_benchmark ;;
-    *) echo "Usage: $0 <musique> <index|benchmark|all> [--model prehop|naive|hoprag|ms_graphrag|browsenet|proprag] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
+    *) echo "Usage: $0 <hotpotqa> <index|benchmark|all> [--model prehop|naive|hoprag|ms_graphrag|lightrag|gfm_rag|linear_rag] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
 esac

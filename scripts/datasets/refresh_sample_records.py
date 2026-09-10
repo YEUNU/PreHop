@@ -32,7 +32,7 @@ def refresh_records(full_rows: list[dict], sample_rows: list[dict]) -> list[dict
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", required=True, choices=["multihoprag", "musique"])
+    parser.add_argument("--dataset", required=True, choices=["multihoprag", "hotpotqa"])
     parser.add_argument("--sample", required=True, type=Path)
     args = parser.parse_args()
 

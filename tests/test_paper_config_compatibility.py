@@ -27,20 +27,20 @@ def test_resolved_matrix_is_config_only_and_preserves_environment(monkeypatch):
 
 
 def test_only_changed_method_contract_invalidates_target(monkeypatch):
-    first = compatibility.target_configuration('prehop', 'musique')
-    unrelated = compatibility.target_configuration('lightrag', 'musique')
+    first = compatibility.target_configuration('prehop', 'hotpotqa')
+    unrelated = compatibility.target_configuration('lightrag', 'hotpotqa')
     monkeypatch.setitem(compatibility.METHOD_CONTRACT_VERSIONS, 'prehop', 'paper-method-future')
-    assert first != compatibility.target_configuration('prehop', 'musique')
-    assert unrelated == compatibility.target_configuration('lightrag', 'musique')
+    assert first != compatibility.target_configuration('prehop', 'hotpotqa')
+    assert unrelated == compatibility.target_configuration('lightrag', 'hotpotqa')
 
 
 def test_real_prompt_contents_change_policy_but_docstrings_do_not(monkeypatch):
     from utils.prompts import indexing, shared
-    first = canonical_semantic_index_policy('prehop', 'musique')
+    first = canonical_semantic_index_policy('prehop', 'hotpotqa')
     monkeypatch.setattr(shared.build_answer_prompt, '__doc__', 'Unrelated documentation')
-    assert first == canonical_semantic_index_policy('prehop', 'musique')
+    assert first == canonical_semantic_index_policy('prehop', 'hotpotqa')
     monkeypatch.setattr(indexing, 'HOPRAG_PROMPT', indexing.HOPRAG_PROMPT + '\nChanged instruction.')
-    assert first != canonical_semantic_index_policy('prehop', 'musique')
+    assert first != canonical_semantic_index_policy('prehop', 'hotpotqa')
 
 
 def test_materialized_schema_change_invalidates_bundle(monkeypatch):
@@ -57,11 +57,11 @@ def test_materialized_schema_change_invalidates_bundle(monkeypatch):
     ('embedding_dimensions', 128), ('method_contract', 'unknown-version'), ('prompt_configuration_sha256', 'bad')])
 def test_actual_index_validator_rejects_changed_semantics(field, value):
     from core.paper_policy import canonical_operational_policy
-    policy = canonical_semantic_index_policy('prehop', 'musique')
+    policy = canonical_semantic_index_policy('prehop', 'hotpotqa')
     policy['operational_config'] = canonical_operational_policy('prehop')
     policy[field] = value
     with pytest.raises(RuntimeError, match='checked-in paper policy'):
-        validate_canonical_index_policy('prehop', 'musique', policy)
+        validate_canonical_index_policy('prehop', 'hotpotqa', policy)
 
 
 def test_runtime_compatibility_preserves_explicit_location_and_content():
@@ -76,7 +76,7 @@ def test_runtime_compatibility_preserves_explicit_location_and_content():
 def test_setup_cannot_mask_config_change():
     first = compatibility.context_configuration()
     changed = deepcopy(first)
-    target = changed['targets']['musique/prehop']
+    target = changed['targets']['hotpotqa/prehop']
     target['operational']['runtime_freeze'] = {'sha256': 'installed'}
     assert compatibility.without_realized_runtime(first) == compatibility.without_realized_runtime(changed)
     target['index']['generation_seed'] = 7
@@ -87,16 +87,37 @@ def test_setup_cannot_mask_config_change():
 def test_actual_consumer_cap_changes_method_policy(monkeypatch):
     from core.config import RAGConfig
     from core.generation_profiles import request_settings
-    before = canonical_semantic_index_policy('prehop', 'musique')
+    before = canonical_semantic_index_policy('prehop', 'hotpotqa')
+    query_before = compatibility.method_identity('prehop')
     monkeypatch.setattr(RAGConfig, 'SYNTHESIS_MAX_OUTPUT_TOKENS', 64)
     assert request_settings('answer')['max_tokens'] == 64
-    assert before != canonical_semantic_index_policy('prehop', 'musique')
+    assert before == canonical_semantic_index_policy('prehop', 'hotpotqa')
+    assert query_before != compatibility.method_identity('prehop')
+
+
+def test_legacy_index_identity_only_accepts_exact_unchanged_construction():
+    observed = {
+        'prompt_configuration_sha256': 'dbefec38526fc3d7699a62e926af2c7141ea99a2c48ae53cfb78b67076ab6ef1',
+        'generation_profiles_sha256': '18145d0cb8623183ee57d10f10ebe11e510505779bb555e0e9c75344e365ca55',
+    }
+    current = compatibility.index_method_identity('prehop')
+    accepted = deepcopy(current)
+    compatibility.preserve_legacy_core_index_identity('prehop', observed, accepted)
+    assert all(accepted[k] == v for k, v in observed.items())
+    changed = deepcopy(current)
+    changed['prompt_configuration_sha256'] = 'changed-index-prompt'
+    compatibility.preserve_legacy_core_index_identity('prehop', observed, changed)
+    assert changed['prompt_configuration_sha256'] == 'changed-index-prompt'
+    unknown = observed | {'generation_profiles_sha256': 'unknown'}
+    rejected = deepcopy(current)
+    compatibility.preserve_legacy_core_index_identity('prehop', unknown, rejected)
+    assert rejected == current
 
 
 def test_resolver_rejects_explicit_unknown_or_changed_semantics(monkeypatch):
     monkeypatch.setenv('RAG_GRAPH_HOP_DEPTH', '2')
     with pytest.raises(RuntimeError):
-        compatibility.target_configuration('prehop', 'musique')
+        compatibility.target_configuration('prehop', 'hotpotqa')
 
 
 def test_protocol_and_fixture_are_in_static_review_scope(monkeypatch):
@@ -134,7 +155,7 @@ def test_admission_revalidation_preserves_original_bytes_and_rejects_migration(t
     from scripts.verify_paper_target import persist_admission
     path = tmp_path / 'admission.json'
     current = {'status': 'admitted', 'path': 'result', 'details_path': 'details', 'strategy': 'naive',
-               'dataset': 'musique', 'bindings': {'configuration_sha256': 'same'}, 'errors': [],
+               'dataset': 'hotpotqa', 'bindings': {'configuration_sha256': 'same'}, 'errors': [],
                'verification_provenance': {'revision': 'old'}}
     persist_admission(path, current)
     before = path.read_bytes()

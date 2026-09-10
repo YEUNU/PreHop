@@ -6,7 +6,6 @@ from core.structured_outputs import StructuredContract, StructuredOutputError
 
 async def generate_json_or_raise(
     llm_client, messages, stage: str, context: str = "",
-    required_fields: dict[str, type] | None = None,
     structured_contract: StructuredContract | None = None, **kwargs,
 ) -> dict[str, Any]:
     if structured_contract is None:

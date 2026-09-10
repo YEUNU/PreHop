@@ -63,7 +63,7 @@ def test_registered_official_revision_rejects_consistently_stale_artifact():
 
 def test_approved_core_policy_detects_method_defining_changes():
     approved = _approved_ablation_policy("prehop")
-    assert approved["query_rewrite_variant"] == "role_aligned_evidence_iterative"
+    assert approved["query_execution"] == "original-question-single-retrieval-v1"
     assert approved["graph_hop_depth"] == 1
     assert approved["default_top_k"] == 12
     mutated = {**approved, "default_top_k": 8}
@@ -71,19 +71,19 @@ def test_approved_core_policy_detects_method_defining_changes():
 
 
 def test_submission_admission_requires_fresh_content_bindings(tmp_path, monkeypatch):
-    relative = Path("data/results/run/naive/musique/seed_42/naive_musique.json")
+    relative = Path("data/results/run/naive/hotpotqa/seed_42/naive_hotpotqa.json")
     result = tmp_path / relative
     result.parent.mkdir(parents=True)
     payload = {"index_provenance": {"policy_sha256": "a" * 64, "code": {}}, "query_provenance": {}}
     result.write_text(json.dumps(payload), encoding="utf-8")
-    result.with_name("naive_musique.details.jsonl").write_text("{}\n", encoding="utf-8")
+    result.with_name("naive_hotpotqa.details.jsonl").write_text("{}\n", encoding="utf-8")
     ledger = result.parents[3] / "admission.json"
     ledger.write_text(
         json.dumps(
             {
                 "status": "admitted",
                 "path": str(result.resolve()),
-                "dataset": "musique",
+                "dataset": "hotpotqa",
                 "strategy": "naive",
                 "bindings": admission_bindings(result.resolve(), payload),
                 "errors": [],
@@ -92,35 +92,36 @@ def test_submission_admission_requires_fresh_content_bindings(tmp_path, monkeypa
         encoding="utf-8",
     )
     monkeypatch.setattr(verify_submission_consistency, "ROOT", tmp_path)
-    assert _validate_admission(relative, payload, "musique", "naive") == []
+    assert _validate_admission(relative, payload, "hotpotqa", "naive") == []
     result.write_text(json.dumps({**payload, "changed": True}), encoding="utf-8")
-    assert "stale" in " ".join(_validate_admission(relative, payload, "musique", "naive"))
+    assert "stale" in " ".join(_validate_admission(relative, payload, "hotpotqa", "naive"))
 
 
 def test_submission_admission_rejects_runtime_freeze_or_inventory_drift(tmp_path, monkeypatch):
     from core import admission, runtime_requirements
 
-    relative = Path("data/results/run/naive/musique/seed_42/naive_musique.json")
+    relative = Path("data/results/run/naive/hotpotqa/seed_42/naive_hotpotqa.json")
     result = tmp_path / relative
     result.parent.mkdir(parents=True)
     payload = {
         "strategy": "naive",
-        "corpus_tag": "musique",
+        "corpus_tag": "hotpotqa",
         "index_provenance": {"policy_sha256": "a" * 64, "code": {}},
         "query_provenance": {},
     }
     result.write_text(json.dumps(payload), encoding="utf-8")
-    result.with_name("naive_musique.details.jsonl").write_text("{}\n", encoding="utf-8")
+    result.with_name("naive_hotpotqa.details.jsonl").write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr("core.paper_compatibility.target_configuration", lambda *args: {"fixture": "configuration"})
     monkeypatch.setattr(runtime_requirements, "runtime_identity", lambda strategy: {"freeze": "first"})
     monkeypatch.setattr(admission, "current_post_query_inventory", lambda *args: {"sha256": "first"})
+    monkeypatch.setattr(admission, "current_corpus_identity", lambda _: {"fingerprint": "fixture-corpus"})
     ledger = result.parents[3] / "admission.json"
     ledger.write_text(
         json.dumps(
             {
                 "status": "admitted",
                 "path": str(result.resolve()),
-                "dataset": "musique",
+                "dataset": "hotpotqa",
                 "strategy": "naive",
                 "bindings": admission_bindings(result.resolve(), payload),
                 "errors": [],
@@ -129,38 +130,27 @@ def test_submission_admission_rejects_runtime_freeze_or_inventory_drift(tmp_path
         encoding="utf-8",
     )
     monkeypatch.setattr(verify_submission_consistency, "ROOT", tmp_path)
-    assert _validate_admission(relative, payload, "musique", "naive") == []
+    assert _validate_admission(relative, payload, "hotpotqa", "naive") == []
     monkeypatch.setattr(runtime_requirements, "runtime_identity", lambda strategy: {"freeze": "second"})
-    assert "stale" in " ".join(_validate_admission(relative, payload, "musique", "naive"))
+    assert "stale" in " ".join(_validate_admission(relative, payload, "hotpotqa", "naive"))
     monkeypatch.setattr("core.paper_compatibility.target_configuration", lambda *args: {"fixture": "configuration"})
     monkeypatch.setattr(runtime_requirements, "runtime_identity", lambda strategy: {"freeze": "first"})
     monkeypatch.setattr(admission, "current_post_query_inventory", lambda *args: {"sha256": "second"})
-    assert "stale" in " ".join(_validate_admission(relative, payload, "musique", "naive"))
+    assert "stale" in " ".join(_validate_admission(relative, payload, "hotpotqa", "naive"))
 
 
 def test_primary_scores_recomputed_from_predictions_and_authoritative_gold():
-    import copy
-
-    expected = {
-        'ground_truth': 'New York', 'answer_aliases': ['NYC'],
-        'evidence_paragraph_ids': ['musique:aabbccddeeff'],
-    }
-    row = {
-        'answer': 'NYC', 'retrieved_sources': [{'paragraph_id': 'musique:aabbccddeeff'}],
-        'expected_sources': {'docs': [], 'facts': [], 'paragraph_ids': ['musique:aabbccddeeff']},
-        'official_answer_em': 1.0, 'official_answer_f1': 1.0,
-        'paragraph_support_precision': 1.0, 'paragraph_support_recall': 1.0,
-        'paragraph_support_f1': 1.0,
-    }
     validate = verify_submission_consistency._validate_primary_row
-    assert validate(row, expected, 'musique') == []
-    for invalid in (float('inf'), float('nan'), True, 1.1, 0.5, None):
-        mutated = {**row, 'official_answer_f1': invalid}
-        assert any('official_answer_f1' in error for error in validate(mutated, expected, 'musique'))
-    assert validate({**row, 'answer': 'Boston'}, expected, 'musique')
-    mutated = copy.deepcopy(row)
-    mutated['expected_sources']['paragraph_ids'] = ['musique:ffffffffffff']
-    assert any('expected_sources' in error for error in validate(mutated, expected, 'musique'))
+    expected = {'ground_truth': 'Paris', 'evidence_facts': ['Alpha is in Paris.']}
+    row = {'answer': 'Paris', 'retrieved_sources': [{'text': 'Alpha is in Paris.'}],
+           'expected_sources': {'docs': [], 'facts': expected['evidence_facts'], 'paragraph_ids': []},
+           'official_hits@4': 1.0, 'official_hits@10': 1.0,
+           'official_mrr@10': 1.0, 'official_map@10': 1.0}
+    assert validate(row, expected, 'multihoprag') == []
+    for invalid in (-1.0, 0.0, float('nan'), float('inf')):
+        assert validate({**row, 'official_mrr@10': invalid}, expected, 'multihoprag')
+    assert validate({**row, 'retrieved_sources': []}, expected, 'multihoprag')
+    assert validate({**row, 'expected_sources': {}}, expected, 'multihoprag')
 
 
 def test_primary_retrieval_recompute_preserves_unanswerable_exclusion():
@@ -188,7 +178,7 @@ def test_average_verification_preserves_summary_when_last_row_ineligible():
 
 
 def test_compact_details_validate_against_full_rows_and_separate_traces():
-    from scripts.verify_submission_consistency import _validate_detail_projection, _approved_generation_revisions
+    from scripts.verify_submission_consistency import _approved_generation_revisions, _validate_detail_projection
     from utils.reporting import compact_detail_row
     rows = [{"query_id": "q", "query": "question", "answer": "answer", "sources": ["source"]}]
     traces = [{"idx": 1, "query_id": "q", "query": "question", "interaction_trace": [{"step": "native"}]}]

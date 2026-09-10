@@ -27,7 +27,7 @@ def test_dependency_conflicts_reject_main_strategies_before_success(monkeypatch,
     monkeypatch.setattr('core.paper_policy.validate_paper_semantic_environment', lambda *args: None)
     monkeypatch.setattr(runtime.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=1, stderr='incompatible packages'))
     with pytest.raises(RuntimeError, match='incompatible packages'):
-        runtime.check(strategy, 'musique')
+        runtime.check(strategy, 'hotpotqa')
 
 
 @pytest.mark.parametrize('selection', ['uv_only', 'python_only', 'both', 'mismatch', 'missing'])
@@ -71,7 +71,7 @@ def test_reuse_cannot_skip_failed_runtime_preflight(tmp_path):
                    'RAG_SKIP_PROJECT_ENV': 'true', 'RAG_INFERENCE_BASE_URL': 'http://litellm.test/v1',
                    'RAG_INFERENCE_API_KEY': 'synthetic', 'RAG_GENERATION_MODEL': 'gemma-4-31b-it',
                    'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b'}
-    result = subprocess.run(['bash', 'scripts/run_paper_target.sh', 'musique', 'prehop', 'completed', '--check'],
+    result = subprocess.run(['bash', 'scripts/run_paper_target.sh', 'hotpotqa', 'prehop', 'completed', '--check'],
                             cwd=tmp_path, env=environment, capture_output=True, check=False)
     assert result.returncode != 0
     assert (tmp_path / 'trace').read_text().splitlines() == ['scripts/check_paper_runtime.py']

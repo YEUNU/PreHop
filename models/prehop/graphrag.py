@@ -16,16 +16,10 @@ from core.config import RAGConfig
 from core.generation_profiles import request_settings
 from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
-from core.structured_outputs import question_contract
 from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
-from models.prehop.llm_json import generate_json_or_raise
 from models.prehop.retrieval import RetrievalPipeline
 from models.prehop.tracing import TracedNeo4j, TraceRecorder, attach_client, traced
-from utils.prompts.query_rewrite import (
-    build_evidence_conditioned_query_prompt,
-    build_role_aligned_query_prompt,
-)
 from utils.prompts.shared import (
     build_answer_prompt as build_shared_answer_prompt,
 )
@@ -179,78 +173,6 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             accepted.append(node)
         return self._build_context_from_nodes(accepted)
 
-    @staticmethod
-    def _validate_role_queries(payload: dict[str, Any]) -> dict[str, list[str]]:
-        validated: dict[str, list[str]] = {}
-        for role in ("q_minus", "q_plus"):
-            values = payload.get(role)
-            if not isinstance(values, list):
-                raise TypeError(f"Role-aligned query rewrite field {role!r} must be a list")
-            questions: list[str] = []
-            seen: set[str] = set()
-            for value in values:
-                if not isinstance(value, str) or not value.strip():
-                    raise ValueError(f"Role-aligned query rewrite field {role!r} contains a blank or non-string item")
-                question = " ".join(value.split())
-                identity = question.casefold()
-                if identity not in seen:
-                    seen.add(identity)
-                    questions.append(question)
-            if len(questions) > RAGConfig.QUESTIONS_PER_DIRECTION:
-                logger.warning(
-                    "Role-aligned query rewrite returned %d unique %s questions; retaining the first %d",
-                    len(questions),
-                    role,
-                    RAGConfig.QUESTIONS_PER_DIRECTION,
-                )
-                questions = questions[: RAGConfig.QUESTIONS_PER_DIRECTION]
-            validated[role] = questions
-        return validated
-
-    @traced
-    async def _rewrite_query_roles(self, query: str) -> dict[str, list[str]] | None:
-        if RAGConfig.QUERY_REWRITE_VARIANT == "none":
-            return None
-        max_words = RAGConfig.QUERY_REWRITE_MAX_WORDS
-        word_count = len(re.findall(r"\b\w+[\w'-]*\b", query))
-        if max_words > 0 and word_count > max_words:
-            return None
-        prompt = build_role_aligned_query_prompt(query, RAGConfig.QUESTIONS_PER_DIRECTION)
-        payload = await generate_json_or_raise(
-            self.llm,
-            [{"role": "user", "content": prompt}],
-            "role-aligned query rewrite",
-            f"query={query!r}",
-            required_fields={"q_minus": list, "q_plus": list},
-            structured_contract=question_contract("rewrite", limit=RAGConfig.QUESTIONS_PER_DIRECTION),
-            **request_settings("rewrite"),
-        )
-        return self._validate_role_queries(payload)
-
-    @traced
-    async def _refine_query_roles(
-        self,
-        query: str,
-        evidence: str,
-        attempted_questions: list[str],
-    ) -> dict[str, list[str]]:
-        prompt = build_evidence_conditioned_query_prompt(
-            query,
-            evidence,
-            attempted_questions,
-            RAGConfig.QUESTIONS_PER_DIRECTION,
-        )
-        payload = await generate_json_or_raise(
-            self.llm,
-            [{"role": "user", "content": prompt}],
-            "evidence-conditioned role rewrite",
-            f"query={query!r}",
-            required_fields={"q_minus": list, "q_plus": list},
-            structured_contract=question_contract("refine", limit=RAGConfig.QUESTIONS_PER_DIRECTION),
-            **request_settings("refine"),
-        )
-        return self._validate_role_queries(payload)
-
     # ---------- main entry ----------
     @traced
     async def run_workflow(
@@ -270,167 +192,13 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         _ = history
         retrieval_query = self._strip_format_instruction(user_query)
         graph_depth = RAGConfig.GRAPH_HOP_DEPTH
-        rewrite_started = time.perf_counter()
-        role_queries = await self._rewrite_query_roles(retrieval_query)
-        rewrite_ms = (time.perf_counter() - rewrite_started) * 1000 if role_queries is not None else 0.0
-        channel_queries = None
-        if role_queries is not None:
-            additive = RAGConfig.QUERY_REWRITE_VARIANT == "role_aligned_additive"
-            channel_queries = {
-                "q_minus": list(dict.fromkeys([*([retrieval_query] if additive else []), *role_queries["q_minus"]])),
-                "q_plus": list(dict.fromkeys([*([retrieval_query] if additive else []), *role_queries["q_plus"]])),
-                "body": [retrieval_query],
-            }
-
-        async def execute_retrieval(
-            queries: dict[str, list[str]] | None,
-            selection_variant: str | None = None,
-        ) -> tuple[str, list[dict[str, Any]], dict[str, float]]:
-            if graph_depth > 0:
-                selection_kwargs = {"selection_variant": selection_variant} if selection_variant is not None else {}
-                return await self.graph_search(
-                    entities=[retrieval_query],
-                    depth=graph_depth,
-                    top_k=RAGConfig.DEFAULT_TOP_K,
-                    channel_queries=queries,
-                    **selection_kwargs,
-                )
-            t_retrieve0 = time.perf_counter()
-            if queries is None:
-                result_context, result_nodes = await self.retrieve(retrieval_query, top_k=RAGConfig.DEFAULT_TOP_K)
-            else:
-                selection_kwargs = {"selection_variant": selection_variant} if selection_variant is not None else {}
-                result_context, result_nodes = await self.retrieve_with_views(
-                    retrieval_query,
-                    top_k=RAGConfig.DEFAULT_TOP_K,
-                    channel_queries=queries,
-                    **selection_kwargs,
-                )
-            return (
-                result_context,
-                result_nodes if isinstance(result_nodes, list) else [],
-                {"retrieve_ms": (time.perf_counter() - t_retrieve0) * 1000, "traversal_ms": 0.0},
-            )
-
-        retrieval_timing_keys = (
-            "retrieve_ms",
-            "traversal_ms",
-            "graph_expand_ms",
-            "deterministic_score_ms",
-            "candidate_order_ms",
-        )
-
-        def add_timing(target: dict[str, float], source: dict[str, float]) -> None:
-            for key in retrieval_timing_keys:
-                target[key] = float(target.get(key, 0.0)) + float(source.get(key, 0.0))
-
-        refinement_trace: list[dict[str, Any]] = []
-        refinement_stop_reason = "not_applicable"
-        retrieval_result: tuple[str, list[dict[str, Any]], dict[str, float]] | None = None
-        evidence_variants = {
-            "role_aligned_evidence",
-            "role_aligned_evidence_iterative",
-        }
-        if RAGConfig.QUERY_REWRITE_VARIANT in evidence_variants and channel_queries is not None:
-            preview_selection_variant = (
-                "role_body_rounds" if RAGConfig.SOURCE_SELECTION_VARIANT == "role_body_list_ranking" else None
-            )
-            current_context, current_nodes, current_timing = await execute_retrieval(
-                channel_queries,
-                preview_selection_variant,
-            )
-            total_timing = {key: float(current_timing.get(key, 0.0)) for key in retrieval_timing_keys}
-            attempted_questions = list(
-                dict.fromkeys(
-                    [
-                        retrieval_query,
-                        *role_queries["q_minus"],
-                        *role_queries["q_plus"],
-                    ]
-                )
-            )
-            attempted_identities = {" ".join(question.casefold().split()) for question in attempted_questions}
-            seen_evidence_ids = {self._node_identity(node) for node in current_nodes}
-            refinement_stop_reason = "evidence_or_question_stability"
-
-            while current_context and current_nodes:
-                if (
-                    RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS > 0
-                    and len(refinement_trace) >= RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS
-                ):
-                    refinement_stop_reason = "configured_round_cap"
-                    break
-                refinement_evidence = self._fit_ranked_context(current_nodes, retrieval_query)
-                if not refinement_evidence:
-                    refinement_stop_reason = "context_budget"
-                    break
-                attempted_snapshot = {role: list(channel_queries[role]) for role in ("q_minus", "q_plus")}
-                refine_started = time.perf_counter()
-                proposed = await self._refine_query_roles(
-                    retrieval_query,
-                    refinement_evidence,
-                    attempted_questions,
-                )
-                rewrite_ms += (time.perf_counter() - refine_started) * 1000
-                refined_role_queries = {
-                    role: [
-                        question
-                        for question in proposed[role]
-                        if " ".join(question.casefold().split()) not in attempted_identities
-                    ]
-                    for role in ("q_minus", "q_plus")
-                }
-                refinement_trace.append(
-                    {
-                        "input": {
-                            "query": retrieval_query,
-                            "attempted": attempted_snapshot,
-                        },
-                        "output": refined_role_queries,
-                    }
-                )
-                if not any(refined_role_queries.values()):
-                    refinement_stop_reason = "no_new_questions"
-                    break
-
-                for role in ("q_minus", "q_plus"):
-                    channel_queries[role] = list(dict.fromkeys([*channel_queries[role], *refined_role_queries[role]]))
-                    attempted_questions.extend(refined_role_queries[role])
-                    attempted_identities.update(
-                        " ".join(question.casefold().split()) for question in refined_role_queries[role]
-                    )
-
-                next_context, next_nodes, next_timing = await execute_retrieval(
-                    channel_queries,
-                    preview_selection_variant,
-                )
-                add_timing(total_timing, next_timing)
-                current_context, current_nodes = next_context, next_nodes
-
-                if RAGConfig.QUERY_REWRITE_VARIANT == "role_aligned_evidence":
-                    refinement_stop_reason = "single_refinement_variant"
-                    break
-
-                # Continue only when the accumulated role queries introduce a
-                # previously unseen selected chunk. Exact question and chunk
-                # identities provide the stopping rule; no score threshold or
-                # dataset-specific round count participates.
-                current_evidence_ids = {self._node_identity(node) for node in current_nodes}
-                new_evidence_ids = current_evidence_ids - seen_evidence_ids
-                seen_evidence_ids.update(current_evidence_ids)
-                if not new_evidence_ids:
-                    refinement_stop_reason = "no_new_evidence"
-                    break
-
-            if RAGConfig.SOURCE_SELECTION_VARIANT == "role_body_list_ranking":
-                final_context, final_nodes, final_timing = await execute_retrieval(channel_queries)
-                add_timing(total_timing, final_timing)
-                retrieval_result = (final_context, final_nodes, total_timing)
-            else:
-                retrieval_result = (current_context, current_nodes, total_timing)
-
-        if retrieval_result is None:
-            retrieval_result = await execute_retrieval(channel_queries)
+        if graph_depth > 0:
+            retrieval_result = await self.graph_search(
+                entities=[retrieval_query], depth=graph_depth, top_k=RAGConfig.DEFAULT_TOP_K)
+        else:
+            started = time.perf_counter()
+            context, nodes = await self.retrieve(retrieval_query, top_k=RAGConfig.DEFAULT_TOP_K)
+            retrieval_result = (context, nodes, {"retrieve_ms": (time.perf_counter()-started)*1000, "traversal_ms": 0.0})
         context, nodes, timing = retrieval_result
 
         retrieved_nodes = nodes if isinstance(nodes, list) else []
@@ -449,26 +217,6 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         }
 
         trace: list[dict[str, Any]] = []
-        if role_queries is not None:
-            trace.append(
-                {
-                    "step": "query_rewrite",
-                    "input": {"query": retrieval_query, "variant": RAGConfig.QUERY_REWRITE_VARIANT},
-                    "output": role_queries,
-                    "rewrite_ms": rewrite_ms,
-                    "refinement_rounds": len(refinement_trace),
-                    "refinement_max_rounds": RAGConfig.QUERY_REFINEMENT_MAX_ROUNDS,
-                    "refinement_stop_reason": refinement_stop_reason,
-                }
-            )
-        for refinement in refinement_trace:
-            trace.append(
-                {
-                    "step": "evidence_query_rewrite",
-                    "input": refinement["input"],
-                    "output": refinement["output"],
-                }
-            )
         trace.append(
             {
                 "step": "retrieve",

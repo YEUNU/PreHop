@@ -136,7 +136,7 @@ def calculate_answer_metrics(
         "answer_precision": best[2],
         "answer_recall": best[3],
         "null_refusal": UNJUDGED_SCORE,
-        # MuSiQue's AnswerMetric uses this normalized EM/F1 and takes the
+        # Alias-aware answer scoring uses normalized EM/F1 and takes the
         # maximum over aliases.  Keep the official names beside the shared
         # primary fields so an artifact can state exactly what it reports.
         "official_answer_em": best[0],
@@ -293,25 +293,6 @@ def _resolve_judge_fields(
     }
 
 
-async def _judge_or_defer(
-    judge_prompt: str,
-    response: str,
-    vllm_client,
-    batch_collector=None,
-    custom_id: str | None = None,
-) -> dict:
-    """Register the default Batch request or run the explicit sync debug path."""
-    if batch_collector is not None:
-        if custom_id is None:
-            raise ValueError("Batch judge requires a stable custom_id")
-        batch_collector.register(custom_id, judge_prompt)
-        judge = _resolve_judge_fields(None, response, RAGConfig.EVAL_MODEL)
-        judge["_deferred_judge"] = True
-        judge["judge_custom_id"] = custom_id
-        return judge
-    return await _run_combined_judge(judge_prompt, response, vllm_client)
-
-
 def _format_judge_context(retrieved_sources: list[Any] | None) -> str:
     """Normalize retrieved source records into the judge's evidence view."""
     nodes: list[dict[str, Any]] = []
@@ -333,7 +314,7 @@ def _format_judge_context(retrieved_sources: list[Any] | None) -> str:
     return format_context_from_nodes(nodes) if nodes else "(empty retrieved context)"
 
 
-# --- Multi-hop dataset metrics (MultiHop-RAG, MuSiQue) ---
+# --- Multi-hop dataset metrics (MultiHop-RAG, HotpotQA) ---
 
 
 def _fact_matches_chunk(fact_norm: str, chunk_norm: str) -> bool:
@@ -398,6 +379,8 @@ def calculate_retrieval_ranking_metrics(
         **{f"evidence_fact_recall@{k}": empty_value for k in ks},
         "official_mrr@10": empty_value,
         "official_map@10": empty_value,
+        "exact_fact_recall@10": empty_value,
+        "all_facts@10": empty_value,
     }
     if not gold_raw or not retrieved_sources:
         return result
@@ -425,6 +408,8 @@ def calculate_retrieval_ranking_metrics(
             ap_sum += len(newly) / rank
     result["official_mrr@10"] = 1.0 / first_hit_rank if first_hit_rank else 0.0
     result["official_map@10"] = ap_sum / total_gold
+    result["exact_fact_recall@10"] = len(covered) / total_gold
+    result["all_facts@10"] = float(len(covered) == total_gold)
 
     for k in ks:
         top_raw = chunks[:k]
@@ -447,66 +432,6 @@ def _source_doc_title(source: Any) -> str:
     return ""
 
 
-_MUSIQUE_PARAGRAPH_ID_RE = re.compile(
-    r"(?:paragraph[-_ ]?id\s*:\s*|musique_)(musique:[a-f0-9]{12,64}|[a-f0-9]{12,64})",
-    re.IGNORECASE,
-)
-
-
-def _source_paragraph_identity(source: Any) -> str:
-    """Find the stable MuSiQue paragraph identity exposed by every adapter.
-
-    Corpus filenames carry the hash identity, and the corpus body repeats it
-    as a metadata header.  The two routes cover adapters that expose only a
-    source filename or only retrieved text.
-    """
-    candidates: list[str] = []
-    if isinstance(source, dict):
-        candidates.extend(str(source.get(key) or "") for key in ("paragraph_id", "source", "doc", "text"))
-    elif isinstance(source, (list, tuple)):
-        candidates.extend(str(value or "") for value in source)
-    else:
-        candidates.append(str(source or ""))
-    for candidate in candidates:
-        direct = candidate.strip()
-        if direct.startswith("musique:"):
-            return direct.lower()
-        match = _MUSIQUE_PARAGRAPH_ID_RE.search(candidate)
-        if match:
-            value = match.group(1).lower()
-            return value if value.startswith("musique:") else f"musique:{value}"
-    return ""
-
-
-def calculate_musique_support_metrics(retrieved_sources: list[Any], gold_paragraph_ids: list[str]) -> dict[str, float]:
-    """SupportMetric formula over global paragraph identities, not titles.
-
-    MuSiQue's official evaluator receives query-local paragraph ``idx``
-    predictions.  This global RAG corpus instead retrieves source documents,
-    so these are deliberately named ``paragraph_support_*`` rather than
-    ``official_support_*`` despite using the same set P/R/F1 formula.
-    """
-    gold = {str(value).strip().lower() for value in (gold_paragraph_ids or []) if str(value).strip()}
-    retrieved = {_source_paragraph_identity(source) for source in (retrieved_sources or [])}
-    retrieved.discard("")
-    if not gold:
-        value = UNJUDGED_SCORE
-        return {
-            "paragraph_support_precision": value,
-            "paragraph_support_recall": value,
-            "paragraph_support_f1": value,
-        }
-    true_positive = len(gold & retrieved)
-    precision = true_positive / len(retrieved) if retrieved else 0.0
-    recall = true_positive / len(gold)
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    return {
-        "paragraph_support_precision": precision,
-        "paragraph_support_recall": recall,
-        "paragraph_support_f1": f1,
-    }
-
-
 def _normalize_doc_key(value: Any) -> str:
     text = str(value or "").lower().strip()
     text = re.sub(r"\.(pdf|txt|md|json)$", "", text)
@@ -520,8 +445,7 @@ def calculate_evidence_doc_metrics(
 ) -> dict[str, float]:
     """Compute title-level evidence P/R/F1 as a diagnostic-only view.
 
-    It remains useful for MultiHop-RAG article inspection, but it is not
-    MuSiQue's official support metric: a title can name multiple paragraphs.
+    A title can name multiple paragraphs; this is not sentence-level support.
     """
     gold_keys = {_normalize_doc_key(doc) for doc in (gold_docs or []) if _normalize_doc_key(doc)}
     retrieved_keys = {
@@ -560,22 +484,20 @@ async def evaluate_multihoprag_response(
     retrieved_sources: list[Any],
     evidence_facts: list[str] | None = None,
     evidence_docs: list[str] | None = None,
-    evidence_paragraph_ids: list[str] | None = None,
     question_type: str = "",
     dataset: str = "",
     answer_aliases: list[str] | None = None,
     vllm_client=None,
-    batch_collector=None,
-    custom_id: str | None = None,
     judge_enabled: bool = False,
+    supporting_facts: list | None = None,
+    hotpot_sentence_store: str | None = None,
 ) -> dict:
     """Evaluate answer quality and dataset-appropriate evidence quality.
 
     Deterministic normalized EM/F1 is the downstream answer signal. The LLM
     judge keeps semantic correctness and context groundedness as separate,
-    optional diagnostic axes. Sentence/fact ranking metrics are skipped for MuSiQue
-    because its gold evidence is paragraph-level, while title-level evidence
-    precision/recall/F1 is reported for every dataset.
+    optional diagnostic axes. Official evidence metrics follow the dataset
+    protocol; title-level evidence precision/recall/F1 is diagnostic.
     """
     if judge_enabled:
         aliases = [str(alias).strip() for alias in (answer_aliases or []) if str(alias).strip()]
@@ -587,7 +509,7 @@ async def evaluate_multihoprag_response(
             response=response,
             retrieved_context=_format_judge_context(retrieved_sources),
         )
-        judge = await _judge_or_defer(judge_prompt, response, vllm_client, batch_collector, custom_id)
+        judge = await _run_combined_judge(judge_prompt, response, vllm_client)
     else:
         judge = {
             "llm_judge_score": UNJUDGED_SCORE,
@@ -607,9 +529,8 @@ async def evaluate_multihoprag_response(
         question_type=question_type,
     )
     dataset_marker = str(dataset or "").strip().lower()
-    if dataset_marker == "musique":
-        # MuSiQue officially supports alias-aware EM/F1.  It does not use
-        # MultiHop-RAG's permissive token-intersection QA decision.
+    if dataset_marker == "hotpotqa":
+        # HotpotQA uses its official answer and sentence-support scorer.
         answer_metrics["official_qa_accuracy"] = UNJUDGED_SCORE
         ranking = {
             "official_hits@4": UNJUDGED_SCORE,
@@ -619,18 +540,21 @@ async def evaluate_multihoprag_response(
             "evidence_fact_recall@4": UNJUDGED_SCORE,
             "evidence_fact_recall@10": UNJUDGED_SCORE,
         }
-        support_metrics = calculate_musique_support_metrics(retrieved_sources, evidence_paragraph_ids or [])
+        if dataset_marker == "hotpotqa":
+            from utils.hotpotqa import PROJECTION, project_sentences, score
+            predicted = project_sentences(retrieved_sources, hotpot_sentence_store or "data/hotpotqa_corpus/sentences.sqlite3")
+            official = score(extract_final_answer(response), predicted, ground_truth, supporting_facts or [])
+            answer_metrics.update(answer_em=official["em"], answer_f1=official["f1"],
+                                  answer_precision=official["prec"], answer_recall=official["recall"],
+                                  official_answer_em=official["em"], official_answer_f1=official["f1"])
+            support_metrics = {"hotpot_" + key: value for key, value in official.items()}
+            support_metrics.update(predicted_supporting_facts=predicted, support_prediction_policy=PROJECTION)
     else:
-        # MultiHop-RAG officially supports its any-token QA accuracy, not
-        # MuSiQue's alias-aware answer evaluator.
+        # MultiHop-RAG officially supports its any-token QA accuracy.
         answer_metrics["official_answer_em"] = UNJUDGED_SCORE
         answer_metrics["official_answer_f1"] = UNJUDGED_SCORE
         ranking = calculate_retrieval_ranking_metrics(retrieved_sources, evidence_facts or [])
-        support_metrics = {
-            "paragraph_support_precision": UNJUDGED_SCORE,
-            "paragraph_support_recall": UNJUDGED_SCORE,
-            "paragraph_support_f1": UNJUDGED_SCORE,
-        }
+        support_metrics = {}
     evidence_docs_metrics = calculate_evidence_doc_metrics(retrieved_sources, evidence_docs or [])
 
     return {

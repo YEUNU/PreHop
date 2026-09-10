@@ -26,9 +26,7 @@ load_project_env "$repo_root/.env"
 PYTHON_BIN=$(resolve_python "$repo_root") || exit 1
 export PYTHON_BIN
 runner="$repo_root/scripts/run_paper_target.sh"
-datasets=(multihoprag musique)
-# PropRAG is excluded from this campaign because its generation route remained
-# non-responsive even with serial requests, bounded output, and backoff.
+datasets=(multihoprag hotpotqa)
 # Keeping strategy as the outer loop completes both datasets for one baseline
 # before moving on.
 strategy_lines=$(python3 "$repo_root/core/strategy_registry.py" --primary-lines) || {

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from core.benchmark_failures import BenchmarkIntegrityError
-
 import asyncio
 import sys
 from pathlib import Path
 from typing import Any
+
+from core.benchmark_failures import BenchmarkIntegrityError
 
 from .base import canonical_semantic_env, load_rows
 

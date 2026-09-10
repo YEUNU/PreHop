@@ -21,17 +21,12 @@ stays tractable without a dataset-specific entity gate.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
-import importlib
-import io
-import itertools
 import json
 import logging
 import os
 import re
 import shutil
-import sys
 import tempfile
 import threading
 import time
@@ -143,18 +138,6 @@ def _validate_cached_node(
             question_embedding = np.asarray(item[2])
             if question_embedding.shape != (_EMBED_DIM,) or not np.isfinite(question_embedding).all():
                 raise RuntimeError(f"HopRAG cache entry has an invalid {role} embedding for {doc_id}")
-
-
-def _validated_question_list(result) -> list[str]:
-    """Validate the official helper's ``(questions, chat)`` return shape."""
-    if not isinstance(result, (tuple, list)) or len(result) != 2:
-        raise ValueError("invalid result shape")
-    questions, _ = result
-    if not isinstance(questions, list) or not questions:
-        raise ValueError("empty question list")
-    if any(not isinstance(question, str) or not question.strip() for question in questions):
-        raise ValueError("question list contains a non-string or blank item")
-    return questions
 
 
 def _atomic_pickle_dump(path: Path, payload) -> None:
@@ -441,278 +424,11 @@ class _VLLMEmbedClient:
         return vectors
 
 
-def _install_round_robin_patch(config) -> None:
-    """Round-robin gen endpoints by replacing tool.OpenAI with a subclass that
-    rotates base_url on each instantiation. This preserves the original
-    _get_chat_completion logic (return format, JSON parsing, try_run retries)
-    and only changes which server each request goes to.
-
-    Also caps max_tokens to 1024 so long 10-K documents (28K+ tokens) fit
-    within the 32768 context window (32768 - 1024 = 31744 max input).
-    """
-    import urllib.error
-    import urllib.request
-
-    import tool
-    from openai import OpenAI as _OrigOpenAI
-
-    # Validate the OpenAI-compatible model registry rather than a proxy-specific
-    # /health route. A two-second /health probe produced false negatives while
-    # a healthy external server was busy near its max_num_seqs limit.
-    live_bases = []
-    for base in _GEN_API_BASES:
-        models_url = base.rstrip("/") + "/models"
-        for attempt in range(1, 4):
-            try:
-                request = urllib.request.Request(
-                    models_url,
-                    headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
-                )
-                with urllib.request.urlopen(request, timeout=15) as response:
-                    payload = json.load(response)
-                model_ids = {item.get("id") for item in payload.get("data", [])}
-                if _GEN_MODEL_NAME not in model_ids:
-                    raise RuntimeError(
-                        f"configured model {_GEN_MODEL_NAME!r} not advertised by {models_url}: "
-                        f"{sorted(model_id for model_id in model_ids if model_id)}"
-                    )
-                live_bases.append(base)
-                break
-            except (OSError, urllib.error.URLError, ValueError, RuntimeError) as exc:
-                if attempt == 3:
-                    logger.warning("HopRAG: generation endpoint rejected after retries: %s (%s)", base, exc)
-                else:
-                    time.sleep(attempt)
-    if not live_bases:
-        raise ConnectionError(f"HopRAG: no configured generation endpoint passed its health check: {_GEN_API_BASES}")
-    logger.info("HopRAG: live gen endpoints for round-robin: %s", live_bases)
-
-    _cycle = itertools.cycle(live_bases)
-    _lock = threading.Lock()
-    _local_bases_set = set(live_bases) | set(_GEN_API_BASES)
-
-    class _RoundRobinOpenAI(_OrigOpenAI):
-        """Drop-in replacement: rotates base_url across live gen endpoints."""
-
-        def __init__(self, api_key=None, base_url=None, **kwargs):
-            if base_url and any(base_url.startswith(b.rstrip("/v1").rstrip("/")) for b in _local_bases_set):
-                with _lock:
-                    base_url = next(_cycle)
-            super().__init__(api_key=api_key, base_url=base_url, **kwargs)
-
-    # tool.py does `from openai import OpenAI` at module level; replacing
-    # tool.OpenAI makes all subsequent `OpenAI(...)` calls in that module use
-    # our subclass while preserving every other part of _get_chat_completion.
-    tool.OpenAI = _RoundRobinOpenAI
-
-    # Cap max_tokens and truncate input per LLM call.
-    # Root cause of "Unterminated string" errors: per-chunk input was unbounded,
-    # so the model generated question lists longer than _MAX_OUTPUT.
-    # Fix: cap input to 3000 chars (~667 tokens) → question list ~10 items ~250t
-    # output, well under the 512-token budget.
-    _MAX_OUTPUT = 512
-    _MAX_INPUT_CHARS = 3000  # chars — tight cap on each LLM call's user message
-
-    _orig_get_chat_completion = tool._get_chat_completion
-
-    def _capped_get_chat_completion(chat, return_json=True, model=None, max_tokens=4096, keys=None):
-        # Truncate the last user message if it exceeds the input budget.
-        messages = list(chat)
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") == "user":
-                text = messages[i].get("content", "")
-                if len(text) > _MAX_INPUT_CHARS:
-                    messages = list(messages)
-                    messages[i] = {**messages[i], "content": text[:_MAX_INPUT_CHARS]}
-                    logger.debug("HopRAG: truncated user message %d→%d chars", len(text), _MAX_INPUT_CHARS)
-                break
-        return _orig_get_chat_completion(
-            messages,
-            return_json=return_json,
-            model=model,
-            max_tokens=min(max_tokens, _MAX_OUTPUT),
-            keys=keys,
-        )
-
-    tool._get_chat_completion = _capped_get_chat_completion
-
-    # Patch txt2obj to fix a bug where `.replace('\\"', '"')` corrupts valid
-    # JSON before parsing. Root cause: vLLM json_object mode returns properly
-    # escaped JSON (e.g. "term \"N/M\""), but txt2obj unescapes \" → " before
-    # json.loads, producing unbalanced quotes → JSONDecodeError → returns None.
-    # Fix: try json.loads directly first (handles all standard JSON escapes),
-    # and only fall back to the original clean_json_str path if that fails.
-    _orig_txt2obj = tool.txt2obj
-
-    def _safe_txt2obj(text):
-        if not text:
-            return _orig_txt2obj(text)
-        # Fast path: vLLM json_object guarantees valid JSON — parse directly.
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            logger.debug("HopRAG response required upstream non-standard JSON cleanup")
-        # Slow path: original clean_json_str logic for non-standard responses.
-        return _orig_txt2obj(text)
-
-    tool.txt2obj = _safe_txt2obj
-
-    logger.info(
-        "HopRAG: round-robin OpenAI patch + max_tokens cap installed across %d endpoints: %s",
-        len(live_bases),
-        live_bases,
-    )
-
-
-def _install_optional_stubs() -> None:
-    """Stub upstream Chinese-NLP tagging; the supported adapter replaces it."""
-    import types
-
-    def _unavailable(name: str):
-        def _raise(*_args, **_kwargs):
-            raise RuntimeError(
-                f"HopRAG optional dependency '{name}' was unexpectedly used; the local runtime hook was not installed"
-            )
-
-        return _raise
-
-    if "paddlenlp" not in sys.modules:
-        m = types.ModuleType("paddlenlp")
-        m.Taskflow = _unavailable("paddlenlp")
-        sys.modules["paddlenlp"] = m
-
-
 def _setup_hoprag_modules(corpus_tag: str) -> None:
     from models.hoprag.native_runtime import setup
     setup(corpus_tag)
     # This scheduler only invokes the unchanged per-document native function.
     _patch_create_nodes_offline_parallel()
-
-
-def _spacy_ner_eng(text: str):
-    """spaCy substitute for paddlenlp Taskflow('pos_tagging').
-
-    Returns a list of unique content-word lemmas. Filters punctuation, stop
-    words, and function-word POS tags. Result feeds into node 'keywords'
-    sets used by sparse_similarity in HopBuilder.create_edge.
-    """
-    global _SPACY_NLP
-    if _SPACY_NLP is None:
-        import spacy
-
-        _SPACY_NLP = spacy.load("en_core_web_sm", disable=["parser"])
-    doc = _SPACY_NLP(str(text or ""))
-    seen = set()
-    out = []
-    for tok in doc:
-        if tok.is_punct or tok.is_space or tok.is_stop:
-            continue
-        if tok.pos_ not in _KEEP_POS:
-            continue
-        lemma = tok.lemma_.lower().strip()
-        if not lemma or len(lemma) < 2:
-            continue
-        if lemma in seen:
-            continue
-        seen.add(lemma)
-        out.append(lemma)
-    return out
-
-
-def _patch_hopbuilder_for_pandas2() -> None:
-    """HopBuilder.create_edge does
-        df.apply(lambda x: x['kw_x'].union(x['kw_y']), axis=1)
-    which returns a Series of set objects. pandas 2.x expands those into
-    multiple columns when assigned back, raising
-    'Cannot set a DataFrame with multiple columns to the single column'.
-    Wrap the union result in a list so pandas treats it as a scalar."""
-    import HopBuilder
-
-    if getattr(HopBuilder.QABuilder.create_edge, "_patched_for_pandas2", False):
-        return
-
-    import inspect
-    import textwrap
-
-    import pandas as pd
-
-    src = inspect.getsource(HopBuilder.QABuilder.create_edge)
-    src = textwrap.dedent(src)
-
-    # pandas 2.x expands lambda-returned set/list into multiple columns when
-    # assigned. Rewrite both `apply(...)` lines to use list comprehensions,
-    # which always yield a single Series of scalars.
-    replacements = [
-        (
-            "cartesian1['keywords_both']=cartesian1.apply(lambda x:x['keywords_x'].union(x['keywords_y']),axis=1)",
-            "cartesian1['keywords_both']=[set(kx).union(set(ky)) for kx,ky in zip(cartesian1['keywords_x'],cartesian1['keywords_y'])]",
-        ),
-        (
-            "cartesian2['keywords_both']=cartesian2.apply(lambda x:x['keywords_x'].union(x['keywords_y']),axis=1)",
-            "cartesian2['keywords_both']=[set(kx).union(set(ky)) for kx,ky in zip(cartesian2['keywords_x'],cartesian2['keywords_y'])]",
-        ),
-        (
-            # A group with all-pending or all-answerable questions (every doc in
-            # this official problem-context group had the other side empty-list
-            # skipped during Q generation) makes the cross join 0 rows. pandas'
-            # groupby(...).apply(fn) on an empty frame never calls fn, so the
-            # result silently loses the doc_id_x/doc_id_y columns the rest of
-            # create_edge assumes exist, raising KeyError downstream. A 0-row
-            # cross join can only ever produce 0 edges regardless, so short
-            # circuit to that same (official) outcome instead of computing it.
-            "cartesian=pending_df.merge(answerable_df,how='cross') # x:pending y:answerable",
-            (
-                "if pending_df.empty or answerable_df.empty:\n"
-                "        self.edges=pd.DataFrame(columns=['node_id_x','question_y','keywords_both','embedding_x','node_id_y','similarity'])\n"
-                "        self.abstract2chunk=answerable_df\n"
-                "        return\n"
-                "    cartesian=pending_df.merge(answerable_df,how='cross') # x:pending y:answerable"
-            ),
-        ),
-        (
-            "cartesian=cartesian.loc[cartesian['node_id_x']!=cartesian['node_id_y']] # Nodes cannot form self-loops, but they can connect to different sentences within the same document (i.e., different nodes)",
-            (
-                "cartesian=cartesian.loc[cartesian['node_id_x']!=cartesian['node_id_y']] # Nodes cannot form self-loops, but they can connect to different sentences within the same document (i.e., different nodes)\n"
-                "    if cartesian.empty:\n"
-                "        self.edges=pd.DataFrame(columns=['node_id_x','question_y','keywords_both','embedding_x','node_id_y','similarity'])\n"
-                "        self.abstract2chunk=answerable_df\n"
-                "        return"
-            ),
-        ),
-        (
-            "cartesian=cartesian.groupby(['doc_id_x','doc_id_y']).apply(get_sparse_similarity_transform).reset_index(drop=True)#",
-            (
-                "cartesian=cartesian.groupby(['doc_id_x','doc_id_y']).apply(get_sparse_similarity_transform).reset_index(drop=True)#\n"
-                "    if cartesian.empty or 'doc_id_x' not in cartesian.columns or 'doc_id_y' not in cartesian.columns:\n"
-                "        self.edges=pd.DataFrame(columns=['node_id_x','question_y','keywords_both','embedding_x','node_id_y','similarity'])\n"
-                "        self.abstract2chunk=answerable_df\n"
-                "        return"
-            ),
-        ),
-        (
-            "cartesian2=cartesian.loc[cartesian['doc_id_x']!=cartesian['doc_id_y']] # To avoid building edges all within the same document, a fallback edge creation step ensures different documents",
-            (
-                "if cartesian.empty or 'doc_id_x' not in cartesian.columns or 'doc_id_y' not in cartesian.columns:\n"
-                "        self.edges=pd.DataFrame(columns=['node_id_x','question_y','keywords_both','embedding_x','node_id_y','similarity'])\n"
-                "        self.abstract2chunk=answerable_df\n"
-                "        return\n"
-                "    cartesian2=cartesian.loc[cartesian['doc_id_x']!=cartesian['doc_id_y']] # To avoid building edges all within the same document, a fallback edge creation step ensures different documents"
-            ),
-        ),
-    ]
-    for old, new in replacements:
-        if old not in src:
-            raise RuntimeError(f"HopBuilder.create_edge source pattern not found: {old[:60]}...")
-        src = src.replace(old, new)
-
-    # Bind into the HopBuilder module namespace so cypher templates etc resolve.
-    namespace = dict(HopBuilder.__dict__)
-    namespace.update({"pd": pd})
-    exec(compile(src, "<hop_create_edge_patched>", "exec"), namespace)  # noqa: S102 - patch vendored method source
-    patched = namespace["create_edge"]
-    patched._patched_for_pandas2 = True  # type: ignore[attr-defined]
-    HopBuilder.QABuilder.create_edge = patched
-    logger.info("HopRAG: patched QABuilder.create_edge for pandas-2 compatibility")
 
 
 def _patch_create_nodes_offline_parallel() -> None:
@@ -914,282 +630,9 @@ def _patch_create_nodes_offline_parallel() -> None:
     )
 
 
-def _patch_create_nodes_cache_batched() -> None:
-    """Replace create_nodes_cache with UNWIND batch INSERT (no per-doc sleep).
-
-    Correctness guarantees:
-    - Neo4j UNWIND ... CREATE ... RETURN id(n) returns IDs in the same order as
-      the input list — this is a stable, documented property used in all Neo4j
-      production batch patterns.
-    - We assert len(returned_ids) == len(batch) and raise on mismatch so a
-      silent mapping error is impossible.
-    - numpy embed arrays are explicitly converted to Python lists so nested-dict
-      UNWIND parameters serialize correctly over Bolt.
-    """
-    import HopBuilder
-
-    if getattr(HopBuilder.QABuilder.create_nodes_cache, "_patched_batched", False):
-        return
-
-    _batch_size = _NODE_INSERT_BATCH
-
-    def _batched_create_nodes_cache(self, cache_dir="path/to/cache_dir"):
-        import json
-        import pickle
-
-        logger.info("HopRAG batched nodes: label=%s from %s", self.label, cache_dir)
-        if self.driver is None:
-            import config as _c
-            from neo4j import GraphDatabase
-
-            self.driver = GraphDatabase.driver(
-                _c.neo4j_url,
-                auth=(_c.neo4j_user, _c.neo4j_password),
-                database=_c.neo4j_dbname,
-                notifications_disabled_categories=["DEPRECATION"],
-            )
-
-        with open(f"{cache_dir}/node2questiondict.pkl", "rb") as fh:
-            old_node2questiondict = pickle.load(fh)
-        with open(f"{cache_dir}/docid2nodes.json", "r") as fh:
-            old_docid2nodes = json.load(fh)
-
-        # Flatten all nodes into a list to allow cross-doc batching.
-        # Order within each doc is preserved so docid2nodes ordering is stable.
-        all_items = []  # (doc_id, text, keywords, embed_list, questiondict)
-        for doc_id, old_node_ids in old_docid2nodes.items():
-            for old_node in old_node_ids:
-                node, questiondict = old_node2questiondict[(old_node, doc_id)]
-                embed = node["embed"]
-                if hasattr(embed, "tolist"):
-                    embed = embed.tolist()
-                all_items.append((doc_id, node["text"], node["keywords"], embed, questiondict))
-
-        logger.info(
-            "HopRAG batched nodes: inserting %d nodes in batches of %d",
-            len(all_items),
-            _batch_size,
-        )
-
-        unwind_query = (
-            f"UNWIND $rows AS row "
-            f"CREATE (n:{self.label} {{text: row.text, keywords: row.keywords, embed: row.embed}}) "
-            f"RETURN id(n)"
-        )
-
-        new_node2questiondict: dict = {}
-        new_docid2nodes: dict = {}
-
-        with self.driver.session() as session:
-            for i in range(0, len(all_items), _batch_size):
-                batch = all_items[i : i + _batch_size]
-                rows = [{"text": text, "keywords": kw, "embed": emb} for _, text, kw, emb, _ in batch]
-                result = session.run(unwind_query, {"rows": rows})
-                new_ids = [r[0] for r in result]
-
-                if len(new_ids) != len(batch):
-                    raise RuntimeError(
-                        f"HopRAG batched nodes: UNWIND returned {len(new_ids)} IDs "
-                        f"for batch of {len(batch)} — aborting to prevent ID mismatch"
-                    )
-
-                for (doc_id, _, _, _, questiondict), new_id in zip(batch, new_ids):
-                    new_node2questiondict[(new_id, doc_id)] = questiondict
-                    new_docid2nodes.setdefault(doc_id, []).append(new_id)
-
-                if (i // _batch_size + 1) % 20 == 0 or i + _batch_size >= len(all_items):
-                    logger.info(
-                        "HopRAG batched nodes: %d/%d inserted",
-                        min(i + _batch_size, len(all_items)),
-                        len(all_items),
-                    )
-
-        return new_docid2nodes, new_node2questiondict
-
-    _batched_create_nodes_cache._patched_batched = True  # type: ignore[attr-defined]
-    HopBuilder.QABuilder.create_nodes_cache = _batched_create_nodes_cache
-    logger.info(
-        "HopRAG: patched create_nodes_cache (UNWIND batch_size=%d, sleep removed)",
-        _batch_size,
-    )
-
-
 _EDGE_CHUNKED_THRESHOLD = int(os.environ.get("RAG_HOP_EDGE_CHUNK_THRESHOLD", "400"))
 _EDGE_TOP_K = int(os.environ.get("RAG_HOP_EDGE_TOP_K", "30"))
 _EDGE_CHUNK_SIZE = int(os.environ.get("RAG_HOP_EDGE_CHUNK_SIZE", "1000"))
-
-
-def _edges_via_chunked_topk(
-    node2questiondict: dict,
-    docid2nodes: dict,
-    top_k: int = _EDGE_TOP_K,
-    chunk_size: int = _EDGE_CHUNK_SIZE,
-):
-    """Memory-safe replacement for HopBuilder.create_edge's O(N²) cross join.
-
-    The original code calls pending_df.merge(answerable_df, how='cross') which
-    materialises N_pending × N_answerable rows — for 3M's 14K nodes that's
-    ~140K × 28K = 3.9B rows = ~31 GB OOM.
-
-    This function instead:
-    1. Computes cosine similarities in chunks of `chunk_size` pending questions.
-    2. Keeps only the top-`top_k` answerable candidates per pending question.
-    3. Builds a compact edge-candidate DataFrame (~N_p × top_k rows).
-    4. Applies the same selection logic as create_edge:
-       cartesian1 (best per pending, intra+cross) + cartesian2 (top-2 cross-doc).
-
-    Returns (edges_df, abstract2chunk_df) with the same column schemas as
-    self.edges / self.abstract2chunk after create_edge runs.
-    """
-    import pandas as pd
-
-    data: list = []
-    for (node_id, doc_id), qdict in node2questiondict.items():
-        for question_label, tuplelist in qdict.items():
-            for qi, tup in enumerate(tuplelist):
-                question, keywords, emb = tup
-                data.append(
-                    {
-                        "doc_id": doc_id,
-                        "node_id": node_id,
-                        "question_label": question_label,
-                        "question_id": qi,
-                        "embedding": np.asarray(emb, dtype=np.float32),
-                        "question": question,
-                        "keywords": keywords,
-                    }
-                )
-
-    if not data:
-        return pd.DataFrame(), pd.DataFrame()
-
-    df = pd.DataFrame(data)
-    del data
-
-    answerable_df = df[df["question_label"] == "answerable"].reset_index(drop=True)
-    pending_df = df[df["question_label"] == "pending"].reset_index(drop=True)
-    del df
-
-    if len(answerable_df) == 0 or len(pending_df) == 0:
-        return pd.DataFrame(), answerable_df
-
-    # Stack embeddings into 2-D float32 arrays for chunked matmul.
-    pending_emb = np.stack(pending_df["embedding"].values).astype(np.float32)  # (N_p, dim)
-    answerable_emb = np.stack(answerable_df["embedding"].values).astype(np.float32)  # (N_a, dim)
-
-    actual_k = min(top_k, len(answerable_df))
-    best_a_idx = np.empty((len(pending_df), actual_k), dtype=np.int32)
-    best_a_scores = np.empty((len(pending_df), actual_k), dtype=np.float32)
-
-    for i in range(0, len(pending_df), chunk_size):
-        chunk = pending_emb[i : i + chunk_size]  # (C, dim)
-        sims = (chunk @ answerable_emb.T).astype(np.float32)  # (C, N_a)
-        if actual_k < sims.shape[1]:
-            idx = np.argpartition(sims, -actual_k, axis=1)[:, -actual_k:]
-        else:
-            idx = np.tile(np.arange(sims.shape[1]), (sims.shape[0], 1))
-        scores = np.take_along_axis(sims, idx, axis=1)
-        best_a_idx[i : i + chunk_size] = idx
-        best_a_scores[i : i + chunk_size] = scores
-        del sims, idx, scores
-
-    del pending_emb, answerable_emb
-
-    # Pre-extract arrays for fast row-level access (avoids repeated .iloc[pi]).
-    p_nids = pending_df["node_id"].values
-    p_dids = pending_df["doc_id"].values
-    p_qs = pending_df["question"].values
-    p_kws = pending_df["keywords"].values
-    p_embs = pending_df["embedding"].values
-
-    a_nids = answerable_df["node_id"].values
-    a_dids = answerable_df["doc_id"].values
-    a_qs = answerable_df["question"].values
-    a_kws = answerable_df["keywords"].values
-
-    edge_rows: list = []
-    for pi in range(len(pending_df)):
-        p_nid = p_nids[pi]
-        p_did = p_dids[pi]
-        for rank in range(actual_k):
-            ai = int(best_a_idx[pi, rank])
-            a_nid = a_nids[ai]
-            if a_nid == p_nid:
-                continue  # no self-loops
-            p_kw: set = p_kws[pi]
-            a_kw: set = a_kws[ai]
-            union_kw = (p_kw | a_kw) if (p_kw or a_kw) else set()
-            inter_kw = p_kw & a_kw
-            sparse_sim = len(inter_kw) / len(union_kw) if union_kw else 0.0
-            edge_rows.append(
-                {
-                    "node_id_x": int(p_nid),
-                    "node_id_y": int(a_nid),
-                    "doc_id_x": p_did,
-                    "doc_id_y": a_dids[ai],
-                    "question_x": p_qs[pi],
-                    "question_y": a_qs[ai],
-                    "keywords_both": union_kw,
-                    "embedding_x": p_embs[pi],
-                    "similarity": float(best_a_scores[pi, rank]) + sparse_sim,
-                }
-            )
-
-    del best_a_idx, best_a_scores
-
-    if not edge_rows:
-        return pd.DataFrame(), answerable_df
-
-    cartesian = pd.DataFrame(edge_rows)
-    del edge_rows
-
-    max_edges = 1_000_000_000
-    inner_ratio = 1 / 4
-
-    # cartesian1: best answerable per pending question (intra + cross doc).
-    idx1 = cartesian.groupby("question_x")["similarity"].idxmax()
-    cartesian1 = (
-        cartesian.loc[idx1]
-        .sort_values("similarity", ascending=False)
-        .drop_duplicates(subset=["node_id_x", "node_id_y"], keep="first")
-    )
-
-    # cartesian2: cross-doc only, top-2 per pending question.
-    cartesian2 = cartesian[cartesian["doc_id_x"] != cartesian["doc_id_y"]].copy()
-    del cartesian
-    cartesian2 = (
-        cartesian2.sort_values(["question_x", "similarity"], ascending=[True, False])
-        .groupby("question_x")
-        .head(2)
-        .sort_values("similarity", ascending=False)
-        .drop_duplicates(subset=["node_id_x", "node_id_y"], keep="first")
-    )
-    trimmed = cartesian2.iloc[max_edges:]
-    cartesian2 = cartesian2.iloc[:max_edges]
-    if len(trimmed) > 0:
-        trimmed = trimmed[~trimmed["node_id_x"].isin(cartesian2["node_id_x"])].groupby("node_id_x").head(1)
-        cartesian2 = pd.concat([cartesian2, trimmed], ignore_index=True)
-    del trimmed
-
-    cartesian1 = cartesian1.iloc[: int(max_edges * inner_ratio)]
-    cartesian2 = cartesian2.iloc[: int(max_edges * (1 - inner_ratio))]
-
-    cols = ["node_id_x", "question_y", "keywords_both", "embedding_x", "node_id_y", "similarity"]
-    edges_df = pd.concat([cartesian1[cols], cartesian2[cols]], ignore_index=True).drop_duplicates(
-        subset=["node_id_x", "node_id_y"], keep="first"
-    )
-
-    used_q = set(cartesian1["question_y"].tolist()) | set(cartesian2["question_y"].tolist())
-    abstract2chunk_df = answerable_df[~answerable_df["question"].isin(used_q)]
-
-    logger.info(
-        "HopRAG chunked edges: %d edges, %d abstract2chunk (top_k=%d, chunk=%d)",
-        len(edges_df),
-        len(abstract2chunk_df),
-        top_k,
-        chunk_size,
-    )
-    return edges_df, abstract2chunk_df
 
 
 def _patch_create_edge_batched() -> None:
@@ -1244,8 +687,12 @@ def _patch_create_edge_batched() -> None:
         real_driver = self.driver
 
         if len(node2questiondict) > _EDGE_CHUNKED_THRESHOLD:
-            # Large group: avoid O(N²) cross join OOM with chunked top-K.
-            self.edges, self.abstract2chunk = _edges_via_chunked_topk(node2questiondict, docid2nodes)
+            # Exhaustive scoring in bounded blocks: no dense-only preselection.
+            from models.hoprag.exact_edges import exact_edges
+            self.edges, self.abstract2chunk = exact_edges(
+                node2questiondict, docid2nodes,
+                HopBuilder.pending_dot_answerable, HopBuilder.sparse_similarity)
+
         else:
             self.driver = _NullDriver()
             try:
@@ -1366,8 +813,7 @@ def _run_stage2_group_streaming(
 ) -> None:
     """Insert nodes per document, then build edges per official problem group.
 
-    The split keeps memory bounded and supports documents shared by many
-    MuSiQue problems. Source of truth is the content-addressed per-doc
+    The split keeps memory bounded. Source of truth is the content-addressed per-doc
     cache produced by Stage 1.
     """
     import gc
@@ -1552,6 +998,7 @@ def _run_stage2_group_streaming(
             _atomic_pickle_dump(edges_done_path, edges_done)
             continue
         try:
+            _patch_create_edge_batched()
             builder.create_edge(group_n2q, group_docid2nodes)
         except Exception as exc:
             raise RuntimeError(f"HopRAG edge build failed for group={group_id}") from exc

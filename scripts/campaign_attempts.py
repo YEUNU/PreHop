@@ -8,7 +8,7 @@ def validated_attempts(values: dict | None) -> dict[str, str]:
     from core.strategy_registry import PRIMARY_STRATEGIES
     values = {} if values is None else values
     allowed = {f'{phase}/{dataset}/{method}' for phase in ('cold', 'one-query')
-               for dataset in ('multihoprag', 'musique') for method in PRIMARY_STRATEGIES}
+               for dataset in ('multihoprag', 'hotpotqa') for method in PRIMARY_STRATEGIES}
     if not isinstance(values, dict) or set(values) - allowed:
         raise ValueError('Retry map contains an unsupported target step')
     if any(not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', value)

@@ -52,24 +52,6 @@ def canonical_semantic_env(name: str, expected: str | int | bool) -> str | int |
     return expected
 
 
-def required_env(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise RuntimeError(f"{name} is required for this official adapter")
-    return value
-
-
-def endpoint_env(alias: str, canonical: str) -> str:
-    value = (os.environ.get(alias) or os.environ.get(canonical) or "").strip()
-    if not value:
-        raise RuntimeError(f"{canonical} (or compatibility alias {alias}) is required")
-    return value
-
-
-def model_env(name: str, fallback: str) -> str:
-    return os.environ.get(name, fallback).strip() or fallback
-
-
 def validate_documents(strategy: str, documents: Any, staged_ids: set[str]) -> list[dict[str, Any]]:
     if not isinstance(documents, list):
         raise TypeError(f"{strategy} documents must be a list")

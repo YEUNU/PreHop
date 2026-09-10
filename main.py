@@ -28,7 +28,7 @@ def _ensure_run_id() -> str:
     return run_id
 
 
-from cli.benchmark import reconcile_pending_judges, run_benchmark_multi_seed
+from cli.benchmark import run_benchmark_multi_seed
 from cli.index import rebuild_hop_edges, run_indexing
 from core.config import RAGConfig
 from core.neo4j_service import Neo4jService
@@ -172,26 +172,9 @@ async def main():
             env_ts = os.environ.get("RAG_BENCHMARK_TIMESTAMP")
             timestamp = env_ts if env_ts else run_id
             os.environ["RAG_BENCHMARK_TIMESTAMP"] = timestamp
-            benchmark_failure = None
-            try:
-                await run_benchmark_multi_seed(
-                    args.queries_file, args.strategy, args.model, corpus_tag=corpus_tag, limit=args.limit
-                )
-            except Exception as exc:  # noqa: BLE001 - reconcile any batches submitted by earlier seeds
-                benchmark_failure = exc
-            reconcile_failure = None
-            try:
-                await reconcile_pending_judges(Path("data/results") / timestamp)
-            except Exception as exc:  # noqa: BLE001 - report both benchmark and judge failures
-                reconcile_failure = exc
-            if benchmark_failure or reconcile_failure:
-                failures = [
-                    f"benchmark: {type(benchmark_failure).__name__}: {benchmark_failure}" if benchmark_failure else "",
-                    f"judge_reconcile: {type(reconcile_failure).__name__}: {reconcile_failure}"
-                    if reconcile_failure
-                    else "",
-                ]
-                raise RuntimeError("; ".join(item for item in failures if item))
+            await run_benchmark_multi_seed(
+                args.queries_file, args.strategy, args.model, corpus_tag=corpus_tag, limit=args.limit
+            )
         elif args.mode == "benchmark_all":
             RAGConfig.validate()
             corpus_tag = args.corpus_tag or "default"
@@ -216,11 +199,6 @@ async def main():
                 except Exception as exc:  # noqa: BLE001 - aggregate independent strategy failures
                     logger.error("Benchmark strategy %s failed: %s", strategy, exc)
                     strategy_failures.append(f"{strategy}: {type(exc).__name__}: {exc}")
-            try:
-                await reconcile_pending_judges(results_dir)
-            except Exception as exc:  # noqa: BLE001 - preserve strategy failures and report judge failure too
-                logger.error("Judge batch reconciliation failed: %s", exc)
-                strategy_failures.append(f"judge_reconcile: {type(exc).__name__}: {exc}")
             if strategy_failures:
                 raise RuntimeError("benchmark_all completed with strategy failures: " + "; ".join(strategy_failures))
     finally:

@@ -23,7 +23,6 @@ VERIFIER_SOURCES = (
     ROOT / "core/inference_transport.py",
     ROOT / "core/embedding_policy.py",
     ROOT / "core/structured_outputs.py",
-    ROOT / "core/native_structured_profile.py",
     ROOT / "models/external_research/extraction_contract.py",
     ROOT / "scripts/check_paper_runtime.py",
     ROOT / "scripts/paper_gate_ledger.py",
@@ -115,7 +114,7 @@ def current_corpus_identity(dataset: str) -> dict[str, Any]:
     """Revalidate v2 manifest and every current prepared source without writes."""
     from cli.index import _load_corpus_manifest, _validate_staged_snapshot
 
-    if dataset not in {"multihoprag", "musique"}:
+    if dataset not in {"multihoprag", "hotpotqa"}:
         raise ValueError("unsupported paper corpus")
     corpus = ROOT / "data" / f"{dataset}_corpus"
     manifest = _load_corpus_manifest(corpus)
@@ -168,10 +167,3 @@ def admission_path_for_result(result_path: Path) -> Path:
         raise ValueError(f"result is not in a seed_42 paper target: {result_path}")
     # .../<run>/<strategy>/<dataset>/seed_42/result.json -> .../<run>/admission.json
     return result_path.parents[3] / "admission.json"
-
-
-def verification_provenance() -> dict:
-    """Describe the actual checker without using its Git state as compatibility."""
-    from utils.provenance import code_provenance
-    return {'code': code_provenance(), 'verifier_sources_sha256': identity_sha256(
-        {str(path): sha256_file(path) for path in verifier_sources()})}

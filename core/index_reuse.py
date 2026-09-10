@@ -262,8 +262,8 @@ def validate_costs(link: dict, payload: dict) -> None:
 
 def completed_source_evidence(value, strategy, dataset):
     """Validate an index-supervisor completion, without claiming a canary gate."""
-    from core.paper_policy import validate_canonical_index_policy
     from core.amortized_cost import indexing_cost, validate_cost
+    from core.paper_policy import validate_canonical_index_policy
     _, completion = bound(value)
     for key, expected in {'status':'index_complete', 'phase':'index', 'strategy':strategy, 'dataset':dataset}.items():
         if completion.get(key) != expected:

@@ -9,6 +9,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 FIELDS = ('generation_concurrency', 'embedding_batch_size', 'embedding_concurrency', 'benchmark_concurrency')
+# Persisted execution profiles retain the retired producer field for compatibility.
 PRODUCER_FIELDS = ('index_document_concurrency', 'index_prefetch_documents',
                    'lightrag_document_concurrency', 'youtu_document_concurrency')
 

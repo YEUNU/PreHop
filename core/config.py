@@ -8,6 +8,8 @@ class RAGConfig:
     HOP_SEED_POLICY = os.environ.get("RAG_HOP_SEED_POLICY", "qplus").strip()
     HOP_LINK_VARIANT = os.environ.get("RAG_HOP_LINK_VARIANT", "question").strip()
     BODY_LINK_REFERENCE = os.environ.get("RAG_BODY_LINK_REFERENCE", "").strip()
+    CONNECTION_TIMING_MODE = os.environ.get("RAG_CONNECTION_TIMING_MODE", "").strip()
+    CONNECTION_TIMING_STORE = os.environ.get("RAG_CONNECTION_TIMING_STORE", "").strip()
 
     # --- Infrastructure (Actual ports identified) ---
     # Required external OpenAI-compatible endpoints. There is intentionally no
@@ -20,7 +22,6 @@ class RAGConfig:
     EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "embedding-model")
 
     # --- Evaluation (LLM-as-a-judge) ---
-    OPENAI_API_KEY = os.environ.get("RAG_INFERENCE_API_KEY", "").strip()
     EVAL_MODEL = os.environ.get("EVAL_MODEL", "").strip()
     # LLM-as-a-judge is optional, supplemental analysis.  Deterministic and
     # official benchmark metrics must be runnable without an evaluator API.
@@ -33,8 +34,7 @@ class RAGConfig:
     )
     # When the optional judge is enabled, Batch is preferred unless an
     # explicit synchronous debugging run requests otherwise.
-    JUDGE_BATCH = parse_strict_bool(os.environ.get("RAG_JUDGE_BATCH", "true"), name="RAG_JUDGE_BATCH")
-    JUDGE_BATCH_POLL_SECONDS = max(2, int(os.environ.get("RAG_JUDGE_BATCH_POLL_SECONDS", "15")))
+    JUDGE_BATCH = parse_strict_bool(os.environ.get("RAG_JUDGE_BATCH", "false"), name="RAG_JUDGE_BATCH")
 
     # --- Common Service Settings ---
     RETRY_COUNT = int(os.environ.get("RAG_RETRY_COUNT", "3"))
@@ -82,8 +82,8 @@ class RAGConfig:
     # ``grounded_v1`` requires source-verifiable structured provenance.
     QUESTION_SCHEMA = os.environ.get("RAG_QUESTION_SCHEMA", "legacy").strip().lower() or "legacy"
     # HOP ANN sends high-dimensional vectors and candidate rows through bounded waves.
-    HOP_GATHER_WAVE = int((os.environ.get("RAG_HOP_GATHER_WAVE") or "64"))
-    HOP_BUILD_CONCURRENCY = int((os.environ.get("RAG_HOP_BUILD_CONCURRENCY") or "4"))
+    HOP_GATHER_WAVE = int(os.environ.get("RAG_HOP_GATHER_WAVE") or "64")
+    HOP_BUILD_CONCURRENCY = int(os.environ.get("RAG_HOP_BUILD_CONCURRENCY") or "4")
     DEFAULT_TOP_K = 12
     CANDIDATE_POOL_MULTIPLIER = int(os.environ.get("RAG_CANDIDATE_POOL_MULTIPLIER", "1"))
     FULLTEXT_ANALYZER = os.environ.get("NEO4J_FULLTEXT_ANALYZER", "english")
@@ -124,18 +124,6 @@ class RAGConfig:
     PRECOMPUTE_RECIPROCAL_HOPS = parse_strict_bool(
         os.environ.get("RAG_PRECOMPUTE_RECIPROCAL_HOPS", "true"), name="RAG_PRECOMPUTE_RECIPROCAL_HOPS"
     )
-    QUERY_REWRITE_VARIANT = (
-        os.environ.get("RAG_QUERY_REWRITE_VARIANT", "role_aligned_evidence_iterative").strip().lower()
-        or "role_aligned_evidence_iterative"
-    )
-    # Role rewriting is useful for compact compositional questions but can
-    # perturb the explicit source and relation constraints already present in
-    # long questions. Zero disables this input-length gate for ablations.
-    QUERY_REWRITE_MAX_WORDS = int(os.environ.get("RAG_QUERY_REWRITE_MAX_WORDS", "32"))
-    # Operational guard for evidence-conditioned rewrite calls. Zero keeps
-    # the evidence-driven stopping rule; positive values cap refinement calls.
-    QUERY_REFINEMENT_MAX_ROUNDS = int(os.environ.get("RAG_QUERY_REFINEMENT_MAX_ROUNDS", "0"))
-
     # --- Ablation & Experimental Toggles ---
     # Q-/Q+ channel ablations.
     # ABLATION_Q_MINUS / ABLATION_Q_PLUS gate whether the Q-/Q+ channels
@@ -239,22 +227,6 @@ class RAGConfig:
             raise ValueError("RAG_HOP_EDGE_FILTER=reciprocal_offline requires RAG_PRECOMPUTE_RECIPROCAL_HOPS=true")
         if cls.QUESTION_SCHEMA not in {"legacy", "grounded_v1", "linked_v2"}:
             raise ValueError("RAG_QUESTION_SCHEMA must be legacy, grounded_v1, or linked_v2")
-        if cls.QUERY_REWRITE_VARIANT not in {
-            "none",
-            "role_aligned",
-            "role_aligned_additive",
-            "role_aligned_evidence",
-            "role_aligned_evidence_iterative",
-        }:
-            raise ValueError(
-                "RAG_QUERY_REWRITE_VARIANT must be none, role_aligned, "
-                "role_aligned_additive, role_aligned_evidence, or "
-                "role_aligned_evidence_iterative"
-            )
-        if cls.QUERY_REWRITE_MAX_WORDS < 0:
-            raise ValueError("RAG_QUERY_REWRITE_MAX_WORDS must be zero or positive")
-        if cls.QUERY_REFINEMENT_MAX_ROUNDS < 0:
-            raise ValueError("RAG_QUERY_REFINEMENT_MAX_ROUNDS must be zero or positive")
         if not cls.EMBEDDING_QUERY_INSTRUCTION:
             raise ValueError("EMBEDDING_QUERY_INSTRUCTION must not be empty")
 

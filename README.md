@@ -8,7 +8,10 @@ uses those stored links for multi-hop evidence retrieval. It generates Q−
 Q− owner in another source file, activates links through Q+ matches, and selects evidence
 for answer synthesis. The incoming/outgoing question formulation follows
 [HopRAG](https://arxiv.org/html/2502.12442v2#S3.S2); Prehop uses its own
-role-aligned retrieval, refinement, and selection policy.
+original-query role search, stored-link expansion, and evidence selection.
+The implementation uses the original question at every input length and runs
+retrieval once. Initial query rewriting and evidence-conditioned re-search have
+been removed. Compatible full-run Prehop results remain unmeasured.
 
 The primary comparison set is Prehop, Naive RAG, HopRAG, MS GraphRAG,
 LightRAG, GFM-RAG, and LinearRAG. Strategy identities and pinned
@@ -56,10 +59,13 @@ Dataset wrappers provide the representative full flows:
 ```bash
 ./run_multihoprag.sh index --model prehop
 ./run_multihoprag.sh benchmark --model prehop --queries full
-
-.venv/bin/python scripts/datasets/prepare_musique.py
-./run_dataset.sh musique all --model prehop
 ```
+
+The paper’s second benchmark is HotpotQA fullwiki. Preparation, official metrics
+and the common sentence-output projection are described in
+[HOTPOTQA_FULLWIKI](docs/HOTPOTQA_FULLWIKI.md). The prepared 5,233,329-paragraph
+corpus and 7,405 development queries passed complete integrity verification.
+Fullwiki indexing and benchmark results remain unmeasured.
 
 Generated indexes, logs, traces, and results stay under ignored local data and
 log directories. Do not treat a smoke run or an indexing completion as a full

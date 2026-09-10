@@ -23,11 +23,6 @@ def validate_native_generation_profile(strategy: str, stats: dict, policy: dict)
         raise RuntimeError("Effective extraction validation profile differs from semantic policy")
     if policy.get("index_validation_profile") and stats.get("index_validation_profile") != policy["index_validation_profile"]:
         raise RuntimeError("Effective index validation profile differs from semantic policy")
-    if strategy == "youtu_graphrag":
-        for field in ("extraction_generation_profile", "extraction_schema_sha256"):
-            if not policy.get(field) or stats.get(field) != policy[field]:
-                raise RuntimeError("Youtu effective extraction profile differs from semantic policy")
-        return
 
 
 async def run_official_index(

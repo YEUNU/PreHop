@@ -1,8 +1,10 @@
 from pathlib import Path
+
 import pytest
-from cli.benchmark import _apply_judge_label, _recompute_aggregates, _update_summary_status, _assert_benchmark_complete
-from core.benchmark_failures import QUALITY_METRICS, POLICY
+
+from cli.benchmark import _apply_judge_label, _assert_benchmark_complete, _recompute_aggregates, _update_summary_status
 from core.amortized_cost import query_cost
+from core.benchmark_failures import POLICY, QUALITY_METRICS
 from core.campaign_outcomes import index_outcomes
 from scripts.verify_submission_consistency import _validate_primary_row
 
@@ -30,16 +32,16 @@ def test_target_integrity_failure_still_blocks_completion():
 
 
 def test_failed_query_verification_requires_zero_primary_metrics():
-    expected={'ground_truth':'answer','evidence_paragraph_ids':['p']}
+    expected={'ground_truth':'answer','evidence_facts':['p']}
     row={'answer':'ERROR answer', 'error':'timeout','retrieved_sources':[],
-         'expected_sources':{'docs':[],'facts':[],'paragraph_ids':['p']},**{key:0. for key in QUALITY_METRICS}}
-    assert _validate_primary_row(row,expected,'musique')==[]
-    row['official_answer_em']=1.
-    assert _validate_primary_row(row,expected,'musique')
+         'expected_sources':{'docs':[],'facts':['p']},**{key:0. for key in QUALITY_METRICS}}
+    assert _validate_primary_row(row,expected,'multihoprag')==[]
+    row['official_mrr@10']=1.
+    assert _validate_primary_row(row,expected,'multihoprag')
 
 
 def test_failed_index_reports_unavailable_quality_and_attempt_time():
-    result=index_outcomes({'targets':{'musique/gfm_rag':{'state':'index_failed','started_at':10,'finished_at':40,'index_exit_code':1}}})['targets'][0]
+    result=index_outcomes({'targets':{'hotpotqa/gfm_rag':{'state':'index_failed','started_at':10,'finished_at':40,'index_exit_code':1}}})['targets'][0]
     assert result['quality_score'] is None and result['quality_evaluation']=='unavailable'
     assert result['attempt_wall_seconds']==30 and result['attempt_phase']=='index'
 
@@ -48,6 +50,7 @@ def test_failed_index_reports_unavailable_quality_and_attempt_time():
 @pytest.mark.parametrize('fatal', [False, True])
 async def test_live_query_loop_isolates_failure_without_zeroing_success(monkeypatch, tmp_path, fatal):
     import json
+
     import cli.benchmark as bench
     import core.execution_profile as profile
     from core.benchmark_failures import BenchmarkIntegrityError
@@ -98,8 +101,9 @@ async def test_live_query_loop_isolates_failure_without_zeroing_success(monkeypa
 
 @pytest.mark.asyncio
 async def test_external_adapter_keeps_native_empty_answer_and_no_evidence():
-    from models.external_research.adapter import ExternalResearchAdapter
     from types import SimpleNamespace
+
+    from models.external_research.adapter import ExternalResearchAdapter
     adapter=object.__new__(ExternalResearchAdapter)
     adapter.strategy='gfm_rag'
     adapter._batcher=None

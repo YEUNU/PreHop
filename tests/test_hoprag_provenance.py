@@ -1,4 +1,3 @@
-import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -7,7 +6,7 @@ import numpy as np
 import pytest
 
 from models.hoprag import official_indexer as hop_official_indexer
-from models.hoprag.hoprag_adapter import HopRAGAdapter, _run_coro_sync
+from models.hoprag.hoprag_adapter import HopRAGAdapter
 from models.hoprag.official_indexer import (
     _build_official_edge_groups,
     _document_cache_digest,
@@ -15,7 +14,6 @@ from models.hoprag.official_indexer import (
     _prune_stale_hoprag_sources,
     _validate_cached_node,
 )
-from scripts.datasets.prepare_musique import paragraph_identity
 
 
 class _AsyncRows:
@@ -30,16 +28,6 @@ class _AsyncRows:
             return next(self._rows)
         except StopIteration as exc:
             raise StopAsyncIteration from exc
-
-
-def test_hoprag_sync_hook_reuses_one_worker_event_loop():
-    async def current_loop_id():
-        return id(asyncio.get_running_loop())
-
-    first = _run_coro_sync(current_loop_id())
-    second = _run_coro_sync(current_loop_id())
-
-    assert first == second
 
 
 def _adapter_with_rows(rows):
@@ -60,11 +48,11 @@ def _adapter_with_rows(rows):
     ("content", "expected"),
     [
         (
-            "Title: Display\nParagraph-ID: musique:abc\n\n--- Page 1 ---\nFirst.\n\n--- Page 2 ---\nSecond.",
+            "Title: Display\nParagraph-ID: hotpotqa:abc\n\n--- Page 1 ---\nFirst.\n\n--- Page 2 ---\nSecond.",
             "First.\n\nSecond.",
         ),
         ("Title: Display\n\nBody keeps, commas, exactly.", "Body keeps, commas, exactly."),
-        ("Paragraph-ID: musique:abc\n\nBody only.", "Body only."),
+        ("Paragraph-ID: hotpotqa:abc\n\nBody only.", "Body only."),
         ("No metadata.\n\nTitle: this body line is evidence.", "No metadata.\n\nTitle: this body line is evidence."),
         ("\ufeffTitle: BOM title\r\n\r\nBody.\r\n", "Body."),
     ],
@@ -73,7 +61,7 @@ def test_hoprag_parser_removes_only_corpus_metadata(content, expected):
     assert _hoprag_indexable_text(content) == expected
 
 
-@pytest.mark.parametrize("content", ["", "Title: Only", "Title: Only\nParagraph-ID: musique:abc"])
+@pytest.mark.parametrize("content", ["", "Title: Only", "Title: Only\nParagraph-ID: hotpotqa:abc"])
 def test_hoprag_parser_rejects_metadata_only_documents(content):
     with pytest.raises(ValueError, match="no evidence text"):
         _hoprag_indexable_text(content)
@@ -221,7 +209,7 @@ async def test_hoprag_workflow_prefers_title_for_doc_and_keeps_source():
             [
                 {
                     "title": "Original article title",
-                    "source": "musique_aabbccddeeff0011",
+                    "source": "hotpotqa_aabbccddeeff0011",
                     "page": 0,
                     "sent_id": 0,
                     "text": "supporting evidence",
@@ -237,7 +225,7 @@ async def test_hoprag_workflow_prefers_title_for_doc_and_keeps_source():
     assert sources == [
         {
             "doc": "Original article title",
-            "source": "musique_aabbccddeeff0011",
+            "source": "hotpotqa_aabbccddeeff0011",
             "page": 0,
             "sent_id": 0,
             "text": "supporting evidence",
@@ -248,10 +236,10 @@ async def test_hoprag_workflow_prefers_title_for_doc_and_keeps_source():
 def test_hoprag_edge_groups_use_whole_corpus_independent_of_gold_queries(tmp_path, monkeypatch):
     staged_dir = tmp_path / "staged"
     staged_dir.mkdir()
-    first_id = paragraph_identity("Repeated", "first body")
-    second_id = paragraph_identity("Repeated", "second body")
-    first_file = f"musique_{first_id.removeprefix('musique:')}.txt"
-    second_file = f"musique_{second_id.removeprefix('musique:')}.txt"
+    first_id = "first"
+    second_id = "second"
+    first_file = f"hotpotqa_{first_id.removeprefix('hotpotqa:')}.txt"
+    second_file = f"hotpotqa_{second_id.removeprefix('hotpotqa:')}.txt"
     (staged_dir / first_file).write_text(f"Title: Repeated\nParagraph-ID: {first_id}\n\nfirst body", encoding="utf-8")
     (staged_dir / second_file).write_text(
         f"Title: Repeated\nParagraph-ID: {second_id}\n\nsecond body", encoding="utf-8"
@@ -266,10 +254,10 @@ def test_hoprag_edge_groups_use_whole_corpus_independent_of_gold_queries(tmp_pat
             {"title": "Repeated", "paragraph_text": "second body"},
         ],
     }
-    (data_dir / "musique_ans_v1.0_dev.jsonl").write_text(json.dumps(raw_row) + "\n", encoding="utf-8")
+    (data_dir / "hotpotqa_ans_v1.0_dev.jsonl").write_text(json.dumps(raw_row) + "\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    groups = _build_official_edge_groups("musique", staged_dir, [first_file, second_file])
+    groups = _build_official_edge_groups("hotpotqa", staged_dir, [first_file, second_file])
 
     assert groups == {"whole-corpus": [first_file, second_file]}
 
@@ -286,23 +274,23 @@ def test_hoprag_snapshot_prune_is_scoped_and_clears_edges_for_rebuild():
     context.__exit__.return_value = None
     driver = MagicMock()
     driver.session.return_value = context
-    builder = SimpleNamespace(label="HO_musique", driver=driver)
+    builder = SimpleNamespace(label="HO_hotpotqa", driver=driver)
 
     changed = _prune_stale_hoprag_sources(
         builder,
-        ["musique_current_a.txt", "musique_current_b.txt"],
-        "HO_musique_p2a",
+        ["hotpotqa_current_a.txt", "hotpotqa_current_b.txt"],
+        "HO_hotpotqa_p2a",
     )
 
     assert changed is True
     count_query, count_params = session.run.call_args_list[0].args
     delete_query, delete_params = session.run.call_args_list[1].args
     edge_query = session.run.call_args_list[2].args[0]
-    assert "MATCH (n:HO_musique)" in count_query
-    assert "MATCH (n:HO_musique)" in delete_query
-    assert "[r:HO_musique_p2a]" in edge_query
-    assert "(a:HO_musique)" in edge_query and "(b:HO_musique)" in edge_query
-    expected_sources = ["musique_current_a", "musique_current_b"]
+    assert "MATCH (n:HO_hotpotqa)" in count_query
+    assert "MATCH (n:HO_hotpotqa)" in delete_query
+    assert "[r:HO_hotpotqa_p2a]" in edge_query
+    assert "(a:HO_hotpotqa)" in edge_query and "(b:HO_hotpotqa)" in edge_query
+    expected_sources = ["hotpotqa_current_a", "hotpotqa_current_b"]
     assert count_params == {"active_sources": expected_sources}
     assert delete_params == {"active_sources": expected_sources}
     delete_result.consume.assert_called_once_with()
