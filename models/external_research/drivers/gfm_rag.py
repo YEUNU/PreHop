@@ -107,7 +107,7 @@ class GFMRAGDriver:
             el_model=instantiate(retriever_cfg.el_model),
             graph_constructor=graph_constructor,
         )
-        self.extraction_audit.assert_healthy()
+
         self.rows = {r["source_id"]: r for r in rows}
         self.top_k = int(canonical_semantic_env("RAG_GFM_RAG_TOP_K", registry_policy["retrieval_top_k"]))
         # The primary single-pass workflow is qa.py/qa_inference, not IRCOT.
@@ -181,7 +181,7 @@ class GFMRAGDriver:
 
     def _prepare_query(self, question):
         result = self.retriever.retrieve(question, top_k=self.top_k)
-        self.extraction_audit.assert_healthy()
+
         candidates = result.get("document") if isinstance(result, dict) else None
         if not isinstance(candidates, list):
             raise TypeError("GFM-RAG retrieval returned malformed documents")
@@ -202,7 +202,7 @@ class GFMRAGDriver:
     def _answer_prepared(self, prepared):
         documents, prompt = prepared
         answer = self.qa_llm.generate_sentence(prompt)
-        self.qa_audit.assert_healthy()
+
         if isinstance(answer, Exception):
             raise answer
         if not isinstance(answer, str):

@@ -58,10 +58,10 @@ Do not fabricate missing entities, answers, usage or successful completion. See
   exact revisions in isolated runtime directories; do not patch or install from
   the source checkout.
 - Adapters may normalize inputs, configure the declared transport and producer
-  concurrency, prepare run-local schemas, record sidecars, and validate native
+  concurrency, prepare run-local schemas, record sidecars, and decode native
   outputs. A method-defining retrieval, graph, serialization, or answer change
   requires a distinct semantic identity.
-- Remote generation and embedding use the single fail-closed LiteLLM gateway.
+- Remote generation and embedding use the configured shared LiteLLM gateway.
   Do not introduce ambient-provider or direct-vendor fallback paths.
 - A model, revision, vector dimension, corpus fingerprint, semantic setting, or
   execution profile change requires compatible new evidence. Never relabel an
@@ -74,8 +74,9 @@ Do not fabricate missing entities, answers, usage or successful completion. See
 - Use a unique run ID and strategy-scoped output namespace. Never clear shared
   graph or artifact state while another run may be active.
 - Source/configuration edits do not by themselves block index dispatch. Keep
-  executed code and settings in provenance; retain artifact, corpus and resume
-  compatibility checks. Preserve failed attempts and original phase costs.
+  executed code and settings in provenance. Do not reintroduce approval, preflight,
+  hash/configuration matching, output-schema rejection, or duplicate-run guards.
+  Preserve actual execution errors and original phase costs.
 - Keep credentials out of commands, logs, artifacts, and tracked files.
 - Generated corpora, indexes, results, traces, runtime homes, private submission
   notes, and manuscript drafts remain ignored. Do not force-add them.
@@ -105,3 +106,12 @@ documented verification must support the claim.
   completion; the legacy verifier entry is a compatibility shim. Do not require
   seed exceptions or restore automatic final validation. Keep final result links
   in `docs/RESULTS.md`; retain runtime, index-reuse and checkpoint checks.
+
+## Controlled experiment reporting
+
+The active HotpotQA setting is the pinned HippoRAG v1 corpus, not fullwiki.
+Preserve all 1,000 released occurrences and their 944 original question IDs;
+cluster uncertainty estimates by original identity. Store experimental timing
+connections in Neo4j. Keep frozen-prefix latency distinct from end-to-end latency
+and co-evidence reachability distinct from semantic correctness. Experiment
+design belongs in `docs/PAPER_ABLATION_DESIGN.md`; do not add progress diaries.

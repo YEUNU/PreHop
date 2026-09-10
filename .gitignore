@@ -227,6 +227,10 @@ data/enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2
 data/multihoprag_corpus/
 data/hotpotqa_corpus/
 data/hotpotqa_raw/
+data/hotpotqa_fullwiki_corpus/
+data/hotpotqa_fullwiki_queries.json
+data/hotpotqa_hipporag_raw/
+data/hotpotqa_hipporag_prepared/
 data/debug/
 # Full request/response and graph payloads may contain private source text.
 data/traces/
@@ -297,3 +301,14 @@ docs/prehop_paper.md
 
 # Local maintenance evidence, cleanup inventories and source snapshots.
 /data/maintenance/
+
+# Generated private manuscript source and typesetting intermediates.
+docs/acl/prehop_paper.tex
+docs/acl/*.aux
+docs/acl/*.bbl
+docs/acl/*.blg
+docs/acl/*.log
+docs/acl/*.out
+
+# Local manuscript build bundle includes private submission details.
+docs/acl/

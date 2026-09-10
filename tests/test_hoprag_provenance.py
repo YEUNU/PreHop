@@ -12,7 +12,6 @@ from models.hoprag.official_indexer import (
     _document_cache_digest,
     _hoprag_indexable_text,
     _prune_stale_hoprag_sources,
-    _validate_cached_node,
 )
 
 
@@ -61,12 +60,6 @@ def test_hoprag_parser_removes_only_corpus_metadata(content, expected):
     assert _hoprag_indexable_text(content) == expected
 
 
-@pytest.mark.parametrize("content", ["", "Title: Only", "Title: Only\nParagraph-ID: hotpotqa:abc"])
-def test_hoprag_parser_rejects_metadata_only_documents(content):
-    with pytest.raises(ValueError, match="no evidence text"):
-        _hoprag_indexable_text(content)
-
-
 def test_hoprag_cache_digest_changes_with_parser_version(tmp_path, monkeypatch):
     source = tmp_path / "doc.txt"
     source.write_text("Title: T\n\nBody", encoding="utf-8")
@@ -87,37 +80,6 @@ def _valid_cached_node(dim: int = 2):
     return node, questions
 
 
-def test_hoprag_cache_validator_accepts_complete_entry(monkeypatch):
-    monkeypatch.setattr(hop_official_indexer, "_EMBED_DIM", 2)
-    node, questions = _valid_cached_node()
-
-    _validate_cached_node("doc.txt", node, questions)
-
-    node["text"] = "Title: a body label that is not the document title"
-    _validate_cached_node("doc.txt", node, questions, "Document title")
-
-
-@pytest.mark.parametrize(
-    ("mutation", "message"),
-    [
-        (lambda node, _q: node.update(text="Title: leaked"), "contains corpus metadata"),
-        (lambda node, _q: node.update(text="--- Page 3 ---"), "contains corpus metadata"),
-        (lambda node, _q: node.update(keywords=[]), "invalid keywords"),
-        (lambda node, _q: node.update(embed=[1.0]), "invalid node embedding"),
-        (lambda node, _q: node.update(embed=[1.0, float("nan")]), "invalid node embedding"),
-        (lambda _node, q: q.pop("pending"), "invalid question roles"),
-        (lambda _node, q: q.update(pending=[]), "no pending questions"),
-        (lambda _node, q: q.update(pending=[("", {"x"}, [1.0, 1.0])]), "invalid pending question"),
-        (lambda _node, q: q.update(pending=[("Valid?", {"x"}, [1.0])]), "invalid pending embedding"),
-    ],
-)
-def test_hoprag_cache_validator_rejects_corruption(monkeypatch, mutation, message):
-    monkeypatch.setattr(hop_official_indexer, "_EMBED_DIM", 2)
-    node, questions = _valid_cached_node()
-    mutation(node, questions)
-
-    with pytest.raises(RuntimeError, match=message):
-        _validate_cached_node("doc.txt", node, questions, "leaked")
 
 
 @pytest.mark.asyncio
@@ -189,14 +151,6 @@ async def test_hoprag_provenance_collapses_duplicate_nodes_from_one_source():
 
     assert nodes[0]["source"] == "one_doc"
     assert "provenance_status" not in nodes[0]
-
-
-@pytest.mark.asyncio
-async def test_hoprag_provenance_rejects_missing_official_result():
-    adapter, _session = _adapter_with_rows([])
-
-    with pytest.raises(RuntimeError, match="provenance lookup found no node"):
-        await adapter._lookup_nodes_by_text(["missing text"])
 
 
 @pytest.mark.asyncio

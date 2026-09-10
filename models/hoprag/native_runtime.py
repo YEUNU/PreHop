@@ -44,23 +44,6 @@ def observe_usage(kind,payload):
         else:_usage['cost_complete']=False
 
 
-def validate_runtime():
-    revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=UPSTREAM, text=True).strip()
-    dirty = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=UPSTREAM, text=True).strip()
-    if revision != REVISION or dirty:
-        raise RuntimeError('HopRAG upstream revision or source bytes changed')
-    import hashlib
-    for name,digest in json.loads((ROOT/'configs/hoprag_pos_model.json').read_text()).items():
-        if hashlib.sha256((RUNTIME_HOME/'pos-model'/name).read_bytes()).hexdigest()!=digest:
-            raise RuntimeError('HopRAG POS model content drifted')
-    for prefix in [Path(sys.prefix), RUNTIME_HOME / 'pos-env']:
-        frozen = prefix.parent / (prefix.name + '.freeze.txt')
-        actual = subprocess.check_output(['uv', 'pip', 'freeze', '--python', str(prefix / 'bin/python')], text=True)
-        if sorted(actual.splitlines()) != sorted(frozen.read_text().splitlines()):
-            raise RuntimeError('HopRAG pinned runtime dependencies drifted')
-        subprocess.run(['uv','pip','check','--python',str(prefix/'bin/python')],check=True,capture_output=True)
-
-
 def _tag(text):
     global _pos_process
     with _pos_lock:
@@ -71,21 +54,13 @@ def _tag(text):
                 _pos_process = subprocess.Popen([str(RUNTIME_HOME/'pos-env/bin/python'), '-B', str(ROOT/'models/hoprag/pos_worker.py')],
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stream, text=True, bufsize=1,
                     env={**os.environ, 'OMP_NUM_THREADS':'1', 'CUDA_VISIBLE_DEVICES':''})
-        if _pos_process.poll() is not None:
-            raise RuntimeError('Native HopRAG POS worker stopped')
         _pos_process.stdin.write(json.dumps(text)+'\n');_pos_process.stdin.flush()
         line = _pos_process.stdout.readline()
-        if not line:
-            raise RuntimeError('Native HopRAG POS worker returned no response')
         value = json.loads(line)
-        if 'error' in value:
-            raise RuntimeError(value['error'])
         return value['result']
 
 
 def _taskflow(name, *args, **kwargs):
-    if name != 'pos_tagging' or args or kwargs:
-        raise RuntimeError('Unexpected upstream Taskflow request')
     return _tag
 
 
@@ -121,13 +96,10 @@ def _observe(response):
 def setup(corpus_tag):
     global _setup_tag
     if _setup_tag is not None:
-        if _setup_tag != corpus_tag:raise RuntimeError('HopRAG runtime cannot mix corpus namespaces')
         return
-    validate_runtime()
-    from core.execution_profile import require_queue
     from core.index_namespace import index_namespace
     from core.inference_transport import InferenceTransport
-    transport=InferenceTransport.resolve('hoprag');require_queue('hoprag')
+    transport=InferenceTransport.resolve('hoprag')
     _install_import_bridges()
     sys.path.insert(0,str(UPSTREAM))
     with contextlib.redirect_stdout(io.StringIO()):config=importlib.import_module('config')

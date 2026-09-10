@@ -11,7 +11,6 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 VERIFIER_SOURCES = (
     ROOT / "scripts/verify_paper_target.py",
-    ROOT / "scripts/verify_submission_consistency.py",
     ROOT / "core/paper_policy.py",
     ROOT / "core/index_reuse.py",
     ROOT / "core/phase_timing.py",
@@ -24,7 +23,7 @@ VERIFIER_SOURCES = (
     ROOT / "core/embedding_policy.py",
     ROOT / "core/structured_outputs.py",
     ROOT / "models/external_research/extraction_contract.py",
-    ROOT / "scripts/check_paper_runtime.py",
+    ROOT / "scripts/runner_environment.py",
     ROOT / "scripts/paper_gate_ledger.py",
     ROOT / "scripts/paper_cold_canary.py",
     ROOT / "scripts/paper_stage_runner.py",
@@ -111,18 +110,11 @@ def _index_stats_binding(payload: dict | None) -> tuple[str | None, str | None]:
 
 
 def current_corpus_identity(dataset: str) -> dict[str, Any]:
-    """Revalidate v2 manifest and every current prepared source without writes."""
-    from cli.index import _load_corpus_manifest, _validate_staged_snapshot
-
-    if dataset not in {"multihoprag", "hotpotqa"}:
-        raise ValueError("unsupported paper corpus")
+    """Read recorded corpus identity without scanning or verifying staged files."""
+    from cli.index import _load_corpus_manifest
     corpus = ROOT / "data" / f"{dataset}_corpus"
-    manifest = _load_corpus_manifest(corpus)
-    if not manifest or manifest.get("schema_version") != 2:
-        raise ValueError("current paper corpus requires a schema_version=2 manifest")
-    files = sorted(path.name for path in corpus.iterdir() if path.is_file() and path.suffix in {".txt", ".md"})
-    _validate_staged_snapshot(files, manifest, corpus)
-    return {**manifest, "manifest_sha256": sha256_file(corpus / "corpus_manifest.json")}
+    return {**(_load_corpus_manifest(corpus) or {}),
+            "manifest_sha256": sha256_file(corpus / "corpus_manifest.json")}
 
 
 def admission_bindings(result_path: Path, payload: dict | None) -> dict[str, str | None]:

@@ -73,7 +73,7 @@ def main() -> int:
     parser.add_argument("--probe", choices=("chat", "embedding", "bisection"), required=True)
     args = parser.parse_args()
     from core.paper_policy import configure_target_environment
-    from scripts.check_paper_runtime import _load_runner_environment
+    from scripts.runner_environment import _load_runner_environment
 
     _load_runner_environment()
     configure_target_environment("prehop", "multihoprag", "gateway-probe")

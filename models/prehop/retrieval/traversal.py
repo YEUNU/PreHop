@@ -54,16 +54,24 @@ class TraversalMixin:
         excluded_ids = {str(chunk_id).strip() for chunk_id in (excluded_chunk_ids or set()) if str(chunk_id).strip()}
 
         t_retrieve0 = time.perf_counter()
-        query_embedding = await self.llm.get_embedding(seed_query)
-        if not query_embedding:
-            raise ValueError(f"Graph retrieval received an empty query embedding for query={seed_query!r}")
-        _unused_selected, base_candidates = await self._retrieve_with_candidate_pool(
-            seed_query,
-            top_k=top_k,
-            query_embedding=query_embedding,
-            select_final=False,
-            selection_variant=selection_variant,
-        )
+        frozen_inputs = os.environ.get("RAG_ABLATION_DIRECT_INPUTS", "") if RAGConfig.PREHOP_ABLATION_PROFILE else ""
+        if frozen_inputs:
+            import asyncio
+
+            from models.prehop.ablation_inputs import read_input
+            frozen = await asyncio.to_thread(read_input, frozen_inputs, seed_query)
+            query_embedding, base_candidates = frozen["query_embedding"], frozen["base_candidates"]
+        else:
+            query_embedding = await self.llm.get_embedding(seed_query)
+            if not query_embedding:
+                raise ValueError(f"Graph retrieval received an empty query embedding for query={seed_query!r}")
+            _unused_selected, base_candidates = await self._retrieve_with_candidate_pool(
+                seed_query,
+                top_k=top_k,
+                query_embedding=query_embedding,
+                select_final=False,
+                selection_variant=selection_variant,
+            )
         retrieve_ms = (time.perf_counter() - t_retrieve0) * 1000
         graph_expand_ms = 0.0
         score_timing: dict[str, float] = {}

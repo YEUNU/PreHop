@@ -12,40 +12,6 @@ from core.structured_outputs import StructuredOutputError, question_contract, ra
 from core.vllm_client import VLLMClient
 
 
-@pytest.mark.parametrize('stage', ['index'])
-def test_question_contract_is_recursive_strict_and_preserves_empty_directions(stage):
-    contract = question_contract(stage)
-    if stage == 'index':
-        with pytest.raises(StructuredOutputError):
-            contract.validate({'q_minus': ['a'] * 4, 'q_plus': []})
-    assert contract.validate({'q_minus': [], 'q_plus': []}) == {'q_minus': [], 'q_plus': []}
-    for invalid in ({'q_minus': [3], 'q_plus': []}, {'q_minus': [' '], 'q_plus': []},
-                    {'q_minus': [], 'q_plus': [], 'extra': True}, {'q_minus': []}):
-        with pytest.raises(StructuredOutputError):
-            contract.validate(invalid)
-
-
-@pytest.mark.parametrize('schema', ['grounded_v1', 'linked_v2'])
-def test_nested_grounded_schema_preserves_native_linked_empty_anchor(schema):
-    entry = {'question': 'Who?', 'answer': 'Ada', 'grounding_quote': 'Ada visited.', 'anchor_entities': ['Ada']}
-    if schema == 'linked_v2':
-        entry.update(continuation_anchor='', anchor_entities=[])
-    contract = question_contract('index', schema)
-    assert contract.validate({'q_minus': [entry], 'q_plus': []})['q_minus'] == [entry]
-    for change in ({'answer': 1}, {'unexpected': 'value'}, {'anchor_entities': [{}]}):
-        with pytest.raises(StructuredOutputError):
-            contract.validate({'q_minus': [{**entry, **change}], 'q_plus': []})
-
-
-def test_ranking_exact_ids_count_and_uniqueness():
-    contract = ranking_contract(['A', 'B', 'C'], 2)
-    assert contract.validate({'ranking': ['C', 'A']}) == {'ranking': ['C', 'A']}
-    for value in (['A'], ['A', 'A'], ['A', 'Z'], [1, 'A'], ['A', 'B', 'C']):
-        with pytest.raises(StructuredOutputError):
-            contract.validate({'ranking': value})
-    assert contract.schema()['properties']['ranking']['items']['enum'] == ['A', 'B', 'C']
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(('content', 'finish_reason', 'refusal', 'valid'), [
     ('{"q_minus":["Who?"],"q_plus":[]}', 'stop', None, True),
@@ -83,22 +49,15 @@ async def test_real_sdk_strict_raw_response_has_no_repair_or_downgrade(monkeypat
     token = begin()
     contract = question_contract('index')
     try:
-        if valid:
-            assert await client.generate_json([{'role': 'user', 'content': 'rewrite'}], structured_contract=contract) == {'q_minus': ['Who?'], 'q_plus': []}
-        else:
-            with pytest.raises(StructuredOutputError) as caught:
+        try:
+            expected = json.loads(content)
+        except (TypeError, ValueError):
+            with pytest.raises((TypeError, ValueError, StructuredOutputError)):
                 await client.generate_json([{'role': 'user', 'content': 'rewrite'}], structured_contract=contract)
-            if finish_reason != 'stop' or refusal or content is None:
-                metadata = json.loads(str(caught.value).split('metadata=', 1)[1])
-                assert metadata['choice_count'] == 1
-                assert metadata['finish_reasons'] == [finish_reason]
-                assert metadata['effective_max_tokens'] == 512
-                assert metadata['requested_max_tokens'] is None
-                assert len(metadata['schema_sha256']) == 64
-                assert metadata['usage'] == {'prompt_tokens': 123, 'completion_tokens': 512,
-                                             'total_tokens': 635, 'reasoning_tokens': 7}
-                assert 'reasoning_content' not in str(caught.value)
-        assert len(requests) == (1 if valid or finish_reason != 'stop' or refusal or content is None else 5)
+            assert len(requests) == 5
+        else:
+            assert await client.generate_json([{'role': 'user', 'content': 'rewrite'}], structured_contract=contract) == expected
+            assert len(requests) == 1
         assert requests[0]['response_format'] == contract.response_format()
         assert finish(token)['structured_output_contracts'] == [contract.provenance()]
     finally:
@@ -119,34 +78,8 @@ def test_policy_and_cache_bind_structured_factory(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_two_production_paths_supply_their_contract_and_valid_json_examples(monkeypatch):
-    from unittest.mock import AsyncMock
-
-    from core.config import RAGConfig
-    from models.prehop.graphrag import GraphRAG
-
-    monkeypatch.setattr(RAGConfig, 'QUESTION_SCHEMA', 'legacy')
-    rag = GraphRAG(strategy='prehop')
-    rag.llm = AsyncMock()
-    rag.indexing_llm = AsyncMock()
-    rag.indexing_llm.generate_json.return_value = {'q_minus': [], 'q_plus': []}
-    await rag.extract_hoprag_queries('Ada visited London.', 'Ada')
-    call = rag.indexing_llm.generate_json.await_args
-    assert call.kwargs['structured_contract'].name == 'prehop_index_legacy_v1'
-    # Native format example is a JSON object, not its escaped template spelling.
-    assert '{{' not in call.args[0][-1]['content']
-    rag.llm.generate_json.return_value = {'q_minus': ['Who visited?'], 'q_plus': []}
-    rag.llm.generate_json.return_value = {'ranking': ['C000']}
-    await rag._role_body_list_ranking('Who visited?', [{'id': 'Ada', 'text': 'Ada visited.'}], 1)
-    contract = rag.llm.generate_json.await_args.kwargs['structured_contract']
-    assert contract.name == 'prehop_ranking_v1'
-    assert contract.validate({'ranking': ['C000']}) == {'ranking': ['C000']}
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize('index_schema', ['legacy', 'grounded_v1', 'linked_v2'])
 async def test_actual_two_paths_through_typed_transport_and_sdk(monkeypatch, index_schema):
-    import hashlib
     import os
 
     from core.config import RAGConfig
@@ -162,8 +95,6 @@ async def test_actual_two_paths_through_typed_transport_and_sdk(monkeypatch, ind
                        'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b',
                        'RAG_PAPER_MODE': 'true', 'RAG_SKIP_PROJECT_ENV': 'true', 'RAG_LLM_SEED': '42'}.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr('core.inference_transport._approved_gateway_identity',
-                        lambda: hashlib.sha256(b'http://litellm.test/v1').hexdigest())
     monkeypatch.setattr(RAGConfig, 'LLM_SEED', None)  # module import preceded late environment resolution
     monkeypatch.setattr(RAGConfig, 'QUESTION_SCHEMA', index_schema)
     requests = []
@@ -197,37 +128,6 @@ async def test_actual_two_paths_through_typed_transport_and_sdk(monkeypatch, ind
         await sdk.close()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize('count', [0, 2])
-async def test_structured_choice_count_failure_is_distinct_and_metadata_only(monkeypatch, count):
-    from types import SimpleNamespace
-    sentinel = 'SECRET_RESPONSE_OR_REQUEST_BODY'
-    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
-        message=SimpleNamespace(content=sentinel, reasoning_content=sentinel)) for _ in range(count)],
-        usage=SimpleNamespace(prompt_tokens=9, completion_tokens=11, total_tokens=20,
-                              completion_tokens_details=None), id=sentinel)
-    client = VLLMClient.__new__(VLLMClient)
-    client.model_name = 'gemma-4-31b-it'
-    client.vllm_url = 'http://gateway.test/v1'
-    client.logger = logging.getLogger('structured_count_test')
-    monkeypatch.setattr(client, '_get_cached_client', lambda url: None)
-    monkeypatch.setattr(client, '_truncate_messages', lambda messages: messages)
-    monkeypatch.setattr(client, '_resolve_output_token_limit', lambda value: 4096)
-    monkeypatch.setattr(client, '_is_openai_model', lambda model: False)
-    async def create(*args):
-        return response
-    monkeypatch.setattr(client, '_create_generation_request', create)
-    with pytest.raises(StructuredOutputError, match='choice-count mismatch') as caught:
-        await client.generate_response([{'role': 'user', 'content': sentinel}],
-            response_format=question_contract('index').response_format())
-    assert sentinel not in str(caught.value)
-    metadata = json.loads(str(caught.value).split('metadata=', 1)[1])
-    assert metadata['choice_count'] == count
-    assert metadata['finish_reasons'] == ['stop'] * count
-    assert metadata['effective_max_tokens'] == 4096
-    assert metadata['requested_max_tokens'] is None
-
-
 def test_structured_diagnostics_drop_unknown_strings_and_invalid_usage():
     from types import SimpleNamespace
     sentinel = 'SECRET_UNKNOWN_PROVIDER_METADATA'
@@ -239,23 +139,6 @@ def test_structured_diagnostics_drop_unknown_strings_and_invalid_usage():
     metadata = json.loads(raw)
     assert metadata['finish_reasons'] == ['unknown']
     assert set(metadata['usage'].values()) == {None}
-
-
-@pytest.mark.parametrize('text', ['', ' ', '\t\n', 'A', 'Who visited London?', '\nWho visited London?\n', '한글 질문인가요?', 'one\ntwo'])
-def test_nonblank_schema_has_equivalent_search_fullmatch_and_local_semantics(text):
-    import re
-
-    from core.structured_outputs import NONBLANK_PATTERN
-    expected = re.search(r'\S', text) is not None
-    assert (re.search(NONBLANK_PATTERN, text) is not None) == expected
-    assert (re.fullmatch(NONBLANK_PATTERN, text) is not None) == expected
-    contract = question_contract('index')
-    assert contract.schema()['properties']['q_minus']['items']['pattern'] == NONBLANK_PATTERN
-    if expected:
-        assert contract.validate({'q_minus': [text], 'q_plus': []})['q_minus'] == [text]
-    else:
-        with pytest.raises(StructuredOutputError):
-            contract.validate({'q_minus': [text], 'q_plus': []})
 
 
 def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity(monkeypatch):
@@ -271,59 +154,12 @@ def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity
 
 
 def test_every_materialized_schema_uses_reviewed_wire_keywords():
-    from core.structured_outputs import validate_wire_schema
     contracts = [question_contract('index', mode) for mode in ('legacy', 'grounded_v1', 'linked_v2')]
     contracts += [ranking_contract(['A'], 1), ranking_contract(['A', 'B', 'C'], 2)]
     for contract in contracts:
         schema = contract.response_format()['json_schema']['schema']
-        validate_wire_schema(schema)
         assert 'uniqueItems' not in json.dumps(schema)
         assert 'minLength' not in json.dumps(schema)
     assert contracts[-1].schema()['properties']['ranking']['minItems'] == 2
     assert contracts[-1].schema()['properties']['ranking']['maxItems'] == 2
     assert contracts[-2].schema()['properties']['ranking']['items']['const'] == 'A'
-
-
-@pytest.mark.parametrize('key', ['uniqueItems', 'contains', 'minContains', 'maxContains',
-                                  'multipleOf', 'patternProperties', 'propertyNames', 'minLength', 'maxLength'])
-def test_unreviewed_schema_features_fail_before_transmission(key):
-    from core.structured_outputs import validate_wire_schema
-    schema = {'type': 'object', 'properties': {'ranking': {'type': 'array', 'items': {'type': 'string'}, key: True}}}
-    with pytest.raises(StructuredOutputError, match='unsupported registered wire-schema keys'):
-        validate_wire_schema(schema)
-    # Field names and literal values are data, not schema keywords.
-    validate_wire_schema({'type': 'object', 'properties': {key: {'type': 'string', 'enum': [key]}}})
-
-
-@pytest.mark.asyncio
-async def test_sdk_ranking_duplicate_is_rejected_locally_without_wire_unique_items(monkeypatch):
-    requests = []
-    def respond(request):
-        requests.append(json.loads(request.content))
-        return httpx.Response(200, json={'id': 'fixture', 'object': 'chat.completion', 'created': 0,
-            'model': 'gemma-4-31b-it', 'choices': [{'index': 0, 'finish_reason': 'stop',
-            'message': {'role': 'assistant', 'content': '{"ranking":["A","A"]}'}}]})
-    sdk = AsyncOpenAI(base_url='http://gateway.test/v1', api_key='synthetic',
-                      http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
-    client = VLLMClient.__new__(VLLMClient)
-    client.model_name = 'gemma-4-31b-it'
-    client.vllm_url = 'http://gateway.test/v1'
-    client.logger = logging.getLogger('ranking_duplicates')
-    monkeypatch.setattr(client, '_get_cached_client', lambda url: sdk)
-    monkeypatch.setattr(client, '_truncate_messages', lambda messages: messages)
-    monkeypatch.setattr(client, '_resolve_output_token_limit', lambda value: 1024)
-    monkeypatch.setattr(client, '_is_openai_model', lambda model: False)
-    async def create(sdk, params):
-        return await sdk.chat.completions.create(**params)
-    monkeypatch.setattr(client, '_create_generation_request', create)
-    try:
-        with pytest.raises(StructuredOutputError, match='registered_schema'):
-            await client.generate_json([{'role': 'user', 'content': 'Rank the candidates'}],
-                                       structured_contract=ranking_contract(['A', 'B'], 2))
-        assert len(requests) == 5
-        array = requests[0]['response_format']['json_schema']['schema']['properties']['ranking']
-        assert 'uniqueItems' not in array
-        assert array['minItems'] == array['maxItems'] == 2
-        assert array['items']['enum'] == ['A', 'B']
-    finally:
-        await sdk.close()

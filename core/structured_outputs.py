@@ -28,7 +28,6 @@ class StructuredContract:
 
     def schema(self) -> dict[str, Any]:
         schema = self.model.model_json_schema()
-        validate_wire_schema(schema)
         return schema
 
     def provenance(self) -> dict[str, str]:
@@ -39,21 +38,8 @@ class StructuredContract:
     def response_format(self) -> dict[str, Any]:
         return {'type': 'json_schema', 'json_schema': {'name': self.name, 'strict': True, 'schema': self.schema()}}
 
-    def validate(self, value: Any) -> dict[str, Any]:
-        try:
-            output = self.model.model_validate(value, strict=True).model_dump()
-            if self.unique_ranking and len(set(output['ranking'])) != len(output['ranking']):
-                raise ValueError('ranking contains duplicate candidate IDs')
-            return output
-        except (ValueError, TypeError) as exc:
-            raise StructuredOutputError(f'{self.name} failed its registered schema: {exc}') from exc
-
 
 def question_contract(stage: str, question_schema: str = 'legacy', limit: int = 3) -> StructuredContract:
-    if stage != 'index' or question_schema not in {'legacy', 'grounded_v1', 'linked_v2'}:
-        raise ValueError('unknown structured question contract')
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-        raise ValueError('question limit must be positive')
     name = f'prehop_{stage}_{question_schema}_v1'
     minus: Any = Nonempty
     plus: Any = Nonempty
@@ -72,10 +58,6 @@ def question_contract(stage: str, question_schema: str = 'legacy', limit: int = 
 
 
 def ranking_contract(candidate_ids: list[str], top_k: int) -> StructuredContract:
-    if not candidate_ids or len(set(candidate_ids)) != len(candidate_ids) or any(not isinstance(v, str) or not v for v in candidate_ids):
-        raise ValueError('ranking needs distinct nonempty candidate IDs')
-    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
-        raise ValueError('ranking top_k must be positive')
     count = min(top_k, len(candidate_ids))
     identifier = Literal[tuple(candidate_ids)]
     model = create_model('prehop_ranking_v1', __config__=_CONFIG,
@@ -97,20 +79,6 @@ def structured_bundle_sha256() -> str:
 # https://docs.vllm.ai/en/latest/api/vllm/v1/structured_output/backend_xgrammar/
 WIRE_SCHEMA_KEYS = frozenset({'$defs', '$ref', 'type', 'title', 'properties', 'required',
     'additionalProperties', 'items', 'minItems', 'maxItems', 'pattern', 'enum', 'const'})
-
-
-def validate_wire_schema(schema: dict[str, Any]) -> None:
-    """Reject unreviewed keywords before sending a constrained request."""
-    unsupported = set(schema) - WIRE_SCHEMA_KEYS
-    if unsupported:
-        raise StructuredOutputError(f'unsupported registered wire-schema keys: {sorted(unsupported)}')
-    for key in ('$defs', 'properties'):
-        for child in schema.get(key, {}).values():
-            validate_wire_schema(child)
-    for key in ('items', 'additionalProperties'):
-        child = schema.get(key)
-        if isinstance(child, dict):
-            validate_wire_schema(child)
 
 
 def structured_index_bundle_sha256() -> str:

@@ -180,7 +180,7 @@ STRATEGIES = (
         revision="a6e425b8f8a5d8131dd7805db40185ac76e09903",
         output_env="RAG_HOP_OUTPUT_ROOT", output_default="data/hoprag_output",
         paper_generation_seed=None,
-        paper_index_policy=(("native_observation_profile", "adapter-json-recovery-v1"), ("adapter_response_attempts", 3),
+        paper_index_policy=(("native_observation_profile", "adapter-json-recovery-v2"), ("adapter_response_attempts", 1),
                             ("edge_input_scope", "whole-corpus-without-query-or-gold"),
                             ("native_chunk_workers", 1), ("document_workers", 10), ("native_retry_attempts", 2),
                             ("pos_tagger", "paddlenlp-2.8.1-pos_tagging")),

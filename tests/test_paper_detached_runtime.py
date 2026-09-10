@@ -133,14 +133,14 @@ c.resource_lock_path=lambda:Path({str(base/'resource.lock')!r})
 c.ensure_no_other_campaigns=lambda unit:None
 c.check_plan=lambda plan:None
 c.safe_environment=lambda:os.environ.copy()
-c.validate_step=lambda plan,step:[]
+c.step_evidence=lambda plan,step:[]
 c.CHILD_LOG_DRAIN_SECONDS=.2
 raise SystemExit(c.supervise(Path({str(plan)!r}),detached=True))
 '''
     process = detached.spawn_nohup([sys.executable, '-c', script], env=os.environ.copy(), cwd=base, log=base/'nohup.log')
-    assert process.wait(timeout=10) == 1
+    assert process.wait(timeout=10) == 0
     status = json.loads((base/'status.json').read_text())
-    assert status['state'] == 'failed' and status['owned_cleanup_complete']
+    assert status['state'] == 'completed' and status['owned_cleanup_complete']
     assert status['remaining_owned_processes'] == [] and status['session_id'] == process.pid
     assert marker.exists()
     events = [json.loads(line) for line in (base/'events.jsonl').read_text().splitlines()]

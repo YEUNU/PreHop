@@ -401,7 +401,7 @@ def test_role_body_owner_selection_deduplicates_and_fills_global_order():
 
 
 @pytest.mark.asyncio
-async def test_role_body_list_ranking_rejects_unknown_duplicate_and_missing_ids(monkeypatch):
+async def test_role_body_list_ranking_maps_native_candidate_ids(monkeypatch):
     monkeypatch.setattr(RAGConfig, "SOURCE_SELECTION_VARIANT", "role_body_list_ranking")
     rag = GraphRAG(strategy="prehop")
     rag.llm.generate_json = AsyncMock(return_value={"ranking": ["C999", "C001", "C001"]})
@@ -425,9 +425,7 @@ async def test_role_body_list_ranking_rejects_unknown_duplicate_and_missing_ids(
         {"id": "global", "title": "Global", "text": "other", "embedding": [0.8, 0.2]},
     ]
 
-    from core.structured_outputs import StructuredOutputError
-
-    with pytest.raises(StructuredOutputError):
+    with pytest.raises(KeyError):
         await rag._score_and_select([1.0, 0.0], candidates, top_k=2, query_text="Which evidence is needed?")
     rag.llm.generate_json.return_value = {"ranking": ["C001", "C000"]}
     selected, _ = await rag._score_and_select([1.0, 0.0], candidates, top_k=2, query_text="Which evidence is needed?")

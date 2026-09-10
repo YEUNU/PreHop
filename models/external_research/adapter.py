@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from core.benchmark_failures import BenchmarkIntegrityError
 from core.generation_profiles import request_settings
 from core.vllm_client import get_llm_client
-from models.official_baseline_runtime import OfficialQueryWorker, verify_snapshot
+from models.official_baseline_runtime import OfficialQueryWorker
 from utils.prompts.shared import build_answer_prompt, mark_answer_boundary
 
 
@@ -22,21 +21,9 @@ class ExternalResearchAdapter:
             from .query_batching import NativeQueryBatcher
             self._batcher = NativeQueryBatcher(self._worker)
 
-    def verify_active_snapshot(self, expected_source_ids: list[str], corpus_manifest: dict | None) -> dict:
-        return verify_snapshot(self.strategy, self.corpus_tag, expected_source_ids, corpus_manifest)
 
     def _documents(self, response: dict[str, Any]) -> list[dict[str, Any]]:
-        documents = response.get("documents")
-        if not isinstance(documents, list):
-            raise BenchmarkIntegrityError(f"{self.strategy} official worker returned malformed documents")
-        seen: set[str] = set()
-        for row in documents:
-            if not isinstance(row, dict) or not str(row.get("source_id", "")).strip():
-                raise BenchmarkIntegrityError(f"{self.strategy} official worker returned a document without source_id")
-            if row["source_id"] in seen:
-                raise BenchmarkIntegrityError(f"{self.strategy} official worker returned duplicate source_id")
-            seen.add(row["source_id"])
-        return documents
+        return response.get("documents")
 
     async def _query(self, query: str) -> dict[str, Any]:
         if self._batcher is not None:
@@ -61,16 +48,12 @@ class ExternalResearchAdapter:
         )
         answer = native_answer
         if answer is None:
-            if self.strategy in {"lightrag", "linear_rag", "gfm_rag"}:
-                raise ValueError(f"{self.strategy} native query omitted its required answer")
             if self.llm is None:
                 self.llm = get_llm_client(self.model_id)
             answer = await self.llm.generate_response(
                 [{"role": "user", "content": build_answer_prompt(context, query)}],
                 **request_settings("answer"),
             )
-        if not isinstance(answer, str):
-            raise TypeError(f"{self.strategy} native answer is not text")
         sources = [
             {
                 "doc": row.get("title") or row["source_id"],

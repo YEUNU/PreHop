@@ -68,7 +68,7 @@ async def test_truncation_raw_response_survives_validation_failure(tmp_path, mon
 @pytest.mark.asyncio
 async def test_format_retry_keeps_both_original_responses(tmp_path, monkeypatch):
     trace = recorder(tmp_path)
-    bodies = ['{"q_minus":[],"q_minus":[],"q_plus":[]}', '{"q_minus":["Who?"],"q_plus":[]}']
+    bodies = ['{"q_minus":', '{"q_minus":["Who?"],"q_plus":[]}']
     calls = []
     def handler(request):
         calls.append(json.loads(request.content))

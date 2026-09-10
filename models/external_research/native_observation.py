@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 PROFILE = 'native-observation-v1'
+PROVIDER = 'prehop_validated_litellm'
 
 
 def record(audit, messages, response=None, error=None, **extra):
@@ -38,7 +39,6 @@ def register_ms_observer(audit, attempts):
     from graphrag_llm.completion.completion_factory import register_completion
     from graphrag_llm.completion.lite_llm_completion import LiteLLMCompletion
 
-    from models.ms_graphrag.extraction_guard import PROVIDER
 
     class ObservedCompletion(LiteLLMCompletion):
         def __init__(self, **kwargs):

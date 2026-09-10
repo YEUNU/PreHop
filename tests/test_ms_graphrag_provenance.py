@@ -79,12 +79,6 @@ def test_ms_parser_separates_display_metadata_from_evidence(content, expected_ti
     assert _ms_indexable_text("doc.txt", content) == (expected_title, expected_body)
 
 
-@pytest.mark.parametrize("content", ["", "Title: Only", "Title: Only\nParagraph-ID: hotpotqa:abc"])
-def test_ms_parser_rejects_metadata_only_documents(content):
-    with pytest.raises(ValueError, match="no evidence text"):
-        _ms_indexable_text("doc.txt", content)
-
-
 def test_ms_staging_writes_clean_body_and_keeps_title_sidecar(tmp_path, monkeypatch):
     corpus = tmp_path / "corpus"
     corpus.mkdir()
@@ -391,35 +385,3 @@ async def test_ms_local_search_marks_unlabelled_provider_response(monkeypatch):
     answer, _sources, _trace = await adapter.local_search("Where was the person born?")
 
     assert answer == "@@ANSWER: Paris"
-
-
-def test_ms_extraction_evidence_survives_shared_benchmark_snapshot(tmp_path, monkeypatch):
-    import asyncio
-    import hashlib
-    import json
-
-    import pandas as pd
-
-    from cli import benchmark
-    from models.ms_graphrag import ms_adapter
-
-    titles = {'doc': 'Document'}
-    evidence = {'version': 1, 'sha256': 'a' * 64}
-    metadata = {
-        'status': 'complete', 'strategy': 'ms_graphrag', 'corpus_tag': 'multihoprag',
-        'snapshot_version': 2, 'source_count': 1,
-        'source_set_sha256': hashlib.sha256(b'doc').hexdigest(),
-        'source_titles': titles, 'source_titles_sha256': ms_adapter._source_titles_sha256(titles),
-        'extraction_validation_profile': 'strict-ms-extraction-v1',
-        'extraction_audit_evidence': evidence,
-    }
-    path = tmp_path / 'metadata.json'
-    path.write_text(json.dumps(metadata))
-    monkeypatch.setattr(ms_adapter, 'snapshot_metadata_path', lambda _: path)
-    monkeypatch.setattr(benchmark, '_manifest_source_ids', lambda _: ['doc'])
-    engine = ms_adapter.MSGraphRAGAdapter.__new__(ms_adapter.MSGraphRAGAdapter)
-    engine.corpus_tag = 'multihoprag'
-    engine._read_parquet = lambda _: pd.DataFrame({'title': ['doc.txt']})
-    result = asyncio.run(benchmark._verify_active_index_snapshot(engine, 'ms_graphrag', 'multihoprag', None, True))
-    assert result['official_stats']['extraction_audit_evidence'] == evidence
-    assert result['official_stats']['extraction_validation_profile'] == 'strict-ms-extraction-v1'

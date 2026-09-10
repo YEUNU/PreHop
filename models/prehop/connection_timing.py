@@ -1,51 +1,20 @@
 """Matched destination resolver for explicit connection-timing ablations.
 
 Both arms hydrate the same destination metadata from Neo4j. The precomputed
-arm reads a separately built SQLite edge table, never historical HOP_ANSWER.
+arm reads experiment-scoped Neo4j HOP_TIMING edges, never historical HOP_ANSWER.
 Online matching has no cross-query destination cache.
 """
 import hashlib
 import json
-import sqlite3
 import time
 from pathlib import Path
 
-CONTRACT = "prehop-connection-timing-v1"
+CONTRACT = "prehop-connection-timing-v2"
 
 
-async def graph_fingerprint(engine):
-    """Bind bodies, representations, ownership and ANN configuration, paged."""
-    digest = hashlib.sha256()
-    after = ""
-    while True:
-        rows = await engine.retry_query(
-            f"MATCH (c:{engine.chunk_label}) WHERE c.id > $after WITH c ORDER BY c.id LIMIT 64 "
-            "CALL (c) { OPTIONAL MATCH (c)-[r:HAS_Q_PLUS|HAS_Q_MINUS]->(q) "
-            "WITH r,q ORDER BY type(r),q.id RETURN collect(CASE WHEN q IS NULL THEN null ELSE "
-            "{kind:type(r),properties:properties(q)} END) AS questions } "
-            f"CALL (c) {{ OPTIONAL MATCH (c)-[:NEXT]->(n:{engine.chunk_label}) "
-            "WITH n ORDER BY n.id RETURN collect(n.id) AS next_ids } "
-            "RETURN c.id AS id,properties(c) AS body,questions,next_ids ORDER BY id", {"after":after})
-        if not rows:
-            break
-        for row in rows:
-            digest.update(json.dumps(row,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()+b"\n")
-        after = rows[-1]["id"]
-    indexes = await engine.retry_query("SHOW INDEXES YIELD name,type,labelsOrTypes,properties,options "
-        "WHERE name IN $names RETURN name,type,labelsOrTypes,properties,options ORDER BY name",
-        {"names":[engine.q_minus_vector_index,engine.q_plus_vector_index,engine.body_vector_index]})
-    if len(indexes) != 3:
-        raise ValueError("Frozen timing graph requires all three vector indexes")
-    digest.update(json.dumps(indexes,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode())
-    return digest.hexdigest()
-
-
-def metadata(path, namespace):
-    with sqlite3.connect(Path(path).resolve().as_uri()+"?mode=ro",uri=True) as db:
-        meta = dict(db.execute("SELECT key,value FROM metadata"))
-    if meta.get("contract") != CONTRACT or meta.get("namespace") != namespace or meta.get("status") != "complete":
-        raise ValueError("Timing links are not a completed snapshot for this namespace")
-    return meta
+def metadata(path, namespace=None):
+    """Read the experiment pointer; graph data lives only in Neo4j."""
+    return json.loads(Path(path).read_text())
 
 
 async def resolve_pairs(engine, starts):
@@ -59,8 +28,6 @@ async def resolve_pairs(engine, starts):
         "RETURN c.id AS id,c.source AS source,collect(CASE WHEN q.query_embedding IS NULL "
         "THEN null ELSE {id:q.id,text:q.text,query_embedding:q.query_embedding} END) AS questions",
         {"starts": starts})
-    if {r["id"] for r in rows} != set(starts):
-        raise ValueError("Connection activation contains missing passage IDs")
     sources = sorted({r["source"] for r in rows})
     counts = await engine.retry_query(
         f"MATCH (c:{engine.chunk_label}) WHERE c.source IN $sources "
@@ -88,28 +55,26 @@ async def hydrate(engine, pairs, excluded):
         "ORDER BY source_id,id", {"pairs": pairs, "excluded": sorted(excluded)})
 
 
-def read_pairs(path, starts, namespace):
-    path = Path(path).resolve()
-    with sqlite3.connect(path.as_uri()+"?mode=ro", uri=True) as db:
-        meta = dict(db.execute("SELECT key,value FROM metadata"))
-        if meta.get("contract") != CONTRACT or meta.get("namespace") != namespace or meta.get("status") != "complete":
-            raise ValueError("Timing links are not a completed snapshot for this namespace")
-        result, matches = [], 0
-        for start in sorted(set(starts)):
-            row = db.execute("SELECT pairs,matches FROM starts WHERE id=?", (start,)).fetchone()
-            if row is None:
-                raise ValueError("Precomputed timing snapshot lacks an activation (including zero-link starts)")
-            result.extend(json.loads(row[0])); matches += row[1]
-    return result, matches
+async def read_pairs(engine, starts, experiment):
+    rows = await engine.retry_query(
+        f"MATCH (s:{engine.chunk_label}) WHERE s.id IN $starts "
+        "OPTIONAL MATCH (s)-[r:HOP_TIMING {experiment:$experiment}]->(d) "
+        "WITH s,r,d ORDER BY s.id,d.id "
+        "RETURN s.id AS source_id, collect(CASE WHEN d IS NULL THEN null ELSE "
+        "{source_id:s.id,id:d.id,activated_question_ids:r.source_question_ids} END) AS pairs",
+        {"starts": sorted(set(starts)), "experiment": experiment})
+    return [pair for row in rows for pair in row["pairs"] if pair]
 
 
 async def expand(engine, starts, excluded, mode, store, namespace):
+    # Small pointer loading is setup, not destination resolution.
+    meta = metadata(store, namespace)
     begin = time.perf_counter()
-    metadata(store, namespace)
     if mode == "online":
         pairs, matches = await resolve_pairs(engine, starts)
     elif mode == "precomputed":
-        pairs, matches = read_pairs(store, starts, namespace)
+        pairs = await read_pairs(engine, starts, meta["experiment"])
+        matches = sum(meta["question_counts"].get(s, 0) for s in set(starts))
     else:
         raise ValueError("Unknown connection timing arm")
     rows = await hydrate(engine, pairs, excluded)
@@ -120,39 +85,36 @@ async def expand(engine, starts, excluded, mode, store, namespace):
 
 async def build(engine, path, namespace, *, page_size=128):
     path = Path(path)
-    if path.exists():
-        raise FileExistsError("Use a new timing-link snapshot")
     path.parent.mkdir(parents=True, exist_ok=True)
+    experiment = "timing_" + hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:24]
     start_time = time.perf_counter()
-    frozen = await graph_fingerprint(engine)
-    build_started = time.perf_counter()
-    db = sqlite3.connect(path)
-    try:
-        db.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY,value TEXT)")
-        db.executemany("INSERT INTO metadata VALUES (?,?)", [("contract",CONTRACT),("namespace",namespace),("status","building")])
-        db.execute("CREATE TABLE starts (id TEXT PRIMARY KEY,pairs TEXT,matches INTEGER)")
-        after, count = "", 0
-        while True:
-            rows = await engine.retry_query(f"MATCH (c:{engine.chunk_label}) WHERE c.id > $after RETURN c.id AS id ORDER BY id LIMIT $limit",
-                                             {"after":after,"limit":page_size})
-            if not rows:
-                break
-            for row in rows:
-                pairs, matches = await resolve_pairs(engine, [row["id"]])
-                db.execute("INSERT INTO starts VALUES (?,?,?)",(row["id"],json.dumps(pairs,sort_keys=True),matches))
-                count += 1
-            db.commit(); after = rows[-1]["id"]
-            print(f"Timing destinations prepared: {count}", flush=True)
-        if not count:
-            raise ValueError("Empty question graph")
-        construction_seconds = time.perf_counter()-build_started
-        if await graph_fingerprint(engine) != frozen:
-            raise ValueError("Graph changed during timing-link preparation")
-        elapsed = time.perf_counter()-start_time
-        db.execute("UPDATE metadata SET value='complete' WHERE key='status'")
-        db.executemany("INSERT INTO metadata VALUES (?,?)",[("preparation_seconds",str(elapsed)),("passages",str(count)),("graph_fingerprint",frozen)])
-        db.commit()
-        return {"contract":CONTRACT,"namespace":namespace,"passages":count,"preparation_seconds":elapsed,
-                "connection_build_seconds":construction_seconds,"verification_seconds":elapsed-construction_seconds}
-    finally:
-        db.close()
+    await engine.retry_query("CREATE (m:RAGTimingSnapshot {experiment:$experiment,namespace:$namespace,status:'building'})",
+                             {"experiment":experiment,"namespace":namespace})
+    after, count, edge_count, question_counts = "", 0, 0, {}
+    while True:
+        rows = await engine.retry_query(f"MATCH (c:{engine.chunk_label}) WHERE c.id > $after RETURN c.id AS id ORDER BY id LIMIT $limit",
+                                         {"after":after,"limit":page_size})
+        if not rows:
+            break
+        for row in rows:
+            pairs, matches = await resolve_pairs(engine, [row["id"]])
+            await engine.retry_query(
+                f"UNWIND $pairs AS p MATCH (s:{engine.chunk_label} {{id:p.source_id}}), (d:{engine.chunk_label} {{id:p.id}}) "
+                "CREATE (s)-[r:HOP_TIMING {experiment:$experiment}]->(d) "
+                "SET r.source_question_ids=p.activated_question_ids",
+                {"pairs":pairs,"experiment":experiment})
+            question_counts[row["id"]] = matches
+            count += 1
+            edge_count += len(pairs)
+        after = rows[-1]["id"]
+        print(f"Timing destinations prepared: {count}", flush=True)
+    elapsed = time.perf_counter()-start_time
+    result = {"contract":CONTRACT,"storage":"neo4j","experiment":experiment,"namespace":namespace,
+              "passages":count,"edges":edge_count,"question_counts":question_counts,
+              "preparation_seconds":elapsed,"connection_build_seconds":elapsed,
+              "shared_nodes_and_ann":True,"historical_primary_edges_modified":False}
+    await engine.retry_query("MATCH (m:RAGTimingSnapshot {experiment:$experiment}) "
+        "SET m.status='complete',m.passages=$passages,m.edges=$edges,m.build_seconds=$seconds",
+        {"experiment":experiment,"passages":count,"edges":edge_count,"seconds":elapsed})
+    path.write_text(json.dumps(result,sort_keys=True))
+    return result

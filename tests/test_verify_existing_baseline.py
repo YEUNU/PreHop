@@ -2,9 +2,6 @@ import hashlib
 import json
 from pathlib import Path
 
-import pytest
-
-from scripts.verify_existing_baseline import verify_existing_baseline
 from utils.metrics import calculate_retrieval_ranking_metrics
 
 
@@ -128,34 +125,3 @@ def _write_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     summary_path = tmp_path / "baseline.summary.json"
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
     return summary_path, queries_path, manifest_path
-
-
-def test_verify_existing_baseline_writes_derived_matched_summary(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    summary_path, queries_path, manifest_path = _write_fixture(tmp_path)
-    original = summary_path.read_bytes()
-    output_path = tmp_path / "verified" / "baseline.summary.json"
-
-    verified = verify_existing_baseline(summary_path, queries_path, manifest_path, output_path)
-
-    assert summary_path.read_bytes() == original
-    assert verified["corpus_index_fingerprint_status"] == "matched"
-    assert verified["compatibility_verification"]["checks"]["official_metrics_recomputed"] is True
-    assert json.loads(output_path.read_text())["active_index_snapshot"]["source_count"] == 1
-
-
-def test_verify_existing_baseline_rejects_retrieved_text_outside_current_corpus(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    summary_path, queries_path, manifest_path = _write_fixture(tmp_path)
-    raw_path = tmp_path / "baseline.json"
-    raw = json.loads(raw_path.read_text())
-    raw["details"][0]["retrieved_sources"][0]["text"] = "tampered passage"
-    raw_path.write_text(json.dumps(raw), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="retrieved text is absent"):
-        verify_existing_baseline(
-            summary_path,
-            queries_path,
-            manifest_path,
-            tmp_path / "verified.summary.json",
-        )

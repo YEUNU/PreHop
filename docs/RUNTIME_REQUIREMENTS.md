@@ -2,8 +2,9 @@
 
 The revised Prehop design removes initial query rewriting and evidence-conditioned
 query regeneration/re-search. The original query searches all three channels at
-every input length. The runtime uses this single-pass policy. Earlier Prehop scores and costs have been removed from paper reporting. New
-results are pending and require separate compatible full-run artifacts.
+every input length. The runtime uses this single-pass policy. Earlier Prehop scores and costs have been removed from paper reporting. The completed
+original-query MultiHop-RAG run is now reported in [the result register](RESULTS.md);
+other pending experiments require their own compatible full-run artifacts.
 
 `core/strategy_registry.py` defines supported methods, pinned upstream revisions,
 and paper policies. `configs/paper_runtime_requirements.json` defines required
@@ -104,36 +105,27 @@ root `third_party/HopRAG` is reference-only. POS model hashes are bound by
 
 `scripts/run_hoprag_scheduled.py` performs a 16-document source canary, full
 MultiHop-RAG indexing, query benchmarking, and completion recording. The canary
-executes a query after checking its index. Native chunks remain sequential within
+executes a query after indexing. Native chunks remain sequential within
 a document; the adapter uses ten document workers. The runtime uses the native
 POS model, not a substitute spaCy path.
 
-## Preflight
+## Runtime selection
 
-Use the selected prepared interpreter for read-only runtime checks:
+Launchers select the configured interpreter and upstream runtime directly.
+Automatic dependency/revision checks, gateway approval, model hash comparisons,
+and semantic-setting equality checks have been removed. The selected settings
+and runtime locations remain recorded in provenance. Missing dependencies or
+files surface through the actual import or I/O operation.
 
-```bash
-"$PYTHON_BIN" scripts/check_paper_runtime.py --strategy ms_graphrag --dataset multihoprag
-"$PYTHON_BIN" scripts/check_paper_runtime.py --strategy lightrag --dataset multihoprag
-"$PYTHON_BIN" scripts/check_paper_runtime.py --strategy gfm_rag --dataset multihoprag
-"$PYTHON_BIN" scripts/check_paper_runtime.py --strategy linear_rag --dataset multihoprag
-"$PYTHON_BIN" scripts/check_paper_runtime.py --strategy hoprag --dataset multihoprag
-```
-
-Checks cover applicable runtime versions, upstream revision/integrity, package
-constraints and freezes, model snapshots, hashes, and typed transport settings.
-Preflight does not run a full benchmark or certify its results. Target wrappers
-apply readiness checks in both check-only and execution modes.
-
-## Native output handling and artifact validation
+## Native output handling and recording
 
 Adapters preserve native source and declare response interventions separately.
 
 | Method | Response contract |
 |---|---|
-| Prehop | Registered structured schemas and bounded identical-request format retries; final text synthesis |
+| Prehop | Requested structured schemas, JSON decoding retries, and final text synthesis; no local response-schema rejection |
 | Naive RAG | Shared text synthesis; no index question generation |
-| HopRAG | `adapter-json-recovery-v1`: parse valid plain/fenced JSON before the native cleaner; validate return shape; at most three adapter attempts |
+| HopRAG | `adapter-json-recovery-v2`: parse valid plain/fenced JSON before the native cleaner; return native completion results unchanged without adapter retries |
 | GFM-RAG | Native JSON mode and empty-list fallback; 300-token NER limit |
 | MS GraphRAG | Observe response/stream data while retaining native parsing and glean/report behavior |
 | LightRAG | Native extraction and document status; failed insertion is not successful processing |
@@ -142,7 +134,7 @@ Adapters preserve native source and declare response interventions separately.
 HopRAG retains raw wire, embedding, and recovery records. Recovery does not
 invent questions or facts. Other native observation records distinguish returned
 responses from native exceptions; observation alone does not establish indexing
-success. Exact stored source coverage and index integrity remain separate checks.
+success. Source counts and index metadata are recorded without an additional integrity gate.
 Missing response or cost telemetry remains unavailable.
 
 | Method | Generation output policy | Retrieval settings |
@@ -234,15 +226,16 @@ The pinned upstream source is unchanged.
 
 ## Paper benchmark scope
 
-The paper targets MultiHop-RAG and HotpotQA fullwiki. Runtime preflight has been
-checked for all seven primary methods, including their public shell entrypoints.
-The 5,233,329-paragraph corpus and all 7,405 development queries passed complete
-archive, file, provenance and sentence-store verification; official scorer parity
-is tested. One upstream unavailable sentence label is preserved as documented in
-[HOTPOTQA_FULLWIKI](HOTPOTQA_FULLWIKI.md). Fullwiki model indexes and benchmark
-results remain unmeasured. The shared projection predicts complete original sentences present in
-returned passages without using gold support labels. Repository-owned launchers and evaluation code support only these two datasets;
-additional dataset support in pinned upstream packages is outside the paper.
+The paper targets MultiHop-RAG and the pinned HippoRAG HotpotQA release
+(9,221 passages, 1,000 occurrences, 944 original question IDs). All seven native
+runtime mappings remain available; the corpus change does not change model
+implementations. See [HOTPOTQA](HOTPOTQA.md) for preparation and population
+identity. Official scorer parity is tested. The common support projection uses
+complete original sentences in returned passages without gold-driven selection.
+Fullwiki data is retained separately and is not the active comparison protocol.
+Repository-owned launchers support these two datasets; additional dataset support
+inside pinned upstream packages is outside the paper.
+
 
 Model-specific shell and Python launchers select HopRAG's pinned main runtime
 instead of the common main interpreter. Its observed runtime identity is read

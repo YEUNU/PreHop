@@ -10,10 +10,10 @@ upstream revisions, and paper policies. Experimental controls are specified in
 ## Strategy dispatch and indexing branches
 
 The primary order is Prehop, Naive RAG, HopRAG, MS GraphRAG, LightRAG, GFM-RAG,
-and LinearRAG. The paper targets MultiHop-RAG and HotpotQA fullwiki. HotpotQA uses
+and LinearRAG. The paper targets MultiHop-RAG and HotpotQA (HippoRAG corpus). HotpotQA uses
 the official introductory-paragraph corpus and complete development split, with
 source and sentence identities preserved. Preparation and evaluation are defined
-in [HOTPOTQA_FULLWIKI](HOTPOTQA_FULLWIKI.md).
+in [HOTPOTQA](HOTPOTQA.md).
 Removed methods do not supply primary comparison cells.
 
 `cli/index.py::run_indexing` acquires a strategy/corpus lock in the working
@@ -63,7 +63,7 @@ produce a complete index.
 | Module under `models/prehop/indexing/` | Responsibility |
 |---|---|
 | `chunking.py` | Parsing, windowing, generation cache, intermediate output |
-| `knowledge_mapping.py` | Question generation and question-record validation |
+| `knowledge_mapping.py` | Question generation and record normalization |
 | `embedding.py` | Role-aware cached embeddings and bounded request batches |
 | `graph_writer.py` | Document replacement, question ownership, indexes and NEXT |
 | `hop_edges.py` | Question-based cross-source HOP construction and provenance |
@@ -170,7 +170,7 @@ linked-continuation switches remain distinct from the primary defaults.
 
 ## Explicit representation ablations
 
-`core/prehop_ablation.py` validates `question_full`, `question_body`, and
+`core/prehop_ablation.py` describes `question_full`, `question_body`, and
 `body_body`. All use original queries, all-seed HOP activation, body-only
 semantic scoring, depth one, and the existing final selector. Under all-seed
 activation, HOP targets inherit the source's total representation score.
@@ -240,7 +240,7 @@ Existing result artifacts retain their historical generation settings.
 Embedding responses must contain one finite, correctly sized vector per input
 with unique, gap-free response indices. Context-size or HTTP 413 errors allow
 order-preserving bisection; unrelated errors and failing singletons propagate.
-External compatibility aliases are confined to validated native child processes.
+External compatibility aliases are configured in native child processes.
 
 ## Evaluation output contract
 
@@ -248,15 +248,14 @@ External compatibility aliases are confined to validated native child processes.
 with legacy dataset metrics retained in code. The HotpotQA adapter projects complete returned corpus sentences to title/index pairs via
 `utils/hotpotqa.py`, then applies Answer, Supporting Fact, and Joint scoring
 rules. The projection is gold-independent and shared across systems. Official
-scorer parity is tested; completed fullwiki experiments remain outstanding.
+scorer parity is tested; completed reduced-corpus experiments remain outstanding.
 Normalized/fuzzy fact recall is diagnostic and differs from the manuscript's
 literal exact-fact recall. Missing metric applicability is `-1`; evaluated
 nonmatches are zero. Terminal failures receive zero primary quality scores and
-remain visible in failure counts. Integrity failures stop the affected target.
+remain visible in failure counts. Actual execution failures remain recorded.
 
-The default checkpoint interval is ten completed queries. Resume requires an
-`in_progress` deterministic result, the same query/model/index configuration,
-and valid retained identities/traces. It runs missing IDs only, preserving both
+The default checkpoint interval is ten completed queries. Resume reads the
+existing result without configuration or identity validation. It runs missing IDs only, preserving both
 successful and terminal-error rows. A resumed batch is not an uninterrupted
 throughput measurement. The representation-ablation launcher itself does not
 provide resume.
@@ -264,7 +263,7 @@ provide resume.
 `record_paper_completion.py` records finished execution without final paper-policy
 validation. It emits the legacy `admitted` receipt label with
 `verification=disabled_by_user`; it does not recalculate metrics or certify
-publication eligibility. Runtime and index checks remain separate. Optional
+publication eligibility. Additional runtime and index verification gates are removed. Optional
 analysis tools are not automatic completion gates. The synchronous benchmark
 entrypoint finishes after query evaluation and resource cleanup; it does not
 submit or reconcile an asynchronous Batch judge job.
@@ -274,8 +273,8 @@ submit or reconcile an asynchronous Batch judge job.
 `core/index_reuse.py` supports links from full-index supervisor completions
 (version 2) and the separate legacy one-query matrix protocol (version 1).
 Both retain original index statistics, corpus identity, method policy, and
-measured construction costs. File-backed methods receive byte-verified query
-copies; service-backed methods retain their source namespace. Copy preparation
+measured construction costs. File-backed methods receive query
+copies without a byte-equality check; service-backed methods retain their source namespace. Copy preparation
 cost is separate from original indexing cost. Query caches do not rewrite the
 bound source index. A canary or index-only artifact cannot supply a full
 benchmark score.
@@ -353,3 +352,19 @@ new link construction. Merge candidates by passage identity before final
 selection; a passage can occur on both routes. Candidate membership is distinct
 from inclusion in the final answer evidence. The timing ablation deliberately
 changes when HOP destinations are resolved and is not the primary query flow.
+
+## Controlled link-experiment modules
+
+`models/prehop/ablation_inputs.py` provides explicit ablation-only frozen direct
+inputs; primary retrieval does not consult them. A/B/C downstream measurements
+carry their restricted latency scope. `models/prehop/connection_timing.py`
+resolves Q+ destinations through the shared native matching wave and stores
+experiment-scoped HOP_TIMING relationships in Neo4j. Both timing arms hydrate
+identical destination fields. A pointer JSON records experiment identity and
+preparation costs, not graph destinations.
+
+`scripts/analyze_evidence_connections.py` reads gold only after construction and
+measures co-evidence reachability plus a degree-matched random null. It never
+writes gold-driven links. `scripts/ablation_statistics.py` resamples original
+question clusters, retaining duplicate release occurrences. The task graph and
+measurement constraints are owned by [PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md).

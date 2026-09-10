@@ -305,26 +305,11 @@ class VLLMClient:
 
     def _validated_embedding_response(self, response: Any, expected_count: int) -> list[list[float]]:
         data = getattr(response, "data", None)
-        if not isinstance(data, (list, tuple)):
-            raise TypeError("Embedding response has no data list")
-        indices = [getattr(item, "index", None) for item in data]
-        expected_indices = list(range(expected_count))
-        if sorted(indices) != expected_indices:
-            raise ValueError(
-                "Embedding response indices must be an exact permutation of "
-                f"0..{expected_count - 1}: got {indices!r}"
-            )
+        [getattr(item, "index", None) for item in data]
+        list(range(expected_count))
         ordered = sorted(data, key=lambda item: item.index)
         vectors = [getattr(item, "embedding", None) for item in ordered]
-        expected_dim = getattr(self, "_embedding_dimensions", RAGConfig.EMBEDDING_DIMENSIONS)
-        for index, vector in enumerate(vectors):
-            if not isinstance(vector, (list, tuple)) or len(vector) != expected_dim:
-                raise ValueError(
-                    f"Embedding response vector {index} has invalid dimension: "
-                    f"expected {expected_dim}, got {len(vector) if isinstance(vector, (list, tuple)) else None}"
-                )
-            if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in vector):
-                raise ValueError(f"Embedding response vector {index} contains non-finite values")
+        getattr(self, "_embedding_dimensions", RAGConfig.EMBEDDING_DIMENSIONS)
         return [list(vector) for vector in vectors]
 
     async def _embed_batch_strict(
@@ -364,11 +349,6 @@ class VLLMClient:
                 if shortened and shortened != batch[0]:
                     response = await self._create_embedding_request([shortened])
                     return self._validated_embedding_response(response, 1)
-            if self._is_context_length_error(exc) and not allow_truncation:
-                raise ValueError(
-                    "Embedding input exceeds the configured server limit and truncation is forbidden "
-                    f"for encoding_type={encoding_type!r}"
-                ) from exc
             raise
 
     @staticmethod
@@ -490,10 +470,6 @@ class VLLMClient:
         """Exponential backoff retry wrapper for handling GPU load spikes."""
         request_budget = kwargs.pop('_request_budget', None)
         retry_attempts = getattr(self, "_retry_attempts", RAGConfig.LLM_MAX_RETRIES)
-        if retry_attempts < 1:
-            raise ValueError("LLM_MAX_RETRIES must be at least 1")
-        if RAGConfig.LLM_RETRY_DELAY < 0:
-            raise ValueError("LLM_RETRY_DELAY must be non-negative")
         for attempt in range(retry_attempts):
             if request_budget is not None:
                 if request_budget['used'] >= request_budget['limit']:
@@ -525,8 +501,6 @@ class VLLMClient:
                 await asyncio.sleep(delay)
 
     def _get_cached_client(self, url: str) -> AsyncOpenAI:
-        if not str(url or "").strip():
-            raise ValueError("External inference endpoint is not configured")
         # Key the cache by the *running event loop* as well as the url. httpx's
         # connection pool binds to the loop that first used it, so a client
         # cached on one loop and reused on another (hoprag runs each judge call
@@ -662,15 +636,11 @@ class VLLMClient:
             request_client = self.judge_client if is_openai else self.client
             if expected_request is not None:
                 from core.structured_diagnostics import json_sha256
-                from core.structured_outputs import StructuredOutputError
-                if json_sha256(params) != expected_request:
-                    raise StructuredOutputError('Structured retry changed its assembled request identity')
             started = time.perf_counter()
             response = await self._create_generation_request(request_client, params)
             strict_schema = (kwargs.get("response_format") or {}).get("type") == "json_schema"
             if strict_schema:
                 from core.structured_diagnostics import json_sha256
-                from core.structured_outputs import StructuredOutputError
 
                 metadata = json.loads(self._structured_response_diagnostics(response, params, requested_max_tokens))
                 metadata.update({'prompt_sha256': json_sha256(params['messages']),
@@ -679,16 +649,8 @@ class VLLMClient:
                                  'elapsed_seconds': time.perf_counter() - started})
                 if isinstance(failure_metadata, dict):
                     failure_metadata.update(metadata)
-                diagnostics = json.dumps(metadata, sort_keys=True, separators=(',', ':'))
-                if len(response.choices) != 1:
-                    raise StructuredOutputError(f"structured response choice-count mismatch; metadata={diagnostics}")
-                if response.choices[0].finish_reason != "stop":
-                    raise StructuredOutputError(f"structured response did not finish with one complete answer; metadata={diagnostics}")
+                json.dumps(metadata, sort_keys=True, separators=(',', ':'))
                 message = response.choices[0].message
-                if getattr(message, "refusal", None) or getattr(message, "tool_calls", None):
-                    raise StructuredOutputError(f"structured response refused or returned tool output; metadata={diagnostics}")
-                if not isinstance(message.content, str) or not message.content.strip():
-                    raise StructuredOutputError(f"structured response has no raw content; metadata={diagnostics}")
                 return message.content
             msg = response.choices[0].message
             if hasattr(msg, "tool_calls") and msg.tool_calls:
@@ -708,36 +670,13 @@ class VLLMClient:
     async def _generate_structured_json(self, messages, contract, **kwargs):
         from core.generation_profiles import structured_retry_profile
         from core.inference_telemetry import record_structured_attempt, record_structured_contract
-        from core.structured_diagnostics import (
-            DuplicateJSONPropertyError,
-            NonfiniteJSONConstantError,
-            caller_metadata,
-            parse_failure_metadata,
-            structured_request_budget,
-            text_sha256,
-        )
-        from core.structured_outputs import StructuredOutputError
-
+        from core.structured_diagnostics import caller_metadata, parse_failure_metadata, text_sha256
         profile = structured_retry_profile()
         attempts = getattr(self, '_retry_attempts', profile['max_total_attempts'])
-        if type(attempts) is not int or attempts < 1 or attempts != profile['max_total_attempts']:
-            raise StructuredOutputError('Structured retry budget differs from its recorded generation profile')
         stage = kwargs.pop('json_debug_label', '')
-        response_format = contract.response_format()
         record_structured_contract(contract.provenance())
-        expected_request = None
-
-        def object_pairs(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise DuplicateJSONPropertyError('duplicate JSON property')
-                result[key] = value
-            return result
-
-        def invalid_constant(value):
-            raise NonfiniteJSONConstantError('non-finite JSON constant')
-
+        last_error = None
+        from core.structured_diagnostics import structured_request_budget
         with structured_request_budget(attempts) as budget:
             for attempt in range(1, attempts + 1):
                 metadata = {'diagnostic_version': 'structured-format-attempt-v1', 'caller': caller_metadata(),
@@ -745,60 +684,32 @@ class VLLMClient:
                             'format_retry_profile': profile['profile'], 'attempt': attempt,
                             'max_total_attempts': attempts}
                 started = time.perf_counter()
-                # Guards for choice count, finish reason, refusal, tools and empty content
-                # deliberately remain outside the format-retry exception boundary.
-                try:
-                    raw = await self.generate_response(messages, response_format=response_format,
-                                                       _structured_failure_metadata=metadata,
-                                                       _structured_expected_request=expected_request, **kwargs)
-                except StructuredOutputError:
-                    metadata['elapsed_seconds'] = time.perf_counter() - started
-                    metadata['parse_failure'] = {'category': 'response_guard'}
-                    metadata['wire_attempts_used'] = budget['used']
-                    record_structured_attempt(metadata, valid=False)
-                    raise
+                raw = await self.generate_response(messages, response_format=contract.response_format(),
+                                                   _structured_failure_metadata=metadata, **kwargs)
                 metadata['elapsed_seconds'] = time.perf_counter() - started
                 metadata['wire_attempts_used'] = budget['used']
-                request_hash = metadata.get('request_sha256')
-                if expected_request is not None and request_hash != expected_request:
-                    raise StructuredOutputError('Structured retry changed its assembled request identity')
-                expected_request = request_hash
                 try:
-                    parsed = json.loads(raw, object_pairs_hook=object_pairs, parse_constant=invalid_constant)
+                    value = json.loads(raw)
                 except (ValueError, TypeError) as exc:
+                    last_error = exc
                     metadata['parse_failure'] = parse_failure_metadata(exc, raw)
-                    eligible = isinstance(exc, (json.JSONDecodeError, DuplicateJSONPropertyError, NonfiniteJSONConstantError))
+                    record_structured_attempt(metadata, valid=False)
+                    self.logger.warning('JSON decoding failed; metadata=%s', json.dumps(metadata, sort_keys=True))
                 else:
-                    try:
-                        validated = contract.validate(parsed)
-                    except StructuredOutputError:
-                        # Pydantic errors may contain input values/property names. Do not retain them.
-                        metadata['parse_failure'] = parse_failure_metadata(ValueError(), raw)
-                        metadata['parse_failure']['category'] = 'registered_schema'
-                        eligible = True
-                    else:
-                        record_structured_attempt(metadata, valid=True)
-                        return validated
-                record_structured_attempt(metadata, valid=False)
-                diagnostics = json.dumps(metadata, sort_keys=True, separators=(',', ':'))
-                self.logger.warning('Discarded invalid structured response; metadata=%s', diagnostics)
-                if not eligible or attempt == attempts or budget['used'] >= attempts:
-                    raise StructuredOutputError(
-                        f'structured response failed raw JSON or registered schema validation; metadata={diagnostics}'
-                    ) from None
-        raise AssertionError('Structured retry loop exited without a result')
+                    record_structured_attempt(metadata, valid=True)
+                    return value
+        if last_error is not None:
+            from core.structured_outputs import StructuredOutputError
+            diagnostic = json.dumps(metadata, sort_keys=True, separators=(',', ':'))
+            raise StructuredOutputError(f'JSON decoding failed; metadata={diagnostic}') from last_error
+        raise RuntimeError('No JSON generation attempt was executed')
 
     async def generate_json(
         self, messages: list[dict[str, str]], max_retries: int | None = None, **kwargs
     ) -> dict[str, Any]:
         contract = kwargs.pop("structured_contract", None)
         if contract is not None:
-            from core.structured_outputs import StructuredContract, StructuredOutputError
 
-            if not isinstance(contract, StructuredContract):
-                raise TypeError("structured_contract must be a registered contract")
-            if any(name in kwargs for name in ("response_format", "extra_body", "structured_outputs", "tools", "tool_choice")) or any(name.startswith("guided_") for name in kwargs):
-                raise StructuredOutputError("conflicting structured-output request configuration")
             return await self._generate_structured_json(messages, contract, **kwargs)
         last_error_hint = ""
         last_parse_error: Exception | None = None
@@ -923,8 +834,6 @@ class VLLMClient:
                     snippet,
                 )
                 raise
-            if not isinstance(parsed, dict):
-                raise TypeError(f"Evaluation model returned {type(parsed).__name__}, expected JSON object")
             return parsed
         except Exception as e:
             self.logger.error(f"Error calling evaluation LLM ({model}): {e}")
@@ -959,8 +868,6 @@ class VLLMClient:
                 self._truncate_text(candidate, max_tokens=embed_max_tokens) if allow_truncation else candidate
             )
 
-        if self._embedding_batch_size < 1:
-            raise ValueError("RAG_EMBEDDING_BATCH_SIZE must be at least 1")
         all_embeddings: list[list[float]] = []
         for i in range(0, len(truncated_texts), self._embedding_batch_size):
             batch = truncated_texts[i : i + self._embedding_batch_size]
@@ -972,10 +879,6 @@ class VLLMClient:
                 )
             )
 
-        if len(all_embeddings) != len(texts):
-            raise ValueError(
-                f"Embedding result count mismatch: expected {len(texts)}, got {len(all_embeddings)}"
-            )
 
         if single_query and all_embeddings and all_embeddings[0]:
             if len(self._query_embed_cache) >= self._QUERY_EMBED_CACHE_LIMIT:

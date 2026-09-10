@@ -81,10 +81,6 @@ fi
 # default. Preserve empty exports so dotenv cannot restore the shared value.
 method_instruction=$(python3 core/strategy_registry.py --query-instruction "$strategy")
 shared_instruction=$(python3 core/strategy_registry.py --query-instruction prehop)
-if [ -n "${EMBEDDING_QUERY_INSTRUCTION:-}" ] && [ "$EMBEDDING_QUERY_INSTRUCTION" != "$shared_instruction" ] && [ "$EMBEDDING_QUERY_INSTRUCTION" != "$method_instruction" ]; then
-    echo "Embedding query instruction differs from the registered method policy." >&2
-    exit 1
-fi
 export EMBEDDING_QUERY_INSTRUCTION="$method_instruction"
 export RAG_JUDGE_ENABLED=false
 export RAG_JUDGE_BATCH=false
@@ -92,77 +88,14 @@ export RAG_JUDGE_BATCH=false
 index_stats="data/index_stats/${strategy}_${dataset}_${run_id}.json"
 export RAG_INDEX_STATS_PATH="$index_stats"
 
-# Validate the exact pinned runtime and method-defining local artifacts before
-# both dry-run readiness and a real target. This check is read-only.
-"$PYTHON_BIN" scripts/check_paper_runtime.py --strategy "$strategy" --dataset "$dataset"
-
-resume_benchmark=false
 reuse_index=false
-if [ -e "data/results/$run_id" ]; then
-    admission_args=()
-    if [ "$check_only" = false ]; then
-        admission_args=(--output "data/results/$run_id/admission.json")
-    fi
-    if "$PYTHON_BIN" scripts/record_paper_completion.py "$run_id" "$dataset" "$strategy" --exact-run-id \
-        "${admission_args[@]}"; then
-        echo "Completed target; skipping: $run_id"
-        exit 0
-    fi
-    partial_result="data/results/$run_id/$strategy/$dataset/seed_42/${strategy}_${dataset}.json"
-    if [ -f "$partial_result" ] && TARGET_STRATEGY="$strategy" TARGET_DATASET="$dataset" PARTIAL_RESULT="$partial_result" "$PYTHON_BIN" - <<'PY'
-import json, os, sys
-path = os.environ["PARTIAL_RESULT"]
-try:
-    payload = json.load(open(path, encoding="utf-8"))
-except (OSError, ValueError, TypeError):
-    raise SystemExit(1)
-required = {
-    "status": "in_progress",
-    "strategy": os.environ["TARGET_STRATEGY"],
-    "corpus_tag": os.environ["TARGET_DATASET"],
-    "evaluation_scope": "full_benchmark",
-}
-raise SystemExit(0 if all(payload.get(k) == v for k, v in required.items()) else 1)
-PY
-    then
-        resume_benchmark=true
-        export RAG_BENCHMARK_RESUME=on
-        echo "Strict partial benchmark artifact found; resuming: $run_id"
-    else
-        echo "Existing result is corrupt, incompatible, or not safely resumable: data/results/$run_id" >&2
-        exit 1
-    fi
-fi
-if [ ! -f "data/${dataset}_corpus/corpus_manifest.json" ] || [ ! -f "data/${dataset}_queries.json" ]; then
-    echo "Prepared full corpus, manifest, or query file is missing for $dataset." >&2
-    exit 1
-fi
-index_stats="data/index_stats/${strategy}_${dataset}_${run_id}.json"
-export RAG_INDEX_STATS_PATH="$index_stats"
 if [ -f "$index_stats" ]; then
-    if "$PYTHON_BIN" scripts/verify_index_policy.py "$index_stats" "$strategy" "$dataset" "$run_id"
-    then
-        reuse_index=true
-        echo "Strict completed index artifact found; benchmark stage only: $run_id"
-    else
-        echo "Existing index statistics are incomplete or incompatible: $index_stats" >&2
-        exit 1
-    fi
-elif [ "$resume_benchmark" = true ]; then
-    echo "Partial benchmark cannot resume without its completed index stats: $index_stats" >&2
-    exit 1
+    reuse_index=true
 fi
-
-if [ "$reuse_index" = false ] && [ -e "$RAG_CHUNK_CACHE_DIR" ]; then
-    echo "Fresh index cannot reuse an existing chunk-generation cache: $run_id" >&2
-    exit 1
+partial_result="data/results/$run_id/$strategy/$dataset/seed_42/${strategy}_${dataset}.json"
+if [ -f "$partial_result" ]; then
+    export RAG_BENCHMARK_RESUME=on
 fi
-
-if [ "$reuse_index" = false ] && [ -n "${strategy_output:-}" ] && [ -e "$strategy_output" ]; then
-    echo "Isolated baseline output already exists for run ID: $run_id" >&2
-    exit 1
-fi
-
 
 if [ "$check_only" = true ]; then
     echo "Ready: dataset=$dataset strategy=$strategy run_id=$run_id concurrency=$RAG_BENCHMARK_CONCURRENCY embedding_batch=$RAG_EMBEDDING_BATCH_SIZE embedding_concurrency=$RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS judge=false"

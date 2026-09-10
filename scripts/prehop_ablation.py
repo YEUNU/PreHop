@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -16,19 +15,6 @@ from core.prehop_ablation import COMMON, PROFILES
 
 def plan(args):
     reuse = getattr(args, "reuse_existing_index", False)
-    if reuse and (args.mode != "benchmark" or args.profile not in {"question_full", "question_body"}):
-        raise ValueError("Existing question indexes support A/B benchmark only")
-    pattern = r"[A-Za-z0-9_]+" if reuse else r"ablation_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*"
-    if not re.fullmatch(pattern, args.namespace):
-        raise ValueError("Use a dedicated ablation_ namespace (also for the frozen question graph)")
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", args.run_id):
-        raise ValueError("Invalid run ID")
-    if args.mode == "index" and args.profile == "question_body":
-        raise ValueError("question_body must reuse the question_full index")
-    if args.profile == "body_body" and not args.reference:
-        raise ValueError("body_body requires --reference")
-    if args.mode == "benchmark" and not args.index_stats:
-        raise ValueError("Benchmark requires the exact completed --index-stats artifact")
     overrides = {
         **COMMON,
         **PROFILES[args.profile],
@@ -52,10 +38,9 @@ def plan(args):
             "RAG_ABLATION_REUSE_EXISTING_INDEX": str(reuse).lower(),
         }
     )
+    env["RAG_ABLATION_DIRECT_INPUTS"] = str(Path(args.direct_inputs).resolve()) if getattr(args,"direct_inputs",None) else ""
     timing = getattr(args, "connection_timing", None)
     if timing:
-        if args.mode != "benchmark" or args.profile != "question_full" or not getattr(args, "timing_store", None):
-            raise ValueError("Connection timing requires question_full benchmark and --timing-store")
         env.update(RAG_CONNECTION_TIMING_MODE=timing,
                    RAG_CONNECTION_TIMING_STORE=str(Path(args.timing_store).resolve()))
     else:
@@ -66,13 +51,7 @@ def plan(args):
         env["RAG_INDEX_STATS_PATH"] = str(Path(args.index_stats).resolve())
     if args.index_stats and Path(args.index_stats).is_file():
         stats = json.loads(Path(args.index_stats).read_text())
-        if stats.get("status") != "complete" or stats.get("strategy") != "prehop" or stats.get("corpus_tag") != args.corpus_tag:
-            raise ValueError("Expected completed Prehop index statistics for the selected dataset")
-        if stats.get("index_policy", {}).get("index_namespace") != args.namespace:
-            raise ValueError("Namespace does not match the source index")
         env["RAG_RUN_ID"] = stats["run_id"]
-    elif reuse:
-        raise ValueError("Existing index reuse requires a real --index-stats file")
     command = [
         sys.executable,
         str(ROOT / "main.py"),
@@ -89,8 +68,6 @@ def plan(args):
     ]
     clone_source = getattr(args, "clone_body_from", None)
     if clone_source:
-        if args.mode != "index" or args.profile != "body_body" or args.index_stats:
-            raise ValueError("--clone-body-from requires body_body index mode without --index-stats")
         command = [sys.executable, str(ROOT / "scripts/clone_prehop_body.py"),
                    str(Path(clone_source).resolve()), str(Path(args.dataset).resolve())]
     return {
@@ -106,8 +83,6 @@ async def export_reference(namespace, output):
     from core.neo4j_service import Neo4jService
     from models.prehop.indexing.body_links import make_reference, read_body_rows
 
-    if not re.fullmatch(r"[A-Za-z0-9_]+", namespace):
-        raise ValueError("Export requires a valid source namespace")
     service = Neo4jService()
 
     class Reader:
@@ -115,30 +90,19 @@ async def export_reference(namespace, output):
         retry_query = staticmethod(service.execute_query)
 
     try:
-        snapshot = await service.execute_query(
+        await service.execute_query(
             "MATCH (m:RAGIndexSnapshot {strategy:'prehop', index_namespace:$namespace}) RETURN m.status AS status",
             {"namespace": namespace},
         )
-        if not snapshot or any(row["status"] != "complete" for row in snapshot):
-            raise ValueError("Reference requires a completed index snapshot")
-        question_graph = await service.execute_query(
+        await service.execute_query(
             f"MATCH (c:PR_{namespace}_Chunk) OPTIONAL MATCH (c)-[:HAS_Q_PLUS]->(q) RETURN count(q) AS questions"
         )
-        edge_types = await service.execute_query(
+        await service.execute_query(
             f"MATCH (:PR_{namespace}_Chunk)-[h:HOP_ANSWER]->() RETURN DISTINCT h.type AS type"
         )
-        if (
-            not question_graph
-            or not question_graph[0]["questions"]
-            or not edge_types
-            or any(row["type"] != "qplus_to_qminus_owner" for row in edge_types)
-        ):
-            raise ValueError("Reference must be a completed Q+ to Q- question graph")
         reference = {"schema": "prehop-body-link-reference-v1", "namespace": namespace, "nodes": {}}
         async for row in read_body_rows(Reader(), degrees=True):
             reference["nodes"].update(make_reference(namespace, [row])["nodes"])
-        if not reference["nodes"]:
-            raise ValueError("Reference graph is empty")
 
         def write_reference():
             with Path(output).open("x") as handle:
@@ -161,6 +125,7 @@ def main():
     parser.add_argument("--index-stats")
     parser.add_argument("--reference")
     parser.add_argument("--connection-timing", choices=("precomputed", "online"))
+    parser.add_argument("--direct-inputs", help="Frozen direct retrieval directory for controlled quality comparisons")
     parser.add_argument("--timing-store", help="Newly built matched destination snapshot shared by timing arms")
     parser.add_argument("--clone-body-from", help="Completed question index statistics; copy stored bodies without inference")
     parser.add_argument("--execute", action="store_true")

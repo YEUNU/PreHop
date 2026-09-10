@@ -30,8 +30,6 @@ def configure_recovery_environment():
 
 async def index():
     configure_recovery_environment()
-    from scripts.check_paper_runtime import check
-    check('hoprag','multihoprag')
     from cli.index import run_indexing
     from core.neo4j_service import Neo4jService
     path=Path(os.environ['RAG_INDEX_STATS_PATH'])

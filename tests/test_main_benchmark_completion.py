@@ -13,7 +13,6 @@ async def test_benchmark_completion_and_failure_cleanup(monkeypatch, tmp_path, m
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.argv", ["main.py", "--mode", mode])
     monkeypatch.setattr(entry.RAGConfig, "PREHOP_ABLATION_PROFILE", "")
-    monkeypatch.setattr(entry.RAGConfig, "validate", lambda: None)
     monkeypatch.setattr(entry, "_ensure_run_id", lambda: "test-run")
     monkeypatch.setenv("RAG_BENCHMARK_TIMESTAMP", "test-run")
     monkeypatch.setattr(entry, "PRIMARY_STRATEGIES", ["naive", "prehop"])

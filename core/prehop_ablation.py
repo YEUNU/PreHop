@@ -1,7 +1,6 @@
 """Explicit, non-primary representation ablations. No defaults are changed."""
 
 import os
-import re
 from pathlib import Path
 
 PROFILES = {
@@ -27,48 +26,6 @@ COMMON = {
 }
 
 
-def validate_profile(config):
-    profile = config.PREHOP_ABLATION_PROFILE
-    timing = getattr(config, "CONNECTION_TIMING_MODE", "")
-    if timing and (timing not in {"online", "precomputed"} or profile != "question_full"):
-        raise ValueError("Connection timing requires question_full and an explicit online/precomputed arm")
-    if timing and not Path(config.CONNECTION_TIMING_STORE).is_file():
-        raise ValueError("Both timing arms require the same completed precomputed-link snapshot")
-    if not profile:
-        if config.HOP_LINK_VARIANT != "question" or config.HOP_SEED_POLICY != "qplus":
-            raise ValueError("New representation controls require RAG_PREHOP_ABLATION_PROFILE")
-        return
-    if profile not in PROFILES:
-        raise ValueError(f"Unknown Prehop ablation profile: {profile}")
-    if os.environ.get("RAG_PAPER_MODE", "false").lower() not in {"false", "0", "no", "off"}:
-        raise ValueError("Representation ablations require RAG_PAPER_MODE=false")
-    namespace = os.environ.get("RAG_INDEX_NAMESPACE", "")
-    reuse = os.environ.get("RAG_ABLATION_REUSE_EXISTING_INDEX") == "true"
-    if reuse and profile not in {"question_full", "question_body"}:
-        raise ValueError("Existing index reuse is only available for A/B")
-    pattern = r"[A-Za-z0-9_]+" if reuse else r"ablation_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*"
-    if not re.fullmatch(pattern, namespace):
-        raise ValueError("Representation ablations require an isolated ablation_ namespace")
-    expected = {
-        **COMMON,
-        **PROFILES[profile],
-        "ABLATION_Q_MINUS": profile != "body_body",
-        "ABLATION_Q_PLUS": profile != "body_body",
-    }
-    mismatches = {
-        key: (getattr(config, key), value) for key, value in expected.items() if getattr(config, key) != value
-    }
-    if mismatches:
-        raise ValueError(f"Ablation profile configuration mismatch: {mismatches}")
-    if profile == "body_body":
-        from models.prehop.indexing.body_links import load_reference
-
-        reference = load_reference(config.BODY_LINK_REFERENCE)
-        namespace = os.environ.get("RAG_INDEX_NAMESPACE", "")
-        if not namespace.startswith("ablation_") or namespace == reference["namespace"]:
-            raise ValueError("Body links require a separate ablation_ index namespace")
-
-
 def ablation_identity(config=None):
     if config is None:
         from core.config import RAGConfig
@@ -76,7 +33,6 @@ def ablation_identity(config=None):
         config = RAGConfig
     if not config.PREHOP_ABLATION_PROFILE:
         return {}
-    validate_profile(config)
     identity = {
         "representation_ablation": config.PREHOP_ABLATION_PROFILE,
         "method_contract": "prehop-representation-ablation-v1",
@@ -84,9 +40,12 @@ def ablation_identity(config=None):
         "hop_link_variant": config.HOP_LINK_VARIANT,
         "comparison_scope": "ablation_only",
     }
+    if os.environ.get("RAG_ABLATION_DIRECT_INPUTS"):
+        identity.update(direct_inputs=os.environ["RAG_ABLATION_DIRECT_INPUTS"],
+                        latency_scope="frozen_prefix_downstream_only")
     if getattr(config, "CONNECTION_TIMING_MODE", ""):
         from core.admission import sha256_file
-        identity.update(connection_timing_contract="prehop-connection-timing-v1",
+        identity.update(connection_timing_contract="prehop-connection-timing-v2",
                         connection_timing_arm=config.CONNECTION_TIMING_MODE,
                         connection_timing_store_sha256=sha256_file(Path(config.CONNECTION_TIMING_STORE)),
                         destination_memoization=False)
@@ -95,84 +54,3 @@ def ablation_identity(config=None):
 
         identity["body_link_reference_sha256"] = sha256_file(Path(config.BODY_LINK_REFERENCE))
     return identity
-
-
-def validate_body_index_policy(policy, digest):
-    """Validate an ablation index without admitting it to primary paper policy."""
-    from core.config import RAGConfig
-    from core.semantic_config import semantic_config_sha256
-
-    validate_profile(RAGConfig)
-    identity = ablation_identity()
-    expected = {
-        "strategy": "prehop",
-        "hop_construction": "body_to_body",
-        "body_link_reference_sha256": identity["body_link_reference_sha256"],
-        "body_link_degree_policy": "reference_per_node",
-        "q_minus_enabled": False,
-        "q_plus_enabled": False,
-        "question_schema": "legacy",
-        "chunk_sentences": RAGConfig.CHUNK_SENTENCES,
-        "sentence_channel_enabled": False,
-        "embedding_model": RAGConfig.EMBEDDING_MODEL,
-        "embedding_dimensions": RAGConfig.EMBEDDING_DIMENSIONS,
-        "embedding_query_instruction": RAGConfig.EMBEDDING_QUERY_INSTRUCTION,
-        "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
-    }
-    if digest != semantic_config_sha256(policy) or any(policy.get(k) != v for k, v in expected.items()):
-        raise RuntimeError("Body ablation index policy/hash does not match the selected method")
-
-
-def validate_ablation_index_policy(policy, digest, dataset):
-    from cli.index import _resolved_index_policy
-    from core.config import RAGConfig
-    from core.semantic_config import semantic_config_sha256, semantic_index_policy
-
-    validate_profile(RAGConfig)
-    if not RAGConfig.PREHOP_ABLATION_PROFILE or policy.get("strategy") != "prehop":
-        raise RuntimeError("Ablation requires a Prehop index")
-    if digest != semantic_config_sha256(policy):
-        raise RuntimeError("Ablation index policy digest mismatch")
-    expected = semantic_index_policy(
-        _resolved_index_policy("prehop", policy.get("indexing_model") or "default", dataset)
-    )
-    observed = semantic_index_policy(policy)
-    # Index construction throughput and its historical sampling seed are
-    # provenance, not query-time controls; retain them in the source artifact.
-    for key in ("operational_config", "generation_seed"):
-        observed.pop(key, None)
-        expected.pop(key, None)
-    if os.environ.get("RAG_ABLATION_REUSE_EXISTING_INDEX") == "true":
-        # Historical primary indexes include additional provenance fields that
-        # non-paper construction does not emit. Compare construction controls,
-        # retaining the original full policy and its digest in the result.
-        keys = {"strategy", "embedding_model", "embedding_dimensions",
-                "embedding_query_instruction", "embedding_max_input_tokens",
-                "fulltext_analyzer", "chunk_sentences", "questions_per_direction",
-                "question_schema", "q_minus_enabled", "q_plus_enabled",
-                "sentence_channel_enabled", "precompute_reciprocal_hops",
-                "continuation_edges_materialized", "continuation_anchor_policy",
-                "hop_construction"}
-        observed = {key: observed.get(key) for key in keys}
-        expected = {key: expected.get(key) for key in keys}
-    if observed != expected:
-        raise RuntimeError("Ablation index settings differ from the selected representation method")
-    if RAGConfig.HOP_LINK_VARIANT == "body":
-        validate_body_index_policy(policy, digest)
-
-
-async def require_empty_ablation_namespace():
-    from core.config import RAGConfig
-    from core.neo4j_service import Neo4jService
-
-    validate_profile(RAGConfig)
-    if os.environ.get("RAG_ABLATION_REUSE_EXISTING_INDEX") == "true":
-        raise ValueError("Existing ablation indexes are read-only")
-    if RAGConfig.PREHOP_ABLATION_PROFILE == "question_body":
-        raise ValueError("question_body must reuse the frozen question_full graph")
-    namespace = os.environ["RAG_INDEX_NAMESPACE"]
-    rows = await Neo4jService().execute_query(
-        f"MATCH (n) WHERE any(label IN labels(n) WHERE label STARTS WITH 'PR_{namespace}_') RETURN count(n) AS count"
-    )
-    if not rows or rows[0]["count"]:
-        raise RuntimeError("Ablation indexing requires a fresh empty namespace; existing data is preserved")

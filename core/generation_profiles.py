@@ -41,7 +41,7 @@ def generation_profiles(strategy: str) -> dict:
         if strategy == 'prehop':
             profiles['structured_format_retry'] = structured_retry_profile()
     elif strategy == 'hoprag':
-        profiles = {'native_defaults': {'owner': 'pinned_upstream', 'revision': spec.revision, 'temperature': 0.1, 'max_tokens': 4096, 'frequency_penalty': 0.0, 'presence_penalty': 0.0, 'seed': None, 'response_parser': 'adapter-json-recovery-v1'}}
+        profiles = {'native_defaults': {'owner': 'pinned_upstream', 'revision': spec.revision, 'temperature': 0.1, 'max_tokens': 4096, 'frequency_penalty': 0.0, 'presence_penalty': 0.0, 'seed': None, 'response_parser': 'adapter-json-recovery-v2'}}
     elif strategy == 'ms_graphrag':
         profiles = {'default_completion_and_native_query': request_settings('ms_completion'),
                     'graph_extraction_and_gleaning': request_settings('ms_extract'),

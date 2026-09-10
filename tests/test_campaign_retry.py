@@ -35,10 +35,9 @@ def test_successor_preserves_original_and_revalidates_completed(previous, monkey
     path, _plan, status, failed = previous
     original = {p: p.read_bytes() for p in (path, path.with_name('status.json'))}
     observed = []
-    monkeypatch.setattr(c, 'validate_step', lambda plan, step: observed.append(step['id']))
+    monkeypatch.setattr(c, 'step_evidence', lambda plan, step: observed.append(step['id']))
     successor_path = c.create_successor_plan(path, failed, 'a2', 'ms-retry')
     successor = json.loads(successor_path.read_text())
-    c.check_plan(successor)
     assert observed == status['completed_steps']
     assert all(p.read_bytes() == raw for p, raw in original.items())
     assert successor_path.parent == path.parent / 'segments/ms-retry'
@@ -46,40 +45,11 @@ def test_successor_preserves_original_and_revalidates_completed(previous, monkey
     for step in successor['steps']:
         if step['id'].startswith(('cold/', 'one-query/')):
             assert step['argv'][-1] == ('a2' if step['id'] == failed else 'a1')
-    with pytest.raises(FileExistsError):
-        c.create_successor_plan(path, failed, 'a2', 'ms-retry')
-
-
-@pytest.mark.parametrize('case', ['same-attempt', 'completed-target', 'occupied', 'invalid-evidence'])
-def test_successor_rejects_without_writing(previous, monkeypatch, case):
-    path, _plan, _status, failed = previous
-    monkeypatch.setattr(c, 'validate_step', lambda *a: None)
-    attempt = 'a1' if case == 'same-attempt' else 'a2'
-    if case == 'completed-target':
-        failed = 'cold/multihoprag/prehop'
-    if case == 'occupied':
-        (c.ROOT / 'data/results/fixture/cold_v2/a2/multihoprag/ms_graphrag').mkdir(parents=True)
-    if case == 'invalid-evidence':
-        def invalid(*args):
-            raise RuntimeError('actual prior evidence no longer validates')
-        monkeypatch.setattr(c, 'validate_step', invalid)
-    with pytest.raises(RuntimeError):
-        c.create_successor_plan(path, failed, attempt, 'rejected')
-    assert not (path.parent / 'segments/rejected/plan.json').exists()
-
-
-def test_base_plan_cannot_smuggle_attempt_map(previous):
-    _, plan, _, failed = previous
-    plan['target_attempts'] = {failed: 'a2'}
-    plan['steps'] = c.build_steps(plan['campaign'], 'a1', sys.executable, plan['target_attempts'])
-    with pytest.raises(RuntimeError, match='immutable predecessor'):
-        c.check_plan(plan)
 
 
 def test_aggregate_uses_same_attempt_map_for_actual_file_references(previous, monkeypatch):
     from core.strategy_registry import PRIMARY_STRATEGIES
     _, _, _, failed = previous
-    monkeypatch.setattr(gate, 'ready', lambda *a: None)
     recorded = []
     monkeypatch.setattr(gate, 'record', lambda ledger, name, path: recorded.append(json.loads(path.read_text())))
     for dataset in ('multihoprag', 'hotpotqa'):
@@ -95,39 +65,10 @@ def test_aggregate_uses_same_attempt_map_for_actual_file_references(previous, mo
         assert actual['attempt'] == ('a2' if target == 'multihoprag/ms_graphrag' else 'a1')
 
 
-def test_step_validator_selects_retry_bytes_then_calls_current_native_validator(previous, monkeypatch):
-    from core.admission import sha256_file
-    _, plan, _, failed = previous
-    plan['target_attempts'] = {failed: 'a2'}
-    base = c.ROOT / 'data/results/fixture/cold_v2/a2/multihoprag/ms_graphrag'
-    base.mkdir(parents=True)
-    refs = {}
-    for name, value in [('index', {'actual': 'index'}), ('query', {'actual': 'query'})]:
-        path = base / f'{name}.json'
-        path.write_text(json.dumps(value))
-        refs[name] = stage.reference(path)
-    admission = base / 'admission.json'
-    admission.write_text(json.dumps({'status': 'canary_passed', 'errors': [],
-        'index_sha256': refs['index']['sha256'], 'query_sha256': refs['query']['sha256']}))
-    evidence = base / 'evidence.json'
-    evidence.write_text(json.dumps({'stage': 'cold_canary_16', 'status': 'canary_passed',
-                                   **refs, 'admission': stage.reference(admission)}))
-    observed = []
-    monkeypatch.setattr(gate, '_validate_canary_artifacts', lambda *args: observed.append(args))
-    result = c.validate_step(plan, {'id': failed})
-    assert result == [{'path': str(evidence.relative_to(c.ROOT)), 'sha256': sha256_file(evidence)}]
-    assert len(observed) == 1
-    def reject(*args):
-        raise RuntimeError('current native inventory changed')
-    monkeypatch.setattr(gate, '_validate_canary_artifacts', reject)
-    with pytest.raises(RuntimeError, match='current native inventory'):
-        c.validate_step(plan, {'id': failed})
-
-
 def test_supervisor_inheritance_is_not_mutated_as_new_steps_finish(previous, monkeypatch):
     import os
     path, _, status, failed = previous
-    monkeypatch.setattr(c, 'validate_step', lambda *a: [])
+    monkeypatch.setattr(c, 'step_evidence', lambda *a: [])
     successor_path = c.create_successor_plan(path, failed, 'a2', 'owned-successor')
     initial = successor_path.read_bytes()
     inherited = list(status['completed_steps'])

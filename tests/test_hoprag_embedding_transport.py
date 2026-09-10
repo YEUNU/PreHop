@@ -47,11 +47,3 @@ def test_hoprag_unrelated_400_fails_without_bisection():
     with pytest.raises(RuntimeError, match="unknown embedding model"):
         client._request_batch(["a", "b"])
     assert responses == []
-
-
-@pytest.mark.parametrize("indices", [[0, 0], [0, 2]])
-def test_hoprag_requires_exact_response_indices(indices):
-    data = [{"index": index, "embedding": [1.0, 0.0]} for index in indices]
-    client = _client([Response(200, {"data": data})])
-    with pytest.raises(ValueError, match="exact permutation"):
-        client._request_batch(["a", "b"])

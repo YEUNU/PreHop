@@ -18,8 +18,6 @@ def method_main_python(strategy: str, default: str | None = None) -> str:
     if strategy == "hoprag":
         from models.hoprag.native_runtime import RUNTIME_HOME
         executable = RUNTIME_HOME / "main-env/bin/python"
-        if not executable.is_file():
-            raise FileNotFoundError("Prepare the pinned HopRAG main runtime first")
         return str(executable.absolute())
     return os.path.abspath(default or sys.executable)
 
@@ -39,15 +37,11 @@ def ensure_method_runtime(strategy: str) -> None:
 
 def load_runtime_requirements() -> dict[str, Any]:
     payload = json.loads(PATH.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != 2:
-        raise RuntimeError("unsupported paper runtime requirements schema")
     return payload
 
 
 def runtime_requirement(strategy: str) -> dict[str, Any]:
     requirement = load_runtime_requirements().get(strategy)
-    if not isinstance(requirement, dict):
-        raise TypeError(f"paper runtime requirements are missing for {strategy}")
     return requirement
 
 

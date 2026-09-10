@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def usefulness(payload, gold, dataset):
+def usefulness(payload, gold, dataset, sentence_store="data/hotpotqa_corpus/sentences.sqlite3"):
     from utils.metrics import _official_multihoprag_fact_match
     direct = {str(n["id"]): n for n in payload["direct"]}
     hop = {str(n["id"]): n for n in payload["expanded"] if n.get("path_type") == "hop"}
@@ -21,7 +21,7 @@ def usefulness(payload, gold, dataset):
             return {i for i, fact in enumerate(gold) if any(_official_multihoprag_fact_match(fact, str(n.get("text") or "")) for n in nodes)}
         if dataset == "hotpotqa":
             from utils.hotpotqa import project_sentences
-            return set(map(tuple,gold)) & set(map(tuple,project_sentences(list(nodes), "data/hotpotqa_corpus/sentences.sqlite3")))
+            return set(map(tuple,gold)) & set(map(tuple,project_sentences(list(nodes), sentence_store)))
         raise ValueError("Use the dataset's declared evidence matcher; unknown dataset")
     d = matched(direct.values())
     added = {k:n for k,n in hop.items() if k not in direct}
@@ -57,13 +57,13 @@ def read_events(paths, event):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", type=Path, required=True)
-    parser.add_argument("--events", type=Path, nargs="+", required=True)
+    parser.add_argument("--events", type=Path, nargs="+")
+    parser.add_argument("--sentence-store",default="data/hotpotqa_corpus/sentences.sqlite3")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = json.loads(args.result.read_text())
-    if result.get("status") != "completed_unadmitted" or result.get("evaluation_scope") != "full_benchmark":
-        raise ValueError("Use a completed full-query ablation result")
-    events = read_events(args.events, "ablation_link_usefulness")
+    paths=args.events or sorted({r["prehop_trace"]["events_path"] for r in result["details"] if r.get("prehop_trace")})
+    events = read_events(paths, "ablation_link_usefulness")
     rows = []
     for row in result["details"]:
         if row.get("error"):
@@ -76,7 +76,7 @@ def main():
         if dataset not in {"multihoprag", "hotpotqa"}:
             raise ValueError("Unsupported dataset")
         gold = expected["facts"] if dataset == "multihoprag" else expected["supporting_facts"]
-        rows.append({"query_id":row["query_id"],**usefulness(payload,gold,dataset)})
+        rows.append({"query_id":row["query_id"],**usefulness(payload,gold,dataset,args.sentence_store)})
     if events:
         raise ValueError("Trace includes queries outside the result")
     keys = ["hop_destination_relevance","added_gold_coverage","retained_added_coverage","retained_next_overlap_coverage","hop_destinations","hop_next_overlap"]

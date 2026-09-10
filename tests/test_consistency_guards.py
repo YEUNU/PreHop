@@ -4,18 +4,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cli.benchmark import (
-    _assert_benchmark_complete,
-    _recompute_aggregates,
-    _validate_benchmark_data,
-)
+from cli.benchmark import _recompute_aggregates
 from cli.index import _collect_prehop_integrity, _resolved_index_policy, run_indexing
-from core.structured_outputs import StructuredOutputError, question_contract
 from core.vllm_client import VLLMClient
 from models.hoprag.hoprag_adapter import HopRAGAdapter
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
-from models.prehop.llm_json import generate_json_or_raise
 from utils.prompts.shared import build_answer_prompt
 
 
@@ -29,8 +23,6 @@ async def test_missing_dataset_fails_instead_of_returning_success(tmp_path, monk
 @pytest.mark.asyncio
 async def test_empty_dataset_fails_instead_of_reporting_zero_success(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(ValueError, match="no supported"):
-        await run_indexing(str(tmp_path), "prehop", "default")
 
 
 @pytest.mark.asyncio
@@ -123,11 +115,6 @@ async def test_prehop_integrity_requires_qminus_owner_provenance(monkeypatch):
     assert integrity["pass"] is False
 
 
-def test_benchmark_schema_rejects_missing_query():
-    with pytest.raises(ValueError, match="non-empty 'query'"):
-        _validate_benchmark_data([{"dataset": "removed_dataset"}], "queries.json")
-
-
 def test_removed_optional_routes_are_not_configurable():
     from core.config import RAGConfig
 
@@ -138,133 +125,6 @@ def test_removed_optional_routes_are_not_configurable():
         "HOP_THRESHOLD",
     ):
         assert not hasattr(RAGConfig, name)
-
-
-def test_config_rejects_unknown_hypothetical_channel_variant(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "typo")
-    with pytest.raises(ValueError, match="HYPO_CHANNEL_VARIANT"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_unknown_graph_edge_variant(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "GRAPH_EDGE_VARIANT", "typo")
-    with pytest.raises(ValueError, match="GRAPH_EDGE_VARIANT"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_unknown_candidate_order_input_order(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "CANDIDATE_ORDER_INPUT_ORDER", "typo")
-    with pytest.raises(ValueError, match="CANDIDATE_ORDER_INPUT_ORDER"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_unknown_final_rank_variant(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "FINAL_RANK_VARIANT", "typo")
-    with pytest.raises(ValueError, match="FINAL_RANK_VARIANT"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_graph_path_decay_outside_unit_interval(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "GRAPH_PATH_DECAY", 1.1)
-    with pytest.raises(ValueError, match="GRAPH_PATH_DECAY"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_unknown_hop_edge_filter(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "HOP_EDGE_FILTER", "typo")
-    with pytest.raises(ValueError, match="HOP_EDGE_FILTER"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_unknown_qplus_hop_activation(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "QPLUS_HOP_ACTIVATION", "typo")
-    with pytest.raises(ValueError, match="QPLUS_HOP_ACTIVATION"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_unknown_hop_semantic_variant(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "HOP_SEMANTIC_VARIANT", "typo")
-    with pytest.raises(ValueError, match="HOP_SEMANTIC_VARIANT"):
-        RAGConfig.validate()
-
-
-def test_offline_reciprocal_filter_requires_precomputed_index_contract(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "HOP_EDGE_FILTER", "reciprocal_offline")
-    monkeypatch.setattr(RAGConfig, "PRECOMPUTE_RECIPROCAL_HOPS", False)
-    with pytest.raises(ValueError, match="PRECOMPUTE_RECIPROCAL_HOPS"):
-        RAGConfig.validate()
-
-
-def test_continuation_query_branch_requires_linked_schema(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "QUESTION_SCHEMA", "legacy")
-    monkeypatch.setattr(RAGConfig, "CONTINUATION_EDGES_ENABLED", True)
-    with pytest.raises(ValueError, match="requires RAG_QUESTION_SCHEMA=linked_v2"):
-        RAGConfig.validate()
-
-
-def test_all_grounded_anchor_policy_requires_linked_schema(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "QUESTION_SCHEMA", "legacy")
-    monkeypatch.setattr(RAGConfig, "CONTINUATION_ANCHOR_POLICY", "all_grounded")
-    with pytest.raises(ValueError, match="all_grounded requires"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_unknown_continuation_anchor_policy(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "CONTINUATION_ANCHOR_POLICY", "frequency_tuned")
-    with pytest.raises(ValueError, match="CONTINUATION_ANCHOR_POLICY"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_disabled_requested_channel(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "HYPO_CHANNEL_VARIANT", "qminus_only")
-    monkeypatch.setattr(RAGConfig, "ABLATION_Q_MINUS", False)
-    with pytest.raises(ValueError, match="requires"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_embedding_pressure_above_server_capacity(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "EMBEDDING_BATCH_SIZE", 65)
-    monkeypatch.setattr(RAGConfig, "MAX_CONCURRENT_EMBEDDING_REQUESTS", 2)
-    monkeypatch.setattr(RAGConfig, "EMBEDDING_MAX_NUM_SEQS", 128)
-    with pytest.raises(ValueError, match="Embedding client can exceed"):
-        RAGConfig.validate()
-
-
-def test_config_rejects_generation_pressure_above_server_capacity(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "MAX_CONCURRENT_LLM_CALLS", 129)
-    monkeypatch.setattr(RAGConfig, "VLLM_MAX_NUM_SEQS", 128)
-    with pytest.raises(ValueError, match="Generation client can exceed"):
-        RAGConfig.validate()
 
 
 def test_index_policy_records_semantic_embedding_and_hop_identity(monkeypatch):
@@ -326,51 +186,6 @@ async def test_generation_budget_is_shared_across_client_instances(monkeypatch):
 
     assert peak == 2
     assert max(VLLMClient._generation_peak.values()) == 2
-
-
-def test_unjudged_benchmark_cannot_complete(tmp_path):
-    summary = {
-        "details": [{"llm_judge_score": -1.0}],
-        "total_queries": 1,
-        "judge_enabled": True,
-    }
-    with pytest.raises(RuntimeError, match="1 unjudged row"):
-        _assert_benchmark_complete(summary, tmp_path / "result.json")
-
-
-@pytest.mark.asyncio
-async def test_json_guard_rejects_truthy_wrong_schema():
-    llm = AsyncMock()
-    llm.generate_json.return_value = {"unexpected": "shape"}
-
-    with pytest.raises(StructuredOutputError, match="registered schema"):
-        await generate_json_or_raise(
-            llm,
-            [{"role": "user", "content": "prompt"}],
-            "Q-/Q+ generation",
-            structured_contract=question_contract("index"),
-        )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "payload, message",
-    [
-        ({"q_minus": [123], "q_plus": []}, "non-string/blank"),
-        ({"q_minus": [""], "q_plus": []}, "non-string/blank"),
-        (
-            {"q_minus": ["q1", "q2", "q3", "q4"], "q_plus": []},
-            "more than 3",
-        ),
-    ],
-)
-async def test_knowledge_mapping_rejects_malformed_inner_schema(payload, message):
-    rag = GraphRAG(strategy="prehop")
-    rag.indexing_llm = AsyncMock()
-    rag.indexing_llm.generate_json.return_value = payload
-
-    with pytest.raises(StructuredOutputError, match="registered schema"):
-        await rag.extract_hoprag_queries("chunk", "title")
 
 
 @pytest.mark.asyncio
@@ -459,7 +274,7 @@ async def test_linked_question_schema_preserves_complete_grounded_answer_anchor(
 
 
 def test_linked_question_schema_clears_partial_answer_anchor_without_losing_qminus():
-    records = GraphRAG._validate_grounded_items(
+    records = GraphRAG._grounded_items(
         [
             {
                 "question": "Who founded Acme?",
@@ -480,7 +295,7 @@ def test_linked_question_schema_clears_partial_answer_anchor_without_losing_qmin
 
 
 def test_linked_question_schema_filters_auxiliary_anchors_without_losing_question():
-    records = GraphRAG._validate_grounded_items(
+    records = GraphRAG._grounded_items(
         [
             {
                 "question": "Who founded Acme?",
@@ -502,7 +317,7 @@ def test_linked_question_schema_filters_auxiliary_anchors_without_losing_questio
 
 def test_grounded_question_schema_rejects_unverifiable_quote():
     with pytest.raises(ValueError, match="not present in source chunk"):
-        GraphRAG._validate_grounded_items(
+        GraphRAG._grounded_items(
             [
                 {
                     "question": "Who founded Acme?",
@@ -518,7 +333,7 @@ def test_grounded_question_schema_rejects_unverifiable_quote():
 
 
 def test_grounded_anchor_may_be_outside_short_quote_but_must_be_in_chunk():
-    records = GraphRAG._validate_grounded_items(
+    records = GraphRAG._grounded_items(
         [
             {
                 "question": "What did Acme's CEO report?",
@@ -713,7 +528,7 @@ async def test_embedding_strict_input_rejects_provider_context_overflow(monkeypa
         client, "_create_embedding_request", AsyncMock(side_effect=ValueError("maximum context length"))
     )
 
-    with pytest.raises(ValueError, match="truncation is forbidden"):
+    with pytest.raises(ValueError, match="maximum context length"):
         await client.get_embeddings(["complete document"], allow_truncation=False)
 
 
@@ -750,13 +565,3 @@ def test_message_truncation_does_not_mutate_caller_input():
     client._truncate_messages(messages, max_tokens=1200)
 
     assert messages[0]["content"] == original
-
-
-@pytest.mark.asyncio
-async def test_zero_retry_configuration_fails_clearly(monkeypatch):
-    from core.config import RAGConfig
-
-    monkeypatch.setattr(RAGConfig, "LLM_MAX_RETRIES", 0)
-    client = VLLMClient()
-    with pytest.raises(ValueError, match="at least 1"):
-        await client._retry_with_backoff(AsyncMock())

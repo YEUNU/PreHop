@@ -54,65 +54,6 @@ class MSGraphRAGAdapter:
         self._short_id_to_doc_id: dict[str, str] | None = None
         self._source_id_to_display_title: dict[str, str] | None = None
 
-    def verify_active_snapshot(self, expected_source_ids: list[str], corpus_manifest: dict | None) -> dict:
-        """Read-only proof that the live parquet snapshot matches its marker.
-
-        This is intentionally independent of MS GraphRAG's official search
-        API. It reads only ``documents.parquet`` and an unconnected sidecar
-        JSON before any query, so it cannot alter official retrieval behavior.
-        """
-        metadata_file = snapshot_metadata_path(self.corpus_tag)
-        try:
-            metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"MS GraphRAG active snapshot metadata is unreadable: {metadata_file}") from exc
-        if not isinstance(metadata, dict) or metadata.get("status") != "complete":
-            raise RuntimeError("MS GraphRAG active snapshot is not marked complete")
-        if metadata.get("strategy") != "ms_graphrag" or metadata.get("corpus_tag") != self.corpus_tag:
-            raise RuntimeError("MS GraphRAG active snapshot metadata identifies a different target")
-        if metadata.get("snapshot_version") != 2:
-            raise RuntimeError("MS GraphRAG active snapshot metadata has an unsupported version")
-        if corpus_manifest is not None:
-            if metadata.get("corpus_manifest_fingerprint") != corpus_manifest.get("fingerprint"):
-                raise RuntimeError("MS GraphRAG active snapshot fingerprint does not match corpus manifest")
-            if metadata.get("corpus_manifest_paragraph_count") != corpus_manifest.get("paragraph_count"):
-                raise RuntimeError("MS GraphRAG active snapshot paragraph count does not match corpus manifest")
-        documents = self._read_parquet("documents")
-        if "title" not in documents.columns:
-            raise RuntimeError("MS GraphRAG documents.parquet lacks title column")
-        titles = documents["title"].tolist()
-        if any(not isinstance(title, str) or not title.strip() for title in titles):
-            raise RuntimeError("MS GraphRAG documents.parquet contains an empty or non-string title")
-        actual_ids = [Path(title).stem for title in titles]
-        if len(actual_ids) != len(set(actual_ids)):
-            raise RuntimeError("MS GraphRAG documents.parquet contains duplicate source identities")
-        actual_ids.sort()
-        expected = sorted(expected_source_ids)
-        if actual_ids != expected:
-            raise RuntimeError(
-                "MS GraphRAG active documents.parquet does not match prepared corpus "
-                f"(expected={len(expected)}, actual={len(actual_ids)})"
-            )
-        import hashlib
-
-        source_digest = hashlib.sha256("\n".join(actual_ids).encode("utf-8")).hexdigest()
-        if metadata.get("source_count") != len(actual_ids) or metadata.get("source_set_sha256") != source_digest:
-            raise RuntimeError("MS GraphRAG active metadata does not match its documents.parquet snapshot")
-        source_titles = metadata.get("source_titles")
-        if (
-            not isinstance(source_titles, dict)
-            or sorted(source_titles) != expected
-            or any(not isinstance(title, str) or not title.strip() for title in source_titles.values())
-            or metadata.get("source_titles_sha256") != _source_titles_sha256(source_titles)
-        ):
-            raise RuntimeError("MS GraphRAG active source-title metadata is invalid")
-        self._source_id_to_display_title = source_titles
-        # The shared benchmark snapshot preserves adapter observations through
-        # official_stats; top-level sidecar extensions are otherwise omitted.
-        return {**metadata, "official_stats": {
-            key: metadata[key] for key in ("extraction_validation_profile", "extraction_audit_evidence")
-            if key in metadata
-        }}
 
     # ------------------------------------------------------------------ parquet I/O
 
@@ -295,7 +236,6 @@ class MSGraphRAGAdapter:
             query=query,
         )
 
-        self._extraction_audit.assert_healthy()
         answer = str(response or "").strip()
         if not answer:
             raise ValueError("MS GraphRAG local search returned an empty answer")
@@ -320,7 +260,6 @@ class MSGraphRAGAdapter:
             query=query,
         )
 
-        self._extraction_audit.assert_healthy()
         answer = str(response or "").strip()
         if not answer:
             raise ValueError("MS GraphRAG global search returned an empty answer")

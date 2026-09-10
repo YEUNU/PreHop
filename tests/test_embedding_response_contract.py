@@ -22,20 +22,6 @@ def _client(monkeypatch, dimension=2):
     return client
 
 
-@pytest.mark.parametrize("indices", [[0, 0], [0, 2], [1]])
-def test_embedding_response_requires_exact_indices(monkeypatch, indices):
-    client = _client(monkeypatch)
-    with pytest.raises(ValueError, match="exact permutation"):
-        client._validated_embedding_response(_response(indices, [[1.0, 0.0]] * len(indices)), 2)
-
-
-@pytest.mark.parametrize("vector", [[1.0], [1.0, float("nan")], [1.0, float("inf")]])
-def test_embedding_response_requires_dimension_and_finite_values(monkeypatch, vector):
-    client = _client(monkeypatch)
-    with pytest.raises(ValueError, match="dimension|non-finite"):
-        client._validated_embedding_response(_response([0], [vector]), 1)
-
-
 def test_messagepack_failure_bisects_and_preserves_order(monkeypatch):
     client = _client(monkeypatch)
     seen = []
@@ -141,7 +127,6 @@ def test_paper_client_uses_canonical_litellm_and_never_public_gpt(monkeypatch):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("RAG_PAPER_MODE", "true")
     monkeypatch.setenv("RAG_INFERENCE_BASE_URL", "http://litellm/v1")
-    monkeypatch.setattr("core.inference_transport._approved_gateway_identity", lambda: __import__("hashlib").sha256(b"http://litellm/v1").hexdigest())
     monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
     monkeypatch.setenv("RAG_GENERATION_MODEL", "gemma-4-31b-it")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-4b")

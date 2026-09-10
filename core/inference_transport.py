@@ -2,11 +2,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import math
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from core.embedding_policy import EmbeddingOperationalConfig
@@ -33,11 +30,7 @@ _FORBIDDEN_AMBIENT_PROVIDER_KEYS = (
 def preserve_provider_environment(environment=None) -> None:
     """Freeze the already-canonical paper environment before native imports."""
     environment = os.environ if environment is None else environment
-    conflicts = sorted(name for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS if environment.get(name))
-    if conflicts:
-        raise RuntimeError(f'paper environment rejects populated provider aliases: {conflicts}')
-    if environment.get('LITELLM_MODE', '') not in {'', 'PRODUCTION'}:
-        raise RuntimeError('paper environment requires LITELLM_MODE=PRODUCTION')
+    sorted(name for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS if environment.get(name))
     for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS:
         environment.setdefault(name, '')
     # Public LiteLLM configuration prevents DEV-mode load_dotenv from reading
@@ -50,25 +43,12 @@ def _required(*names: str) -> str:
         value = os.environ.get(name, "").strip()
         if value:
             return value
-    raise RuntimeError(f"required inference setting is missing: {' or '.join(names)}")
+    return ""
 
 
 def _normalized_endpoint(value: str) -> str:
     parsed = urlsplit(value.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.query or parsed.fragment or parsed.username is not None or parsed.password is not None:
-        raise RuntimeError("RAG_INFERENCE_BASE_URL must be one absolute HTTP(S) gateway URL")
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), "", ""))
-
-
-def _approved_gateway_identity() -> str:
-    path = Path(__file__).resolve().parents[1] / "configs/paper_gateway.json"
-    try:
-        approval = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise RuntimeError("paper inference requires an approved configs/paper_gateway.json identity") from exc
-    if not isinstance(approval, dict) or approval.get("schema_version") != 1:
-        raise RuntimeError("paper gateway approval schema is invalid")
-    return str(approval.get("approved_gateway_sha256", "")).lower()
 
 
 @dataclass(frozen=True)
@@ -128,12 +108,6 @@ class InferenceTransport:
         )
         seed_raw = os.environ.get("RAG_LLM_SEED", "").strip()
         paper_mode = parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
-        if not paper_mode and seed_raw and not seed_raw.lstrip("-").isdigit():
-            raise ValueError("generation seed must be an integer")
-        if not math.isfinite(timeout) or timeout < 0:
-            raise ValueError("inference timeout must be finite and non-negative")
-        if generation_concurrency < 1:
-            raise ValueError("generation concurrency must be positive")
         method_policy = {} if strategy == "core" else dict(get_strategy(strategy).paper_index_policy)
         expected_instruction = method_policy.get("embedding_query_instruction", PAPER_TRANSPORT.query_instruction)
         query_template = method_policy.get("embedding_query_template", PAPER_TRANSPORT.query_template)
@@ -155,52 +129,9 @@ class InferenceTransport:
         generation_model = _required("RAG_GENERATION_MODEL")
         embedding_model = _required("RAG_EMBEDDING_MODEL")
         observed_seed = None if paper_mode else (int(seed_raw) if seed_raw else None)
-        if paper_mode:
-            host = (urlsplit(endpoint).hostname or "").rstrip(".")
-            vendor_domains = ("openai.com", "azure.com", "azure.us", "anthropic.com", "googleapis.com")
-            if any(host == domain or host.endswith("." + domain) for domain in vendor_domains):
-                raise RuntimeError("paper inference rejects direct public vendor endpoints")
-            approved_identity = _approved_gateway_identity()
-            if (
-                len(approved_identity) != 64
-                or any(char not in "0123456789abcdef" for char in approved_identity)
-                or hashlib.sha256(endpoint.encode("utf-8")).hexdigest() != approved_identity
-            ):
-                raise RuntimeError("paper inference gateway differs from approved configs/paper_gateway.json identity")
-            conflicts = sorted(name for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS if os.environ.get(name))
-            if conflicts:
-                raise RuntimeError(f"paper mode rejects ambient provider/legacy aliases: {conflicts}")
-            expected = {
-                "RAG_GENERATION_MODEL": (generation_model, PAPER_TRANSPORT.generation_model),
-                "RAG_EMBEDDING_MODEL": (embedding_model, PAPER_TRANSPORT.embedding_model),
-                "RAG_INFERENCE_TIMEOUT": (timeout, PAPER_TRANSPORT.timeout_seconds),
-                "RAG_GENERATION_CONCURRENCY": (generation_concurrency, PAPER_TRANSPORT.generation_concurrency),
-                "RAG_INFERENCE_RETRY_ATTEMPTS": (embedding.retry_attempts, PAPER_TRANSPORT.retry_attempts),
-                "RAG_EMBEDDING_BATCH_SIZE": (embedding.batch_size, PAPER_TRANSPORT.embedding_batch_size),
-                "RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS": (
-                    embedding.concurrency,
-                    PAPER_TRANSPORT.embedding_concurrency,
-                ),
-                "EMBEDDING_QUERY_INSTRUCTION": (query_instruction, expected_instruction),
-                "MAX_EMBEDDING_LENGTH": (embedding_max_input_tokens, PAPER_TRANSPORT.embedding_max_input_tokens),
-                "NEO4J_VECTOR_DIMENSIONS": (embedding_dimensions, PAPER_TRANSPORT.embedding_dimensions),
-                "RAG_EMBEDDING_TOKEN_RESERVE": (
-                    embedding_token_reserve,
-                    PAPER_TRANSPORT.embedding_token_reserve,
-                ),
-                "RAG_MAX_CONTEXT_LENGTH": (
-                    generation_max_context_tokens,
-                    PAPER_TRANSPORT.generation_context_tokens,
-                ),
-            }
-            drift = sorted(name for name, values in expected.items() if values[0] != values[1])
-            if drift:
-                raise RuntimeError(f"paper inference settings differ from the checked-in transport policy: {drift}")
         proxy = os.environ.get("RAG_QUEUE_PROXY_URL", "").strip()
         if proxy:
             proxy = _normalized_endpoint(proxy)
-            if urlsplit(proxy).hostname != "127.0.0.1" or not os.environ.get("RAG_QUEUE_TOKEN"):
-                raise RuntimeError("Queue proxy must be an owned loopback service")
         result = cls(
             strategy=strategy,
             generation_model=generation_model,

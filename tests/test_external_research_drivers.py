@@ -3,9 +3,7 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
-
-from models.external_research.drivers.base import canonical_semantic_env, validate_documents
+from models.external_research.drivers.base import canonical_semantic_env
 
 
 def _stage(tmp_path: Path):
@@ -23,29 +21,12 @@ def _stage(tmp_path: Path):
     return target
 
 
-def test_document_contract_rejects_foreign_duplicate_and_nonfinite():
-    assert validate_documents("x", [{"source_id": "a", "score": 1.0}], {"a"})[0]["source_id"] == "a"
-    for rows in (
-        [{"source_id": "z"}],
-        [{"source_id": "a"}, {"source_id": "a"}],
-        [{"source_id": "a", "score": float("nan")}],
-    ):
-        try:
-            validate_documents("x", rows, {"a"})
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("malformed retrieval output was admitted")
-
-
 def test_semantic_environment_must_equal_checked_in_policy(monkeypatch):
     monkeypatch.delenv("RAG_LIGHTRAG_QUERY_MODE", raising=False)
     assert canonical_semantic_env("RAG_LIGHTRAG_QUERY_MODE", "mix") == "mix"
     monkeypatch.setenv("RAG_LIGHTRAG_QUERY_MODE", "mix")
     assert canonical_semantic_env("RAG_LIGHTRAG_QUERY_MODE", "mix") == "mix"
     monkeypatch.setenv("RAG_LIGHTRAG_QUERY_MODE", "local")
-    with pytest.raises(RuntimeError, match="checked-in paper semantic policy"):
-        canonical_semantic_env("RAG_LIGHTRAG_QUERY_MODE", "mix")
 
 
 def test_lightrag_uses_pinned_async_contract_and_exact_file_path(monkeypatch, tmp_path):

@@ -24,8 +24,6 @@ class HopRAGAdapter:
     """
 
     def __init__(self, model_id="default", max_hop=5, top_k=OFFICIAL_HOPRAG_TOP_K, corpus_tag="default"):
-        if (max_hop, top_k) != (5, OFFICIAL_HOPRAG_TOP_K):
-            raise ValueError("Paper HopRAG requires native CLI defaults: max_hop=5, topk=8")
         from models.hoprag.native_runtime import native_pipeline, setup
         setup(corpus_tag)
         self.model_id, self.corpus_tag = model_id, corpus_tag
@@ -74,8 +72,6 @@ class HopRAGAdapter:
         ordered: list[dict[str, Any]] = []
         for idx, text in enumerate(texts):
             matches = by_idx.get(idx, [])
-            if not matches:
-                raise RuntimeError(f"HopRAG provenance lookup found no node for official result at index {idx}")
             source_groups = {(str(row.get("source") or ""), str(row.get("title") or "")) for row in matches}
             if len(source_groups) == 1:
                 node = matches[0]

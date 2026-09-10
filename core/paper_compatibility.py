@@ -45,28 +45,6 @@ def index_method_identity(strategy):
     return identity
 
 
-def preserve_legacy_core_index_identity(strategy, observed, expected):
-    """Recognize the old combined index/query digest only for unchanged builds.
-
-    The old digests were reproduced from the repository's pre-removal prompts
-    and generation settings. Source records retain their original hashes.
-    Unknown historical values or changed construction settings are rejected.
-    """
-    old_prompt = "dbefec38526fc3d7699a62e926af2c7141ea99a2c48ae53cfb78b67076ab6ef1"
-    old_generation = {"prehop":"18145d0cb8623183ee57d10f10ebe11e510505779bb555e0e9c75344e365ca55",
-                      "naive":"e0f5128007c709b4017691f9cdec7da18f9a285510d9b1eb4645fcf658e727bb"}
-    if strategy not in old_generation:
-        return
-    if (observed.get("prompt_configuration_sha256"),observed.get("generation_profiles_sha256")) != (old_prompt,old_generation[strategy]):
-        return
-    if (expected.get("prompt_configuration_sha256"),expected.get("generation_profiles_sha256")) != (
-        "58adc4825e977e8eb1d2bf78e8b9e609c465ab3548582a15503eafff9e5b46ac",
-        "96c69065c7ee75ec703deefdc3efeb20da0dec769afc56b4735eec98b82f8b91"):
-        return
-    for key in ("prompt_configuration_sha256","generation_profiles_sha256"):
-        expected[key] = observed[key]
-
-
 def target_configuration(strategy: str, dataset: str) -> dict[str, Any]:
     """Resolve the same canonical policies checked against actual produced stats."""
     from core.generation_profiles import generation_profiles
@@ -75,12 +53,10 @@ def target_configuration(strategy: str, dataset: str) -> dict[str, Any]:
         canonical_query_policy,
         canonical_semantic_index_policy,
         configure_target_environment,
-        validate_paper_semantic_environment,
     )
     prior = os.environ.copy()
     try:
         configure_target_environment(strategy, dataset, 'compatibility-resolution')
-        validate_paper_semantic_environment(strategy, dataset)
         operational = canonical_operational_policy(strategy)
         return {'version': COMPATIBILITY_VERSION, 'evidence_version': EVIDENCE_VERSION,
                 'method_contract': METHOD_CONTRACT_VERSIONS[strategy], 'strategy': strategy, 'dataset': dataset,

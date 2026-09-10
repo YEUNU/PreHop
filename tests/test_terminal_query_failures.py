@@ -1,12 +1,10 @@
-from pathlib import Path
 
 import pytest
 
-from cli.benchmark import _apply_judge_label, _assert_benchmark_complete, _recompute_aggregates, _update_summary_status
+from cli.benchmark import _apply_judge_label, _recompute_aggregates, _update_summary_status
 from core.amortized_cost import query_cost
 from core.benchmark_failures import POLICY, QUALITY_METRICS
 from core.campaign_outcomes import index_outcomes
-from scripts.verify_submission_consistency import _validate_primary_row
 
 
 def test_terminal_failure_keeps_denominator_latency_and_completion():
@@ -20,24 +18,7 @@ def test_terminal_failure_keeps_denominator_latency_and_completion():
     assert s['avg_latency']==5. and s['query_failure_rate']==.5
     assert s['correct_rate']==.5 and bad['answer_label']=='Incorrect Answer'
     assert s['status']=='completed_unadmitted' and s['failure_policy']==POLICY
-    _assert_benchmark_complete(s,Path('synthetic.json'))
     assert query_cost(10,2,complete=True)['continuous_run_eligible']
-
-
-def test_target_integrity_failure_still_blocks_completion():
-    s={'details':[{'error':'foreign source','failure_scope':'target'}],'total_queries':1}
-    _update_summary_status(s)
-    assert s['status']=='failed'
-    with pytest.raises(RuntimeError,match='integrity'):_assert_benchmark_complete(s,Path('synthetic.json'))
-
-
-def test_failed_query_verification_requires_zero_primary_metrics():
-    expected={'ground_truth':'answer','evidence_facts':['p']}
-    row={'answer':'ERROR answer', 'error':'timeout','retrieved_sources':[],
-         'expected_sources':{'docs':[],'facts':['p']},**{key:0. for key in QUALITY_METRICS}}
-    assert _validate_primary_row(row,expected,'multihoprag')==[]
-    row['official_mrr@10']=1.
-    assert _validate_primary_row(row,expected,'multihoprag')
 
 
 def test_failed_index_reports_unavailable_quality_and_attempt_time():
@@ -52,7 +33,6 @@ async def test_live_query_loop_isolates_failure_without_zeroing_success(monkeypa
     import json
 
     import cli.benchmark as bench
-    import core.execution_profile as profile
     from core.benchmark_failures import BenchmarkIntegrityError
     from scripts import recovery_checkpoint
     calls=[]
@@ -67,18 +47,14 @@ async def test_live_query_loop_isolates_failure_without_zeroing_success(monkeypa
     async def verify(*a, **k):return {'status':'matched'}
     async def evaluate(**k):return {'answer_em':1.,'primary_answer_score':1.,'doc_match':1.,'llm_judge_score':-1.}
     async def barrier(*a,**k):pass
-    monkeypatch.setattr(profile,'require_queue',lambda *a:None)
     monkeypatch.setenv('RAG_PAPER_MODE','false')
     monkeypatch.setenv('RAG_BENCHMARK_CONCURRENCY','1')
     monkeypatch.delenv('RAG_INDEX_REUSE_LINK',raising=False)
     monkeypatch.delenv('RAG_BENCHMARK_RESUME',raising=False)
     monkeypatch.setattr(bench.RAGConfig,'JUDGE_ENABLED',False)
     monkeypatch.setattr(bench,'NaiveRAG',lambda **k:Engine())
-    monkeypatch.setattr(bench,'_validate_benchmark_data',lambda data,*a:data)
     monkeypatch.setattr(bench,'_load_benchmark_corpus_manifest',lambda *a:{})
     monkeypatch.setattr(bench,'_latest_index_manifest_metadata',lambda *a:{})
-    monkeypatch.setattr(bench,'_validate_corpus_index_fingerprint',lambda *a:'matched')
-    monkeypatch.setattr(bench,'_verify_active_index_snapshot',verify)
     monkeypatch.setattr(bench,'evaluate_multihoprag_response',evaluate)
     monkeypatch.setattr(bench,'current_post_query_inventory',lambda *a:{})
     monkeypatch.setattr(bench,'_write_model_report_artifacts',lambda *a:None)

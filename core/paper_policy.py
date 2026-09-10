@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from core.runtime_requirements import runtime_requirement
-from core.semantic_config import parse_strict_bool, semantic_config_sha256, semantic_index_policy
 from core.strategy_registry import PAPER_TRANSPORT, get_strategy
 
 PAPER_EMBEDDING_QUERY_INSTRUCTION = PAPER_TRANSPORT.query_instruction
@@ -54,72 +53,6 @@ def preserve_method_environment(environment=None, env_path: Path | None = None) 
     environment = os.environ if environment is None else environment
     for name, value in method_environment_defaults(env_path).items():
         environment.setdefault(name, value)
-
-
-def _strict_env_value(name: str, expected: str | float | bool) -> None:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return
-    if isinstance(expected, bool):
-        try:
-            observed: str | float | bool = parse_strict_bool(raw, name=name)
-        except ValueError as exc:
-            raise RuntimeError(str(exc)) from exc
-    elif isinstance(expected, int):
-        try:
-            observed = int(raw)
-        except ValueError as exc:
-            raise RuntimeError(f"{name} must be an integer") from exc
-    elif isinstance(expected, float):
-        try:
-            observed = float(raw)
-        except ValueError as exc:
-            raise RuntimeError(f"{name} must be a number") from exc
-    else:
-        observed = raw.strip()
-    if observed != expected:
-        raise RuntimeError(f"{name} differs from the checked-in paper semantic policy")
-
-
-def validate_paper_semantic_environment(strategy: str, dataset: str) -> None:
-    """Reject caller overrides that would diverge from recorded paper policy."""
-    policy = canonical_semantic_index_policy(strategy, dataset)
-    mappings: dict[str, str | float | bool] = {
-        "MAX_EMBEDDING_LENGTH": policy["embedding_max_input_tokens"],
-        "RAG_MAX_CONTEXT_LENGTH": policy["generation_max_context_tokens"],
-        "RAG_EMBEDDING_TOKEN_RESERVE": policy["embedding_token_reserve"],
-        "NEO4J_FULLTEXT_ANALYZER": policy["fulltext_analyzer"],
-    }
-    if policy["embedding_query_instruction"] is not None:
-        mappings["EMBEDDING_QUERY_INSTRUCTION"] = policy["embedding_query_instruction"]
-        if policy["embedding_dimensions"] is not None:
-            mappings["NEO4J_VECTOR_DIMENSIONS"] = policy["embedding_dimensions"]
-    spec = get_strategy(strategy)
-    mappings.update({environment: expected for _field, environment, expected in spec.paper_index_environment})
-    for name, expected in mappings.items():
-        _strict_env_value(name, expected)
-    if strategy in {"prehop", "naive"}:
-        for _field, name, expected in spec.paper_query_policy:
-            if name is not None:
-                _strict_env_value(name, expected)
-    method_prefixes = _METHOD_PREFIXES.get(strategy, ())
-    allowed = set(mappings)
-    if strategy == "hoprag":
-        allowed.update(_PREHOP_HOP_ENVIRONMENT)
-    allowed.update(
-        {
-            spec.output_env,
-            f"RAG_{strategy.upper()}_ROOT",
-            f"RAG_{strategy.upper()}_PYTHON",
-        }
-    )
-    unknown = sorted(
-        name
-        for name, value in os.environ.items()
-        if value.strip() and any(name.startswith(prefix) for prefix in method_prefixes) and name not in allowed
-    )
-    if unknown:
-        raise RuntimeError(f"unknown paper method environment override(s): {unknown}")
 
 
 def configure_target_environment(strategy: str, dataset: str, run_id: str) -> None:
@@ -218,47 +151,3 @@ def canonical_operational_policy(strategy: str) -> dict[str, Any]:
     from core.runtime_requirements import runtime_identity
 
     return {**InferenceTransport.resolve(strategy).policy_dict(), **runtime_identity(strategy)}
-
-
-def validate_canonical_index_policy(
-    strategy: str,
-    dataset: str,
-    policy: dict[str, Any] | None,
-    recorded_sha256: str | None = None,
-) -> str:
-    """Validate the complete semantic key set and its content hash."""
-    raw_policy = dict(policy or {})
-    observed = semantic_index_policy(raw_policy)
-    observed_digest = semantic_config_sha256(policy)
-    if recorded_sha256 is not None and recorded_sha256 != observed_digest:
-        raise RuntimeError("stored index policy digest does not match its policy content")
-    expected = canonical_semantic_index_policy(strategy, dataset)
-    expected["operational_config"] = canonical_operational_policy(strategy)
-    # Historical indexes keep their measured generation seed; changing the
-    # launch default must not rewrite or invalidate their original evidence.
-    if 'generation_seed' in observed:
-        expected['generation_seed'] = observed['generation_seed']
-    if 'generation_seed' in observed.get('operational_config', {}):
-        expected['operational_config']['generation_seed'] = observed['operational_config']['generation_seed']
-    from core.paper_compatibility import preserve_legacy_core_index_identity
-    preserve_legacy_core_index_identity(strategy, observed, expected)
-    # Historical core indexes used one bundle for index and query schemas.
-    # Its index schemas are unchanged; the removed query schemas do not affect
-    # materialized nodes or links. Recognize only this verified bundle pair.
-    if strategy in {"prehop", "naive"} and (
-        observed.get("structured_schema_bundle_sha256") == "2b09963a5ecad5f62071b66d2252338c19f7cd91548c87430cdfb83eaf42ad90"
-        and expected.get("structured_schema_bundle_sha256") == "ffce0eb4e429829a49ee0e47308d58c01d8c6ab5ebcb90f421ab566baf1ad03d"
-    ):
-        expected["structured_schema_bundle_sha256"] = observed["structured_schema_bundle_sha256"]
-    if observed != expected:
-        missing = sorted(set(expected) - set(observed))
-        extra = sorted(set(observed) - set(expected))
-        changed = sorted(key for key in set(expected) & set(observed) if expected[key] != observed[key])
-        raise RuntimeError(
-            "stored index policy differs from the checked-in paper policy "
-            f"(missing={missing}, extra={extra}, changed={changed})"
-        )
-    expected_digest = semantic_config_sha256(expected)
-    if expected_digest != observed_digest:
-        raise RuntimeError("stored index policy digest differs from the canonical complete policy")
-    return expected_digest

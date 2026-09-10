@@ -1,16 +1,14 @@
-"""Adapter recovery for valid JSON rejected by the native cleaner and bad return arity."""
+"""Adapter recovery for valid JSON rejected by the native cleaner without changing native completion results."""
 import json
 import re
 import threading
 import time
 from pathlib import Path
 
-PROFILE = 'adapter-json-recovery-v1'
+PROFILE = 'adapter-json-recovery-v2'
 
 
-def install(tool, audit_path, attempts=3):
-    if attempts < 1:
-        raise ValueError('attempts must be positive')
+def install(tool, audit_path):
     native_parser = tool.txt2obj
     native_completion = tool.get_chat_completion
     lock = threading.Lock()
@@ -32,26 +30,14 @@ def install(tool, audit_path, attempts=3):
 
     def completion(*args, **kwargs):
         keys = kwargs.get('keys', args[4] if len(args) > 4 else None)
-        expected = len(keys) + 1 if keys is not None else 2
-        for attempt in range(1, attempts + 1):
-            result = native_completion(*args, **kwargs)
-            valid = isinstance(result, tuple) and len(result) == expected and isinstance(result[-1], list)
-            if valid and keys:
-                for key, value in zip(keys, result[:-1]):
-                    if key in {'Title', 'Decision', 'answer', 'Answer'}:
-                        valid = valid and isinstance(value, str)
-                    elif key in {'Question List', 'Subqueries'}:
-                        valid = valid and isinstance(value, list) and all(isinstance(item, str) for item in value)
-            row = {'profile': PROFILE, 'time': time.time(), 'attempt': attempt,
-                       'status': 'accepted' if valid else 'retry' if attempt < attempts else 'exhausted',
-                       'keys': keys, 'result': result}
-            with lock:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open('a') as stream:
-                    stream.write(json.dumps(row, ensure_ascii=False, default=str)+'\n')
-            if valid:
-                return result
-        raise RuntimeError('HopRAG response exhausted adapter recovery; see '+str(path))
+        result = native_completion(*args, **kwargs)
+        row = {'profile': PROFILE, 'time': time.time(), 'status': 'observed',
+               'keys': keys, 'result': result}
+        with lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open('a') as stream:
+                stream.write(json.dumps(row, ensure_ascii=False, default=str)+'\n')
+        return result
 
     tool.txt2obj = parser
     tool.get_chat_completion = completion

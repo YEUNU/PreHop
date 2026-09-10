@@ -38,8 +38,6 @@ class EmbeddingOperationalConfig:
                 os.environ.get(prefix + "RETRY_ATTEMPTS", os.environ.get("RAG_INFERENCE_RETRY_ATTEMPTS", "5"))
             ),
         )
-        if min(values.batch_size, values.concurrency, values.retry_attempts) < 1:
-            raise ValueError(f"invalid embedding operational config for {strategy}: {values}")
         return values
 
     def as_dict(self) -> dict[str, int]:

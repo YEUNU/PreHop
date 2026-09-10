@@ -40,8 +40,6 @@ def _canonical_child(monkeypatch, strategy):
             monkeypatch.delenv(name, raising=False)
         else:
             monkeypatch.setenv(name, value)
-    monkeypatch.setattr('core.inference_transport._approved_gateway_identity',
-                        lambda: hashlib.sha256(b'http://litellm.test/v1').hexdigest())
     return _runtime_env(strategy)
 
 

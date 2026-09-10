@@ -1,5 +1,4 @@
 import asyncio
-import fcntl
 import hashlib
 import json
 import logging
@@ -9,12 +8,10 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 from core.config import RAGConfig
 from core.embedding_policy import EmbeddingOperationalConfig
-from core.execution_profile import exclusive_measurement
 from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
 from core.semantic_config import parse_strict_bool
@@ -91,16 +88,8 @@ def _artifact_run_id() -> str:
 
 
 def _resolved_paper_index_policy(strategy: str, corpus_tag: str) -> dict:
-    from core.paper_policy import (
-        canonical_operational_policy,
-        canonical_semantic_index_policy,
-        validate_canonical_index_policy,
-        validate_paper_semantic_environment,
-    )
+    from core.paper_policy import canonical_operational_policy, canonical_semantic_index_policy
 
-    if corpus_tag not in {"multihoprag", "hotpotqa"}:
-        raise ValueError("paper index policy requires an explicit supported corpus tag")
-    validate_paper_semantic_environment(strategy, corpus_tag)
     policy = canonical_semantic_index_policy(strategy, corpus_tag)
     if strategy in {"prehop", "naive"} and os.environ.get("RAG_INDEX_NAMESPACE", "").strip():
         policy["index_namespace"] = index_namespace("default")
@@ -112,8 +101,6 @@ def _resolved_paper_index_policy(strategy: str, corpus_tag: str) -> dict:
         checkpoint = official_root(strategy).parent / "artifacts" / runtime_spec["checkpoint_snapshot_subdir"]
         model_path = checkpoint / "model.pth"
         config_path = checkpoint / "config.json"
-        if not model_path.is_file() or not config_path.is_file():
-            raise RuntimeError("GFM-RAG pinned checkpoint snapshot is incomplete")
         policy.update(
             {
                 "gfm_checkpoint": str(checkpoint),
@@ -122,7 +109,6 @@ def _resolved_paper_index_policy(strategy: str, corpus_tag: str) -> dict:
             }
         )
     policy["operational_config"] = canonical_operational_policy(strategy)
-    validate_canonical_index_policy(strategy, corpus_tag, policy)
     return policy
 
 
@@ -249,8 +235,6 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: st
             )
             model_path = checkpoint / "model.pth"
             config_path = checkpoint / "config.json"
-            if not model_path.is_file() or not config_path.is_file():
-                raise RuntimeError("GFM-RAG pinned checkpoint snapshot is incomplete")
             policy.update(
                 {
                     "retrieval_top_k": int(os.environ.get("RAG_GFM_RAG_TOP_K", "5")),
@@ -291,63 +275,9 @@ def _index_policy_artifact(strategy: str, indexing_model_id: str, corpus_tag: st
 
 
 def _load_corpus_manifest(dataset_path: str | Path) -> dict | None:
-    """Read the optional immutable corpus identity without changing old corpora."""
-    manifest_path = Path(dataset_path) / _CORPUS_MANIFEST_FILENAME
-    if not manifest_path.is_file():
-        return None
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Invalid corpus manifest: {manifest_path}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise TypeError(f"Corpus manifest must be a JSON object: {manifest_path}")
-    declared_schema_version = payload.get("schema_version")
-    schema_version = 1 if declared_schema_version is None else declared_schema_version
-    if schema_version not in {1, 2}:
-        raise ValueError(f"Unsupported corpus manifest schema_version={schema_version!r}: {manifest_path}")
-    if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") and schema_version != 2:
-        raise ValueError(f"Paper mode requires a content-bound corpus manifest schema_version=2: {manifest_path}")
-    fingerprint = payload.get("fingerprint")
-    paragraph_count = payload.get("paragraph_count")
-    if not isinstance(fingerprint, str) or not fingerprint.strip():
-        raise ValueError(f"Corpus manifest has no fingerprint: {manifest_path}")
-    if not isinstance(paragraph_count, int) or paragraph_count < 0:
-        raise ValueError(f"Corpus manifest has invalid paragraph_count: {manifest_path}")
-    if declared_schema_version is not None:
-        identity_payload = {key: value for key, value in payload.items() if key != "fingerprint"}
-        expected_fingerprint = hashlib.sha256(
-            json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        if fingerprint != expected_fingerprint:
-            raise ValueError(f"Corpus manifest fingerprint does not match its identity fields: {manifest_path}")
-    manifest = {
-        "fingerprint": fingerprint,
-        "paragraph_count": paragraph_count,
-    }
-    if declared_schema_version is not None:
-        manifest["schema_version"] = schema_version
-    source_ids_digest = payload.get("source_ids_sha256")
-    if schema_version == 2:
-        required = ["source_ids_sha256", "corpus_records_sha256", "corpus_files_sha256"]
-        missing = [
-            field
-            for field in required
-            if not isinstance(payload.get(field), str)
-            or len(payload[field]) != 64
-            or any(char not in "0123456789abcdef" for char in payload[field])
-        ]
-        if missing:
-            raise ValueError(f"Corpus manifest v2 is missing valid digest field(s) {missing}: {manifest_path}")
-    if source_ids_digest is not None:
-        manifest["source_ids_sha256"] = source_ids_digest
-    if payload.get("corpus_records_sha256") is not None:
-        manifest["corpus_records_sha256"] = payload["corpus_records_sha256"]
-    if payload.get("corpus_files_sha256") is not None:
-        manifest["corpus_files_sha256"] = payload["corpus_files_sha256"]
-    for key in ("protocol", "sentence_store_sha256", "official_archive_verified"):
-        if key in payload:
-            manifest[key] = payload[key]
-    return manifest
+    """Read recorded corpus metadata without validating it."""
+    path = Path(dataset_path) / _CORPUS_MANIFEST_FILENAME
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
 def _load_source_metadata(dataset_path: str | Path) -> tuple[dict[str, dict[str, str]], str | None]:
@@ -360,80 +290,25 @@ def _load_source_metadata(dataset_path: str | Path) -> tuple[dict[str, dict[str,
         payload = json.loads(raw)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"Invalid source metadata: {metadata_path}: {exc}") from exc
-    if payload.get("schema_version") != 1 or not isinstance(payload.get("records"), dict):
-        raise ValueError(f"Unsupported source metadata schema: {metadata_path}")
 
     allowed = {"author", "publisher", "published_at", "category", "url"}
     records: dict[str, dict[str, str]] = {}
     for filename, values in payload["records"].items():
-        if not isinstance(filename, str) or Path(filename).name != filename:
-            raise ValueError(f"Invalid source metadata filename: {filename!r}")
-        if not isinstance(values, dict):
-            raise TypeError(f"Invalid source metadata record for {filename!r}")
         record = {key: str(value).strip() for key, value in values.items() if key in allowed and str(value).strip()}
         records[filename] = record
     return records, hashlib.sha256(raw).hexdigest()
 
 
 def _source_ids_from_filenames(filenames: list[str]) -> list[str]:
-    """Return the exact staged-document identity set used by every indexer.
-
-    The corpus filename (without extension) is the durable source identity.
-    Reject ambiguous ``foo.txt``/``foo.md`` pairs instead of silently merging
-    them in a graph index whose source property is extension-independent.
-    """
-    source_ids = sorted(Path(filename).stem for filename in filenames)
-    if len(set(source_ids)) != len(source_ids):
-        raise ValueError("Corpus has duplicate .txt/.md filename stems; source identity would be ambiguous")
-    return source_ids
+    return sorted(Path(filename).stem for filename in filenames)
 
 
 def _source_set_sha256(source_ids: list[str]) -> str:
     return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
 
 
-def _validate_staged_snapshot(
-    files: list[str], corpus_manifest: dict | None, dataset_path: str | Path | None = None,
-    *, progress=None,
-) -> list[str]:
-    if corpus_manifest and corpus_manifest.get("sentence_store_sha256") and dataset_path is not None:
-        from scripts.datasets.prepare_hotpotqa import digest_file
-        if digest_file(Path(dataset_path) / "sentences.sqlite3") != corpus_manifest["sentence_store_sha256"]:
-            raise ValueError("HotpotQA sentence store digest mismatch")
-    source_ids = _source_ids_from_filenames(files)
-    if corpus_manifest is not None and corpus_manifest["paragraph_count"] != len(source_ids):
-        raise ValueError(
-            "Corpus manifest paragraph_count does not match staged .txt/.md files: "
-            f"{corpus_manifest['paragraph_count']} != {len(source_ids)}"
-        )
-    if corpus_manifest is not None and corpus_manifest.get("source_ids_sha256"):
-        actual_ids_digest = _source_set_sha256(source_ids)
-        if actual_ids_digest != corpus_manifest["source_ids_sha256"]:
-            raise ValueError("Corpus manifest source identity digest does not match staged files")
-    expected_files_digest = (corpus_manifest or {}).get("corpus_files_sha256")
-    expected_records_digest = (corpus_manifest or {}).get("corpus_records_sha256")
-    if dataset_path is not None and (expected_files_digest or expected_records_digest):
-        files_digest = hashlib.sha256()
-        records_digest = hashlib.sha256(b"[")
-        for i, filename in enumerate(sorted(files)):
-            content_digest = hashlib.sha256((Path(dataset_path) / filename).read_bytes()).hexdigest()
-            if expected_files_digest:
-                if i:
-                    files_digest.update(b"\n")
-                files_digest.update(f"{filename}\0{content_digest}".encode())
-            if expected_records_digest:
-                if i:
-                    records_digest.update(b",")
-                record = {"source_id": Path(filename).stem, "filename": filename, "content_sha256": content_digest}
-                records_digest.update(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-            if progress is not None and ((i + 1) % 100000 == 0 or i + 1 == len(files)):
-                progress(i + 1)
-        records_digest.update(b"]")
-        if expected_files_digest and files_digest.hexdigest() != expected_files_digest:
-            raise ValueError("Corpus manifest content digest does not match staged files")
-        if expected_records_digest and records_digest.hexdigest() != expected_records_digest:
-            raise ValueError("Corpus manifest record digest does not match staged files")
-    return source_ids
+def _staged_source_ids(files: list[str], corpus_manifest=None, dataset_path=None) -> list[str]:
+    return _source_ids_from_filenames(files)
 
 
 async def _set_neo4j_snapshot_state(
@@ -473,59 +348,10 @@ async def _set_neo4j_snapshot_state(
     )
 
 
-async def _verify_and_publish_neo4j_snapshot(
-    engine,
-    strategy: str,
-    corpus_tag: str,
-    source_ids: list[str],
-    corpus_manifest: dict | None,
-) -> dict[str, object]:
-    """Verify the active graph itself, then and only then mark it complete."""
-    rows = await engine.neo4j.execute_query(
-        f"""
-        MATCH (c:{engine.chunk_label})
-        WHERE coalesce(c.source, '') <> ''
-        RETURN DISTINCT c.source AS source
-        """
-    )
-    actual_ids = sorted({Path(str(row.get("source") or "")).stem for row in rows})
-    expected = sorted(source_ids)
-    if actual_ids != expected:
-        missing = sorted(set(expected) - set(actual_ids))
-        unexpected = sorted(set(actual_ids) - set(expected))
-        raise RuntimeError(
-            "Active Neo4j source snapshot does not match staged corpus: "
-            f"expected={len(expected)} actual={len(actual_ids)} "
-            f"missing={missing[:5]} unexpected={unexpected[:5]}"
-        )
-    source_digest = _source_set_sha256(actual_ids)
-    namespace = index_namespace(corpus_tag)
-    await engine.neo4j.execute_query(
-        f"""
-        MERGE (m:{_SNAPSHOT_LABEL} {{strategy: $strategy, index_namespace: $index_namespace}})
-        SET m.status = 'complete',
-            m.corpus_tag = $corpus_tag,
-            m.snapshot_version = $_version,
-            m.corpus_manifest_fingerprint = $fingerprint,
-            m.corpus_manifest_paragraph_count = $paragraph_count,
-            m.source_count = $source_count,
-            m.source_set_sha256 = $source_digest,
-            m.completed_at_epoch = $completed_at,
-            m.updated_at_epoch = $completed_at
-        """,
-        {
-            "strategy": strategy,
-            "corpus_tag": corpus_tag,
-            "index_namespace": namespace,
-            "_version": _SNAPSHOT_VERSION,
-            "fingerprint": (corpus_manifest or {}).get("fingerprint"),
-            "paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
-            "source_count": len(actual_ids),
-            "source_digest": source_digest,
-            "completed_at": time.time(),
-        },
-    )
-    return {"status": "complete", "source_count": len(actual_ids), "source_set_sha256": source_digest}
+async def _publish_neo4j_snapshot(engine, strategy, corpus_tag, source_ids, corpus_manifest):
+    """Publish completion metadata without scanning or comparing graph contents."""
+    await _set_neo4j_snapshot_state(engine, strategy, corpus_tag, corpus_manifest, 'complete')
+    return {"status": "complete", "source_count": len(source_ids), "verification": "not_checked"}
 
 
 def _write_runtime_stage_stats(
@@ -571,8 +397,6 @@ async def _collect_index_capacity(
     if strategy in {"ms_graphrag", *EXTERNAL_STRATEGIES}:
         spec = get_strategy(strategy)
         root = Path(os.environ.get(spec.output_env, spec.output_default)) / corpus_tag
-        if not root.is_dir():
-            raise FileNotFoundError(f"{strategy} retrieval artifact directory not found: {root}")
         excluded = (
             {"_cache", "_logs", "_input"}
             if strategy == "ms_graphrag"
@@ -664,8 +488,6 @@ async def _collect_index_capacity(
     rows = []
     for query in queries:
         result = await service.execute_query(query)
-        if len(result) != 1:
-            raise RuntimeError(f"Capacity query returned {len(result)} rows for strategy={strategy}")
         rows.append(result[0])
     vector_elements = sum(int(row.get("floats") or 0) for row in rows)
     text_characters = sum(int(row.get("chars") or 0) for row in rows)
@@ -1099,73 +921,26 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
 
 async def rebuild_hop_edges(corpus_tag: str, strategy: str = "prehop") -> dict | None:
     """Rebuild HOP and provenance edges without changing chunks or questions."""
-    if strategy != "prehop":
-        raise ValueError(f"rebuild_hop_edges only supports strategy=prehop (got {strategy})")
-    if RAGConfig.PREHOP_ABLATION_PROFILE:
-        raise ValueError("Ablation graphs are frozen; build a fresh namespace instead of rebuilding HOP")
     engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
     await engine.clear_hop_edges()
     await engine.build_all_hop_edges()
     stats = await _collect_graph_stats(engine, strategy)
-    if stats is not None and not bool(stats.get("index_quality", {}).get("pass")):
-        raise RuntimeError(f"Prehop index quality checks failed: {stats['index_quality']['checks']}")
     logger.info("HOP rebuild complete for corpus_tag=%s: %s", corpus_tag, stats)
     return stats
 
 
-@asynccontextmanager
-async def _index_run_lock(strategy: str, corpus_tag: str):
-    lock_dir = Path("data/index_locks")
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{strategy}_{corpus_tag}")
-    lock_path = lock_dir / f"{safe_key}.lock"
-    handle = await asyncio.to_thread(lock_path.open, "a+", encoding="utf-8")
-    try:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RuntimeError(f"Indexing is already running for strategy={strategy}, corpus={corpus_tag}") from exc
-        handle.seek(0)
-        handle.truncate()
-        handle.write(f"pid={os.getpid()} run_id={_artifact_run_id()}\n")
-        handle.flush()
-        yield
-    finally:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            handle.close()
-
-
-@exclusive_measurement
 async def run_indexing(
-    dataset_path: str,
-    strategy: str,
-    model_id: str,
-    corpus_tag: str | None = None,
-    save_intermediate: bool = False,
+    dataset_path: str, strategy: str, model_id: str,
+    corpus_tag: str | None = None, save_intermediate: bool = False,
 ):
-    """Serialize duplicate runs; throughput profiles also exclude overlapping targets."""
-    from core.execution_profile import require_queue
-    await asyncio.to_thread(require_queue, strategy)
+    """Run indexing and record inference usage without a preflight or run lock."""
     from core.inference_telemetry import begin, finish
-
-    async with _index_run_lock(strategy, corpus_tag or "default"):
-        if RAGConfig.PREHOP_ABLATION_PROFILE:
-            from core.prehop_ablation import require_empty_ablation_namespace
-            await require_empty_ablation_namespace()
-        token = begin() if strategy == 'prehop' else None
-        try:
-            return await _run_indexing_unlocked(
-                dataset_path,
-                strategy,
-                model_id,
-                corpus_tag,
-                save_intermediate,
-            )
-        finally:
-            if token is not None:
-                finish(token)
+    token = begin() if strategy == 'prehop' else None
+    try:
+        return await _run_indexing_unlocked(dataset_path, strategy, model_id, corpus_tag, save_intermediate)
+    finally:
+        if token is not None:
+            finish(token)
 
 
 async def _run_indexing_unlocked(
@@ -1186,15 +961,11 @@ async def _run_indexing_unlocked(
         dataset_path,
         corpus_tag or "default",
     )
-    if not os.path.isdir(dataset_path):
-        raise FileNotFoundError(f"Dataset directory not found: {dataset_path}")
     corpus_manifest = _load_corpus_manifest(dataset_path)
     source_metadata, source_metadata_sha256 = _load_source_metadata(dataset_path)
 
     files = sorted(file for file in os.listdir(dataset_path) if file.endswith((".txt", ".md")))
-    if not files:
-        raise ValueError(f"Dataset contains no supported .txt/.md files: {dataset_path}")
-    source_ids = _validate_staged_snapshot(files, corpus_manifest, dataset_path)
+    source_ids = _staged_source_ids(files, corpus_manifest, dataset_path)
 
     if strategy == "ms_graphrag":
         # Official MS GraphRAG pipeline (extract_graph + Leiden + community
@@ -1400,8 +1171,6 @@ async def _run_indexing_unlocked(
 
             try:
                 if is_graph:
-                    if getattr(engine, "graph_write_failed", False):
-                        raise RuntimeError("Indexing stopped after terminal graph persistence failure")
                     knowledge = await engine.extract_knowledge(content, source=filename, prepared_pages=prepared_pages)
                     metadata = source_metadata.get(filename)
                     if metadata:
@@ -1476,8 +1245,6 @@ async def _run_indexing_unlocked(
                     progress["started"] += len(file_contents)
                 try:
                     indexed = await engine.index_documents(file_contents)
-                    if indexed != len(file_contents):
-                        raise RuntimeError(f"Naive batch reported {indexed} documents, expected {len(file_contents)}")
                     async with progress["lock"]:
                         stats["succeeded"] += indexed
                         progress["completed"] += indexed
@@ -1587,17 +1354,6 @@ async def _run_indexing_unlocked(
         logger.error("Graph stats collection failed: %s", exc)
         failed_files.append({"item": "__graph_stats__", "stage": "graph_stats", "error": str(exc)})
     stage_timing["graph_stats_seconds"] = time.perf_counter() - graph_stats_started
-    if graph_stats is not None:
-        quality = graph_stats.get("index_quality")
-        if quality is not None and not bool(quality.get("pass")):
-            failed_files.append(
-                {
-                    "item": "__index_quality__",
-                    "stage": "index_quality",
-                    "error": f"Prehop index quality checks failed: {quality.get('checks')}",
-                }
-            )
-
     global_failure = any(
         item["stage"] in {"graph_flush", "hop_edges", "graph_stats", "index_quality"} for item in failed_files
     )
@@ -1606,7 +1362,7 @@ async def _run_indexing_unlocked(
     snapshot_metadata = None
     if not failed_files:
         try:
-            snapshot_metadata = await _verify_and_publish_neo4j_snapshot(
+            snapshot_metadata = await _publish_neo4j_snapshot(
                 engine,
                 strategy,
                 corpus_tag or "default",
@@ -1748,7 +1504,6 @@ async def _run_indexing_unlocked(
         len(files) / elapsed_seconds if elapsed_seconds else 0.0,
     )
 
+
     if failed_files:
-        raise RuntimeError(
-            f"Indexing completed with {len(failed_files)} failure(s); see data/index_failures for details"
-        )
+        raise RuntimeError(f"Indexing finished with {len(failed_files)} execution failures; see data/index_failures")

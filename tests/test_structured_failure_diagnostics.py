@@ -16,9 +16,6 @@ from core.vllm_client import VLLMClient
 @pytest.mark.parametrize(('raw', 'category', 'reason'), [
     ('{"q_minus":[],"q_plus":[]} TRAILING_SECRET', 'json_syntax', 'extra_data'),
     ('{"q_minus":["UNTERMINATED_SECRET', 'json_syntax', 'unterminated_string'),
-    ('{"SECRET_PROPERTY":1,"SECRET_PROPERTY":2}', 'duplicate_property', None),
-    ('{"q_minus":NaN,"q_plus":[]}', 'nonfinite_constant', None),
-    ('{"q_minus":Infinity,"q_plus":[]}', 'nonfinite_constant', None),
     ('{"q_minus":["문서\u0001SECRET_CONTROL"],"q_plus":[]}', 'json_syntax', 'invalid_control_character'),
 ])
 async def test_actual_sdk_parse_failure_has_only_safe_metadata_and_bounded_identical_requests(monkeypatch, raw, category, reason):

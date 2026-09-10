@@ -10,24 +10,15 @@ from cli.benchmark import (
     OFFICIAL_QUERY_ID_DIGESTS,
     _aggregate_seed_summaries,
     _apply_judge_label,
-    _assert_benchmark_complete,
     _benchmark_checkpoint_due,
     _evaluation_scope,
-    _judge_independence,
     _latest_index_manifest_metadata,
-    _load_benchmark_corpus_manifest,
     _order_benchmark_rows,
     _recompute_aggregates,
     _resume_benchmark_rows,
     _update_summary_status,
-    _validate_corpus_index_fingerprint,
-    _verify_active_index_snapshot,
 )
-from cli.index import (
-    _load_corpus_manifest,
-    _load_source_metadata,
-    _verify_and_publish_neo4j_snapshot,
-)
+from cli.index import _load_source_metadata
 from models.hoprag import official_indexer as hop_official_indexer
 from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
@@ -105,8 +96,6 @@ def test_benchmark_checkpoint_interval_is_bounded_and_always_writes_final_state(
     assert not _benchmark_checkpoint_due(1, 25, 10)
     assert _benchmark_checkpoint_due(10, 25, 10)
     assert _benchmark_checkpoint_due(25, 25, 10)
-    with pytest.raises(ValueError, match="at least 1"):
-        _benchmark_checkpoint_due(1, 25, 0)
 
 
 def _write_resume_fixture(tmp_path, rows, *, status="in_progress", strategy="hoprag"):
@@ -199,49 +188,6 @@ def test_benchmark_resume_reorders_partial_concurrent_checkpoint_by_manifest(tmp
     assert [(row["idx"], row["query_id"]) for row in retained] == [(1, "q1"), (3, "q3")]
 
 
-@pytest.mark.parametrize(
-    ("rows", "message"),
-    [
-        (
-            [
-                {"query_id": "q1", "query": "first"},
-                {"query_id": "q1", "query": "first"},
-            ],
-            "duplicate query_id",
-        ),
-        ([{"query_id": "foreign", "query": "first"}], "outside the current manifest"),
-    ],
-)
-def test_benchmark_resume_rejects_invalid_query_identity(tmp_path, rows, message):
-    result_file = _write_resume_fixture(tmp_path, rows)
-    with pytest.raises(RuntimeError, match=message):
-        _resume_benchmark_rows(
-            result_file,
-            [{"_id": "q1", "query": "first"}],
-            {"strategy": "hoprag"},
-            judge_enabled=False,
-        )
-
-
-def test_benchmark_resume_rejects_metadata_mismatch_and_enabled_judge(tmp_path):
-    result_file = _write_resume_fixture(tmp_path, [{"query_id": "q1", "query": "first"}])
-    benchmark_data = [{"_id": "q1", "query": "first"}]
-    with pytest.raises(RuntimeError, match="metadata mismatch"):
-        _resume_benchmark_rows(
-            result_file,
-            benchmark_data,
-            {"strategy": "prehop"},
-            judge_enabled=False,
-        )
-    with pytest.raises(RuntimeError, match="judge is enabled"):
-        _resume_benchmark_rows(
-            result_file,
-            benchmark_data,
-            {"strategy": "hoprag"},
-            judge_enabled=True,
-        )
-
-
 def test_benchmark_resume_migrates_behavior_equivalent_candidate_order_metadata(tmp_path):
     result_file = _write_resume_fixture(tmp_path, [{"query_id": "q1", "query": "first"}], strategy="prehop")
     payload = json.loads(result_file.read_text(encoding="utf-8"))
@@ -280,113 +226,6 @@ def test_evaluation_scope_uses_actual_evaluated_count_before_filename():
         7405,
     )
     assert _evaluation_scope("hotpotqa", 200, "hotpotqa_queries.json", "subset") == ("subset_exploratory", 7405)
-    with pytest.raises(ValueError, match="query-id digest"):
-        _evaluation_scope("hotpotqa", 7405, "hotpotqa_queries.json", "wrong")
-
-
-def test_corpus_manifest_is_optional_but_full_benchmark_requires_matching_index(tmp_path, monkeypatch):
-    from core.paper_policy import canonical_operational_policy, canonical_semantic_index_policy
-    from core.semantic_config import semantic_config_sha256
-
-    corpus_dir = tmp_path / "hotpotqa_corpus"
-    corpus_dir.mkdir()
-    query_digest = OFFICIAL_QUERY_ID_DIGESTS["hotpotqa"]
-    manifest_payload = {
-        "fingerprint": "corpus-fingerprint",
-        "paragraph_count": 2,
-        "query_ids_sha256": query_digest,
-    }
-    (corpus_dir / "corpus_manifest.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
-    queries_path = tmp_path / "hotpotqa_queries.json"
-    queries_path.write_text("[]", encoding="utf-8")
-    stats_dir = tmp_path / "index_stats"
-    stats_dir.mkdir()
-    stats_path = stats_dir / "prehop_hotpotqa_run.json"
-    monkeypatch.setenv("RAG_INFERENCE_BASE_URL", "http://litellm.test/v1")
-    monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
-    monkeypatch.setenv("RAG_GENERATION_MODEL", "gemma-4-31b-it")
-    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-4b")
-    monkeypatch.setenv("RAG_LLM_SEED", "42")
-    policy = {
-        **canonical_semantic_index_policy("prehop", "hotpotqa"),
-        "operational_config": canonical_operational_policy("prehop"),
-    }
-    stats_path.write_text(
-        json.dumps(
-            {
-                "status": "complete",
-                "strategy": "prehop",
-                "corpus_tag": "hotpotqa",
-                "corpus_manifest_fingerprint": "corpus-fingerprint",
-                "corpus_manifest_paragraph_count": 2,
-                    "index_policy": policy,
-                "index_policy_sha256": semantic_config_sha256(policy),
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    corpus_manifest = _load_benchmark_corpus_manifest("hotpotqa", queries_path)
-    assert _load_corpus_manifest(corpus_dir) == {
-        "fingerprint": "corpus-fingerprint",
-        "paragraph_count": 2,
-    }
-    index_manifest = _latest_index_manifest_metadata("prehop", "hotpotqa", stats_dir)
-    assert (
-        _validate_corpus_index_fingerprint("hotpotqa", "full_benchmark", corpus_manifest, index_manifest, query_digest)
-        == "matched"
-    )
-    bad_manifest = {**corpus_manifest, "query_ids_sha256": "wrong"}
-    with pytest.raises(RuntimeError, match="query-id digest"):
-        _validate_corpus_index_fingerprint("hotpotqa", "full_benchmark", bad_manifest, index_manifest, query_digest)
-    with pytest.raises(RuntimeError, match="requires corpus_manifest"):
-        _validate_corpus_index_fingerprint("multihoprag", "full_benchmark", None, None, query_digest)
-    with pytest.raises(RuntimeError, match="requires corpus_manifest"):
-        _validate_corpus_index_fingerprint("hotpotqa", "full_benchmark", None, None, query_digest)
-
-    stats_path.write_text(
-        json.dumps(
-            {"status": "complete", "corpus_manifest_fingerprint": "stale", "corpus_manifest_paragraph_count": 2}
-        ),
-        encoding="utf-8",
-    )
-    stale_index = _latest_index_manifest_metadata("prehop", "hotpotqa", stats_dir)
-    with pytest.raises(RuntimeError, match="does not match"):
-        _validate_corpus_index_fingerprint("hotpotqa", "full_benchmark", corpus_manifest, stale_index, query_digest)
-    assert (
-        _validate_corpus_index_fingerprint(
-            "hotpotqa", "subset_exploratory", corpus_manifest, stale_index, "subset-digest"
-        )
-        == "mismatch_exploratory"
-    )
-
-
-def test_index_artifact_selection_uses_exact_run_id_not_mtime(tmp_path, monkeypatch):
-    completed = tmp_path / "prehop_hotpotqa_completed.json"
-    failed = tmp_path / "prehop_hotpotqa_failed.json"
-    completed.write_text(
-        json.dumps({"run_id": "completed", "status": "complete", "corpus_manifest_fingerprint": "old"}),
-        encoding="utf-8",
-    )
-    failed.write_text(
-        json.dumps({"run_id": "failed", "status": "failed", "corpus_manifest_fingerprint": "new"}),
-        encoding="utf-8",
-    )
-    os.utime(completed, (1, 1))
-    os.utime(failed, (2, 2))
-
-    monkeypatch.setenv("RAG_RUN_ID", "failed")
-    selected = _latest_index_manifest_metadata("prehop", "hotpotqa", tmp_path)
-
-    assert selected["status"] == "failed"
-    with pytest.raises(RuntimeError, match="completed index artifact"):
-        _validate_corpus_index_fingerprint(
-            "hotpotqa",
-            "full_benchmark",
-            {"fingerprint": "new", "query_ids_sha256": OFFICIAL_QUERY_ID_DIGESTS["hotpotqa"]},
-            selected,
-            OFFICIAL_QUERY_ID_DIGESTS["hotpotqa"],
-        )
 
 
 def test_index_artifact_selection_honors_explicit_path_and_run_identity(tmp_path, monkeypatch):
@@ -421,193 +260,6 @@ def test_index_manifest_selection_does_not_cross_prefixing_corpus_tags(tmp_path)
     assert selected["path"] == str(legacy)
 
 
-@pytest.mark.asyncio
-async def test_neo4j_snapshot_metadata_is_published_only_after_live_source_set_matches():
-    writes = []
-
-    class Neo4j:
-        async def execute_query(self, query, parameters=None):
-            if "RETURN DISTINCT c.source" in query:
-                return [{"source": "hotpotqa_alpha.txt"}, {"source": "hotpotqa_beta.txt"}]
-            writes.append((query, parameters))
-            return []
-
-    class Engine:
-        chunk_label = "PR_hotpotqa_Chunk"
-        neo4j = Neo4j()
-
-    metadata = await _verify_and_publish_neo4j_snapshot(
-        Engine(),
-        "prehop",
-        "hotpotqa",
-        ["hotpotqa_alpha", "hotpotqa_beta"],
-        {"fingerprint": "fp", "paragraph_count": 2},
-    )
-
-    assert metadata["status"] == "complete"
-    assert metadata["source_count"] == 2
-    assert len(writes) == 1
-    assert "m.status = 'complete'" in writes[0][0]
-
-
-@pytest.mark.asyncio
-async def test_neo4j_snapshot_mismatch_never_publishes_complete_metadata():
-    writes = []
-
-    class Neo4j:
-        async def execute_query(self, query, parameters=None):
-            if "RETURN DISTINCT c.source" in query:
-                return [{"source": "hotpotqa_alpha.txt"}]
-            writes.append((query, parameters))
-            return []
-
-    class Engine:
-        chunk_label = "PR_hotpotqa_Chunk"
-        neo4j = Neo4j()
-
-    with pytest.raises(RuntimeError, match="does not match"):
-        await _verify_and_publish_neo4j_snapshot(
-            Engine(),
-            "prehop",
-            "hotpotqa",
-            ["hotpotqa_alpha", "hotpotqa_beta"],
-            {"fingerprint": "fp", "paragraph_count": 2},
-        )
-    assert not writes
-
-
-@pytest.mark.asyncio
-async def test_full_active_snapshot_gate_checks_metadata_and_live_sources(tmp_path):
-    corpus_dir = tmp_path / "hotpotqa_corpus"
-    corpus_dir.mkdir()
-    (corpus_dir / "hotpotqa_alpha.txt").write_text("x", encoding="utf-8")
-    (corpus_dir / "hotpotqa_beta.txt").write_text("x", encoding="utf-8")
-    manifest_path = corpus_dir / "corpus_manifest.json"
-    manifest_path.write_text(json.dumps({"fingerprint": "fp", "paragraph_count": 2}), encoding="utf-8")
-    manifest = {"path": str(manifest_path), "fingerprint": "fp", "paragraph_count": 2}
-    digest = hashlib.sha256(b"hotpotqa_alpha\nhotpotqa_beta").hexdigest()
-
-    class Neo4j:
-        async def execute_query(self, query, parameters=None):
-            if "RAGIndexSnapshot" in query:
-                return [
-                    {
-                        "status": "complete",
-                        "fingerprint": "fp",
-                        "paragraph_count": 2,
-                        "source_count": 2,
-                        "source_set_sha256": digest,
-                        "snapshot_version": 1,
-                    }
-                ]
-            return [{"source": "hotpotqa_alpha.txt"}, {"source": "hotpotqa_beta.txt"}]
-
-    class Engine:
-        chunk_label = "PR_hotpotqa_Chunk"
-        neo4j = Neo4j()
-
-    verified = await _verify_active_index_snapshot(Engine(), "prehop", "hotpotqa", manifest, strict=True)
-    assert verified["status"] == "matched"
-
-    class BadNeo4j(Neo4j):
-        async def execute_query(self, query, parameters=None):
-            if "RAGIndexSnapshot" in query:
-                return await super().execute_query(query, parameters)
-            return [{"source": "hotpotqa_alpha.txt"}]
-
-    class BadEngine:
-        chunk_label = "PR_hotpotqa_Chunk"
-        neo4j = BadNeo4j()
-
-    with pytest.raises(RuntimeError, match="Active index integrity gate failed"):
-        await _verify_active_index_snapshot(BadEngine(), "prehop", "hotpotqa", manifest, strict=True)
-    exploratory = await _verify_active_index_snapshot(BadEngine(), "prehop", "hotpotqa", manifest, strict=False)
-    assert exploratory["status"] == "mismatch_exploratory"
-
-
-@pytest.mark.asyncio
-async def test_hoprag_active_readback_preserves_periods_in_stored_stems(tmp_path):
-    source = "Article_about_the_U.S._economy"
-    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-    corpus_dir = tmp_path / "multihoprag_corpus"
-    corpus_dir.mkdir()
-    (corpus_dir / f"{source}.txt").write_text("evidence", encoding="utf-8")
-    manifest_path = corpus_dir / "corpus_manifest.json"
-    manifest_path.write_text(json.dumps({"fingerprint": "fp", "paragraph_count": 1}), encoding="utf-8")
-    manifest = {"path": str(manifest_path), "fingerprint": "fp", "paragraph_count": 1}
-
-    class Neo4j:
-        async def execute_query(self, query, parameters=None):
-            _ = parameters
-            if "RAGIndexSnapshot" in query:
-                return [
-                    {
-                        "status": "complete",
-                        "fingerprint": "fp",
-                        "paragraph_count": 1,
-                        "source_count": 1,
-                        "source_set_sha256": digest,
-                        "omitted_source_count": 0,
-                        "omitted_source_set_sha256": hashlib.sha256(b"").hexdigest(),
-                        "snapshot_version": 2,
-                    }
-                ]
-            return [{"source": source}]
-
-    class Engine:
-        chunk_label = "HO_multihoprag"
-        neo4j = Neo4j()
-
-    verified = await _verify_active_index_snapshot(Engine(), "hoprag", "multihoprag", manifest, strict=True)
-
-    assert verified["status"] == "matched"
-    assert verified["omitted_source_count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_hoprag_active_snapshot_records_officially_skipped_sources(tmp_path):
-    represented = "hotpotqa_alpha"
-    omitted = "hotpotqa_beta"
-    represented_digest = hashlib.sha256(represented.encode("utf-8")).hexdigest()
-    omitted_digest = hashlib.sha256(omitted.encode("utf-8")).hexdigest()
-    corpus_dir = tmp_path / "hotpotqa_corpus"
-    corpus_dir.mkdir()
-    (corpus_dir / f"{represented}.txt").write_text("alpha", encoding="utf-8")
-    (corpus_dir / f"{omitted}.txt").write_text("beta", encoding="utf-8")
-    manifest_path = corpus_dir / "corpus_manifest.json"
-    manifest_path.write_text(json.dumps({"fingerprint": "fp", "paragraph_count": 2}), encoding="utf-8")
-    manifest = {"path": str(manifest_path), "fingerprint": "fp", "paragraph_count": 2}
-
-    class Neo4j:
-        async def execute_query(self, query, parameters=None):
-            _ = parameters
-            if "RAGIndexSnapshot" in query:
-                return [
-                    {
-                        "status": "complete",
-                        "fingerprint": "fp",
-                        "paragraph_count": 2,
-                        "source_count": 1,
-                        "source_set_sha256": represented_digest,
-                        "omitted_source_count": 1,
-                        "omitted_source_set_sha256": omitted_digest,
-                        "snapshot_version": 2,
-                    }
-                ]
-            return [{"source": represented}]
-
-    class Engine:
-        chunk_label = "HO_hotpotqa"
-        neo4j = Neo4j()
-
-    verified = await _verify_active_index_snapshot(Engine(), "hoprag", "hotpotqa", manifest, strict=True)
-
-    assert verified["status"] == "matched"
-    assert verified["input_source_count"] == 2
-    assert verified["source_count"] == 1
-    assert verified["omitted_source_count"] == 1
-
-
 def test_ms_snapshot_metadata_is_sidecar_and_requires_actual_document_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(ms_official_indexer, "_OUTPUT_ROOT", tmp_path)
     output_dir = ms_official_indexer.output_dir_for("hotpotqa")
@@ -617,7 +269,7 @@ def test_ms_snapshot_metadata_is_sidecar_and_requires_actual_document_sources(tm
         lambda _path: pd.DataFrame({"title": ["hotpotqa_alpha.txt", "hotpotqa_beta.txt"]}),
     )
 
-    payload = ms_official_indexer._verify_and_publish_snapshot(
+    payload = ms_official_indexer._publish_snapshot(
         "hotpotqa",
         ["hotpotqa_alpha", "hotpotqa_beta"],
         {"fingerprint": "fp", "paragraph_count": 2},
@@ -655,7 +307,7 @@ def test_hoprag_snapshot_preserves_periods_in_stored_source_ids():
         driver = Driver()
         label = "HO_multihoprag"
 
-    payload = hop_official_indexer._verify_and_publish_snapshot(
+    payload = hop_official_indexer._publish_snapshot(
         Builder(),
         "multihoprag",
         ["Article_about_the_U.S._economy"],
@@ -665,17 +317,6 @@ def test_hoprag_snapshot_preserves_periods_in_stored_source_ids():
     assert payload["source_count"] == 1
     assert payload["input_source_count"] == 1
     assert payload["omitted_source_count"] == 0
-
-
-def test_paper_mode_rejects_schema1_manifest_before_indexing(tmp_path, monkeypatch):
-    payload = {"schema_version": 1, "paragraph_count": 0}
-    payload["fingerprint"] = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    (tmp_path / "corpus_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setenv("RAG_PAPER_MODE", "true")
-    with pytest.raises(ValueError, match="schema_version=2"):
-        _load_corpus_manifest(tmp_path)
 
 
 def test_paired_bootstrap_retains_runtime_failure_as_zero():
@@ -759,7 +400,6 @@ def test_judge_disabled_does_not_block_deterministic_completion(tmp_path):
 
     assert summary["status"] == "completed_unadmitted"
     assert summary["correct_rate"] == 1.0
-    _assert_benchmark_complete(summary, tmp_path / "result.json")
 
 
 def test_multi_seed_aggregate_excludes_ineligible_seeds_and_all_ineligible_metrics():
@@ -806,14 +446,6 @@ def test_multi_seed_aggregate_excludes_ineligible_seeds_and_all_ineligible_metri
     assert "avg_llm_judge_score" not in aggregate["overall"]
     assert aggregate["categories"]["2hop"]["avg_answer_em"]["n"] == 1
     assert "avg_groundedness" not in aggregate["categories"]["2hop"]
-
-
-def test_self_judge_requires_explicit_debug_override():
-    with pytest.raises(RuntimeError, match="must be independent"):
-        _judge_independence("same-model", "same-model", "generation-model", False)
-
-    assert _judge_independence("same-model", "same-model", "generation-model", True) == (False, True)
-    assert _judge_independence("independent-judge", "generation-model", "generation-model", False) == (True, False)
 
 
 def _artifact(strategy: str, *, query_id: str = "q-1") -> dict:

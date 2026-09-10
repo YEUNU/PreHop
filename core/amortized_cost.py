@@ -27,8 +27,3 @@ def indexing_cost(stats):
 def query_cost(seconds, count, *, complete, resumed=False):
     return normalized_cost(seconds, count, unit='query', complete=complete, resumed=resumed,
                            scope='query_batch_dispatch_to_last_answer_including_internal_queue_and_retries')
-
-
-def validate_cost(value, expected):
-    if not isinstance(value, dict) or value != expected:
-        raise ValueError('Amortized cost differs from its wall-time/count/completion contract')

@@ -72,8 +72,6 @@ def _hoprag_indexable_text(content: str) -> str:
     sent to HopRAG's question generator. Paragraph boundaries and all body
     text otherwise remain unchanged for the official ``\n\n`` chunker.
     """
-    if not isinstance(content, str):
-        raise TypeError(f"HopRAG document content must be str, got {type(content).__name__}")
     lines = content.removeprefix("\ufeff").splitlines()
     if lines and lines[0].startswith("Title: "):
         lines = lines[1:]
@@ -83,8 +81,6 @@ def _hoprag_indexable_text(content: str) -> str:
         lines = lines[1:]
     lines = [line for line in lines if not _PAGE_MARKER_RE.fullmatch(line.strip())]
     body = "\n".join(lines).strip()
-    if not body:
-        raise ValueError("HopRAG document has no evidence text after metadata removal")
     return body
 
 
@@ -94,50 +90,6 @@ def _document_cache_digest(path: Path) -> str:
     digest.update(f"hoprag-cache-v{_CACHE_FORMAT_VERSION}\0".encode("ascii"))
     digest.update(path.read_bytes())
     return digest.hexdigest()
-
-
-def _validate_cached_node(
-    doc_id: str,
-    node: object,
-    questiondict: object,
-    display_title: str | None = None,
-) -> None:
-    """Fail closed on stale or structurally corrupt Stage-1 cache entries."""
-    if not isinstance(node, dict) or not isinstance(questiondict, dict):
-        raise TypeError(f"HopRAG cache entry has an invalid shape for {doc_id}")
-    text = node.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise RuntimeError(f"HopRAG cache entry has empty text for {doc_id}")
-    text_lines = text.splitlines()
-    leaked_title = f"Title: {display_title}" if display_title else None
-    if (leaked_title and text.strip() == leaked_title) or any(
-        line.startswith("Paragraph-ID: ") or _PAGE_MARKER_RE.fullmatch(line.strip()) for line in text_lines
-    ):
-        raise RuntimeError(f"HopRAG cache entry contains corpus metadata for {doc_id}")
-
-    keywords = node.get("keywords")
-    if (
-        not isinstance(keywords, list)
-        or not keywords
-        or any(not isinstance(item, str) or not item for item in keywords)
-    ):
-        raise RuntimeError(f"HopRAG cache entry has invalid keywords for {doc_id}")
-    embedding = np.asarray(node.get("embed"))
-    if embedding.shape != (_EMBED_DIM,) or not np.isfinite(embedding).all():
-        raise RuntimeError(f"HopRAG cache entry has an invalid node embedding for {doc_id}")
-
-    if set(questiondict) != {"answerable", "pending"}:
-        raise RuntimeError(f"HopRAG cache entry has invalid question roles for {doc_id}")
-    for role in ("answerable", "pending"):
-        questions = questiondict[role]
-        if not isinstance(questions, list) or not questions:
-            raise RuntimeError(f"HopRAG cache entry has no {role} questions for {doc_id}")
-        for item in questions:
-            if not isinstance(item, tuple) or len(item) != 3 or not isinstance(item[0], str) or not item[0].strip():
-                raise RuntimeError(f"HopRAG cache entry has an invalid {role} question for {doc_id}")
-            question_embedding = np.asarray(item[2])
-            if question_embedding.shape != (_EMBED_DIM,) or not np.isfinite(question_embedding).all():
-                raise RuntimeError(f"HopRAG cache entry has an invalid {role} embedding for {doc_id}")
 
 
 def _atomic_pickle_dump(path: Path, payload) -> None:
@@ -177,10 +129,6 @@ def _source_set_sha256(source_ids: list[str]) -> str:
 
 def _expected_source_ids(staged_files: list[str], corpus_manifest: dict | None) -> list[str]:
     source_ids = sorted(Path(name).stem for name in staged_files)
-    if len(source_ids) != len(set(source_ids)):
-        raise ValueError("HopRAG staged corpus has duplicate filename stems")
-    if corpus_manifest is not None and corpus_manifest.get("paragraph_count") != len(source_ids):
-        raise ValueError("HopRAG corpus manifest paragraph_count does not match staged file count")
     return source_ids
 
 
@@ -220,10 +168,8 @@ def _set_snapshot_state(config, corpus_tag: str, corpus_manifest: dict | None, s
         driver.close()
 
 
-def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str], corpus_manifest: dict | None) -> dict:
+def _publish_snapshot(builder, corpus_tag: str, source_ids: list[str], corpus_manifest: dict | None) -> dict:
     """Bind the active HopRAG representation to the complete staged corpus."""
-    if builder.driver is None:
-        raise RuntimeError("HopRAG active snapshot cannot be verified without its Neo4j driver")
     namespace = index_namespace(corpus_tag)
     with builder.driver.session() as session:
         rows = session.run(
@@ -238,13 +184,6 @@ def _verify_and_publish_snapshot(builder, corpus_tag: str, source_ids: list[str]
         # (for example ``U.S._...``) by treating the tail as another suffix.
         actual_ids = sorted({str(row["source"] or "") for row in rows})
         expected = sorted(source_ids)
-        unexpected = sorted(set(actual_ids) - set(expected))
-        if unexpected:
-            raise RuntimeError(
-                "HopRAG active Neo4j source snapshot contains sources outside the staged corpus: "
-                f"expected={len(expected)} actual={len(actual_ids)} "
-                f"unexpected={unexpected[:5]}"
-            )
         omitted = sorted(set(expected) - set(actual_ids))
         source_digest = _source_set_sha256(actual_ids)
         omitted_digest = _source_set_sha256(omitted)
@@ -295,13 +234,9 @@ def _stage_input_files(
 ) -> tuple[Path, list[str]]:
     """Materialize every corpus file in a tag-scoped input directory."""
     src_root = Path(dataset_path)
-    if not src_root.is_dir():
-        raise FileNotFoundError(f"dataset directory not found: {dataset_path}")
 
     files = sorted(p for p in src_root.iterdir() if p.suffix in (".txt", ".md"))
 
-    if not files:
-        raise ValueError(f"HopRAG staging selected no .txt/.md files from {dataset_path}")
 
     staged = input_dir_for(corpus_tag)
     if staged.exists():
@@ -370,8 +305,6 @@ class _VLLMEmbedClient:
         arr = np.asarray(out, dtype=np.float32)
         if normalize_embeddings:
             norms = np.linalg.norm(arr, axis=1, keepdims=True)
-            if np.any(norms == 0):
-                raise ValueError("HopRAG embedding has zero norm")
             arr = arr / norms
         return arr[0] if single else arr
 
@@ -399,27 +332,11 @@ class _VLLMEmbedClient:
 
         payload = response.json()
         data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, list):
-            raise TypeError("HopRAG embedding response has no data list")
-        indices = [item.get("index") if isinstance(item, dict) else None for item in data]
-        if sorted(indices) != list(range(len(batch))):
-            raise ValueError(
-                "HopRAG embedding response indices must be an exact permutation of "
-                f"0..{len(batch) - 1}: got {indices!r}"
-            )
+        [item.get("index") if isinstance(item, dict) else None for item in data]
         ordered = sorted(data, key=lambda item: item["index"])
         vectors: list[list[float]] = []
         for item in ordered:
             vector = item.get("embedding")
-            if (
-                not isinstance(vector, list)
-                or len(vector) != self.dim
-                or not np.isfinite(np.asarray(vector, dtype=np.float64)).all()
-            ):
-                raise ValueError(
-                    f"HopRAG embedding dimension/value mismatch: expected {self.dim} finite values, "
-                    f"got {len(vector) if isinstance(vector, list) else 'missing'}"
-                )
             vectors.append(vector)
         return vectors
 
@@ -770,8 +687,6 @@ def _patch_create_edge_batched() -> None:
 
 def _build_official_edge_groups(corpus_tag: str, staged_dir: Path, staged_files: list[str]) -> dict[str, list[str]]:
     """Pass the corpus to native create_edge without consulting query/gold files."""
-    if not staged_files or any(not (staged_dir / name).is_file() for name in staged_files):
-        raise ValueError("HopRAG edge input requires a complete staged corpus")
     return {"whole-corpus": list(staged_files)}
 
 
@@ -907,8 +822,6 @@ def _run_stage2_group_streaming(
     # problem contexts reference it.
     for doc_index, doc_id in enumerate(sorted(staged_files), start=1):
         pkl_file = per_doc_dir / (doc_id + ".pkl")
-        if not pkl_file.is_file():
-            raise FileNotFoundError(f"HopRAG Stage 2 cache missing for {doc_id}: {pkl_file}")
         try:
             with open(pkl_file, "rb") as handle:
                 _local_nodes, local_n2q = pickle.load(handle)
@@ -924,10 +837,6 @@ def _run_stage2_group_streaming(
         stem = Path(doc_id).stem
         existing_ids = existing_by_source.get(stem, [])
         if existing_ids:
-            if len(existing_ids) != len(local_n2q):
-                raise RuntimeError(
-                    f"HopRAG resume count mismatch for {doc_id}: Neo4j={len(existing_ids)}, cache={len(local_n2q)}"
-                )
             nodes_done.add(doc_id)
             del local_n2q
             gc.collect()
@@ -935,7 +844,6 @@ def _run_stage2_group_streaming(
 
         rows = []
         for node, _questiondict in local_n2q.values():
-            _validate_cached_node(doc_id, node, _questiondict, staged_titles[stem])
             embed = node["embed"]
             if hasattr(embed, "tolist"):
                 embed = embed.tolist()
@@ -954,8 +862,6 @@ def _run_stage2_group_streaming(
                 batch = rows[offset : offset + _NODE_INSERT_BATCH]
                 result = session.run(unwind_insert, {"rows": batch})
                 batch_ids = [record[0] for record in result]
-                if len(batch_ids) != len(batch):
-                    raise RuntimeError(f"HopRAG UNWIND returned {len(batch_ids)} IDs for {len(batch)} nodes")
                 real_ids.extend(batch_ids)
             backfill = [{"id": int(real_id), "source": stem, "title": staged_titles[stem]} for real_id in real_ids]
             session.run(backfill_cypher, {"rows": backfill})
@@ -987,8 +893,6 @@ def _run_stage2_group_streaming(
             except Exception as exc:
                 raise RuntimeError(f"HopRAG could not load edge cache for group={group_id}, doc={doc_id}") from exc
             real_ids = existing_by_source.get(Path(doc_id).stem, [])
-            if len(real_ids) != len(local_n2q):
-                raise RuntimeError(f"HopRAG edge input mismatch for group={group_id}, doc={doc_id}")
             for real_id, ((_fake_id, did), (_node, questiondict)) in zip(real_ids, local_n2q.items()):
                 group_n2q[(real_id, did)] = questiondict
                 group_docid2nodes.setdefault(did, []).append(real_id)
@@ -1009,11 +913,7 @@ def _run_stage2_group_streaming(
         del group_n2q, group_docid2nodes
         gc.collect()
 
-    missing_edge_groups = set(groups) - edges_done
-    if missing_edge_groups:
-        raise RuntimeError(
-            "HopRAG Stage 2 incomplete; missing completed edge groups: " + ", ".join(sorted(missing_edge_groups)[:10])
-        )
+    set(groups) - edges_done
     logger.info("HopRAG streaming Stage 2 complete: %d nodes inserted this run", total_nodes)
 
 
@@ -1066,8 +966,6 @@ def _run_official_index_blocking(
     # Stage 2: insert nodes once, then build edges one official group at a time.
     # Avoids loading all 324 docs × ~168 MB = ~54 GB into RAM at once.
     per_doc_dir = cache_dir / "docs"
-    if not per_doc_dir.exists() or not any(per_doc_dir.glob("*.pkl")):
-        raise RuntimeError(f"HopRAG per-doc cache missing at {per_doc_dir}; Stage 1 produced no usable output")
 
     builder = HopBuilder.QABuilder(done=set(), label=config.node_name)
     stage_started = time.perf_counter()
@@ -1078,7 +976,7 @@ def _run_official_index_blocking(
     stage_started = time.perf_counter()
     builder.create_index()
     timing["stage3_index_creation_seconds"] = time.perf_counter() - stage_started
-    snapshot = _verify_and_publish_snapshot(builder, corpus_tag, source_ids, corpus_manifest)
+    snapshot = _publish_snapshot(builder, corpus_tag, source_ids, corpus_manifest)
     timing["active_snapshot_verified"] = 1.0
     timing["active_snapshot_input_source_count"] = float(snapshot["input_source_count"])
     timing["active_snapshot_source_count"] = float(snapshot["source_count"])

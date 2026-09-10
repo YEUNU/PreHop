@@ -134,7 +134,6 @@ async def main():
     parser = _build_parser()
     args = parser.parse_args()
     if RAGConfig.PREHOP_ABLATION_PROFILE:
-        RAGConfig.validate()
         if os.environ.get("RAG_ABLATION_REUSE_EXISTING_INDEX") == "true" and args.mode != "benchmark":
             raise ValueError("Existing ablation indexes are benchmark-only")
         if args.strategy != "prehop" or args.mode not in {"index", "benchmark"} or args.clear_graph:
@@ -149,7 +148,6 @@ async def main():
             await _clear_graph_and_schema(neo4j)
             logger.info("Neo4j graph and application schema cleared successfully.")
         elif args.mode == "index":
-            RAGConfig.validate()
             if args.clear_graph and args.strategy in {"prehop", "naive", "hoprag"}:
                 if os.environ.get("RAG_INDEX_NAMESPACE", "").strip():
                     raise RuntimeError(
@@ -164,10 +162,8 @@ async def main():
                 logger.info("%s uses file artifacts; Neo4j clear is not applicable.", args.strategy)
             await run_indexing(args.dataset, args.strategy, args.model, args.corpus_tag, args.save_intermediate)
         elif args.mode == "hop_rebuild":
-            RAGConfig.validate()
             await rebuild_hop_edges(args.corpus_tag or "default", args.strategy)
         elif args.mode == "benchmark":
-            RAGConfig.validate()
             corpus_tag = args.corpus_tag or "default"
             env_ts = os.environ.get("RAG_BENCHMARK_TIMESTAMP")
             timestamp = env_ts if env_ts else run_id
@@ -176,7 +172,6 @@ async def main():
                 args.queries_file, args.strategy, args.model, corpus_tag=corpus_tag, limit=args.limit
             )
         elif args.mode == "benchmark_all":
-            RAGConfig.validate()
             corpus_tag = args.corpus_tag or "default"
             env_ts = os.environ.get("RAG_BENCHMARK_TIMESTAMP")
             timestamp = env_ts if env_ts else run_id

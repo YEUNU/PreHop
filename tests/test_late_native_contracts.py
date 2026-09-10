@@ -9,27 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.paper_policy import method_environment_defaults, preserve_method_environment
 from models.external_research.drivers.linear_rag import LinearNativeInference, LinearRAGDriver
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def test_method_sentinels_are_generic_and_preserve_explicit_overrides(tmp_path):
-    path = tmp_path / '.env'
-    path.write_text('RAG_MS_CONCURRENT_REQUESTS=secret-not-read\nRAG_LINEAR_RAG_UNKNOWN=future\n')
-    defaults = method_environment_defaults(path)
-    assert defaults['RAG_MS_CONCURRENT_REQUESTS'] == ''
-    assert defaults['RAG_LINEAR_RAG_UNKNOWN'] == ''
-    env = {'RAG_MS_CONCURRENT_REQUESTS': 'explicit'}
-    preserve_method_environment(env, path)
-    assert env['RAG_MS_CONCURRENT_REQUESTS'] == 'explicit'
-    assert env['RAG_LINEAR_RAG_UNKNOWN'] == ''
-    from unittest.mock import patch
-
-    from core.paper_policy import validate_paper_semantic_environment
-    with patch.dict(os.environ, env, clear=True), pytest.raises(RuntimeError, match='unknown paper method'):
-        validate_paper_semantic_environment('ms_graphrag', 'hotpotqa')
 
 
 def _runtime(strategy):

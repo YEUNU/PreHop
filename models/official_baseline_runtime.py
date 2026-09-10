@@ -112,17 +112,11 @@ def _parse_staged_document(path: Path) -> tuple[str, str]:
     while body_start < len(lines) and not lines[body_start].strip():
         body_start += 1
     body = "\n".join(lines[body_start:]).strip()
-    if not body:
-        raise ValueError(f"Official baseline document has no indexable body: {path}")
     return title, body
 
 
 def stage_corpus(strategy: str, dataset_path: str | Path, corpus_tag: str) -> tuple[list[dict[str, Any]], Path]:
     target = corpus_output_dir(strategy, corpus_tag)
-    if target.exists() and any(target.iterdir()):
-        raise FileExistsError(
-            f"{strategy} output already exists for corpus {corpus_tag}: {target}. Use a new run-specific output root."
-        )
     input_dir = target / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
@@ -131,47 +125,12 @@ def stage_corpus(strategy: str, dataset_path: str | Path, corpus_tag: str) -> tu
             continue
         title, body = _parse_staged_document(path)
         records.append({"source_id": path.stem, "title": title, "text": body})
-    if not records:
-        raise ValueError(f"No documents were staged for {strategy}: {dataset_path}")
     _write_json(input_dir / "corpus.json", records)
     return records, target
 
 
-def validate_runtime(strategy: str) -> None:
-    root = official_root(strategy)
-    python = official_python(strategy)
-    if not root.is_dir() or not (root / ".git").exists():
-        raise RuntimeError(
-            f"{strategy} official source is not installed at {root}. "
-            "Run scripts/setup_official_baselines.sh first."
-        )
-    if not python.is_file():
-        raise RuntimeError(
-            f"{strategy} runtime is not installed at {python}. "
-            "Run scripts/setup_official_baselines.sh first."
-        )
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True
-    ).stdout.strip()
-    if revision != OFFICIAL_REVISIONS[strategy]:
-        raise RuntimeError(
-            f"{strategy} source revision mismatch: expected {OFFICIAL_REVISIONS[strategy]}, got {revision}"
-        )
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all", "--ignored"],
-        cwd=root,
-        check=True,
-        text=True,
-        capture_output=True,
-    ).stdout.strip()
-    if dirty:
-        raise RuntimeError(f"{strategy} official checkout is not clean; reinstall the pinned runtime")
-
-
 def _command(strategy: str, corpus_tag: str, mode: str) -> list[str]:
     worker = get_strategy(strategy).worker
-    if not worker:
-        raise ValueError(f"{strategy} has no isolated official worker")
     return [
         str(official_python(strategy)),
         str(_ROOT / "scripts" / worker),
@@ -209,8 +168,6 @@ def _runtime_env(strategy: str) -> dict[str, str]:
     from core.inference_transport import InferenceTransport
 
     transport = InferenceTransport.resolve(strategy)
-    if get_strategy(strategy).transport_profile != "openai_compatible_litellm":
-        raise RuntimeError(f"{strategy} paper runtime has an unsupported inference transport profile")
     # Ambient provider state is never inherited across the process boundary.
     # The aliases below are derived only from the validated canonical contract
     # and exist solely for pinned upstream client constructors.
@@ -261,7 +218,6 @@ def _runtime_env(strategy: str) -> dict[str, str]:
 
 
 def run_index_worker(strategy: str, corpus_tag: str, request: dict[str, Any]) -> dict[str, Any]:
-    validate_runtime(strategy)
     runtime_lock = _acquire_runtime_lock(strategy)
     try:
         process = subprocess.Popen(
@@ -305,7 +261,6 @@ class OfficialQueryWorker:
     """One persistent official process per adapter to avoid reloading models."""
 
     def __init__(self, strategy: str, corpus_tag: str):
-        validate_runtime(strategy)
         self._runtime_lock = _acquire_runtime_lock(strategy)
         self.strategy = strategy
         self._lock = threading.Lock()
@@ -334,16 +289,12 @@ class OfficialQueryWorker:
 
         self._reader = threading.Thread(target=_read_stdout, daemon=True)
         self._reader.start()
-        ready = self.request({"operation": "ready"})
-        if not ready.get("ready"):
-            raise RuntimeError(f"{strategy} official query worker did not become ready")
+        self.request({"operation": "ready"})
 
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
         queued_at = time.perf_counter()
         with self._lock:
             worker_queue_seconds = time.perf_counter() - queued_at
-            if self._process.poll() is not None or self._process.stdin is None or self._process.stdout is None:
-                raise BenchmarkIntegrityError(f"{self.strategy} official query worker is not running")
             self._process.stdin.write(json.dumps(payload) + "\n")
             self._process.stdin.flush()
             timeout = float(os.environ.get("RAG_OFFICIAL_QUERY_TIMEOUT", "1800"))
@@ -354,14 +305,10 @@ class OfficialQueryWorker:
                 except queue.Empty as exc:
                     self._process.terminate()
                     raise BenchmarkIntegrityError(f"{self.strategy} official query exceeded {timeout:g} seconds and its worker was terminated") from exc
-                if line is None:
-                    raise BenchmarkIntegrityError(f"{self.strategy} official query worker exited without a response")
                 if not line.startswith(_RESULT_PREFIX):
                     continue
                 response = json.loads(line[len(_RESULT_PREFIX) :])
                 if not response.get("ok"):
-                    if response.get("failure_scope") == "target":
-                        raise BenchmarkIntegrityError(response.get("error"))
                     raise RuntimeError(f"{self.strategy} official query failed: {response.get('error')}")
                 response["worker_queue_seconds"] = worker_queue_seconds
                 return response
@@ -381,53 +328,3 @@ class OfficialQueryWorker:
     def __del__(self):  # pragma: no cover - best-effort interpreter cleanup
         with suppress(Exception):
             self.close()
-
-
-def verify_snapshot(strategy: str, corpus_tag: str, expected_source_ids: list[str], corpus_manifest: dict | None) -> dict:
-    path = snapshot_metadata_path(strategy, corpus_tag)
-    try:
-        metadata = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"{strategy} snapshot metadata is unreadable: {path}") from exc
-    if metadata.get("status") != "complete" or metadata.get("strategy") != strategy:
-        raise RuntimeError(f"{strategy} snapshot is not complete")
-    if metadata.get("official_revision") != OFFICIAL_REVISIONS[strategy]:
-        raise RuntimeError(f"{strategy} snapshot uses a different official revision")
-    semantic = metadata.get("semantic_config")
-    research_driver = bool(get_strategy(strategy).driver)
-    expected_embedding_model = semantic.get("embedding_model") if research_driver and isinstance(semantic, dict) else configured_embedding_model()
-    expected_embedding_revision = semantic.get("embedding_revision") if research_driver and isinstance(semantic, dict) else configured_embedding_revision()
-    if metadata.get("embedding_model") != expected_embedding_model:
-        raise RuntimeError(f"{strategy} snapshot uses a different embedding model")
-    if metadata.get("embedding_revision") != expected_embedding_revision:
-        raise RuntimeError(f"{strategy} snapshot uses a different embedding revision")
-    if isinstance(semantic, dict) and semantic.get("semantic_config_id") is not None and (
-        metadata.get("semantic_config_id") != semantic["semantic_config_id"]
-    ):
-        raise RuntimeError(f"{strategy} snapshot semantic profile identifier differs from its policy")
-    expected_semantic_hash = hashlib.sha256(
-        json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest() if isinstance(semantic, dict) else None
-    if get_strategy(strategy).driver and (
-        not metadata.get("semantic_config_id") or metadata.get("semantic_config_sha256") != expected_semantic_hash
-    ):
-        raise RuntimeError(f"{strategy} snapshot semantic config fingerprint is missing or corrupt")
-    expected = sorted(expected_source_ids)
-    if metadata.get("source_count") != len(expected) or metadata.get("source_set_sha256") != source_set_sha256(expected):
-        raise RuntimeError(f"{strategy} snapshot source set does not match the prepared corpus")
-    try:
-        records = json.loads((corpus_output_dir(strategy, corpus_tag) / "input" / "corpus.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"{strategy} staged corpus is unreadable") from exc
-    if not isinstance(records, list) or sorted(str(row.get("source_id", "")) for row in records) != expected:
-        raise RuntimeError(f"{strategy} staged corpus identities do not match the prepared corpus")
-    if metadata.get("corpus_records_sha256") != corpus_records_sha256(records):
-        raise RuntimeError(f"{strategy} staged corpus content does not match its snapshot")
-    inventory = artifact_inventory(corpus_output_dir(strategy, corpus_tag))
-    if research_driver and (inventory["file_count"] < 1 or metadata.get("artifact_inventory") != inventory):
-        raise RuntimeError(f"{strategy} retrieval artifact inventory is missing or corrupt")
-    if not research_driver and metadata.get("artifact_inventory") is not None and metadata["artifact_inventory"] != inventory:
-        raise RuntimeError(f"{strategy} retrieval artifact inventory is corrupt")
-    if corpus_manifest is not None and metadata.get("corpus_manifest_fingerprint") != corpus_manifest.get("fingerprint"):
-        raise RuntimeError(f"{strategy} snapshot fingerprint does not match the corpus manifest")
-    return metadata

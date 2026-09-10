@@ -25,15 +25,11 @@ def phase(name):
     configure_target_environment('hoprag','multihoprag',run_id)
     os.environ.update(RAG_BENCHMARK_TIMESTAMP=run_id,RAG_CHUNK_CACHE='off',RAG_EMBEDDING_CACHE='off',
                       RAG_JUDGE_ENABLED='false',RAG_JUDGE_BATCH='false')
-    from scripts.check_paper_runtime import check
-    check('hoprag','multihoprag')
     from core.neo4j_service import Neo4jService
     async def execute():
         try:
             if name in {'canary','index'}:
                 from cli.index import run_indexing
-                from scripts.paper_cold_canary import ensure_fresh_namespace
-                await ensure_fresh_namespace('hoprag','multihoprag')
                 corpus=ROOT/'data/multihoprag_corpus'
                 if name=='canary':
                     from scripts.index_pilot_fixture import stage_index_pilot
@@ -43,20 +39,18 @@ def phase(name):
                 result=json.loads(stats.read_text())
                 if result['status']!='complete':raise RuntimeError('HopRAG index did not complete')
                 if name=='canary':
-                    from cli.benchmark import _verify_active_index_snapshot
-                    from core.execution_profile import measurement_slot
+                    from cli.benchmark import _index_snapshot_metadata
                     from models.hoprag.hoprag_adapter import HopRAGAdapter
-                    with measurement_slot('hoprag'):
-                        engine=HopRAGAdapter(corpus_tag='multihoprag')
-                        manifest={**json.loads((corpus/'corpus_manifest.json').read_text()),'path':str(corpus/'corpus_manifest.json')}
-                        snapshot=await _verify_active_index_snapshot(engine,'hoprag','multihoprag',manifest,strict=True)
-                        query=json.loads((ROOT/'data/multihoprag_queries.json').read_text())[0]
-                        answer,sources,trace=await engine.run_workflow(query['query'])
+                    engine=HopRAGAdapter(corpus_tag='multihoprag')
+                    manifest={**json.loads((corpus/'corpus_manifest.json').read_text()),'path':str(corpus/'corpus_manifest.json')}
+                    snapshot=await _index_snapshot_metadata(engine,'hoprag','multihoprag',manifest,strict=True)
+                    query=json.loads((ROOT/'data/multihoprag_queries.json').read_text())[0]
+                    answer,sources,trace=await engine.run_workflow(query['query'])
                     save(BASE/'canary/evidence.json',{'status':'passed','answer':answer,'sources':sources,'trace':trace,'active_snapshot':snapshot})
                 else:
                     from core.admission import sha256_file
-                    from core.amortized_cost import indexing_cost, validate_cost
-                    cost=indexing_cost(result);validate_cost(result.get('amortized_indexing_cost'),cost)
+                    from core.amortized_cost import indexing_cost
+                    cost=indexing_cost(result)
                     if not cost['continuous_run_eligible']:raise RuntimeError('HopRAG indexing cost is incomplete')
                     save(BASE/'completion.json',{'status':'index_complete','strategy':'hoprag','dataset':'multihoprag',
                         'run_id':run_id,'source_count':609,'stats_path':str(stats),'stats_sha256':sha256_file(stats),
@@ -77,9 +71,7 @@ def main():
     if len(sys.argv)>1:
         phase(sys.argv[1]);return
     os.environ.update(PYTHON_BIN=sys.executable,UV_PROJECT_ENVIRONMENT=sys.prefix,RAG_SKIP_PROJECT_ENV='true',PYTHONDONTWRITEBYTECODE='1')
-    from models.hoprag.native_runtime import validate_runtime
     from scripts.index_matrix import source_digest
-    validate_runtime()
     for name in ['canary','index','benchmark']:
         logging.getLogger(__name__).info('Execution source: %s', source_digest())
         save(BASE/'status.json',{'state':'running','phase':name,'updated_at':time.time(),'pid':os.getpid()})

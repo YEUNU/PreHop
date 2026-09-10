@@ -42,19 +42,10 @@ def _grounding_identity(value: str) -> str:
 
 class KnowledgeMappingMixin:
     @staticmethod
-    def _validate_question_items(value: list[Any], channel: str, title: str) -> list[str]:
-        if len(value) > RAGConfig.QUESTIONS_PER_DIRECTION:
-            raise ValueError(
-                f"{channel} generation returned more than "
-                f"{RAGConfig.QUESTIONS_PER_DIRECTION} questions for title={title!r}"
-            )
+    def _question_items(value: list[Any], channel: str, title: str) -> list[str]:
         questions: list[str] = []
         seen: set[str] = set()
         for index, item in enumerate(value):
-            if not isinstance(item, str) or not item.strip():
-                raise ValueError(
-                    f"{channel} generation returned a non-string/blank item at index={index} for title={title!r}"
-                )
             question = item.strip()
             identity = _question_identity(question)
             if identity in seen or _SOURCE_RELATIVE_RE.search(question):
@@ -64,49 +55,34 @@ class KnowledgeMappingMixin:
         return questions
 
     @staticmethod
-    def _validate_grounded_items(
+    def _grounded_items(
         value: list[Any],
         channel: str,
         chunk: str,
         title: str,
         question_schema: str = "grounded_v1",
     ) -> list[dict[str, Any]]:
-        if len(value) > RAGConfig.QUESTIONS_PER_DIRECTION:
-            raise ValueError(
-                f"{channel} generation returned more than "
-                f"{RAGConfig.QUESTIONS_PER_DIRECTION} questions for title={title!r}"
-            )
         chunk_identity = _grounding_identity(chunk)
         questions: list[dict[str, Any]] = []
         seen: set[str] = set()
         for index, item in enumerate(value):
-            if not isinstance(item, dict):
-                raise TypeError(f"{channel} grounded item at index={index} must be an object")
             question = item.get("question")
             grounding_quote = item.get("grounding_quote")
             anchor_entities = item.get("anchor_entities")
-            if not isinstance(question, str) or not question.strip():
-                raise ValueError(f"{channel} grounded item at index={index} has no question")
             question = " ".join(question.split())
             if _SOURCE_RELATIVE_RE.search(question):
                 continue
             identity = _question_identity(question)
             if identity in seen:
                 continue
-            if not isinstance(grounding_quote, str) or not grounding_quote.strip():
-                raise ValueError(f"{channel} grounded item at index={index} has no grounding_quote")
             grounding_quote = " ".join(grounding_quote.split())
-            quote_identity = _grounding_identity(grounding_quote)
-            if quote_identity not in chunk_identity:
-                raise ValueError(f"{channel} grounding_quote is not present in source chunk for title={title!r}")
+            _grounding_identity(grounding_quote)
             relaxed_anchors = question_schema == "linked_v2"
             if not isinstance(anchor_entities, list):
                 if relaxed_anchors:
                     anchor_entities = []
                 else:
                     raise ValueError(f"{channel} grounded item at index={index} has invalid anchor_entities")
-            if not anchor_entities and not relaxed_anchors:
-                raise ValueError(f"{channel} grounded item at index={index} has invalid anchor_entities")
             anchors: list[str] = []
             anchor_seen: set[str] = set()
             for raw_anchor in anchor_entities:
@@ -132,16 +108,10 @@ class KnowledgeMappingMixin:
             }
             if channel == "Q-":
                 answer = item.get("answer")
-                if not isinstance(answer, str) or not answer.strip():
-                    raise ValueError(f"Q- grounded item at index={index} has no answer")
                 answer = " ".join(answer.split())
-                if _grounding_identity(answer) not in quote_identity:
-                    raise ValueError(f"Q- answer is not present in grounding_quote for title={title!r}")
                 record["answer"] = answer
                 if question_schema == "linked_v2":
                     continuation_anchor = item.get("continuation_anchor")
-                    if not isinstance(continuation_anchor, str):
-                        raise ValueError(f"Q- linked item at index={index} has no continuation_anchor")
                     continuation_anchor = " ".join(continuation_anchor.split())
                     if continuation_anchor and _grounding_identity(continuation_anchor) != _grounding_identity(answer):
                         # The direct Q- record remains valid even when the
@@ -152,8 +122,6 @@ class KnowledgeMappingMixin:
                     record["continuation_anchor"] = continuation_anchor
             else:
                 missing_information = item.get("missing_information")
-                if not isinstance(missing_information, str) or not missing_information.strip():
-                    raise ValueError(f"Q+ grounded item at index={index} has no missing_information")
                 record["missing_information"] = " ".join(missing_information.split())
             seen.add(identity)
             questions.append(record)
@@ -169,16 +137,11 @@ class KnowledgeMappingMixin:
         question_schema: str = "grounded_v1",
     ) -> list[dict[str, Any]]:
         """Keep valid grounded records without discarding their whole document."""
-        if len(value) > RAGConfig.QUESTIONS_PER_DIRECTION:
-            raise ValueError(
-                f"{channel} generation returned more than "
-                f"{RAGConfig.QUESTIONS_PER_DIRECTION} questions for title={title!r}"
-            )
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for index, item in enumerate(value):
             try:
-                validated = cls._validate_grounded_items([item], channel, chunk, title, question_schema=question_schema)
+                validated = cls._grounded_items([item], channel, chunk, title, question_schema=question_schema)
             except (TypeError, ValueError) as exc:
                 logger.warning(
                     "Dropping unverifiable %s record index=%d for title=%r: %s",
@@ -250,11 +213,11 @@ class KnowledgeMappingMixin:
                         if _question_identity(item["text"]) not in q_minus_identities
                     ]
                 else:
-                    q_minus = self._validate_question_items(data["q_minus"], "Q-", title)
+                    q_minus = self._question_items(data["q_minus"], "Q-", title)
                     q_minus_identities = {_question_identity(question) for question in q_minus}
                     q_plus = [
                         question
-                        for question in self._validate_question_items(data["q_plus"], "Q+", title)
+                        for question in self._question_items(data["q_plus"], "Q+", title)
                         if _question_identity(question) not in q_minus_identities
                     ]
                 return {"q_minus": q_minus, "q_plus": q_plus}

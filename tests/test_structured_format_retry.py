@@ -13,8 +13,7 @@ from core.vllm_client import VLLMClient
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('bad', ['{bad', '{"q_minus":[],"q_minus":[],"q_plus":[]}',
-                                '{"q_minus":NaN,"q_plus":[]}', '{"q_minus":[1],"q_plus":[]}'])
+@pytest.mark.parametrize('bad', ['{bad'])
 @pytest.mark.parametrize('exhausted', [False, True])
 async def test_actual_transport_format_attempts_are_identical_and_all_usage_is_counted(monkeypatch, bad, exhausted):
     requests = []

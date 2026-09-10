@@ -2,8 +2,9 @@
 
 The revised Prehop design removes initial query rewriting and evidence-conditioned
 query regeneration/re-search. The original query searches all three channels at
-every input length. The runtime uses this single-pass policy. Earlier Prehop scores and costs have been removed from paper reporting. New
-results are pending and require separate compatible full-run artifacts.
+every input length. The runtime uses this single-pass policy. Earlier Prehop scores and costs have been removed from paper reporting. The completed
+original-query MultiHop-RAG run is now reported in [the result register](RESULTS.md);
+other pending experiments require their own compatible full-run artifacts.
 
 Use this guide to launch targets, preserve existing evidence, and report
 comparable costs. Runtime setup belongs in
@@ -11,15 +12,16 @@ comparable costs. Runtime setup belongs in
 [RESULTS](RESULTS.md). Keep live counters, queue snapshots, and temporary
 investigations in generated campaign artifacts outside `docs`.
 
-HotpotQA fullwiki preparation and its sentence-output evaluation policy are
-documented in [HOTPOTQA_FULLWIKI](HOTPOTQA_FULLWIKI.md).
+HotpotQA (HippoRAG corpus) preparation and its sentence-output evaluation policy are
+documented in [HOTPOTQA](HOTPOTQA.md).
 
 ## Completion and continuation
 
 A finished benchmark receives a completion receipt from
 `scripts/record_paper_completion.py`, without final paper-policy validation.
-The legacy verifier entry forwards to that recorder. Runtime readiness,
-index-reuse, corpus integrity, and checkpoint checks remain separate.
+The legacy verifier entry forwards to that recorder. Automatic runtime, index-reuse, corpus-integrity, configuration, and checkpoint
+validation gates are also removed. JSON decoding and actual execution errors
+remain observable.
 An index-only completion is not a completed query benchmark.
 
 LLM judging is disabled in the paper configuration. If explicitly enabled for
@@ -42,10 +44,10 @@ legacy versions retain their historical per-kind limits.
 
 `core/inference_queue.py` limits upstream requests across child processes,
 forwards request bodies and streaming responses, and does not add retries.
-The default measurement limit is one target. `RAG_MEASUREMENT_MAX_TARGETS`
-accepts 1–4; multiple targets require the owned queue and imply shared-resource
-measurement. Local ownership locks cannot establish exclusivity against remote
-clients or other users.
+The dispatcher controls the number of active targets. The current rolling
+configuration runs two targets; per-target measurement and index locks no longer
+reject overlapping launches. The shared queue still enforces its configured
+request limit.
 
 ### Shared indexing profile
 
@@ -137,9 +139,8 @@ TERM and a bounded wait, without KILL escalation. Surviving owned processes
 block restart. Reboot recovery and automatic chat notifications are not claimed.
 
 `paper_campaign.py` and `run_paper_matrix.sh` also retain a separate legacy
-full-matrix evidence-ledger workflow. Its explicit prerequisites are distinct
-from the index-only and rolling dispatcher, and its legacy stage names do not
-change the registry's target count. It is not an automatic final validation step.
+full-matrix evidence-ledger workflow. Its ledger records executed stages without prerequisite approval checks. Legacy
+stage names do not change the registry's target count. It is not an automatic final validation step.
 
 ### Cancelling queued work
 
@@ -157,7 +158,7 @@ Report datasets separately and state each metric's population.
 | Dataset | Quality population and measures | Cost normalization |
 |---|---|---|
 | MultiHop-RAG | 2,255 non-null queries: official Hits@4/10, MRR@10, MAP@10; all 2,556 queries: official QA Accuracy | 609 source documents; 2,556 queries |
-| HotpotQA fullwiki | All 7,405 dev queries: official answer, supporting-fact and joint EM/F1/precision/recall; results unmeasured | 5,233,329 source paragraphs; 7,405 queries; prepared artifacts verified |
+| HotpotQA (HippoRAG corpus) | All 1,000 released rows (944 original questions): official answer, supporting-fact and joint EM/F1/precision/recall; results unmeasured | 9,221 released passages; row-weighted metrics and original-question cluster intervals |
 
 The 301 MultiHop-RAG null questions are excluded from successful retrieval
 rows. Terminal failures have zero quality scores; failed null rows can alter
@@ -197,3 +198,14 @@ Query bootstrap intervals do not capture generation/index-build variability or
 selection bias. Latency comparisons require a declared common serving/load
 window. The [ablation specification](PAPER_ABLATION_DESIGN.md) defines the two
 representation comparisons and their unequal initial search budgets.
+
+## Controlled link experiments
+
+`scripts/link_experiment_campaign.py` executes the explicit dependency graph
+from `scripts/plan_link_experiments.py`. Ordinary tasks use at most two slots.
+Exclusive timing tasks wait for an idle campaign, while ready non-timing work
+can continue. Primary benchmark tasks follow their completed index. Shared
+inference capacity remains 120; timing benchmarks set query concurrency to one.
+See [PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md) for measurement scope and
+[HOTPOTQA](HOTPOTQA.md) for the active corpus. The JSON timing-store file points
+to Neo4j HOP_TIMING relationships and contains no destination table.

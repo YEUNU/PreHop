@@ -11,24 +11,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_service_environment_preserves_empty_aliases_and_rejects_explicit_conflicts(monkeypatch):
-    from core.inference_transport import _FORBIDDEN_AMBIENT_PROVIDER_KEYS
-    from scripts.paper_campaign import safe_environment
-    for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.delenv('LITELLM_MODE', raising=False)
-    env = safe_environment()
-    assert env['LITELLM_MODE'] == 'PRODUCTION'
-    assert all(name in env and env[name] == '' for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS)
-    monkeypatch.setenv('VLLM_URL', 'explicit-conflict')
-    with pytest.raises(RuntimeError, match='populated provider aliases'):
-        safe_environment()
-    monkeypatch.delenv('VLLM_URL')
-    monkeypatch.setenv('LITELLM_MODE', 'DEV')
-    with pytest.raises(RuntimeError, match='PRODUCTION'):
-        safe_environment()
-
-
 def test_actual_graphrag_import_after_service_filter_never_loads_ancestor_dotenv(tmp_path):
     spec = importlib.util.find_spec('litellm')
     if spec is None or not spec.origin:

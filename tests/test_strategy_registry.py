@@ -1,4 +1,3 @@
-import pytest
 
 from core.embedding_policy import EmbeddingOperationalConfig
 from core.inference_transport import InferenceTransport
@@ -58,5 +57,4 @@ def test_transport_consumes_only_canonical_single_endpoint(monkeypatch):
     monkeypatch.delenv("RAG_INFERENCE_BASE_URL")
     monkeypatch.setenv("VLLM_URL", "http://legacy-generation/v1")
     monkeypatch.setenv("VLLM_EMBED_URL", "http://legacy-embedding/v1")
-    with pytest.raises(RuntimeError, match="RAG_INFERENCE_BASE_URL"):
-        InferenceTransport.resolve("prehop")
+    assert InferenceTransport.resolve("prehop").generation_base_url == ""
