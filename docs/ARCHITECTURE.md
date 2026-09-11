@@ -170,19 +170,22 @@ linked-continuation switches remain distinct from the primary defaults.
 
 ## Explicit representation ablations
 
-`core/prehop_ablation.py` describes `question_full`, `question_body`, and
-`body_body`. All use original queries, all-seed HOP activation, body-only
+`core/prehop_ablation.py` describes `question_full`, `question_body`,
+`body_body`, and `body_full`. All use original queries, all-seed HOP activation, body-only
 semantic scoring, depth one, and the existing final selector. Under all-seed
 activation, HOP targets inherit the source's total representation score.
 These settings are not the historical primary benchmark baseline.
 
-A/B can read an existing compatible question graph through
+Both question-based linking conditions can read an existing compatible question graph through
 `--reuse-existing-index`. They retain its namespace and exact index-stat
-identity; writes and HOP rebuilds are disallowed for reused indexes. C uses a
-fresh namespace and the frozen reference's per-passage degree budget.
+identity; writes and HOP rebuilds are disallowed for reused indexes. The body-based linking conditions share a
+separate namespace and the frozen reference's per-passage degree budget.
 `scripts/clone_prehop_body.py` can copy body properties and Document/Chunk,
 CONTAINS, and NEXT structure without copying questions or HOP edges, then build
-body links. Clone-only costs are not cold indexing costs.
+body links. Clone-only costs are not cold indexing costs. `body_full` uses frozen
+multi-channel inputs from the question index with the body-linked graph; the
+launcher requires benchmark mode and explicit frozen inputs for this profile.
+Question representations supply initial retrieval but do not construct body links.
 
 The launcher prints a plan unless `--execute` is supplied. Its metadata uses
 `prehop-representation-ablation-v1`. See
@@ -204,7 +207,12 @@ Prehop instead resolves each Q+ through an ANN Q− index with source exclusion.
 Both precompute connections; this architectural difference alone establishes
 neither novelty nor a retrieval or cost advantage. Large edge groups use
 `models/hoprag/exact_edges.py` to score all candidate pairs in bounded blocks
-and retain native selection rules. The older approximate dense-top-k helper
+and retain native selection rules. The adapter creates the native-dtype answer
+vector array once per edge group and reuses it across pending blocks.
+`RAG_HOP_EDGE_BLOCK_SIZE` defaults to 128; only the current block of pair scores
+is allocated. Sparse weights, same-node exclusion, tie ordering and final
+sort/deduplication remain unchanged. No complete question cross join is built.
+The older approximate dense-top-k helper
 remains unused. Small groups use the native constructor.
 
 <a id="legacy-external-modules"></a>
@@ -327,18 +335,20 @@ controller's dispatch policy. See [execution procedures](THROUGHPUT_EXECUTION.md
 
 ## Research diagrams
 
-The [manuscript](prehop_paper.md) uses three editable diagrams:
+The method is illustrated by three editable schematics:
 [overview](../fig/prehop_paper_overview.svg),
 [query retrieval](../fig/prehop_paper_retrieval.svg), and
 [passage-link example](../fig/prehop_paper_links.svg).
 They describe the current single-pass paper design. HOP links come from
 question matching; NEXT links come from within-source passage order. Original-
 query retrieval and stored-link traversal contribute to a deduplicated candidate
-set before selection. There is no input-length branch or query rewriting. A/B/C conditions
+set before selection. There is no input-length branch or query rewriting. Representation-ablation conditions
 use the separate controls in [the ablation specification](PAPER_ABLATION_DESIGN.md).
 Unreferenced legacy SVG/drawio schematics are retained under `fig/archive/`;
 they document superseded designs and must not be used as current paper figures.
-Export and target-display checks are tracked in [the manuscript checklist](PAPER_CHECKLIST.md#figures-and-export-stability).
+Result graphs are generated from completed evidence registered in
+[RESULTS](RESULTS.md); they do not define runtime behavior.
+Export and target-display checks are tracked in [the manuscript checklist](PAPER_CHECKLIST.md#rendering-and-cross-references).
 
 ### Direct retrieval and stored-link traversal
 
@@ -356,7 +366,7 @@ changes when HOP destinations are resolved and is not the primary query flow.
 ## Controlled link-experiment modules
 
 `models/prehop/ablation_inputs.py` provides explicit ablation-only frozen direct
-inputs; primary retrieval does not consult them. A/B/C downstream measurements
+inputs; primary retrieval does not consult them. representation ablation downstream measurements
 carry their restricted latency scope. `models/prehop/connection_timing.py`
 resolves Q+ destinations through the shared native matching wave and stores
 experiment-scoped HOP_TIMING relationships in Neo4j. Both timing arms hydrate
@@ -368,3 +378,35 @@ measures co-evidence reachability plus a degree-matched random null. It never
 writes gold-driven links. `scripts/ablation_statistics.py` resamples original
 question clusters, retaining duplicate release occurrences. The task graph and
 measurement constraints are owned by [PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md).
+
+
+## Post-hoc connection analysis
+
+`scripts/analyze_evidence_connections.py` reads a frozen graph and produces
+`co-evidence-connectivity-v3` artifacts. It does not change retrieval or graph
+construction. Per-query records retain original question IDs, relation-specific
+scores, all random-graph realizations, and observed-minus-random differences.
+Summaries expose released-row and original-question macro means with separate
+question-cluster intervals. Random-graph variability occupies separate fields.
+
+`scripts/ablation_statistics.py` pairs occurrence IDs before resampling original
+questions. For version-3 connectivity inputs it discovers the complete metric
+list, including signed differences, from `comparison_metrics`.
+`scripts/analyze_ablation_links.py` uses the same inference function for
+query-conditioned utility, with its successful-query denominator retained.
+The scientific definitions belong in [PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md).
+
+`scripts/prepare_reference_timing.py` reads original full-run traces to recover
+actual connection starts, exclusions, settings and historical destinations.
+`scripts/prehop_connection_timing.py --reference-inputs` measures both connection
+arms on those recorded inputs using the prepared Neo4j store. It performs no
+initial retrieval or answer generation. The original controlled replay remains
+separate because its starts and settings can differ from the primary reference.
+
+`scripts/estimate_connection_total.py` adds each query's online-minus-stored
+connection delta to its existing measured full-query latency. It writes a new
+`estimated_end_to_end` artifact, leaving the baseline untouched. Per-query
+reasons explain unavailable estimates; paired-subset summaries remain distinct
+from full-population summaries. Connection measurements retain the
+`fixed_start_connection_replay` scope. These are analysis outputs, not new
+production retrieval pipelines or runtime approval gates.

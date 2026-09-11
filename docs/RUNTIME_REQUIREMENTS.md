@@ -224,7 +224,7 @@ HopRAG runtime before reuse; passing preflight does not establish completed
 edge construction.
 The pinned upstream source is unchanged.
 
-## Paper benchmark scope
+## Dataset compatibility
 
 The paper targets MultiHop-RAG and the pinned HippoRAG HotpotQA release
 (9,221 passages, 1,000 occurrences, 944 original question IDs). All seven native
@@ -236,6 +236,8 @@ Fullwiki data is retained separately and is not the active comparison protocol.
 Repository-owned launchers support these two datasets; additional dataset support
 inside pinned upstream packages is outside the paper.
 
+
+### HopRAG launcher selection
 
 Model-specific shell and Python launchers select HopRAG's pinned main runtime
 instead of the common main interpreter. Its observed runtime identity is read

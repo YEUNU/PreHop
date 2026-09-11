@@ -1,10 +1,8 @@
 # Execution and Measurement Protocol
 
-The revised Prehop design removes initial query rewriting and evidence-conditioned
-query regeneration/re-search. The original query searches all three channels at
-every input length. The runtime uses this single-pass policy. Earlier Prehop scores and costs have been removed from paper reporting. The completed
-original-query MultiHop-RAG run is now reported in [the result register](RESULTS.md);
-other pending experiments require their own compatible full-run artifacts.
+Prehop uses original-query, single-pass retrieval at every input length.
+The query path is defined in [ARCHITECTURE](ARCHITECTURE.md#prehop-query-path-and-branches);
+result eligibility and completed measurements belong in [RESULTS](RESULTS.md).
 
 Use this guide to launch targets, preserve existing evidence, and report
 comparable costs. Runtime setup belongs in
@@ -202,10 +200,58 @@ representation comparisons and their unequal initial search budgets.
 ## Controlled link experiments
 
 `scripts/link_experiment_campaign.py` executes the explicit dependency graph
-from `scripts/plan_link_experiments.py`. Ordinary tasks use at most two slots.
+from `scripts/plan_link_experiments.py`. Ordinary tasks use at most two slots,
+with at most one HopRAG task across datasets. A ready HopRAG phase takes
+priority when its slot is free; the other slot remains available to other models.
+A plan with `max_active: 1` and `execution_filter: "hoprag"` runs only
+one HopRAG task at a time and leaves other models pending.
+`--resume` preserves recorded completed/failed tasks and adopts running tasks
+from the saved state instead of restarting the task graph.
 Exclusive timing tasks wait for an idle campaign, while ready non-timing work
 can continue. Primary benchmark tasks follow their completed index. Shared
-inference capacity remains 120; timing benchmarks set query concurrency to one.
+inference capacity remains 120; connection replays process one query at a time.
+No additional natural end-to-end timing benchmarks are scheduled. Reference
+traces supply matched starting passages for connection-only measurements;
+offline analysis adds their per-query deltas to existing measured full-query
+latencies. Estimated latency is separate from measured latency and cannot
+replace measured batch wall time or throughput.
 See [PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md) for measurement scope and
 [HOTPOTQA](HOTPOTQA.md) for the active corpus. The JSON timing-store file points
 to Neo4j HOP_TIMING relationships and contains no destination table.
+
+
+The controller starts only tasks whose dependencies have completed. Ready
+ablation benchmarks have dispatch priority over preparation and indexing;
+primary benchmarks follow their own index. A failed task is recorded as
+`failed`, and dependent tasks become `dependency_failed`; the controller does
+not silently retry or substitute results. Adopted processes occupy the same
+slots as newly launched jobs. Timing exclusivity applies to this campaign,
+not to unrelated clients of the LiteLLM server.
+
+Use the generated campaign `status.json` for task state and the owning result
+or log for progress. Estimate remaining time from observed completions over a
+recent interval. Report the measured phase: HopRAG edge-scoring progress does
+not include later persistence or query benchmarking. Keep ETA and partial
+scores outside this document and the final result tables. A pending task has
+no measured duration yet, so a campaign-wide completion time may be unavailable.
+
+
+Post-hoc analysis scripts are loaded when their scheduled subprocesses start.
+Pending connectivity comparisons discover the full metric set from version-3
+analysis artifacts, including the source-document-excluded score and signed
+observed-minus-random differences. Older plan commands therefore acquire these
+analyses without restarting an active benchmark, indexer, or controller.
+The artifact structure is documented in [ARCHITECTURE](ARCHITECTURE.md#post-hoc-connection-analysis).
+
+### HopRAG edge blocks
+
+`RAG_HOP_EDGE_BLOCK_SIZE=128` controls adapter scoring memory, not candidate
+selection. `scripts/benchmark_hoprag_edges.py` measures blocks 8, 32, 64 and 128
+against the pinned native dense function using existing per-document caches.
+It records dtype, exact score equality, throughput and process peak RSS; these
+are implementation measurements, not completed corpus indexing costs.
+
+`scripts/resume_hoprag_cached.py` preserves per-document node/question/embedding
+caches and stage completion sets. An interrupted, uncommitted edge group is
+scored again; completed groups remain recorded. Previous index statistics and
+interrupted edge-attempt costs remain separate from the new recovery duration.
