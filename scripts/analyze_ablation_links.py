@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from scripts.ablation_statistics import cluster_interval
 
 
 def usefulness(payload, gold, dataset, sentence_store="data/hotpotqa_corpus/sentences.sqlite3"):
@@ -54,6 +55,14 @@ def read_events(paths, event):
     return values
 
 
+def summarize_utility(rows):
+    keys = ["hop_destination_relevance","added_gold_coverage","retained_added_coverage",
+            "retained_next_overlap_coverage","hop_destinations","hop_next_overlap"]
+    return {key:{**cluster_interval([r[key] for r in rows if r.get(key) is not None],
+                    [r.get('original_query_id',r['query_id']) for r in rows if r.get(key) is not None]),
+                 'total_rows':len(rows),'eligible_queries':sum(r.get(key) is not None for r in rows)} for key in keys}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", type=Path, required=True)
@@ -66,9 +75,10 @@ def main():
     events = read_events(paths, "ablation_link_usefulness")
     rows = []
     for row in result["details"]:
+        identity={"query_id":row["query_id"],"original_query_id":row.get("original_query_id",row["query_id"])}
         if row.get("error"):
             events.pop(row["query_id"], None)
-            rows.append({"query_id":row["query_id"],"failed":True})
+            rows.append({**identity,"failed":True})
             continue
         payload = events.pop(row["query_id"])
         dataset = str(result["dataset"]).lower().replace("multihop-rag", "multihoprag")
@@ -76,19 +86,15 @@ def main():
         if dataset not in {"multihoprag", "hotpotqa"}:
             raise ValueError("Unsupported dataset")
         gold = expected["facts"] if dataset == "multihoprag" else expected["supporting_facts"]
-        rows.append({"query_id":row["query_id"],**usefulness(payload,gold,dataset,args.sentence_store)})
+        rows.append({**identity,**usefulness(payload,gold,dataset,args.sentence_store)})
     if events:
         raise ValueError("Trace includes queries outside the result")
-    keys = ["hop_destination_relevance","added_gold_coverage","retained_added_coverage","retained_next_overlap_coverage","hop_destinations","hop_next_overlap"]
-    aggregates = {}
-    for key in keys:
-        values = [r[key] for r in rows if r.get(key) is not None]
-        aggregates[key] = {"mean":sum(values)/len(values) if values else None,"eligible_queries":len(values)}
+    aggregates = summarize_utility(rows)
     with args.output.open("x") as f:
         json.dump({"source_result":str(args.result.resolve()),"source_sha256":hashlib.sha256(args.result.read_bytes()).hexdigest(),
                    "queries":len(rows),"failed_queries":sum(bool(r.get("failed")) for r in rows),
                    "denominator_policy":"Utility is conditional on successful queries; failures remain counted separately. Missing events for successful queries are errors.",
-                   "aggregates":aggregates,"details":rows},f,indent=2)
+                   "analysis_contract":"query-link-utility-v3","aggregates":aggregates,"details":rows},f,indent=2)
 
 
 if __name__ == "__main__":

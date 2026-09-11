@@ -14,6 +14,10 @@ from core.prehop_ablation import COMMON, PROFILES
 
 
 def plan(args):
+    if args.profile == "body_full" and (
+        args.mode != "benchmark" or not getattr(args, "direct_inputs", None)
+    ):
+        raise ValueError("body_full requires a benchmark with frozen multi-channel retrieval inputs")
     reuse = getattr(args, "reuse_existing_index", False)
     overrides = {
         **COMMON,

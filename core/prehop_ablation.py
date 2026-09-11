@@ -7,6 +7,7 @@ PROFILES = {
     "question_full": {"HYPO_CHANNEL_VARIANT": "full", "HOP_LINK_VARIANT": "question"},
     "question_body": {"HYPO_CHANNEL_VARIANT": "body_only", "HOP_LINK_VARIANT": "question"},
     "body_body": {"HYPO_CHANNEL_VARIANT": "body_only", "HOP_LINK_VARIANT": "body"},
+    "body_full": {"HYPO_CHANNEL_VARIANT": "full", "HOP_LINK_VARIANT": "body"},
 }
 COMMON = {
     "HOP_SEED_POLICY": "all",

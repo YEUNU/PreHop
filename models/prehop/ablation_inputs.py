@@ -17,4 +17,11 @@ def write_input(directory,query,value):
 
 def read_input(directory,query):
     # Return a fresh object so downstream scoring cannot mutate another arm.
-    return json.loads(gzip.decompress(input_path(directory,query).read_bytes()))
+    occurrences = Path(directory) / 'occurrences'
+    if occurrences.is_dir():
+        from models.prehop.tracing import _IDENTITY
+        query_id = (_IDENTITY.get() or {})['query_id']
+        path = input_path(occurrences, query_id)
+    else:
+        path = input_path(directory, query)
+    return json.loads(gzip.decompress(path.read_bytes()))

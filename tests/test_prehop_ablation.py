@@ -144,6 +144,29 @@ def test_launcher_plans_distinct_outputs_without_execution(tmp_path):
     args.profile = "question_body"
 
 
+def test_body_full_keeps_full_search_inputs_on_body_graph(tmp_path):
+    args = SimpleNamespace(
+        namespace="ablation_body", run_id="body_full_query", profile="body_full",
+        mode="benchmark", reference=tmp_path / "reference.json", index_stats=None,
+        dataset=tmp_path / "corpus", queries=tmp_path / "queries.json",
+        corpus_tag="multihoprag", direct_inputs=tmp_path / "full_search",
+    )
+    task = plan(args)
+    env = task["environment"]
+    assert env["RAG_HOP_LINK_VARIANT"] == "body"
+    assert env["RAG_HYPO_CHANNEL_VARIANT"] == "full"
+    assert env["RAG_ABLATION_DIRECT_INPUTS"] == str(args.direct_inputs.resolve())
+    assert env["RAG_HOP_SEED_POLICY"] == "all"
+    assert env["RAG_HOP_SEMANTIC_VARIANT"] == "body_only"
+    args.direct_inputs = None
+    with pytest.raises(ValueError, match="frozen multi-channel"):
+        plan(args)
+    args.direct_inputs = tmp_path / "full_search"
+    args.mode = "index"
+    with pytest.raises(ValueError, match="benchmark"):
+        plan(args)
+
+
 
 
 @pytest.mark.asyncio
