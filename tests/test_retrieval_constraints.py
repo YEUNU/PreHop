@@ -702,6 +702,7 @@ async def test_retrieval_records_every_direct_representation_path():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("decay", "expected_score"), [(0.0, 0.0), (0.5, 0.25), (1.0, 0.5)])
 async def test_hop_target_inherits_only_the_qplus_seed_rank(monkeypatch, decay, expected_score):
+    monkeypatch.setattr(RAGConfig, "HOP_SEED_POLICY", "qplus")
     monkeypatch.setattr(RAGConfig, "GRAPH_PATH_DECAY", decay)
     rag = GraphRAG(strategy="prehop")
     seed = {
@@ -925,7 +926,8 @@ async def test_qplus_hybrid_preserves_exact_question_ids_across_modalities():
 
 
 @pytest.mark.asyncio
-async def test_only_query_matched_dependency_seeds_can_initiate_hop_traversal():
+async def test_only_query_matched_dependency_seeds_can_initiate_hop_traversal(monkeypatch):
+    monkeypatch.setattr(RAGConfig, "HOP_SEED_POLICY", "qplus")
     rag = GraphRAG(strategy="prehop")
     direct = {
         "id": "direct",

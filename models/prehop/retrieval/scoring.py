@@ -61,8 +61,8 @@ class SimilarityScoringMixin:
 
         The best matching individual source Q+ represents a traversed
         dependency bridge; linked continuation paths use the matched Q− in the
-        same role. The conservative default takes its minimum with direct body
-        relevance. A query-time ablation uses the bridge alone because the
+        same role. The default uses body relevance; the historical body_bridge_min
+        option takes the minimum with bridge relevance. An ablation uses the bridge alone because the
         offline graph already selected the target body. Equal reciprocal ranks
         then combine the resulting semantic order with the Q-/body/Q+ retrieval
         order. Neither path compares backend-specific raw scores or introduces

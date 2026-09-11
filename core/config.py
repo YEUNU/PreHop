@@ -5,7 +5,7 @@ from core.semantic_config import parse_strict_bool
 
 class RAGConfig:
     PREHOP_ABLATION_PROFILE = os.environ.get("RAG_PREHOP_ABLATION_PROFILE", "").strip()
-    HOP_SEED_POLICY = os.environ.get("RAG_HOP_SEED_POLICY", "qplus").strip()
+    HOP_SEED_POLICY = os.environ.get("RAG_HOP_SEED_POLICY", "all").strip()
     HOP_LINK_VARIANT = os.environ.get("RAG_HOP_LINK_VARIANT", "question").strip()
     BODY_LINK_REFERENCE = os.environ.get("RAG_BODY_LINK_REFERENCE", "").strip()
     CONNECTION_TIMING_MODE = os.environ.get("RAG_CONNECTION_TIMING_MODE", "").strip()
@@ -113,11 +113,11 @@ class RAGConfig:
         os.environ.get("RAG_CONTINUATION_ANCHOR_POLICY", "named_only").strip().lower() or "named_only"
     )
     # Query-time semantic evidence for traversed HOP targets. The conservative
-    # default requires both query-to-body and query-to-source-Q+ similarity;
+    # historical policy requires both query-to-body and query-to-source-Q+ similarity;
     # ``bridge_only`` is a parameter-free structural ablation because the
     # offline Q+->Q- edge has already selected the answering target.
     HOP_SEMANTIC_VARIANT = (
-        os.environ.get("RAG_HOP_SEMANTIC_VARIANT", "body_bridge_min").strip().lower() or "body_bridge_min"
+        os.environ.get("RAG_HOP_SEMANTIC_VARIANT", "body_only").strip().lower() or "body_only"
     )
     # Optional index-time materialization avoids reverse vector ANN on every
     # reciprocal-filtered query while preserving the same nearest-neighbour rule.

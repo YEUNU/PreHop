@@ -1,8 +1,8 @@
 """Level-batched traversal over pre-built NEXT/HOP_ANSWER edges.
 
 The complete representation-union seed pool is expanded in one Neo4j request.
-By default, only query-matched Q+ owners expose HOP at level zero. The
-explicit representation ablations expose HOP on every retrieved seed. The default path
+By default, every retrieved seed exposes HOP at level zero. The historical
+qplus policy restricts this to query-matched Q+ owners. The default path
 activates all stored provenance on that owner; reciprocal filtering and exact
 matched-ID activation remain selectable ablations. Later levels expose NEXT
 only. All structurally bounded results are retained until final
@@ -224,6 +224,8 @@ class TraversalMixin:
         query_embedding: list[float] | None = None,
         top_k: int | None = None,
     ) -> list[dict[str, Any]]:
+        if RAGConfig.GRAPH_EDGE_VARIANT == "none":
+            return []
         continuation_source_question_ids = continuation_source_question_ids or {}
         query_embedding = query_embedding or []
         top_k = RAGConfig.DEFAULT_TOP_K if top_k is None else max(1, int(top_k))

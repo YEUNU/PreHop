@@ -249,6 +249,10 @@ when revising prose. They do not prohibit implementation detail in developer doc
   current artifact. These checks do not authorize benchmark reruns or restore
   automatic execution/approval gates.
 
+## Retrieval terminology
+
+Distinguish index-time Q+ to Q− destination matching from query-time body/Q−/Q+ retrieval and HOP start activation. Never abbreviate a HOP activation restriction as “Q+ search” or “Q+ policy.” State whether a result uses HOP starts retrieved through Q+ or all retrieved starts; a default change does not relabel historical evidence.
+
 ## Anonymous research distribution
 
 Before sharing an anonymous repository, inspect its distributed file list for

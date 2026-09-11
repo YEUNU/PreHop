@@ -126,7 +126,8 @@ not select among valid outputs by quality. Final synthesis remains text output.
 ## Prehop query path and branches
 
 The primary settings use depth one, full NEXT/HOP expansion, Q−/body/Q+ search,
-Q+-owner activation, unfiltered stored links, and final LLM evidence selection.
+all-start HOP activation, body-only semantic scoring, unfiltered stored links,
+and final LLM evidence selection.
 Prehop uses the original query on every enabled channel at every input length.
 Retrieval executes once. Retrieved evidence does not generate further questions
 or trigger re-search. This query change reuses the existing index; construction
@@ -150,23 +151,30 @@ Question searches allocate three times the owner budget before collapsing
 individual questions to their owners.
 
 `retrieval/traversal.py` walks NEXT in both directions and HOP only in its
-stored direction. Under the default `HOP_SEED_POLICY=qplus`, only passages
-matched through Q+ expose HOP links. Owner activation exposes all provenance
+stored direction. Under the default `HOP_SEED_POLICY=all`, every retrieved starting passage
+exposes its HOP links. The historical `qplus` policy restricts starts to Q+ matches. Owner activation exposes all provenance
 on that passage; `RAG_QPLUS_HOP_ACTIVATION=exact` restricts it to matched Q+ IDs.
 Graph-discovered targets are not expanded again within the one-step pass.
 
 A graph-only NEXT target inherits its source's total representation score;
-a HOP target inherits its source's Q+ score. Both use path decay 0.5. Direct
+a HOP target also inherits its source's total score under `all` (the historical `qplus` policy uses its Q+ score). Both use path decay 0.5. Direct
 candidates retain their direct score when also reached by a graph path.
-`retrieval/scoring.py` uses query-to-body similarity for direct/NEXT candidates
-and the minimum of body similarity and best source-Q+ similarity for HOP
-candidates. Semantic and representation orders are fused by reciprocal rank.
+`retrieval/scoring.py` uses query-to-body similarity for all candidates by default
+(`HOP_SEMANTIC_VARIANT=body_only`). The historical `body_bridge_min` option
+uses the minimum of body and best source-Q+ similarity for HOP candidates. Semantic and representation orders are fused by reciprocal rank.
 The default LLM selector receives all candidates as numbered passages, without
 gold labels, retrieval scores, or path metadata.
 
 Depth zero disables graph expansion while preserving passage selection.
 Experimental channel, edge, reciprocal-filter, semantic-scoring, and
 linked-continuation switches remain distinct from the primary defaults.
+
+The primary component launcher supports `--expansion next_only`, `hop_only`,
+and `none`. It retains the reference run’s activation and scoring policies;
+for historical runs these are Q+-owner activation and bridge scoring. With `none`, traversal returns no neighbors
+before opening a graph session. Every condition retains frozen initial
+candidates, primary candidate scoring, and the common LLM selector. The index
+is unchanged; each condition has a distinct run-local component identity.
 
 ## Explicit representation ablations
 
@@ -352,10 +360,12 @@ Export and target-display checks are tracked in [the manuscript checklist](PAPER
 
 ### Direct retrieval and stored-link traversal
 
-The query diagram distinguishes two routes into one candidate set. The original
+The query diagram distinguishes two routes into one candidate set. Manuscript
+diagrams currently label the historical evaluated expansion configuration; that activation
+restriction does not describe the updated runtime default. The original
 query searches body, Q−, and Q+ representations; question hits map to owner
 passages before rank fusion. All direct candidates remain in the pool. In the
-primary policy, Q+-matched starting passages expose stored outgoing HOP links;
+current default, all retrieved starting passages expose stored outgoing HOP links;
 NEXT supplies previous and next passages from retrieved starts. Both edge types
 are written during indexing. Query-time traversal reads destinations, without
 new link construction. Merge candidates by passage identity before final
@@ -410,3 +420,14 @@ reasons explain unavailable estimates; paired-subset summaries remain distinct
 from full-population summaries. Connection measurements retain the
 `fixed_start_connection_replay` scope. These are analysis outputs, not new
 production retrieval pipelines or runtime approval gates.
+
+
+### Reference-specific expansion analysis
+
+The experiment planner schedules NEXT-only, HOP-only and no-expansion controls
+against each recorded reference. Updated-default MultiHop-RAG controls use a
+separate task family and artifact namespace from historical controls. The
+factorial analyzer reads the four saved conditions and computes paired
+conditional effects and the additive interaction; it performs no retrieval.
+Independently launched reference processes can be adopted into the same two-job
+accounting without restarting them. Historical results keep their executed policy.

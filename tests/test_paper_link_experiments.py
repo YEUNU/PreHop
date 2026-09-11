@@ -173,3 +173,41 @@ def test_pending_migration_preserves_running_commands_and_completed_results():
     assert state['missing']=={'state':'completed','reused_evidence':'finished.json'}
     assert 'execution_filter' not in plan
     assert 'missing' not in states
+
+
+def test_updated_policy_suite_has_separate_evidence_and_reference_dependency(tmp_path):
+    from scripts.plan_link_experiments import make_plan
+    source=tmp_path/'stats.json'
+    source.write_text(json.dumps({'index_policy':{'index_namespace':'source'},'run_id':'source'}))
+    old=tmp_path/'historical.json';new=tmp_path/'updated.json'
+    plan=make_plan('suite',source,multihoprag_reference=old,updated_reference=new,
+                   updated_after=['new-reference'],adopt=[{'id':'new-reference','command':[], 'after':[]}])
+    jobs={j['id']:j for j in plan['jobs']}
+    for short in ('hp','mhr-updated'):
+        for label,expansion in [('hop-only','hop_only'),('direct-only','none')]:
+            job=jobs[f'{short}-primary-{label}-inputs']
+            assert job['command'][job['command'].index('--expansion')+1]==expansion
+    for key,job in jobs.items():
+        if key.startswith('mhr-updated-'):
+            assert str(old) not in job['command']
+            assert all(not d.startswith('mhr-') or d.startswith('mhr-updated-') for d in job['after'])
+            assert job['after']
+    assert jobs['mhr-updated-primary-hop-inputs']['after']==['new-reference']
+    assert jobs['mhr-updated-reference-starts']['after']==['new-reference']
+    assert str(new) in jobs['mhr-updated-primary-hop-inputs']['command']
+    assert str(old) in jobs['mhr-primary-hop-inputs']['command']
+    assert jobs['mhr-updated-reference-timing']['exclusive']
+    assert not any('natural' in j['id'] for j in plan['jobs'])
+
+
+def test_factorial_uses_paired_occurrences_and_keeps_cluster_units():
+    from scripts.analyze_expansion_factorial import analyze
+    queries=[{'_id':'a','original_query_id':'same'}, {'_id':'b','original_query_id':'same'}, {'_id':'c'}]
+    results={arm:{'details':[{'query_id':q['_id'],'official_map@10':v} for q in queries]}
+             for arm,v in [('full',.8),('next_only',.5),('hop_only',.4),('none',.2)]}
+    report=analyze(results,queries,['official_map@10'])
+    metric=report['interaction']['official_map@10']
+    assert metric['mean']==pytest.approx(.1)
+    assert metric['rows']==3 and metric['clusters']==2
+    assert len(report['contrasts'])==6
+    assert report['contrasts']['full-minus-next_only']['metrics']['official_map@10']['mean']==pytest.approx(.3)

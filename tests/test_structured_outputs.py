@@ -145,7 +145,7 @@ def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity
     from core import structured_outputs
     from models.prehop.indexing.chunking import _generation_signature
     assert structured_outputs.PREHOP_STRUCTURED_PROFILE == 'prehop-json-schema-v3'
-    assert canonical_semantic_index_policy('prehop', 'hotpotqa')['method_contract'] == 'paper-method-v4'
+    assert canonical_semantic_index_policy('prehop', 'hotpotqa')['method_contract'] == 'paper-method-v5'
     current = structured_bundle_sha256()
     cache = _generation_signature('gemma-4-31b-it')
     monkeypatch.setattr(structured_outputs, 'PREHOP_STRUCTURED_PROFILE', 'prehop-json-schema-v1')

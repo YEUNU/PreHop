@@ -1,9 +1,9 @@
 """Retrieve direct evidence and dependency seeds by representation role.
 
 Each enabled representation is searched exactly once with the original
-benchmark query. Q- and body hits are direct-evidence candidates; Q+ hits are
-dependency seeds whose owner chunks expose the configured ``HOP_ANSWER``
-provenance (owner-wide unfiltered provenance by default; reciprocal filtering
+benchmark query. All hits are direct-evidence candidates and default HOP starts;
+Q+ hits additionally mark dependency seeds for the historical qplus policy.
+Starting chunks expose the configured ``HOP_ANSWER`` provenance (owner-wide unfiltered provenance by default; reciprocal filtering
 and exact matched-Q+ activation remain ablations).
 The representation results form an unweighted set union. Direction is
 expressed only by graph role.

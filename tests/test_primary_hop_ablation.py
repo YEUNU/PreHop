@@ -126,3 +126,74 @@ def test_prepare_accepts_hotpot_population_and_preserves_each_prefix(tmp_path, m
     for qid,vector in [('q1',[.1]),('q2',[.9])]:
         with trace_identity(query_id=qid):
             assert read_input(output/'primary-inputs','same')['query_embedding']==vector
+
+
+@pytest.mark.asyncio
+async def test_direct_only_skips_all_graph_reads(monkeypatch):
+    from core.config import RAGConfig
+    from models.prehop.retrieval.traversal import TraversalMixin
+    monkeypatch.setattr(RAGConfig, 'GRAPH_EDGE_VARIANT', 'none')
+    reader = TraversalMixin()
+    # No database is provided: disabling expansion must return before any read.
+    assert await reader._expand_frontier(['seed'], set(), {'seed': {'q1'}}) == []
+
+
+@pytest.mark.asyncio
+async def test_direct_only_preserves_frozen_pool_and_calls_common_selector(monkeypatch):
+    from core.config import RAGConfig
+    from models.prehop import ablation_inputs
+    from models.prehop.retrieval.traversal import TraversalMixin
+    monkeypatch.setattr(RAGConfig, 'GRAPH_EDGE_VARIANT', 'none')
+    monkeypatch.setattr(RAGConfig, 'PREHOP_ABLATION_PROFILE', 'primary_direct_only')
+    monkeypatch.setenv('RAG_ABLATION_DIRECT_INPUTS', 'frozen')
+    candidates = [{'id': 'seed', 'representation_score': .7, 'dependency_seed': True,
+                   'matched_qplus_ids': ['question'], 'embedding': [1.0]},
+                  {'id': 'body-owner', 'representation_score': 0., 'role_body_owner_only': True}]
+    monkeypatch.setattr(ablation_inputs, 'read_input', lambda *args: {
+        'query_embedding': [1.0], 'base_candidates': candidates})
+    class Reader(TraversalMixin):
+        trace_recorder = None
+        _normalize_entity_term = staticmethod(lambda value: value)
+        _node_identity = staticmethod(lambda node: node['id'])
+        _without_transient_retrieval_scores = staticmethod(lambda node: node)
+        _build_context_from_nodes = staticmethod(lambda nodes: 'selected context')
+        async def _score_and_select(self, embedding, nodes, top_k, **kwargs):
+            assert embedding == [1.0]
+            assert nodes == candidates
+            assert top_k == 12
+            return nodes, None
+    context, nodes, _ = await Reader().graph_search(['original query'], 1, 12)
+    assert context == 'selected context'
+    assert nodes == candidates
+
+
+@pytest.mark.asyncio
+async def test_hop_only_preserves_owner_activation_without_next(monkeypatch):
+    from core.config import RAGConfig
+    from models.prehop.retrieval.traversal import TraversalMixin
+
+    async def empty_records():
+        for row in []:
+            yield row
+
+    for key, value in {'GRAPH_EDGE_VARIANT': 'hop_only', 'CONNECTION_TIMING_MODE': '',
+                       'QUESTION_SCHEMA': 'legacy', 'HOP_EDGE_FILTER': 'none',
+                       'QPLUS_HOP_ACTIVATION': 'owner'}.items():
+        monkeypatch.setattr(RAGConfig, key, value)
+    session = AsyncMock()
+    session.run.return_value = empty_records()
+    context = AsyncMock()
+    context.__aenter__.return_value = session
+    reader = TraversalMixin()
+    reader.chunk_label = 'OriginalChunk'
+    reader.q_plus_label = 'OriginalQPlus'
+    reader.q_plus_vector_index = 'original_qplus'
+    reader.neo4j = SimpleNamespace(driver=SimpleNamespace(session=MagicMock(return_value=context)))
+    assert await reader._expand_frontier(['seed', 'body'], set(), {'seed': {'q1'}}) == []
+    query, parameters = session.run.await_args.args
+    assert ':NEXT' not in query
+    assert '[hop:HOP_ANSWER]' in query
+    assert parameters['frontier_ids'] == ['seed', 'body']
+    assert parameters['hop_source_ids'] == ['seed']
+    assert parameters['hop_source_question_ids'] == {'seed': ['q1']}
+    assert parameters['qplus_hop_activation'] == 'owner'

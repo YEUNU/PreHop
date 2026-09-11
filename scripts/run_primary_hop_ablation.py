@@ -1,4 +1,4 @@
-"""Replay the primary retrieval prefix and remove HOP expansion only.
+"""Replay primary retrieval with controlled HOP/NEXT expansion.
 
 The source result and trace payloads are read-only. This launcher deliberately
 does not use the representation-ablation COMMON configuration.
@@ -16,6 +16,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+
+# Stable identities retain compatibility with completed component runs.
+EXPANSIONS = {
+    'next_only': ('without_hop', 'primary-hop-removal-v1',
+                  'HOP traversal disabled; direct retrieval and NEXT retained'),
+    'none': ('direct_only', 'primary-direct-only-v1',
+             'HOP and NEXT traversal disabled; direct retrieval retained'),
+    'hop_only': ('hop_only', 'primary-hop-only-v1',
+                 'NEXT traversal disabled; direct retrieval and primary HOP retained'),
+}
 
 
 def comparison_metrics(tag):
@@ -130,6 +141,13 @@ def prepare(args):
     }
     (args.output / 'prefix-manifest.json').write_text(json.dumps(manifest, indent=2))
     env = environment(reference, args.output, inputs)
+    expansion = getattr(args, 'expansion', 'next_only')
+    component, contract, changed = EXPANSIONS[expansion]
+    env['RAG_GRAPH_EDGE_VARIANT'] = expansion
+    env['RAG_PREHOP_ABLATION_PROFILE'] = 'primary_' + component
+    manifest['contract'] = contract
+    manifest['changed_component'] = changed
+    (args.output / 'prefix-manifest.json').write_text(json.dumps(manifest, indent=2))
     command = [sys.executable, str(Path(__file__).resolve()), 'worker',
                '--reference', str(args.reference.resolve()), '--queries', str(args.queries.resolve()),
                '--output', str(args.output.resolve())]
@@ -215,7 +233,8 @@ async def worker(args):
     def component_identity(config=None):
         from core.config import RAGConfig
         config = config or RAGConfig
-        return {'component_ablation': 'without_hop', 'method_contract': 'primary-hop-removal-v1',
+        return {'component_ablation': EXPANSIONS[config.GRAPH_EDGE_VARIANT][0],
+                'method_contract': EXPANSIONS[config.GRAPH_EDGE_VARIANT][1],
                 'primary_reference_sha256': digest(args.reference),
                 'hop_seed_policy': config.HOP_SEED_POLICY, 'hop_link_variant': config.HOP_LINK_VARIANT,
                 'comparison_scope': 'primary_component_ablation',
@@ -250,8 +269,14 @@ def supervise(args):
         subprocess.run([sys.executable, str(ROOT / 'scripts/ablation_statistics.py'),
                         '--left', str(args.reference), '--right', str(result),
                         '--queries', str(args.queries), '--metrics', *comparison_metrics(tag),
-                        '--output', str(args.output / 'primary-minus-without-hop.json')],
+                        '--output', str(args.output / ('primary-minus-' + EXPANSIONS[plan['environment']['RAG_GRAPH_EDGE_VARIANT']][0].replace('_', '-') + '.json'))],
                        cwd=ROOT, check=True)
+        if getattr(args, 'next_reference', None):
+            subprocess.run([sys.executable, str(ROOT / 'scripts/ablation_statistics.py'),
+                            '--left', str(args.next_reference), '--right', str(result),
+                            '--queries', str(args.queries), '--metrics', *comparison_metrics(tag),
+                            '--output', str(args.output / ('next-minus-' + EXPANSIONS[plan['environment']['RAG_GRAPH_EDGE_VARIANT']][0].replace('_', '-') + '.json'))],
+                           cwd=ROOT, check=True)
         status.write_text(json.dumps({'state': 'completed', 'result': str(result), 'started': started,
                                      'completed': datetime.now(UTC).isoformat()}))
     except BaseException as error:
@@ -262,6 +287,8 @@ def supervise(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('prepare', 'verify', 'worker', 'supervise'))
+    parser.add_argument('--next-reference', type=Path)
+    parser.add_argument('--expansion', choices=tuple(EXPANSIONS), default='next_only')
     parser.add_argument('--reference', type=Path, required=True)
     parser.add_argument('--queries', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
