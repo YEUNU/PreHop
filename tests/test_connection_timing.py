@@ -35,6 +35,8 @@ async def test_matched_hydration_and_alternating_replay(tmp_path,monkeypatch):
     hydrate = AsyncMock(side_effect=lambda _e,pairs,_excluded:pairs)
     monkeypatch.setattr(timing,"hydrate",hydrate)
     result = await replay(SimpleNamespace(),{"query":["a","b"]},path,"test",repetitions=2,warmups=0)
+    assert result["measurement_scope"] == "fixed_start_connection_replay"
+    assert not result["includes_direct_retrieval"] and not result["includes_answer_generation"]
     assert result["identical_start_fraction"] == 1.0
     assert result["details"][0]["order"] == ("precomputed","online")
     assert result["details"][1]["order"] == ("online","precomputed")
@@ -67,3 +69,18 @@ def test_link_utility_separates_direct_and_next_and_zero_gain():
     empty = usefulness({"direct":[],"expanded":[],"selected":[]},["fact"],"multihoprag")
     assert empty["hop_destination_relevance"] is None
     assert empty["hop_destinations"] == 0 and empty["added_gold_coverage"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reference_exclusions_apply_to_both_arms_and_reported_destinations(tmp_path,monkeypatch):
+    from models.prehop import connection_timing as timing
+    path=tmp_path/'links.json'
+    path.write_text(json.dumps({'experiment':'test','question_counts':{'a':2}}))
+    pairs=[{'source_id':'a','id':'excluded'},{'source_id':'a','id':'kept'}]
+    monkeypatch.setattr(timing,'resolve_pairs',AsyncMock(return_value=(pairs,2)))
+    monkeypatch.setattr(timing,'read_pairs',AsyncMock(return_value=pairs))
+    hydrate=AsyncMock(return_value=[]);monkeypatch.setattr(timing,'hydrate',hydrate)
+    report=await replay(SimpleNamespace(),{'q':['a']},path,'test',exclusions={'q':['excluded']})
+    for arm in report['details'][0]['arms'].values():
+        assert arm['destinations']=={'a':['kept']}
+    assert all(call.args[2]=={'excluded'} for call in hydrate.await_args_list)

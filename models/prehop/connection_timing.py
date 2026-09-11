@@ -80,7 +80,7 @@ async def expand(engine, starts, excluded, mode, store, namespace):
     rows = await hydrate(engine, pairs, excluded)
     return rows, {"arm": mode, "connection_ms": (time.perf_counter()-begin)*1000,
                   "match_requests": matches, "starts": sorted(set(starts)),
-                  "destinations": {s: sorted({p["id"] for p in pairs if p["source_id"] == s}) for s in sorted(set(starts))}}
+                  "destinations": {s: sorted({p["id"] for p in pairs if p["source_id"] == s and p["id"] not in excluded}) for s in sorted(set(starts))}}
 
 
 async def build(engine, path, namespace, *, page_size=128):

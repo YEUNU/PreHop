@@ -37,6 +37,9 @@ def main():
     a=p.parse_args();stored=json.loads(a.precomputed.read_text());online=json.loads(a.online.read_text())
     metrics=['latency','retrieve_ms','graph_expand_ms','official_map@10','all_facts@10','official_qa_accuracy','hotpot_sp_f1','hotpot_joint_f1','hotpot_f1']
     result=compare(online,stored,metrics,json.loads(a.queries.read_text()))
+    result['measurement_scope']='natural_end_to_end'
+    result['includes_direct_retrieval']=True
+    result['includes_answer_generation']=True
     result['agreement']=agreement(timing_events(stored),timing_events(online))
     result['interpretation']='natural end-to-end supplement; input/output differences and unseeded generation prevent a pure placement interpretation'
     a.output.write_text(json.dumps(result,indent=2))
