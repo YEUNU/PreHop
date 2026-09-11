@@ -66,7 +66,7 @@ The second benchmark uses the original HippoRAG HotpotQA release: 9,221 passages
 and 1,000 query rows (944 unique original questions). Preparation, duplicate-row
 handling, and official scoring rules are described in
 [HOTPOTQA](docs/HOTPOTQA.md). This is a reduced retrieval corpus; completed
-results remain outstanding. Controlled A/B/C and Neo4j stored-versus-online
+results remain outstanding. Controlled representation ablation and Neo4j stored-versus-online
 experiments are specified in [PAPER_ABLATION_DESIGN](docs/PAPER_ABLATION_DESIGN.md).
 
 Generated indexes, logs, traces, and results stay under ignored local data and
@@ -80,9 +80,11 @@ benchmark result.
   transport, and native output recording.
 - [Execution and measurement](docs/THROUGHPUT_EXECUTION.md): profiles, launch
   procedures, recovery, and cost definitions.
-- [Results](docs/RESULTS.md): result status and artifact requirements.
 - [Maintainer policy](CLAUDE.md): repository maintenance rules.
-- [Representation ablations](docs/PAPER_ABLATION_DESIGN.md): comparisons, controls, and execution commands.
+- [HotpotQA data](docs/HOTPOTQA.md): corpus preparation and evaluation mapping.
+
+Research results, experiment plans, submission checklists, manuscripts, and
+presentation exports are maintained locally and excluded from the public tree.
 
 ## Verification
 

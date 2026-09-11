@@ -312,3 +312,22 @@ docs/acl/*.out
 
 # Local manuscript build bundle includes private submission details.
 docs/acl/
+
+# Private research evidence, submission preparation, and paper-only tooling.
+/docs/RESULTS.md
+/docs/PAPER_CHECKLIST.md
+/docs/PAPER_ABLATION_DESIGN.md
+/scripts/render_acl_paper.py
+/scripts/render_paper_figures.py
+# Private research exports at any depth.
+**/prehop_paper*.pdf
+**/prehop_paper*.tex
+**/prehop_presentation*.pptx
+**/prehop_presentation*.pdf
+# Local credentials and editor/agent state.
+.codex/
+*.pem
+*.p12
+*.pfx
+credentials.json
+secrets.json
