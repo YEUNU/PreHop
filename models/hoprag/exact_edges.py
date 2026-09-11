@@ -7,7 +7,27 @@ import pandas as pd
 COLS = ['node_id_x','question_y','keywords_both','embedding_x','node_id_y','similarity']
 
 
-def exact_edges(node2questiondict, docid2nodes, dense, sparse, chunk_size=8):
+class PreparedDense:
+    """Reuse native-dtype answer vectors; allocate only one pending score block."""
+
+    def __init__(self, answerable):
+        import torch
+
+        self.torch = torch
+        self.answerable = np.array(answerable.embedding.tolist())
+        self.dtype = self.answerable.dtype
+        self.cuda = torch.cuda.is_available()
+        if self.cuda:
+            self.answerable = torch.tensor(self.answerable).cuda()
+
+    def __call__(self, pending, _answerable=None):
+        pending_array = np.array(pending.embedding.tolist())
+        if self.cuda:
+            return self.torch.tensor(pending_array).cuda().mm(self.answerable.T).cpu().numpy()
+        return pending_array.dot(self.answerable.T)
+
+
+def exact_edges(node2questiondict, docid2nodes, dense, sparse, chunk_size=8, *, reuse_answer_vectors=False):
     rows=[]
     for (nid,did),groups in node2questiondict.items():
         for label,questions in groups.items():
@@ -19,6 +39,9 @@ def exact_edges(node2questiondict, docid2nodes, dense, sparse, chunk_size=8):
     a=df[df.question_label=='answerable'].reset_index(drop=True)
     if p.empty or a.empty:
         return pd.DataFrame(columns=COLS), a
+    if reuse_answer_vectors:
+        dense = PreparedDense(a)
+        logging.getLogger(__name__).info("HopRAG prepared answer vectors once: shape=%s dtype=%s block=%d", tuple(dense.answerable.shape), dense.dtype, chunk_size)
     pn=p.node_id.to_numpy();an=a.node_id.to_numpy();pdid=p.doc_id.to_numpy();adid=a.doc_id.to_numpy()
     pdocs=sorted(set(pdid));adocs=sorted(set(adid))
     pr={d:i for i,d in enumerate(pdocs)};ar={d:i for i,d in enumerate(adocs)}

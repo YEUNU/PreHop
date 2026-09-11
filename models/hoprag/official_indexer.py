@@ -608,7 +608,9 @@ def _patch_create_edge_batched() -> None:
             from models.hoprag.exact_edges import exact_edges
             self.edges, self.abstract2chunk = exact_edges(
                 node2questiondict, docid2nodes,
-                HopBuilder.pending_dot_answerable, HopBuilder.sparse_similarity)
+                HopBuilder.pending_dot_answerable, HopBuilder.sparse_similarity,
+                chunk_size=int(os.environ.get("RAG_HOP_EDGE_BLOCK_SIZE", "128")),
+                reuse_answer_vectors=True)
 
         else:
             self.driver = _NullDriver()
