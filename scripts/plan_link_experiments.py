@@ -1,4 +1,4 @@
-"""Write the reproducible A/B/C, timing and co-evidence experiment task graph."""
+"""Write primary component, matched timing, and supplemental experiment tasks."""
 import argparse
 import json
 import os
@@ -9,7 +9,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
 
-def make_plan(campaign,mhr_stats,*,adopt=()):
+def make_plan(campaign,mhr_stats,*,multihoprag_reference,adopt=()):
     from core.index_namespace import index_namespace
     from core.strategy_registry import PRIMARY_STRATEGIES
     base=ROOT/'data/results'/campaign;python=str(Path(sys.executable).absolute())
@@ -21,7 +21,7 @@ def make_plan(campaign,mhr_stats,*,adopt=()):
     def primary(strategy,phase,after=()):
         return add(f'hp-{strategy}-{phase}',[python,'scripts/link_experiment_campaign.py','primary',campaign,phase,strategy,'hotpotqa'],after,3 if phase=='benchmark' else 8)
     hp_index=primary('prehop','index')
-    primary('prehop','benchmark',[hp_index])
+    hp_benchmark=primary('prehop','benchmark',[hp_index])
     hp_run=f'{campaign}-index-hotpotqa-prehop'
     old=os.environ.get('RAG_INDEX_NAMESPACE');os.environ['RAG_INDEX_NAMESPACE']='hotpotqa_'+hp_run
     hp_ns=index_namespace('hotpotqa')
@@ -43,15 +43,14 @@ def make_plan(campaign,mhr_stats,*,adopt=()):
         clone=add(f'{short}-body-clone',[python,'scripts/prehop_ablation.py','--mode','index','--profile','body_body',
             '--clone-body-from',stats,'--namespace',c_namespace,'--run-id',c_run,'--corpus-tag',tag,'--dataset',corpus,
             '--queries',queries,'--reference',reference,'--execute'],dependencies,2)
-        def bench(arm,profile,ns,source,after,*,direct=None,timing=None,exclusive=False,short=short,tag=tag,corpus=corpus,queries=queries,reference=reference):
+        def bench(arm,profile,ns,source,after,*,direct=None,short=short,tag=tag,corpus=corpus,queries=queries,reference=reference):
             run=f'{campaign}-{short}-{arm}'
             cmd=[python,'scripts/prehop_ablation.py','--mode','benchmark','--profile',profile,'--namespace',ns,
                 '--run-id',run,'--corpus-tag',tag,'--dataset',corpus,'--queries',queries,'--index-stats',source,'--execute']
             if profile!='body_body':cmd+=['--reuse-existing-index']
             else:cmd+=['--reference',reference]
             if direct:cmd+=['--direct-inputs',direct]
-            if timing:cmd+=['--connection-timing',timing,'--timing-store',base/f'{short}-timing-store.json']
-            key=add(f'{short}-{arm}',cmd,after,0,exclusive,{'RAG_BENCHMARK_CONCURRENCY':'1'} if exclusive else {})
+            key=add(f'{short}-{arm}',cmd,after,0)
             result=ROOT/f'data/results/ablations/{run}/{profile}/prehop/{tag}/seed_42/prehop_{tag}.json'
             return key,result
         for arm,profile,suffix,ns,source,extra in [('A','question_full','full',namespace,stats,[]),
@@ -72,36 +71,80 @@ def make_plan(campaign,mhr_stats,*,adopt=()):
             '--output',base/f'{short}-connectivity-comparison.json'],[f'{short}-B-connectivity',f'{short}-C-connectivity'],4)
         store=base/f'{short}-timing-store.json'
         build=add(f'{short}-timing-build',[python,'scripts/prehop_connection_timing.py','--mode','build','--index-stats',stats,
-            '--store',store,'--output',base/f'{short}-timing-build.json','--execute'],list(arms.values()),4)
-        replay=add(f'{short}-timing-replay',[python,'scripts/prehop_connection_timing.py','--mode','replay','--index-stats',stats,
-            '--store',store,'--activations',inputs['full'][1]/'activations.json','--queries',queries,'--repetitions','5','--warmups','1',
+            '--store',store,'--output',base/f'{short}-timing-build.json','--execute'],dependencies,1)
+        add(f'{short}-timing-replay',[python,'scripts/prehop_connection_timing.py','--mode','replay','--index-stats',stats,
+            '--store',store,'--activations',inputs['full'][1]/'activations.json','--queries',queries,'--repetitions','1','--warmups','0',
             '--output',base/f'{short}-timing-replay.json','--execute'],[build,inputs['full'][0]],0,True)
-        # Natural end-to-end timing is supplemental. Reverse block order on repeat 2.
-        previous=replay;e2e={}
-        for rep,order in [(1,['precomputed','online']),(2,['online','precomputed'])]:
-            for arm in order:
-                previous,result=bench(f'T-{arm}-{rep}','question_full',namespace,stats,[previous],timing=arm,exclusive=True)
-                e2e[(rep,arm)]=(previous,result)
-            add(f'{short}-T-comparison-{rep}',[python,'scripts/compare_timing_runs.py','--online',e2e[(rep,'online')][1],
-                '--precomputed',e2e[(rep,'precomputed')][1],'--queries',queries,
-                '--output',base/f'{short}-T-comparison-{rep}.json'],[e2e[(rep,a)][0] for a in order],2)
+        reference_result=(Path(multihoprag_reference) if short=='mhr' else
+            ROOT/f'data/results/{campaign}-hotpotqa-prehop/prehop/hotpotqa/seed_42/prehop_hotpotqa.json')
+        component_output=base/f'{short}-primary-without-hop'
+        component_args=['--reference',reference_result,'--queries',queries,'--output',component_output]
+        component_prepare=add(f'{short}-primary-hop-inputs',
+            [python,'scripts/run_primary_hop_ablation.py','prepare',*component_args],
+            [] if short=='mhr' else [hp_benchmark],0)
+        add(f'{short}-primary-without-hop',
+            [python,'scripts/run_primary_hop_ablation.py','supervise',*component_args],
+            [component_prepare],0)
+        reference_inputs=base/f'{short}-reference-starts.json'
+        reference_job=add(f'{short}-reference-starts',[python,'scripts/prepare_reference_timing.py',
+            '--reference-result',reference_result,'--output',reference_inputs],
+            [] if short=='mhr' else [hp_benchmark],4)
+        build_job=next(j for j in jobs if j['id']==build)
+        build_job['command'] += ['--reference-inputs', str(reference_inputs)]
+        build_job['after'] = [reference_job]
+        reference_replay=add(f'{short}-reference-timing',[python,'scripts/verify_primary_timing.py','--index-stats',stats,'--store',store,'--reference-inputs',reference_inputs,
+            '--queries',queries,'--output',base/f'{short}-reference-timing.json'],[build,reference_job],0,True)
+        add(f'{short}-estimated-total',[python,'scripts/estimate_connection_total.py',
+            '--reference-result',reference_result,'--timing',base/f'{short}-reference-timing.json',
+            '--queries',queries,'--output',base/f'{short}-estimated-total.json'],[reference_replay],2)
     for strategy in PRIMARY_STRATEGIES:
         if strategy=='prehop':continue
         index=primary(strategy,'index');primary(strategy,'benchmark',[index])
+    for job in jobs:
+        suffix=job['id'].split('-',1)[-1]
+        if suffix in {'A','B','C'} or suffix.startswith(('A-','B-','C-','direct-','body-clone','connectivity-','timing-replay')):
+            job['experiment_role']='supplemental_representation_comparison'
+            job['priority']=12
+        elif 'primary-' in suffix or suffix in {'reference-starts','reference-timing','estimated-total','timing-build'}:
+            job['experiment_role']='primary_anchored_ablation'
+        if job['id']=='hp-prehop-index':job['priority']=1
     for row in adopt:
         existing=next((j for j in jobs if j['id']==row['id']),None)
         if existing:existing.update(row)
         else:jobs.append(row)
-    return {'contract':'prehop-link-experiments-v2','campaign':campaign,'max_active':2,
-        'hotpotqa_protocol':'hotpotqa-hipporag-v1-1000','measurement_policy':'timing jobs run without other campaign jobs; queue quota remains 120',
-        'primary_endpoints':{'timing':'paired connection-stage saving','multihoprag_B_C':'official_map@10','hotpotqa_B_C':'hotpot_sp_f1'},
+    return {'contract':'prehop-link-experiments-v4','campaign':campaign,'max_active':2,'max_hoprag_active':1,
+        'hotpotqa_protocol':'hotpotqa-hipporag-v1-1000','measurement_policy':'fixed-start timing only; no natural end-to-end reruns; separate reference-based estimates; queue quota 120',
+        'multihoprag_reference_result':str(multihoprag_reference),
+        'primary_endpoints':{'timing':'paired connection-stage saving','multihoprag_without_hop':'official_map@10','hotpotqa_without_hop':'hotpot_sp_f1'},
         'jobs':jobs}
+
+
+def reconcile_pending(existing, states, latest, completed=None):
+    """Replace pending definitions while preserving active and completed evidence."""
+    from copy import deepcopy
+    plan=deepcopy(existing)
+    previous={j['id']:j for j in existing['jobs']}
+    jobs=[]
+    updated=deepcopy(states)
+    for job in latest['jobs']:
+        key=job['id']
+        state=updated.setdefault(key, {'state':'pending'})
+        jobs.append(deepcopy(previous[key] if state['state'] in {'running','completed'} and key in previous else job))
+    keys={j['id'] for j in jobs}
+    jobs.extend(deepcopy(j) for j in existing['jobs'] if j['id'] not in keys)
+    for key,evidence in (completed or {}).items():
+        if updated.get(key,{}).get('state') != 'running':
+            updated[key]={'state':'completed','reused_evidence':str(evidence)}
+    plan.update({k:deepcopy(v) for k,v in latest.items() if k!='jobs'})
+    plan['jobs']=jobs
+    plan.pop('execution_filter',None)
+    return plan,updated
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--campaign',required=True)
-    p.add_argument('--multihoprag-index-stats',type=Path,required=True);p.add_argument('--adopt',type=Path)
-    a=p.parse_args();plan=make_plan(a.campaign,a.multihoprag_index_stats,adopt=json.loads(a.adopt.read_text()) if a.adopt else ())
+    p.add_argument('--multihoprag-index-stats',type=Path,required=True);p.add_argument('--adopt',type=Path);p.add_argument('--multihoprag-reference',type=Path,required=True)
+    a=p.parse_args();plan=make_plan(a.campaign,a.multihoprag_index_stats,multihoprag_reference=a.multihoprag_reference,adopt=json.loads(a.adopt.read_text()) if a.adopt else ())
     path=ROOT/'data/results'/a.campaign/'plan.json';path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(json.dumps(plan,indent=2));print(json.dumps({'plan':str(path),'jobs':len(plan['jobs'])}))
 

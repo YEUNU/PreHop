@@ -66,16 +66,24 @@ def test_timing_waits_without_stopping_other_ready_work():
     assert ready_jobs(jobs,states,[jobs[0]])==[]
 
 
-def test_plan_reuses_b_prefix_for_c_and_keeps_timing_native(tmp_path):
+def test_plan_keeps_fixed_start_timing_and_estimates_without_full_reruns(tmp_path):
     from scripts.plan_link_experiments import make_plan
     source=tmp_path/'stats.json';source.write_text(json.dumps({'index_policy':{'index_namespace':'source'},'run_id':'source'}))
-    jobs=make_plan('test-campaign',source)['jobs'];byid={j['id']:j for j in jobs}
+    jobs=make_plan('test-campaign',source,multihoprag_reference=tmp_path/'reference.json')['jobs'];byid={j['id']:j for j in jobs}
     assert len(byid)==len(jobs)
     for job in jobs:assert all(d in byid for d in job['after'])
     b=byid['mhr-B']['command'];c=byid['mhr-C']['command']
     assert b[b.index('--direct-inputs')+1]==c[c.index('--direct-inputs')+1]
-    t=byid['mhr-T-online-1'];assert '--direct-inputs' not in t['command'] and t['exclusive']
-    assert byid['mhr-T-precomputed-2']['after']==['mhr-T-online-2']
+    assert not any('-T-' in key for key in byid)
+    assert not any('--connection-timing' in job['command'] for job in jobs)
+    assert byid['mhr-timing-replay']['exclusive']
+    assert byid['mhr-reference-timing']['exclusive']
+    assert '--reference-inputs' in byid['mhr-reference-timing']['command']
+    assert byid['mhr-estimated-total']['after']==['mhr-reference-timing']
+    assert byid['hp-reference-starts']['after']==['hp-prehop-benchmark']
+    replay = byid['mhr-timing-replay']['command']
+    assert replay[replay.index('--repetitions')+1] == '1'
+    assert replay[replay.index('--warmups')+1] == '0'
     seen=set()
     while len(seen)<len(jobs):
         ready={j['id'] for j in jobs if j['id'] not in seen and set(j['after'])<=seen}
@@ -104,3 +112,64 @@ def test_paired_quality_keeps_terminal_failures_in_denominator():
     assert report['metrics']['official_map@10']['mean'] == -.5
     assert report['metrics']['official_map@10']['rows'] == 1
     assert report['left_failures'] == 1
+
+
+def test_only_one_hoprag_job_can_use_the_two_campaign_slots():
+    from scripts.link_experiment_campaign import ready_jobs
+    jobs=[{'id':'hp-hoprag-index','priority':8},{'id':'mhr-hoprag-index','priority':8},{'id':'ordinary','priority':0}]
+    states={j['id']:{'state':'pending'} for j in jobs}
+    picked=ready_jobs(jobs,states,[])
+    assert len(picked)==2 and sum('hoprag' in j['id'] for j in picked)==1
+    assert ready_jobs(jobs,states,[{'id':'adopted-hoprag-mhr'}])==[jobs[2]]
+
+
+def test_campaign_resume_does_not_repeat_completed_adopted_work(tmp_path):
+    from scripts.link_experiment_campaign import run
+    plan=tmp_path/'plan.json'
+    plan.write_text(json.dumps({'jobs':[{'id':'done','adopt':{'pid':-1},'command':['must-not-run']}]}))
+    (tmp_path/'status.json').write_text(json.dumps({'tasks':{'done':{'state':'completed','exit_code':0}}}))
+    run(plan,resume=True)
+    state=json.loads((tmp_path/'status.json').read_text())
+    assert state['state']=='completed' and state['tasks']['done']['state']=='completed'
+    assert not (tmp_path/'done.log').exists()
+
+
+def test_hoprag_only_mode_runs_one_task_and_leaves_other_models_pending():
+    from scripts.link_experiment_campaign import ready_jobs
+    jobs=[{'id':'hp-hoprag-index'},{'id':'mhr-hoprag-index'},{'id':'hp-lightrag-index','priority':0}]
+    states={j['id']:{'state':'pending'} for j in jobs}
+    assert ready_jobs(jobs,states,[],max_active=1,strategy_filter='hoprag')==[jobs[0]]
+    assert ready_jobs(jobs,states,[jobs[0]],max_active=1,strategy_filter='hoprag')==[]
+
+
+def test_primary_hotpot_jobs_do_not_depend_on_supplemental_arms(tmp_path):
+    from scripts.plan_link_experiments import make_plan
+    source=tmp_path/'stats.json'
+    source.write_text(json.dumps({'index_policy':{'index_namespace':'source'},'run_id':'source'}))
+    plan=make_plan('test',source,multihoprag_reference=tmp_path/'reference.json')
+    jobs={j['id']:j for j in plan['jobs']}
+    assert plan['max_active']==2 and plan['max_hoprag_active']==1
+    assert jobs['hp-primary-hop-inputs']['after']==['hp-prehop-benchmark']
+    assert jobs['hp-primary-without-hop']['after']==['hp-primary-hop-inputs']
+    assert jobs['hp-timing-build']['after']==['hp-reference-starts']
+    assert '--reference-inputs' in jobs['hp-timing-build']['command']
+    assert jobs['hp-reference-timing']['after']==['hp-timing-build','hp-reference-starts']
+    assert 'scripts/verify_primary_timing.py' in jobs['hp-reference-timing']['command']
+    for key in ['hp-A','hp-B','hp-C']:
+        assert jobs[key]['experiment_role']=='supplemental_representation_comparison'
+        assert jobs[key]['priority']>jobs['hp-primary-without-hop']['priority']
+
+
+def test_pending_migration_preserves_running_commands_and_completed_results():
+    from scripts.plan_link_experiments import reconcile_pending
+    old={'jobs':[{'id':'running','command':['old']},{'id':'done','command':['done']}], 'execution_filter':'hoprag'}
+    states={'running':{'state':'running','identity':{'pid':7}},'done':{'state':'completed'}}
+    latest={'jobs':[{'id':'running','command':['new']},{'id':'done','command':['new']},
+                    {'id':'missing','command':['new']}],'max_active':2,'max_hoprag_active':1}
+    plan,state=reconcile_pending(old,states,latest,{'missing':'finished.json'})
+    assert plan['jobs'][0]['command']==['old']
+    assert plan['jobs'][1]['command']==['done']
+    assert state['running']==states['running']
+    assert state['missing']=={'state':'completed','reused_evidence':'finished.json'}
+    assert 'execution_filter' not in plan
+    assert 'missing' not in states
