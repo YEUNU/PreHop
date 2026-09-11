@@ -248,3 +248,11 @@ when revising prose. They do not prohibit implementation detail in developer doc
   outside `docs/`. Do not declare a criterion satisfied without checking the
   current artifact. These checks do not authorize benchmark reruns or restore
   automatic execution/approval gates.
+
+## Anonymous research distribution
+
+Before sharing an anonymous repository, inspect its distributed file list for
+author names, account names, personal paths, contact details and identifying
+repository links, including LICENSE and package metadata. Preserve third-party
+attribution and license terms. Verify the served snapshot after publishing;
+a local check does not establish that an anonymous proxy has refreshed.
