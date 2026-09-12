@@ -80,7 +80,7 @@ benchmark result.
   transport, and native output recording.
 - [Execution and measurement](docs/THROUGHPUT_EXECUTION.md): profiles, launch
   procedures, recovery, and cost definitions.
-- [Maintainer policy](CLAUDE.md): repository maintenance rules.
+- [Maintainer policy](AGENTS.md): repository maintenance rules.
 - [HotpotQA data](docs/HOTPOTQA.md): corpus preparation and evaluation mapping.
 
 Research results, experiment plans, submission checklists, manuscripts, and

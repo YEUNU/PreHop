@@ -285,7 +285,7 @@ run_mhr_full_benchmark.sh
 .DS_Store
 
 # Submission-strategy details (target venue, deadlines, rejection history) —
-# private, local-only. See CLAUDE.md "Documentation structure".
+# private, local-only. See AGENTS.md "Private research materials".
 SUBMISSION_TARGET.md
 
 # Working paper draft — keep the editable manuscript local until a release
