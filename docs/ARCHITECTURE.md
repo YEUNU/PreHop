@@ -110,15 +110,17 @@ does not by itself guarantee that linked passages have different article titles.
 
 `core/structured_outputs.py` defines schemas for index question generation and
 candidate selection. Requests use strict JSON-schema response formats through
-the common gateway. Validators reject extra fields, wrong types, duplicate
-keys, malformed JSON, refusals, and incomplete responses. Ranking requires
-exactly the requested number of distinct IDs from the supplied candidate pool.
-Initial question rewriting and document-conditioned refinement, including their
-schemas, prompts, length gates and configuration fields, have been removed.
+the common gateway. The ranking schema requests the configured number of IDs
+from the supplied candidate pool. The client decodes the returned JSON without
+additional local schema or ranking-uniqueness validation; actual decoding and
+consumer errors propagate. Initial question rewriting and document-conditioned
+refinement, including their schemas, prompts, length gates and configuration
+fields, have been removed.
 
-`prehop-json-schema-v3` omits unsupported wire keywords such as `uniqueItems`
-while enforcing uniqueness locally. Materialized schema and prompt digests are
-part of semantic identity. The controlled format-retry profile retries the same
+`prehop-json-schema-v3` does not emit `uniqueItems`. Materialized schemas and
+existing provenance digests retain their recorded identities; the historical
+validation-contract label in the digest is not an active local validator.
+The controlled format-retry profile retries the same
 request under one shared maximum of five wire attempts, including transport
 retries. Discarded responses and available usage remain recorded; retries do
 not select among valid outputs by quality. Final synthesis remains text output.

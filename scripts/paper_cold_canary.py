@@ -68,8 +68,7 @@ async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, 
             from models.external_research.adapter import ExternalResearchAdapter
             engine = ExternalResearchAdapter(strategy, corpus_tag=dataset)
         from cli.benchmark import _index_snapshot_metadata
-        snapshot = await _index_snapshot_metadata(
-            engine, strategy, dataset, {**loaded, 'path': str(corpus / 'corpus_manifest.json')}, True)
+        snapshot = await _index_snapshot_metadata()
         index = {**raw, 'dataset': dataset, 'fresh_index': True, 'source_count': snapshot['source_count'],
                  'source_manifest': source_ref,
                  **({} if full_corpus else {'cold_fixture': fixture_identity()}),

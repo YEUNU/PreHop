@@ -18,7 +18,7 @@ def observed_chat_type(base):
     class ObservedChat(base):
         _audit = PrivateAttr()
 
-        def configure_validation(self, audit, attempts, ner_limits, triple_limit):
+        def configure_observation(self, audit):
             self._audit = audit
             return self
 
@@ -35,7 +35,7 @@ def observed_chat_type(base):
     return ObservedChat
 
 
-def register_ms_observer(audit, attempts):
+def register_ms_observer(audit):
     from graphrag_llm.completion.completion_factory import register_completion
     from graphrag_llm.completion.lite_llm_completion import LiteLLMCompletion
 

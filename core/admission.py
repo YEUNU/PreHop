@@ -151,11 +151,3 @@ def admission_bindings(result_path: Path, payload: dict | None) -> dict[str, str
             payload.get("post_query_artifact_inventory") if isinstance(payload, dict) else None
         ),
     }
-
-
-def admission_path_for_result(result_path: Path) -> Path:
-    """Return the target-level ledger beside the strategy output subtree."""
-    if result_path.parent.name != "seed_42" or len(result_path.parents) < 4:
-        raise ValueError(f"result is not in a seed_42 paper target: {result_path}")
-    # .../<run>/<strategy>/<dataset>/seed_42/result.json -> .../<run>/admission.json
-    return result_path.parents[3] / "admission.json"

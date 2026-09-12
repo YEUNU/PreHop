@@ -1,18 +1,7 @@
 """Compare paper settings and adapter boundaries against the pinned native code."""
-import os
-from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from core.generation_profiles import request_settings
-
-
-def _native(strategy, relative):
-    home = os.environ.get('RAG_TEST_PINNED_RUNTIME_HOME')
-    if not home:
-        pytest.skip('actual pinned native sources not selected')
-    return Path(home) / strategy / 'source' / relative
 
 
 def test_ms_native_models_do_not_set_an_output_cap():

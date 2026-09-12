@@ -29,7 +29,6 @@ STAGES = (
     "full_target_admitted",
 )
 DATASETS = ("multihoprag", "hotpotqa")
-MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 
 def _context() -> dict[str, object]:

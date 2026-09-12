@@ -132,24 +132,7 @@ def _query_records_sha256(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(records).encode("utf-8")).hexdigest()
 
 
-def _manifest_source_ids(corpus_manifest: dict | None) -> list[str] | None:
-    """Read the prepared corpus identity set without touching an index.
-
-    Legacy MultiHop-RAG manifests are optional; only a manifest-bearing corpus
-    can be checked against an active source snapshot.
-    """
-    if corpus_manifest is None:
-        return None
-    corpus_dir = Path(str(corpus_manifest["path"])).parent
-    source_ids = sorted(path.stem for path in corpus_dir.iterdir() if path.is_file() and path.suffix in (".txt", ".md"))
-    return source_ids
-
-
-def _source_set_sha256(source_ids: list[str]) -> str:
-    return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
-
-
-async def _index_snapshot_metadata(engine, strategy, corpus_tag, corpus_manifest, strict=False):
+async def _index_snapshot_metadata():
     """Record that execution does not perform an active-index verification."""
     return {"status": "not_checked"}
 
@@ -593,17 +576,8 @@ async def run_benchmark(
         vllm = get_llm_client(model_id) if judge_enabled else None
     except Exception as exc:
         raise RuntimeError(f"Failed to initialize engine for {strategy}: {exc}") from exc
-    # Stats artifacts are only a report of what indexing intended to build.
-    # Before query execution, prove the currently active graph/parquet snapshot
-    # still matches the prepared corpus. Full benchmarks fail closed; subsets
-    # retain the diagnostic state for exploratory debugging.
-    active_index_snapshot = await _index_snapshot_metadata(
-        engine,
-        strategy,
-        corpus_tag,
-        corpus_manifest,
-        strict=evaluation_scope == "full_benchmark",
-    )
+    # Active-index verification is disabled; retain its explicit report status.
+    active_index_snapshot = await _index_snapshot_metadata()
     results: list[dict[str, Any]] = []
     category_results: dict[str, list[dict[str, Any]]] = {}
 

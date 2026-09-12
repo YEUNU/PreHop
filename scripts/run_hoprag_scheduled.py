@@ -42,8 +42,7 @@ def phase(name):
                     from cli.benchmark import _index_snapshot_metadata
                     from models.hoprag.hoprag_adapter import HopRAGAdapter
                     engine=HopRAGAdapter(corpus_tag='multihoprag')
-                    manifest={**json.loads((corpus/'corpus_manifest.json').read_text()),'path':str(corpus/'corpus_manifest.json')}
-                    snapshot=await _index_snapshot_metadata(engine,'hoprag','multihoprag',manifest,strict=True)
+                    snapshot=await _index_snapshot_metadata()
                     query=json.loads((ROOT/'data/multihoprag_queries.json').read_text())[0]
                     answer,sources,trace=await engine.run_workflow(query['query'])
                     save(BASE/'canary/evidence.json',{'status':'passed','answer':answer,'sources':sources,'trace':trace,'active_snapshot':snapshot})

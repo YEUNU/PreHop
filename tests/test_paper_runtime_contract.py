@@ -37,14 +37,6 @@ def _canonical_transport(monkeypatch, strategy="prehop"):
         monkeypatch.setenv("RAG_LLM_SEED", "42")
 
 
-def _complete_policy(monkeypatch, strategy, dataset):
-    _canonical_transport(monkeypatch, strategy)
-    return {
-        **canonical_semantic_index_policy(strategy, dataset),
-        "operational_config": canonical_operational_policy(strategy),
-    }
-
-
 def test_every_strategy_has_one_explicit_litellm_transport_profile():
     assert {spec.transport_profile for spec in BY_NAME.values()} == {"openai_compatible_litellm"}
 

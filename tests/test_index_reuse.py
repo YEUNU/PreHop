@@ -88,7 +88,7 @@ def linked(tmp_path, monkeypatch):
 def test_validated_clone_keeps_source_identity_and_fresh_result(linked):
     path, link, original, clone, _ = linked
     before = reuse.inventory(original)
-    reuse.load_link(path, link['target_run_id'], link['strategy'], link['dataset'], pristine_clone=True)
+    reuse.load_link(path, link['target_run_id'], link['strategy'], link['dataset'])
     assert os.environ['RAG_RUN_ID'] == 'source'
     assert os.environ['RAG_BENCHMARK_TIMESTAMP'] == link['target_run_id']
     assert os.environ['RAG_INDEX_NAMESPACE'] == 'hotpotqa_source'

@@ -24,7 +24,6 @@ class StructuredOutputError(RuntimeError):
 class StructuredContract:
     name: str
     model: type[BaseModel]
-    unique_ranking: bool = False
 
     def schema(self) -> dict[str, Any]:
         schema = self.model.model_json_schema()
@@ -62,7 +61,7 @@ def ranking_contract(candidate_ids: list[str], top_k: int) -> StructuredContract
     identifier = Literal[tuple(candidate_ids)]
     model = create_model('prehop_ranking_v1', __config__=_CONFIG,
                          ranking=(list[identifier], Field(..., min_length=count, max_length=count)))
-    return StructuredContract('prehop_ranking_v1', model, unique_ranking=True)
+    return StructuredContract('prehop_ranking_v1', model)
 
 
 def structured_bundle_sha256() -> str:
@@ -72,13 +71,6 @@ def structured_bundle_sha256() -> str:
     bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas,
               'validation_contract': 'strict-json-schema-local-unique-v2'}
     return hashlib.sha256(json.dumps(bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-
-
-# Approved subset used by our materialized PreHop schemas. New keywords require
-# explicit backend validation, not silent removal or a weaker decoding fallback.
-# https://docs.vllm.ai/en/latest/api/vllm/v1/structured_output/backend_xgrammar/
-WIRE_SCHEMA_KEYS = frozenset({'$defs', '$ref', 'type', 'title', 'properties', 'required',
-    'additionalProperties', 'items', 'minItems', 'maxItems', 'pattern', 'enum', 'const'})
 
 
 def structured_index_bundle_sha256() -> str:

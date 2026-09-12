@@ -17,7 +17,7 @@ def test_gfm_passes_native_response_and_options_unchanged(tmp_path, content):
             calls.append(kwargs)
             return reply
     audit = ExtractionAudit(tmp_path/'audit.jsonl', profile=PROFILE)
-    client = observed_chat_type(Native)().configure_validation(audit, 5, {300}, 1024)
+    client = observed_chat_type(Native)().configure_observation(audit)
     assert client.invoke([], max_tokens=300, response_format={'type':'json_object'}) is reply
     assert calls == [{'max_tokens':300, 'response_format':{'type':'json_object'}}]
 
@@ -30,7 +30,7 @@ def test_native_exception_is_rethrown_once_and_does_not_override_native_fallback
             calls.append(kwargs)
             raise error
     audit = ExtractionAudit(tmp_path/'audit.jsonl', profile=PROFILE)
-    client = observed_chat_type(Native)().configure_validation(audit, 5, {300}, 1024)
+    client = observed_chat_type(Native)().configure_observation(audit)
     try:
         client.invoke([], max_tokens=300)
     except RuntimeError as exc:
@@ -63,7 +63,7 @@ async def test_ms_observer_keeps_preamble_truncation_and_cache(monkeypatch, tmp_
     monkeypatch.setattr(native_module, 'LiteLLMCompletion', Base)
     monkeypatch.setattr(factory, 'register_completion', lambda name, cls: registered.update({name:cls}))
     audit = ExtractionAudit(tmp_path/'audit.jsonl', profile=PROFILE)
-    register_ms_observer(audit, 5)
+    register_ms_observer(audit)
     provider = registered[PROVIDER](cache='native-cache')
     result = await provider._completion_async(messages=[]) if asynchronous else provider._completion(messages=[])
     assert result is response and len(calls) == 1

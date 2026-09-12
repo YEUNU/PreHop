@@ -151,9 +151,7 @@ def reuse_benchmark(campaign: str, strategy: str, dataset: str) -> None:
     run_id = f'{campaign}-{dataset}-{strategy}'
     path = ROOT / 'data/results' / run_id / 'index_link.json'
     bootstrap_benchmark(path, run_id, strategy, dataset)
-    from core.semantic_config import parse_strict_bool
-    resumed = parse_strict_bool(os.environ.get('RAG_BENCHMARK_RESUME', 'false'), name='RAG_BENCHMARK_RESUME')
-    load_link(path, run_id, strategy, dataset, pristine_clone=not resumed)
+    load_link(path, run_id, strategy, dataset)
     from cli.benchmark import run_benchmark
     async def run():
         try:

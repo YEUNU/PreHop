@@ -303,10 +303,6 @@ def _source_ids_from_filenames(filenames: list[str]) -> list[str]:
     return sorted(Path(filename).stem for filename in filenames)
 
 
-def _source_set_sha256(source_ids: list[str]) -> str:
-    return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
-
-
 def _staged_source_ids(files: list[str], corpus_manifest=None, dataset_path=None) -> list[str]:
     return _source_ids_from_filenames(files)
 

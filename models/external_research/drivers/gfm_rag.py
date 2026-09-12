@@ -92,11 +92,7 @@ class GFMRAGDriver:
         graph_constructor = instantiate(retriever_cfg.graph_constructor)
         # Retain official NER/OpenIE prompts and parsers while replacing only
         # their transport with the configured OpenAI-compatible Gemma route.
-        compatible_chat.configure_validation(
-            self.extraction_audit, transport.retry_attempts,
-            {ner_model.max_tokens, graph_constructor.open_ie_model.max_ner_tokens},
-            graph_constructor.open_ie_model.max_triples_tokens,
-        )
+        compatible_chat.configure_observation(self.extraction_audit)
         ner_model.client = compatible_chat
         graph_constructor.open_ie_model.client = compatible_chat
         self.retriever = GFMRetriever.from_index(

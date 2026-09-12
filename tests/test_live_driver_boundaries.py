@@ -1,5 +1,4 @@
 """Optional real pinned-runtime regressions; no inference and no original artifact writes."""
-import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -76,8 +75,3 @@ print("native_import_and_transport_ok")
                             env=environment, check=False, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert 'native_import_and_transport_ok' in result.stdout
-
-
-def _inventory(root):
-    return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in root.rglob('*') if path.is_file()}

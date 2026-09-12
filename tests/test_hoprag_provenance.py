@@ -2,7 +2,6 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-import numpy as np
 import pytest
 
 from models.hoprag import official_indexer as hop_official_indexer
@@ -68,18 +67,6 @@ def test_hoprag_cache_digest_changes_with_parser_version(tmp_path, monkeypatch):
     monkeypatch.setattr(hop_official_indexer, "_CACHE_FORMAT_VERSION", 999)
 
     assert _document_cache_digest(source) != first
-
-
-def _valid_cached_node(dim: int = 2):
-    vector = np.ones(dim, dtype=np.float32)
-    node = {"text": "Evidence.", "keywords": ["evidence"], "embed": vector}
-    questions = {
-        "answerable": [("What is stated?", {"evidence"}, vector)],
-        "pending": [("What is needed next?", {"evidence"}, vector)],
-    }
-    return node, questions
-
-
 
 
 @pytest.mark.asyncio

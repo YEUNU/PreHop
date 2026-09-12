@@ -62,7 +62,7 @@ def bootstrap_benchmark(link_path: Path, target: str, strategy: str, dataset: st
     os.environ['RAG_INDEX_REUSE_LINK'] = str(path)
 
 
-def load_link(link_path: Path, target: str, strategy: str, dataset: str, *, pristine_clone: bool = False) -> dict:
+def load_link(link_path: Path, target: str, strategy: str, dataset: str) -> dict:
     """Load the selected index link and configure its recorded namespace."""
     link = json.loads(local_path(str(link_path)).read_text())
     configure(link)
@@ -110,7 +110,7 @@ def prepare(campaign: str, strategy: str, dataset: str) -> Path:
              'preparation_elapsed_seconds': time.perf_counter() - started}
     path = base / 'index_link.json'
     save(path, value)
-    load_link(path, target, strategy, dataset, pristine_clone=True)
+    load_link(path, target, strategy, dataset)
     return path
 
 
@@ -153,5 +153,5 @@ def prepare_completed(campaign, strategy, dataset, completion_path):
              'preparation_elapsed_seconds':time.perf_counter()-started}
     path=base/'index_link.json'
     save(path,value)
-    load_link(path,target,strategy,dataset,pristine_clone=True)
+    load_link(path,target,strategy,dataset)
     return path
