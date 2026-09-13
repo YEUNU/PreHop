@@ -87,6 +87,8 @@ class LightRAGDriver:
             embedding_func=embedder,
             embedding_batch_num=transport.embedding_batch_size,
             embedding_func_max_async=transport.embedding_concurrency,
+            default_llm_timeout=transport.timeout_seconds,
+            default_embedding_timeout=transport.timeout_seconds,
             **self._producer_options(),
         )
         self.loop = asyncio.new_event_loop()
@@ -111,7 +113,9 @@ class LightRAGDriver:
         if len(statuses) != len(self.rows) or any(str(getattr(status, "status", "")).lower().split(".")[-1] != "processed" for status in statuses.values()):
             raise RuntimeError("LightRAG did not mark every staged source as processed")
         return {"source_count": len(self.rows), "coverage_complete": True, "query_mode": self.param.mode,
-                "native_top_k": self.param.top_k, "document_concurrency": self.engine.max_parallel_insert}
+                "native_top_k": self.param.top_k, "document_concurrency": self.engine.max_parallel_insert,
+                "native_llm_timeout_seconds": self.engine.default_llm_timeout,
+                "native_embedding_timeout_seconds": self.engine.default_embedding_timeout}
 
     def query(self, question: str) -> dict[str, Any]:
         return self.loop.run_until_complete(self._query_async(question))

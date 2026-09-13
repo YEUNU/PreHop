@@ -33,10 +33,6 @@ async def run_official_index(
     inventory = artifact_inventory(target)
     operational_config = dict(index_policy or {}).get("operational_config", {})
     policy = semantic_index_policy(index_policy)
-    if policy.get("extraction_validation_profile"):
-        from .extraction_contract import validate_audit_evidence
-
-        validate_audit_evidence(stats.get("extraction_audit_evidence"))
     semantic_sha256 = semantic_config_sha256(index_policy)
     _write_json(
         snapshot_metadata_path(strategy, corpus_tag),

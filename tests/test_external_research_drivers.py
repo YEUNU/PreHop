@@ -43,6 +43,7 @@ def test_lightrag_uses_pinned_async_contract_and_exact_file_path(monkeypatch, tm
     class LightRAG:
         def __init__(self, **kwargs):
             calls["config"] = kwargs
+            self.__dict__.update(kwargs)
             self.max_parallel_insert = kwargs.get("max_parallel_insert", 2)
 
         async def initialize_storages(self):
@@ -119,6 +120,8 @@ def test_lightrag_uses_pinned_async_contract_and_exact_file_path(monkeypatch, tm
     driver.index()
     result = driver.query("q")
     assert calls["initialized"]
+    assert calls["config"]["default_llm_timeout"] == 23.0
+    assert calls["config"]["default_embedding_timeout"] == 23.0
     assert calls["config"]["embedding_batch_num"] == 16
     assert calls["config"]["embedding_func_max_async"] == 1
     assert calls["embedding"]["embedding_dim"] == 2560

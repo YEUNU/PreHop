@@ -50,7 +50,7 @@ class MSGraphRAGAdapter:
         self._text_units: pd.DataFrame | None = None
         self._relationships: pd.DataFrame | None = None
         self._documents: pd.DataFrame | None = None
-        self._doc_id_to_title: dict[str, str] | None = None
+        self._doc_id_to_title: dict[str, str | list[str]] | None = None
         self._short_id_to_doc_id: dict[str, str] | None = None
         self._source_id_to_display_title: dict[str, str] | None = None
 
@@ -100,7 +100,7 @@ class MSGraphRAGAdapter:
     def _build_source_maps(
         text_units: pd.DataFrame,
         documents: pd.DataFrame,
-    ) -> tuple[dict[str, str], dict[str, str]]:
+    ) -> tuple[dict[str, str], dict[str, str | list[str]]]:
         """Build the exact provenance mapping used by GraphRAG's query API.
 
         ``read_text_units`` assigns ``TextUnit.short_id`` from the DataFrame
@@ -120,18 +120,23 @@ class MSGraphRAGAdapter:
         if not text_units.index.is_unique:
             raise RuntimeError("MS GraphRAG text_units.parquet has duplicate row indices")
 
-        doc_id_to_title: dict[str, str] = {}
+        doc_id_to_title: dict[str, str | list[str]] = {}
         source_filenames: set[str] = set()
         for _, row in documents.iterrows():
             doc_id = str(row.get("id", "") or "").strip()
             source_filename = str(row.get("title", "") or "").strip()
             if not doc_id or not source_filename:
                 raise RuntimeError("MS GraphRAG documents.parquet contains empty provenance fields")
-            if doc_id in doc_id_to_title:
-                raise RuntimeError(f"MS GraphRAG documents.parquet has duplicate document id: {doc_id!r}")
             if source_filename in source_filenames:
                 raise RuntimeError(f"MS GraphRAG documents.parquet has duplicate source filename: {source_filename!r}")
-            doc_id_to_title[doc_id] = source_filename
+            # Upstream hashes content, so distinct corpus sources can share an ID.
+            # Preserve every source alias without changing the native graph.
+            previous = doc_id_to_title.get(doc_id)
+            if previous is None:
+                doc_id_to_title[doc_id] = source_filename
+            else:
+                aliases = [previous] if isinstance(previous, str) else previous
+                doc_id_to_title[doc_id] = [*aliases, source_filename]
             source_filenames.add(source_filename)
 
         short_id_to_doc_id: dict[str, str] = {}
@@ -195,22 +200,24 @@ class MSGraphRAGAdapter:
             # becomes dependent on the diagnostic ``doc`` fallback.
             if doc_id not in doc_map:
                 raise RuntimeError(f"MS GraphRAG source {unit_id!r} references unknown document id {doc_id!r}")
-            source_filename = str(doc_map[doc_id] or "").strip()
-            source_text = str(row.get("text", "") or "")
-            if not source_filename or not source_text.strip():
-                raise RuntimeError(f"MS GraphRAG source {unit_id!r} has incomplete provenance")
-            title = self._display_title(source_text, source_filename)
-            sources.append(
-                {
-                    "doc": title,
-                    "source": source_filename,
-                    "source_filename": source_filename,
-                    "document_id": doc_id,
-                    "page": 0,
-                    "text": source_text,
-                    "sent_id": 0,
-                }
-            )
+            aliases = doc_map[doc_id]
+            for source_alias in ([aliases] if isinstance(aliases, str) else aliases):
+                source_filename = str(source_alias or "").strip()
+                source_text = str(row.get("text", "") or "")
+                if not source_filename or not source_text.strip():
+                    raise RuntimeError(f"MS GraphRAG source {unit_id!r} has incomplete provenance")
+                title = self._display_title(source_text, source_filename)
+                sources.append(
+                    {
+                        "doc": title,
+                        "source": source_filename,
+                        "source_filename": source_filename,
+                        "document_id": doc_id,
+                        "page": 0,
+                        "text": source_text,
+                        "sent_id": 0,
+                    }
+                )
         return sources
 
     # ------------------------------------------------------------------ search APIs

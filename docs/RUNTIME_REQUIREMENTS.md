@@ -245,3 +245,16 @@ from that interpreter. The HopRAG document worker setting is 10. Prehop's shared
 `RAG_HOP_GATHER_WAVE`, `RAG_HOP_BUILD_CONCURRENCY`, `RAG_HOP_SEMANTIC_VARIANT` and
 `RAG_HOP_EDGE_FILTER` settings do not configure HopRAG and are not treated as
 unknown HopRAG overrides. Native upstream files remain unchanged.
+
+
+### Native output aliases and timeout alignment
+
+MS GraphRAG may assign the same content-derived document ID to multiple corpus
+files. The adapter retains all source aliases when decoding citations, without
+rewriting native parquet tables, graph membership, search results or answers.
+LightRAG's public `default_llm_timeout` and `default_embedding_timeout` arguments
+use the configured transport timeout (600 seconds in the campaign). Native
+worker watchdog behavior remains unchanged; the HTTP deadline alone does not
+configure these internal wrappers. Index receipts record the applied values.
+External index completion no longer invokes the removed extraction-validation
+function. Native extraction observations and actual errors remain available.

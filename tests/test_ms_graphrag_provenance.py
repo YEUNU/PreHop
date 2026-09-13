@@ -291,11 +291,6 @@ def test_ms_source_map_uses_dataframe_index_like_official_api():
             "references unknown document",
         ),
         (
-            pd.DataFrame([{"document_id": "d"}]),
-            pd.DataFrame([{"id": "d", "title": "a.txt"}, {"id": "d", "title": "b.txt"}]),
-            "duplicate document id",
-        ),
-        (
             pd.DataFrame([{"document_id": "d1"}]),
             pd.DataFrame([{"id": "d1", "title": "a.txt"}, {"id": "d2", "title": "a.txt"}]),
             "duplicate source filename",
@@ -385,3 +380,17 @@ async def test_ms_local_search_marks_unlabelled_provider_response(monkeypatch):
     answer, _sources, _trace = await adapter.local_search("Where was the person born?")
 
     assert answer == "@@ANSWER: Paris"
+
+
+def test_native_content_hash_aliases_preserve_every_source_without_mutating_frames():
+    documents = pd.DataFrame([{"id": "same", "title": "a.txt"}, {"id": "same", "title": "b.txt"}])
+    units = pd.DataFrame([{"document_id": "same"}])
+    original = documents.copy(deep=True)
+    short, names = MSGraphRAGAdapter._build_source_maps(units, documents)
+    adapter = MSGraphRAGAdapter.__new__(MSGraphRAGAdapter)
+    adapter._short_id_to_doc_id = short
+    adapter._doc_id_to_title = names
+    sources = adapter._extract_sources({"sources": pd.DataFrame([{"id": "0", "text": "Shared text"}])})
+    assert [r["source"] for r in sources] == ["a.txt", "b.txt"]
+    assert all(r["text"] == "Shared text" for r in sources)
+    pd.testing.assert_frame_equal(documents, original)
