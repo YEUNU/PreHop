@@ -1,10 +1,8 @@
 # Runtime Requirements
 
-The revised Prehop design removes initial query rewriting and evidence-conditioned
-query regeneration/re-search. The original query searches all three channels at
-every input length. The runtime uses this single-pass policy. Earlier Prehop scores and costs have been removed from paper reporting. The completed
-original-query MultiHop-RAG run is now reported in [the result register](RESULTS.md);
-other pending experiments require their own compatible full-run artifacts.
+Use this guide to prepare method runtimes and understand their native output
+contracts. Query behavior belongs in [Architecture](ARCHITECTURE.md); launch and
+completion behavior belongs in [Execution](THROUGHPUT_EXECUTION.md).
 
 `core/strategy_registry.py` defines supported methods, pinned upstream revisions,
 and paper policies. `configs/paper_runtime_requirements.json` defines required
@@ -13,9 +11,9 @@ explains how to prepare and use those runtimes.
 
 ## Main Python environment
 
-Select a prepared environment explicitly. Standard paper entrypoints check its
-installed dependencies and lockfile consistency without synchronizing it during
-execution. HopRAG uses its separately prepared native runtime.
+Select a prepared environment explicitly. Entrypoints use it without dependency
+synchronization or automatic lockfile checks. HopRAG uses its separately prepared
+native runtime.
 
 For a new main environment:
 
@@ -39,12 +37,14 @@ Configure `.env` or the exported environment with:
 - `RAG_GENERATION_MODEL=gemma-4-31b-it`
 - `RAG_EMBEDDING_MODEL=qwen3-embedding-4b`
 
-Generation and embeddings share one OpenAI-compatible LiteLLM base. Paper mode
-checks its normalized identity against `configs/paper_gateway.json`. Empty
-bases, URL userinfo, unsupported model overrides, and direct public-provider
-fallbacks are rejected. Credentials must not enter commands, logs, or artifacts.
+Generation and embeddings share one OpenAI-compatible LiteLLM base. Shell
+launchers require the canonical base, key, and model variables and reject legacy
+provider inputs. `core/inference_transport.py` records the normalized endpoint
+identity without comparing it against `configs/paper_gateway.json`. Configure
+the shared gateway; automatic gateway approval and model-equality checks are
+removed. Credentials must not enter commands, logs, or artifacts.
 Legacy provider variables are not an alternative public interface; compatibility
-names are injected only into validated isolated native children.
+names are injected only into isolated native children.
 
 The remote embedding contract is 2,560 dimensions, a 32,768-token input limit,
 and zero token reserve. The generation context limit is 262,144. Query
@@ -62,8 +62,9 @@ Pinned upstream checkouts are immutable. Package setup exports the approved
 revision into a unique build directory before installation and checks original
 source integrity. `RAG_OFFICIAL_BASELINE_HOME` selects the shared
 `<home>/<strategy>/{source,artifacts,venv}` layout. Source and interpreter
-overrides must resolve to the validated runtime. Use a fresh runtime home when
-preparing a replacement; setup does not clean an existing attempt.
+overrides select the runtime whose actual identity is recorded. Use a fresh
+runtime home when preparing a replacement; setup does not clean an existing
+attempt.
 
 ```bash
 ./scripts/setup_official_baselines.sh --primary
@@ -71,8 +72,8 @@ preparing a replacement; setup does not clean an existing attempt.
 
 This provisions packaged external methods using registry revisions. It does not
 provision HopRAG's separate main/POS environments. Each prepared environment
-records `runtime.freeze.txt`. Preflight checks installed metadata and retained
-freeze/constraint hashes; a local freeze is not a universal cross-platform lock.
+records `runtime.freeze.txt`. The freeze records installed metadata; it is not
+an automatic dispatch check or a universal cross-platform lock.
 
 ## Pinned external runtimes
 
@@ -152,37 +153,12 @@ edit. Client waiting may include the queue; a timeout does not prove upstream
 inference was cancelled. Selected native parameter parity does not imply fully
 upstream-identical execution after shared model/transport adaptations.
 
-### Original-question retrieval
-
-Prehop sends the original question to its enabled search channels and retrieves
-once. Initial rewriting and evidence-conditioned refinement have been removed,
-including their response schemas and 32-word condition. Existing indexes remain
-reusable when their construction settings match. Historical combined prompt
-hashes are recognized only for the exact unchanged construction contracts;
-source index records retain their original provenance.
-
 ## Completion and campaign scope
 
-`record_paper_completion.py` records finished execution without final paper-policy
-validation. `verify_paper_target.py` forwards to it for compatibility. Runtime,
-source coverage, index-reuse, and checkpoint checks remain enabled; historical
-seed differences do not require exception records. See
-[completion records](RESULTS.md#completion-records).
-
-### Durable campaign ownership
-
-Index and rolling dispatch do not require a clean source digest merely to launch
-the next job. The separate legacy full-matrix workflow in `paper_campaign.py`
-and `run_paper_matrix.sh` still consumes its explicit evidence ledger. That path
-is not a prerequisite for ordinary target execution or an automatic final
-validation stage. It derives 14 targets from seven methods and two datasets;
-legacy stage names containing `16` are identifiers, not current target counts.
-
-Supervisors own process sessions and retain identity-bound status and logs.
-They do not promise reboot recovery or chat notifications. Use
-[execution procedures](THROUGHPUT_EXECUTION.md) for foreground targets and the
-index-only supervisor. Do not modify an active supervisor's artifacts to change
-its recorded history.
+See [completion and continuation](THROUGHPUT_EXECUTION.md#completion-and-continuation)
+for receipts and resume behavior, and
+[persistent ownership and recovery](THROUGHPUT_EXECUTION.md#persistent-ownership-and-recovery)
+for supervisors and the legacy evidence-ledger workflow.
 
 ### Serving capacity
 
@@ -203,9 +179,8 @@ Prehop trace and intermediate-output storage must be writable. See
 
 ### HopRAG edge recovery
 
-Runtime validation dispatches to the selected method's own validator. Start new
-index attempts in fresh campaign namespaces; directories from failed readiness
-checks do not establish reusable indexes.
+Start new index attempts in fresh campaign namespaces. A directory's existence
+does not establish completed indexing.
 
 Large HopRAG edge groups use bounded exhaustive scoring in the adapter. All
 answerable candidates are scored; no dense-only top-k prefilter is used. Native
@@ -216,26 +191,20 @@ those fixtures, not a guarantee of every possible numerical boundary case.
 Cached nodes are reused; recovery costs retain prior attempt time separately.
 
 The cached recovery launcher, `scripts/resume_hoprag_cached.py`, applies the
-registered `RAG_HOP_DOC_WORKERS=10` before runtime validation. It removes the
+registered `RAG_HOP_DOC_WORKERS=10` before indexing. It removes the
 retired `RAG_HOP_MAX_THREADS`, `RAG_HOP_GATHER_WAVE`,
 `RAG_HOP_BUILD_CONCURRENCY`, `RAG_HOP_SEMANTIC_VARIANT`, and
-`RAG_HOP_EDGE_FILTER` launch overrides. The launcher validates the actual
-HopRAG runtime before reuse; passing preflight does not establish completed
-edge construction.
+`RAG_HOP_EDGE_FILTER` launch overrides. The launcher records the resumed
+execution and checks its index completion status; selecting a runtime does not
+establish completed edges.
 The pinned upstream source is unchanged.
 
 ## Dataset compatibility
 
-The paper targets MultiHop-RAG and the pinned HippoRAG HotpotQA release
-(9,221 passages, 1,000 occurrences, 944 original question IDs). All seven native
-runtime mappings remain available; the corpus change does not change model
-implementations. See [HOTPOTQA](HOTPOTQA.md) for preparation and population
-identity. Official scorer parity is tested. The common support projection uses
-complete original sentences in returned passages without gold-driven selection.
-Fullwiki data is retained separately and is not the active comparison protocol.
-Repository-owned launchers support these two datasets; additional dataset support
-inside pinned upstream packages is outside the paper.
-
+Repository-owned launchers support MultiHop-RAG and the pinned HippoRAG
+HotpotQA release. [HOTPOTQA](HOTPOTQA.md) owns its corpus, preparation, and
+sentence projection contract. Additional datasets supported by upstream
+packages are outside this comparison.
 
 ### HopRAG launcher selection
 

@@ -5,14 +5,13 @@
 Prehop builds question-guided links between corpus chunks during indexing and
 uses those stored links for multi-hop evidence retrieval. It generates Q−
 (answered here) and Q+ (needed elsewhere) representations, connects Q+ to a
-Q− owner in another source file, activates links through Q+ matches, and selects evidence
+Q− owner in another source file, expands links from all retrieved starts, and selects evidence
 for answer synthesis. The incoming/outgoing question formulation follows
 [HopRAG](https://arxiv.org/html/2502.12442v2#S3.S2); Prehop uses its own
 original-query role search, stored-link expansion, and evidence selection.
 The implementation uses the original question at every input length and runs
 retrieval once. Initial query rewriting and evidence-conditioned re-search have
-been removed. The completed MultiHop-RAG run covers all 2,556 questions; results and source
-artifacts are recorded in [the result register](docs/RESULTS.md).
+been removed.
 
 The primary comparison set is Prehop, Naive RAG, HopRAG, MS GraphRAG,
 LightRAG, GFM-RAG, and LinearRAG. Strategy identities and pinned
@@ -65,9 +64,7 @@ Dataset wrappers provide the representative full flows:
 The second benchmark uses the original HippoRAG HotpotQA release: 9,221 passages
 and 1,000 query rows (944 unique original questions). Preparation, duplicate-row
 handling, and official scoring rules are described in
-[HOTPOTQA](docs/HOTPOTQA.md). This is a reduced retrieval corpus; completed
-results remain outstanding. Controlled representation ablation and Neo4j stored-versus-online
-experiments are specified in [PAPER_ABLATION_DESIGN](docs/PAPER_ABLATION_DESIGN.md).
+[HOTPOTQA](docs/HOTPOTQA.md). This is a reduced retrieval corpus, not the official fullwiki setting.
 
 Generated indexes, logs, traces, and results stay under ignored local data and
 log directories. Do not treat a smoke run or an indexing completion as a full
@@ -88,16 +85,10 @@ presentation exports are maintained locally and excluded from the public tree.
 
 ## Verification
 
-```bash
-uv run --extra dev ruff check .
-uv run --extra dev python -m compileall -q core cli models utils scripts main.py
-uv run --extra dev pytest -q
-```
+See [maintainer verification](AGENTS.md#verification) for lint, compilation,
+and test commands.
 
 ## License
 
 MIT. External methods retain their upstream licenses and run in isolated
 environments where required.
-
-Completed benchmark outputs are linked in [RESULTS](docs/RESULTS.md#evidence-locations).
-Final completion records execution status without a separate paper-policy gate.

@@ -2,23 +2,21 @@
 
 This document describes implementation behavior. `core/config.py` owns runtime
 defaults; `core/strategy_registry.py` owns supported methods, primary order,
-upstream revisions, and paper policies. Experimental controls are specified in
-[PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md), measured evidence in
-[RESULTS](RESULTS.md), and launch procedures in
-[THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md).
+upstream revisions, and paper policies. Launch procedures are defined in
+[THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md). Research-only sources are
+described in [RESEARCH_POLICY](RESEARCH_POLICY.md).
 
 ## Strategy dispatch and indexing branches
 
 The primary order is Prehop, Naive RAG, HopRAG, MS GraphRAG, LightRAG, GFM-RAG,
 and LinearRAG. The paper targets MultiHop-RAG and HotpotQA (HippoRAG corpus). HotpotQA uses
-the official introductory-paragraph corpus and complete development split, with
+the pinned HippoRAG v1 pooled retrieval corpus, with
 source and sentence identities preserved. Preparation and evaluation are defined
 in [HOTPOTQA](HOTPOTQA.md).
 Removed methods do not supply primary comparison cells.
 
-`cli/index.py::run_indexing` acquires a strategy/corpus lock in the working
-checkout and calls `_run_indexing_unlocked`. Namespace isolation is separate
-from that local lock; it is not a cross-worktree database lock.
+`cli/index.py::run_indexing` calls `_run_indexing_unlocked` without a preflight
+or run lock. Run-scoped namespaces provide artifact isolation.
 
 | Method | Index construction | Query path |
 |---|---|---|
@@ -49,8 +47,10 @@ response interventions.
 
 Prepared `corpus_manifest.json` files bind source IDs, file and corpus-record
 hashes, query IDs, counts, and query-record hashes. HotpotQA evaluation requires
-preserving original article titles and sentence indices through preparation. Full benchmarks require a completed
-index with matching corpus identity and verify the active source snapshot.
+preserving original article titles and sentence indices through preparation.
+Provenance records the selected index and source identities; dispatch does not
+verify snapshot or corpus equality. Scientific comparisons still require the
+declared inputs and a completed index.
 Gold evidence is used for evaluation, not index construction or retrieval.
 
 ## Prehop index construction
@@ -72,8 +72,9 @@ produce a complete index.
 
 The primary legacy schema generates up to three Q− and three Q+ strings per
 passage. Q− asks about facts answered by the passage; Q+ asks for information
-elsewhere. Empty lists are valid. Invalid types and blank questions fail;
-deduplication and source-relative wording filters remove unsuitable records.
+elsewhere. Empty lists are valid. The decoder strips question strings and removes
+duplicates and source-relative wording. It has no additional blank-string or
+type-validation gate; incompatible values can fail during native string use.
 Grounded and linked schemas remain explicit experimental settings.
 
 Each body and individual question has a document embedding scoped by its title.
@@ -199,7 +200,7 @@ Question representations supply initial retrieval but do not construct body link
 
 The launcher prints a plan unless `--execute` is supplied. Its metadata uses
 `prehop-representation-ablation-v1`. See
-[PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md) for commands, controls, and
+the local-only `docs/PAPER_ABLATION_DESIGN.md` for commands, controls, and
 permitted interpretations.
 
 ## HopRAG indexing and reference checkout
@@ -251,8 +252,8 @@ The registry sets `iteration_threshold=0.4`, `passage_ratio=2`, and
 
 `core/inference_transport.py` owns gateway identity, model aliases, dimensions,
 timeouts, retries, and generation seed semantics. Generation and embedding use
-one OpenAI-compatible LiteLLM base. Paper mode rejects unsupported public
-provider aliases and omits LLM seeds; evaluation/sampling seed 42 is separate.
+one OpenAI-compatible LiteLLM base. Shell launchers reject legacy provider
+input variables. Paper mode omits LLM seeds; evaluation/sampling seed 42 is separate.
 Existing result artifacts retain their historical generation settings.
 
 Embedding responses must contain one finite, correctly sized vector per input
@@ -266,9 +267,9 @@ External compatibility aliases are configured in native child processes.
 with legacy dataset metrics retained in code. The HotpotQA adapter projects complete returned corpus sentences to title/index pairs via
 `utils/hotpotqa.py`, then applies Answer, Supporting Fact, and Joint scoring
 rules. The projection is gold-independent and shared across systems. Official
-scorer parity is tested; completed reduced-corpus experiments remain outstanding.
-Normalized/fuzzy fact recall is diagnostic and differs from the manuscript's
-literal exact-fact recall. Missing metric applicability is `-1`; evaluated
+scorer parity is tested.
+Normalized/fuzzy and literal exact-fact recall are separate diagnostics; neither
+redefines the official benchmark metrics. Missing metric applicability is `-1`; evaluated
 nonmatches are zero. Terminal failures receive zero primary quality scores and
 remain visible in failure counts. Actual execution failures remain recorded.
 
@@ -305,12 +306,8 @@ Version 3 uses one shared generation/embedding request semaphore in
 Profile limits are request bounds, not evidence of GPU saturation or exclusive
 remote resources.
 
-Index cost uses original successful pipeline wall time. Query batch cost uses
-dispatch through the last answer/failure, distinct from individual response
-latency and cumulative benchmark-segment wall time. Neo4j storage measurements
-are logical-payload estimates; file-backed measurements are physical artifact
-bytes. They are not equivalent physical database sizes. Full definitions belong
-in [the measurement protocol](THROUGHPUT_EXECUTION.md#final-tables-and-measurement-definitions).
+Cost definitions and storage measurement boundaries belong in
+[the measurement protocol](THROUGHPUT_EXECUTION.md#final-tables-and-measurement-definitions).
 
 ## Prehop tracing
 
@@ -343,42 +340,10 @@ legacy full-matrix path still has an explicit evidence ledger. Its checks must
 not be described as automatic final policy validation or as the rolling
 controller's dispatch policy. See [execution procedures](THROUGHPUT_EXECUTION.md).
 
-## Research diagrams
-
-The method is illustrated by three editable schematics:
-[overview](../fig/prehop_paper_overview.svg),
-[query retrieval](../fig/prehop_paper_retrieval.svg), and
-[passage-link example](../fig/prehop_paper_links.svg).
-They describe the current single-pass paper design. HOP links come from
-question matching; NEXT links come from within-source passage order. Original-
-query retrieval and stored-link traversal contribute to a deduplicated candidate
-set before selection. There is no input-length branch or query rewriting. Representation-ablation conditions
-use the separate controls in [the ablation specification](PAPER_ABLATION_DESIGN.md).
-Unreferenced legacy SVG/drawio schematics are retained under `fig/archive/`;
-they document superseded designs and must not be used as current paper figures.
-Result graphs are generated from completed evidence registered in
-[RESULTS](RESULTS.md); they do not define runtime behavior.
-Export and target-display checks are tracked in [the manuscript checklist](PAPER_CHECKLIST.md#rendering-and-cross-references).
-
-### Direct retrieval and stored-link traversal
-
-The query diagram distinguishes two routes into one candidate set. Manuscript
-diagrams currently label the historical evaluated expansion configuration; that activation
-restriction does not describe the updated runtime default. The original
-query searches body, Q−, and Q+ representations; question hits map to owner
-passages before rank fusion. All direct candidates remain in the pool. In the
-current default, all retrieved starting passages expose stored outgoing HOP links;
-NEXT supplies previous and next passages from retrieved starts. Both edge types
-are written during indexing. Query-time traversal reads destinations, without
-new link construction. Merge candidates by passage identity before final
-selection; a passage can occur on both routes. Candidate membership is distinct
-from inclusion in the final answer evidence. The timing ablation deliberately
-changes when HOP destinations are resolved and is not the primary query flow.
-
 ## Controlled link-experiment modules
 
 `models/prehop/ablation_inputs.py` provides explicit ablation-only frozen direct
-inputs; primary retrieval does not consult them. representation ablation downstream measurements
+inputs; primary retrieval does not consult them. Representation-ablation downstream measurements
 carry their restricted latency scope. `models/prehop/connection_timing.py`
 resolves Q+ destinations through the shared native matching wave and stores
 experiment-scoped HOP_TIMING relationships in Neo4j. Both timing arms hydrate
@@ -389,7 +354,7 @@ preparation costs, not graph destinations.
 measures co-evidence reachability plus a degree-matched random null. It never
 writes gold-driven links. `scripts/ablation_statistics.py` resamples original
 question clusters, retaining duplicate release occurrences. The task graph and
-measurement constraints are owned by [PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md).
+measurement constraints are owned by the local-only `docs/PAPER_ABLATION_DESIGN.md`.
 
 
 ## Post-hoc connection analysis
@@ -406,7 +371,7 @@ questions. For version-3 connectivity inputs it discovers the complete metric
 list, including signed differences, from `comparison_metrics`.
 `scripts/analyze_ablation_links.py` uses the same inference function for
 query-conditioned utility, with its successful-query denominator retained.
-The scientific definitions belong in [PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md).
+The scientific definitions belong in the local-only `docs/PAPER_ABLATION_DESIGN.md`.
 
 `scripts/prepare_reference_timing.py` reads original full-run traces to recover
 actual connection starts, exclusions, settings and historical destinations.

@@ -1,14 +1,11 @@
 # Execution and Measurement Protocol
 
-Prehop uses original-query, single-pass retrieval at every input length.
-The query path is defined in [ARCHITECTURE](ARCHITECTURE.md#prehop-query-path-and-branches);
-result eligibility and completed measurements belong in [RESULTS](RESULTS.md).
-
 Use this guide to launch targets, preserve existing evidence, and report
 comparable costs. Runtime setup belongs in
-[RUNTIME_REQUIREMENTS](RUNTIME_REQUIREMENTS.md); completed numbers belong in
-[RESULTS](RESULTS.md). Keep live counters, queue snapshots, and temporary
-investigations in generated campaign artifacts outside `docs`.
+[RUNTIME_REQUIREMENTS](RUNTIME_REQUIREMENTS.md). Completed research numbers
+are maintained in the local-only `docs/RESULTS.md`. Keep live counters, queue
+snapshots, and temporary investigations in generated campaign artifacts outside
+`docs`.
 
 HotpotQA (HippoRAG corpus) preparation and its sentence-output evaluation policy are
 documented in [HOTPOTQA](HOTPOTQA.md).
@@ -90,16 +87,17 @@ export UV_PROJECT_ENVIRONMENT=/absolute/path/to/prepared/main-venv
 ```
 
 The wrapper owns the queue until its foreground child exits. Do not put a
-background launcher inside it. `run_paper_target.sh ... --check` performs
-readiness checks without launching the target. The real target uses fresh
-run-scoped storage and disables in-repository generation/embedding caches.
+background launcher inside it. `run_paper_target.sh ... --check` resolves
+launch settings without running the target; it does not verify runtime readiness.
+The real target uses run-scoped storage and disables in-repository
+generation/embedding caches.
 It never invokes the global graph clear operation.
 
-A compatible completed index can be reused; a compatible partial deterministic
-benchmark can resume missing queries. Completed benchmark status is recorded
-without another final policy check. Existing incompatible artifacts are
-preserved and require a fresh run ID. Source and query provenance remain bound
-to the actual execution.
+The launcher skips indexing when the run's index-statistics file exists and
+resumes missing query IDs when its partial result exists. These file-presence
+checks do not establish semantic compatibility. Use fresh run IDs for changed
+inputs or settings and retain the provenance of reused artifacts. See
+[checkpoint behavior](ARCHITECTURE.md#evaluation-output-contract).
 
 ## Index-only batch
 
@@ -156,7 +154,7 @@ Report datasets separately and state each metric's population.
 | Dataset | Quality population and measures | Cost normalization |
 |---|---|---|
 | MultiHop-RAG | 2,255 non-null queries: official Hits@4/10, MRR@10, MAP@10; all 2,556 queries: official QA Accuracy | 609 source documents; 2,556 queries |
-| HotpotQA (HippoRAG corpus) | All 1,000 released rows (944 original questions): official answer, supporting-fact and joint EM/F1/precision/recall; results unmeasured | 9,221 released passages; row-weighted metrics and original-question cluster intervals |
+| HotpotQA (HippoRAG corpus) | All 1,000 released rows (944 original questions): official answer, supporting-fact and joint EM/F1/precision/recall | 9,221 released passages; row-weighted metrics and original-question cluster intervals |
 
 The 301 MultiHop-RAG null questions are excluded from successful retrieval
 rows. Terminal failures have zero quality scores; failed null rows can alter
@@ -194,8 +192,8 @@ phase wall time; trace files are excluded from retrieval-index storage size.
 Paired quality analyses require matched query IDs and explicit method controls.
 Query bootstrap intervals do not capture generation/index-build variability or
 selection bias. Latency comparisons require a declared common serving/load
-window. The [ablation specification](PAPER_ABLATION_DESIGN.md) defines the two
-representation comparisons and their unequal initial search budgets.
+window. The local-only `docs/PAPER_ABLATION_DESIGN.md` defines the representation
+comparisons and their unequal initial search budgets.
 
 ## Controlled link experiments
 
@@ -215,7 +213,7 @@ traces supply matched starting passages for connection-only measurements;
 offline analysis adds their per-query deltas to existing measured full-query
 latencies. Estimated latency is separate from measured latency and cannot
 replace measured batch wall time or throughput.
-See [PAPER_ABLATION_DESIGN](PAPER_ABLATION_DESIGN.md) for measurement scope and
+See the local-only `docs/PAPER_ABLATION_DESIGN.md` for measurement scope and
 [HOTPOTQA](HOTPOTQA.md) for the active corpus. The JSON timing-store file points
 to Neo4j HOP_TIMING relationships and contains no destination table.
 

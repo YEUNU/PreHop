@@ -12,7 +12,7 @@ work. If a requested research edit needs a missing source or evidence artifact,
 report exactly what is missing; do not invent results or reconstruct private
 material from assumptions.
 
-Use paper-writing guidance for manuscript claims and experiment specifications.
+Writing-skill selection is defined in [AGENTS.md](../AGENTS.md#change-policy).
 Cross-deliverable synchronization applies to research content shared by those
 deliverables. Maintenance-policy edits and developer-documentation edits alone
 do not require paper or presentation rendering. Follow an explicit user request
@@ -21,14 +21,13 @@ that remains.
 
 ## Controlled experiment reporting
 
-The active HotpotQA setting is the pinned HippoRAG v1 corpus, not fullwiki.
-Preserve all 1,000 released occurrences and their 944 original question IDs;
-cluster uncertainty estimates by original identity. Store experimental timing
-connections in Neo4j. Keep frozen-prefix latency distinct from end-to-end latency
+[HOTPOTQA](HOTPOTQA.md#source-and-population) owns the active corpus,
+released-row population, and original-question clustering convention. Experimental
+connection storage and timing controls belong in `docs/PAPER_ABLATION_DESIGN.md`.
+Keep frozen-prefix latency distinct from end-to-end latency
 and co-evidence reachability distinct from semantic correctness. Label additive
 full-query latency estimates separately from existing measured latency; never
-present connection-only replay as a new end-to-end execution. Experiment
-design belongs in `docs/PAPER_ABLATION_DESIGN.md`; do not add progress diaries.
+present connection-only replay as a new end-to-end execution.
 
 ## Manuscript: research argument, not an engineering specification
 
@@ -115,12 +114,12 @@ when revising prose. They do not prohibit implementation detail in developer doc
 
 ## Consistent terminology and visual comparisons
 
-- Use the terminology mapping in `docs/PAPER_CHECKLIST.md` across prose, table
-  headers, captions, diagram nodes, graph axes, legends, and speaker notes.
+- Apply [retrieval terminology](../AGENTS.md#retrieval-terminology) across prose,
+  table headers, captions, diagram nodes, graph axes, legends, and speaker notes.
   Distinguish the original query from passage body text, starting passages from
   source documents, and primary Prehop from the common representation-comparison
   policy. Use descriptive conditions rather than unexplained A/B/C labels.
-- Keep system names and order consistent with the registered comparison set.
+- Keep system names consistent with the registry and use the display order below.
   Keep representation-condition order stable across tables and graphs. Do not
   silently reorder by score or mix primary and alternative-policy results.
 - Performance plots default to actual mean scores with 95% confidence intervals,
@@ -165,7 +164,8 @@ when revising prose. They do not prohibit implementation detail in developer doc
   font embedding, figure/table references, clipping, overlap, blank pages, and
   final-size legibility. Check the current venue's page limit without modifying
   official style files or shrinking the prescribed type size.
-- Record durable criteria in `docs/PAPER_CHECKLIST.md`; keep transient audit outputs
+- Keep durable editing rules in this policy. `docs/PAPER_CHECKLIST.md` records
+  evidenced checks and outstanding requirements; keep transient audit outputs
   outside `docs/`. Do not declare a criterion satisfied without checking the
   current artifact. These checks do not authorize benchmark reruns or restore
   automatic execution/approval gates.
@@ -191,3 +191,17 @@ when revising prose. They do not prohibit implementation detail in developer doc
   do not apply best-value emphasis to response rates or conditional scores.
   Refusal recognition and official correctness are distinct labels. Observed
   association does not establish the causal effect of a prompt instruction.
+
+## Publication conventions
+
+Use the fixed display order **Prehop, HopRAG, MS GraphRAG, LightRAG, GFM-RAG,
+LinearRAG, Naive RAG**, retaining only applicable systems in completed-only
+result tables. Do not reorder by score, speed, or completion status. Strategy
+identifiers in code are unchanged. Use these display names without shortening
+Naive RAG to Naive or substituting Microsoft GraphRAG for MS GraphRAG.
+
+In paper tables, percentages and seconds use two decimals, MRR/MAP use four
+on a 0–1 scale, and counts are integers unless explicitly averaged. Added
+coverage and percentage-score differences are in percentage points (pp).
+`—` means unmeasured, `N/A` means non-applicable, and measured zero remains
+numeric. Source artifacts retain their original numeric precision.
