@@ -101,6 +101,13 @@ when revising prose. They do not prohibit implementation detail in developer doc
 - Stored-link evidence gains do not establish precomputation speedups. Keep
   measured connection timing, shared-service downstream latency, measured full
   queries, and estimated full-query time distinct.
+- Use one declared completed source for each dataset's Ours result across
+  system tables, component tables, figures and presentation slides. Identical
+  method configurations do not create separate method names; deduplicate their
+  reference rows when combining comparisons. When the source changes, recompute
+  dependent summaries and recheck matched inputs before retaining component
+  claims. Never import latency or paired effects from another reference merely
+  to make displayed values agree.
 - Keep conclusions consistent across abstract, results, discussion, limitations,
   and conclusion. Supplementary diagnostics may move to appendices regardless
   of direction; retain consequential positive and negative findings in the main

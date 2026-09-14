@@ -326,6 +326,8 @@ docs/acl/
 **/prehop_presentation*.pdf
 # Local credentials and editor/agent state.
 .codex/
+# Locally installed agent skills; not part of the experiment implementation.
+/.agents/skills/
 *.pem
 *.p12
 *.pfx
