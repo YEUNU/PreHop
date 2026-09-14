@@ -132,6 +132,13 @@ when revising prose. They do not prohibit implementation detail in developer doc
 - Merge repeated system rows or shared metric headers when the result remains
   readable. Keep different timing scopes explicit. Prefer one-column figures
   when labels remain legible; do not shrink text to force a dense layout.
+- When presenting a benchmark retrieval comparison, include its complete
+  reported official metric set across main and supplementary results; do not
+  select endpoints because a preferred configuration wins. Stratified and
+  component comparisons follow the same coverage rule. Identical evaluator
+  outputs may be explained once rather than duplicated. Keep separate diagnostic
+  questions and their denominators explicit. Split presentation panels when
+  completeness would otherwise make figure labels too small.
 - Keep completed numerical evidence traceable in `docs/RESULTS.md` when a table
   is replaced by a graph. Retain pending result slots and consequential findings.
 
@@ -155,3 +162,25 @@ when revising prose. They do not prohibit implementation detail in developer doc
   outside `docs/`. Do not declare a criterion satisfied without checking the
   current artifact. These checks do not authorize benchmark reruns or restore
   automatic execution/approval gates.
+
+## Retrieval-focused evaluation and reader outcomes
+
+- Main benchmark comparisons assess evidence retrieval and connection cost.
+  Keep native-reader Answer/Joint outcomes and response diagnostics in paper
+  appendices, with consequential qualifications in the main argument and
+  Limitations. Present all result families in the presentation's main flow.
+- MultiHop-RAG retains all four official retrieval metrics. HotpotQA may add
+  explicitly defined retrieval diagnostics at common rank cutoffs; these are
+  not official fullwiki QA scores. Preserve sentence precision and F1 alongside
+  recall and disclose actual returned counts. A rank cap does not equalize
+  output count, passage length, compute or native retrieval units.
+- Supporting Fact metrics derived from returned passages evaluate evidence,
+  not answer generation. Do not attribute low support precision or exact-set
+  EM to a refusal prompt. Separate evidence projection from native sentence
+  selection, and leave unresolved provenance uncredited without dropping queries.
+- Distinguish dataset-null questions from model refusals on answerable questions.
+  Report response counts and full-population scores with answered-only scores.
+  System-specific answered subsets cannot establish cross-system superiority;
+  do not apply best-value emphasis to response rates or conditional scores.
+  Refusal recognition and official correctness are distinct labels. Observed
+  association does not establish the causal effect of a prompt instruction.
