@@ -7,7 +7,7 @@ from core.strategy_registry import (
     PRIMARY_STRATEGIES,
     RESEARCH_EXTERNAL_STRATEGIES,
 )
-from models.official_baseline_runtime import OFFICIAL_REPOSITORIES, OFFICIAL_REVISIONS, _command
+from models.official_baseline_runtime import OFFICIAL_REVISIONS, _command
 
 
 def test_primary_matrix_and_legacy_admission_are_centralized():
@@ -25,11 +25,10 @@ def test_primary_matrix_and_legacy_admission_are_centralized():
     assert set(RESEARCH_EXTERNAL_STRATEGIES) == {"lightrag", "gfm_rag", "linear_rag"}
 
 
-def test_runtime_revision_repo_and_worker_are_registry_views(monkeypatch, tmp_path):
+def test_runtime_revision_and_worker_are_registry_views(monkeypatch, tmp_path):
     for name, spec in BY_NAME.items():
         if spec.external:
             assert OFFICIAL_REVISIONS[name] == spec.revision
-            assert OFFICIAL_REPOSITORIES[name] == spec.repository
     monkeypatch.setenv("RAG_LIGHTRAG_PYTHON", str(tmp_path / "python"))
     command = _command("lightrag", "corpus", "index")
     assert command[1].endswith("scripts/research_baseline_worker.py")

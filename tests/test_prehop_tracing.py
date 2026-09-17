@@ -11,7 +11,7 @@ from core.config import RAGConfig
 from core.structured_outputs import StructuredOutputError, question_contract
 from core.vllm_client import VLLMClient
 from models.prehop.tracing import TraceRecorder, attach_client, trace_identity, traced
-from scripts.inspect_prehop_trace import inspect_trace
+from scripts.inspect_prehop_trace import iter_trace
 
 
 def recorder(tmp_path):
@@ -19,7 +19,7 @@ def recorder(tmp_path):
 
 
 def payloads(trace):
-    return inspect_trace(trace.directory / 'events.jsonl', payloads=True)
+    return list(iter_trace(trace.directory / 'events.jsonl', payloads=True))
 
 
 def client(monkeypatch, trace, handler, sdk_retries=0):
@@ -170,7 +170,7 @@ async def test_batched_graph_write_is_findable_from_each_document(tmp_path):
         {'documents': [{'doc_id': 'one.txt'}, {'doc_id': 'two.txt'}]})
     assert result == [{'written': 2}]
     for source in ('one.txt', 'two.txt'):
-        rows = inspect_trace(trace.directory / 'events.jsonl', source=source)
+        rows = list(iter_trace(trace.directory / 'events.jsonl', source=source))
         assert len(rows) == 2
         assert rows[0]['span_id'] == rows[1]['span_id']
 

@@ -39,9 +39,6 @@ class MSGraphRAGAdapter:
 
         # GraphRagConfig pointing to external inference + LanceDB at output_dir
         self._config = build_config(corpus_tag, input_dir_for(corpus_tag))
-        from models.ms_graphrag import official_indexer
-
-        self._extraction_audit = official_indexer._EXTRACTION_AUDIT
 
         # Lazy-loaded parquet DataFrames
         self._entities: pd.DataFrame | None = None

@@ -48,10 +48,6 @@ def _read_events(stream, root, verified, source, query_id, errors, payloads):
         yield event
 
 
-def inspect_trace(path, **kwargs):
-    return list(iter_trace(path, **kwargs))
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('events', type=Path)

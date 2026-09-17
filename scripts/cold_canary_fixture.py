@@ -76,12 +76,3 @@ def stage_fixture(base: Path, dataset: str) -> tuple[Path, dict, dict]:
         json.dump(manifest, stream, ensure_ascii=False, sort_keys=True)
         stream.write('\n')
     return corpus, manifest, row
-
-
-def validate_fixture(corpus: Path, dataset: str, record: dict, identity: object) -> None:
-    if identity != fixture_identity() or record != query_record(dataset):
-        raise RuntimeError('Cold fixture/query is not the preregistered protocol')
-    expected = {document['filename']: document['text'].encode() for document in load_fixture()['documents']}
-    actual = {path.name: path.read_bytes() for path in corpus.iterdir() if path.is_file() and path.suffix in {'.txt', '.md'}}
-    if actual != expected:
-        raise RuntimeError('Cold fixture source bytes differ from preregistration')

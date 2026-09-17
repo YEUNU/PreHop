@@ -160,21 +160,6 @@ def test_primary_hotpot_jobs_do_not_depend_on_supplemental_arms(tmp_path):
         assert jobs[key]['priority']>jobs['hp-primary-without-hop']['priority']
 
 
-def test_pending_migration_preserves_running_commands_and_completed_results():
-    from scripts.plan_link_experiments import reconcile_pending
-    old={'jobs':[{'id':'running','command':['old']},{'id':'done','command':['done']}], 'execution_filter':'hoprag'}
-    states={'running':{'state':'running','identity':{'pid':7}},'done':{'state':'completed'}}
-    latest={'jobs':[{'id':'running','command':['new']},{'id':'done','command':['new']},
-                    {'id':'missing','command':['new']}],'max_active':2,'max_hoprag_active':1}
-    plan,state=reconcile_pending(old,states,latest,{'missing':'finished.json'})
-    assert plan['jobs'][0]['command']==['old']
-    assert plan['jobs'][1]['command']==['done']
-    assert state['running']==states['running']
-    assert state['missing']=={'state':'completed','reused_evidence':'finished.json'}
-    assert 'execution_filter' not in plan
-    assert 'missing' not in states
-
-
 def test_updated_policy_suite_has_separate_evidence_and_reference_dependency(tmp_path):
     from scripts.plan_link_experiments import make_plan
     source=tmp_path/'stats.json'

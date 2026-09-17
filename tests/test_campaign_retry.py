@@ -61,7 +61,7 @@ def test_aggregate_uses_same_attempt_map_for_actual_file_references(previous, mo
     stage.aggregate('fixture', 'cold_canary_16', 'a1', {failed: 'a2'})
     assert len(recorded[0]['targets']) == 14
     for target, ref in recorded[0]['targets'].items():
-        _, actual = gate._bound_json(ref)
+        actual = json.loads((gate.ROOT / ref['path']).read_text())
         assert actual['attempt'] == ('a2' if target == 'multihoprag/ms_graphrag' else 'a1')
 
 

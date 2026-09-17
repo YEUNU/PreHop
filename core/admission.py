@@ -1,4 +1,4 @@
-"""Content bindings for immutable paper-target admission records."""
+"""Content digests and artifact identities for execution provenance."""
 
 from __future__ import annotations
 
@@ -96,58 +96,9 @@ def current_post_query_inventory(strategy: str, dataset: str) -> dict[str, Any]:
     return {"kind": "not_applicable", "file_count": 0, "total_bytes": 0, "sha256": None}
 
 
-def _index_stats_binding(payload: dict | None) -> tuple[str | None, str | None]:
-    raw_path = payload.get("index_manifest_stats_path") if isinstance(payload, dict) else None
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        return None, None
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = ROOT / path
-    resolved = path.resolve()
-    if ROOT not in resolved.parents or not resolved.is_file():
-        return str(resolved), None
-    return str(resolved), sha256_file(resolved)
-
-
 def current_corpus_identity(dataset: str) -> dict[str, Any]:
     """Read recorded corpus identity without scanning or verifying staged files."""
     from cli.index import _load_corpus_manifest
     corpus = ROOT / "data" / f"{dataset}_corpus"
     return {**(_load_corpus_manifest(corpus) or {}),
             "manifest_sha256": sha256_file(corpus / "corpus_manifest.json")}
-
-
-def admission_bindings(result_path: Path, payload: dict | None) -> dict[str, str | None]:
-    """Bind an admission decision to result bytes and verifier semantics."""
-    details_path = result_path.with_name(result_path.stem + ".details.jsonl")
-    stats_path, stats_digest = _index_stats_binding(payload)
-    strategy = str(payload.get("strategy") or "") if isinstance(payload, dict) else ""
-    dataset = str(payload.get("corpus_tag") or "") if isinstance(payload, dict) else ""
-    from core.paper_compatibility import EVIDENCE_VERSION, runtime_compatibility, target_configuration
-    from core.runtime_requirements import runtime_identity
-
-    try:
-        corpus_identity = current_corpus_identity(dataset) if dataset else None
-    except (OSError, TypeError, ValueError, RuntimeError):
-        corpus_identity = None
-    current_runtime = runtime_identity(strategy) if strategy else None
-    current_inventory = current_post_query_inventory(strategy, dataset) if strategy and dataset else None
-    configuration = target_configuration(strategy, dataset) if strategy and dataset else None
-    return {
-        "current_corpus_identity_sha256": identity_sha256(corpus_identity) if corpus_identity else None,
-        "result_sha256": sha256_file(result_path) if result_path.is_file() else None,
-        "details_sha256": sha256_file(details_path) if details_path.is_file() else None,
-        "evidence_contract": EVIDENCE_VERSION,
-        "configuration_sha256": identity_sha256(configuration) if configuration else None,
-        "index_policy_sha256": (
-            payload.get("index_provenance", {}).get("policy_sha256") if isinstance(payload, dict) else None
-        ),
-        **({"index_reuse_sha256": payload["index_reuse"].get("sha256")} if isinstance(payload, dict) and isinstance(payload.get("index_reuse"), dict) else {}),
-        "index_stats_path": stats_path,
-        "index_stats_sha256": stats_digest,
-        "runtime_identity_sha256": identity_sha256(runtime_compatibility(current_runtime) if current_runtime else None),
-        "post_query_artifact_inventory_sha256": identity_sha256(current_inventory),
-        "recorded_post_query_artifact_inventory_sha256": identity_sha256(
-            payload.get("post_query_artifact_inventory") if isinstance(payload, dict) else None
-        ),
-    }

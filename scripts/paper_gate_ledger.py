@@ -60,12 +60,6 @@ def initialize(path: Path, campaign: str) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _bound_json(reference: object) -> tuple[Path, dict]:
-    artifact = (ROOT / str(reference["path"])).resolve()
-    value = json.loads(artifact.read_text(encoding="utf-8"))
-    return artifact, value
-
-
 def execute_stage(path: Path, campaign: str, stage: str) -> None:
     """Produce receipts from successful commands and advance one live stage."""
     import subprocess

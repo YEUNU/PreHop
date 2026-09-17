@@ -79,7 +79,7 @@ def test_protocol_and_fixture_are_in_static_review_scope(monkeypatch):
     context = compatibility.context_configuration()
     assert context['protocol']['cold_fixture'] == cold_canary_fixture.fixture_identity()
     monkeypatch.setattr(paper_gate_ledger, 'STAGES', (*paper_gate_ledger.STAGES, 'new_stage'))
-    assert compatibility.without_realized_runtime(context) != compatibility.without_realized_runtime(compatibility.context_configuration())
+    assert context['protocol'] != compatibility.context_configuration()['protocol']
 
 
 def test_failed_probe_does_not_prevent_actual_checkpoint_resume_admission(tmp_path):

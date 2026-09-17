@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.admission import admission_bindings, verifier_sources
+from core.admission import verifier_sources
 from core.inference_transport import InferenceTransport
 from core.paper_policy import canonical_operational_policy, canonical_semantic_index_policy
 from core.semantic_config import semantic_index_policy
@@ -73,21 +73,6 @@ def test_runtime_requirements_are_valid_json_and_cover_external_primary_methods(
     payload = json.loads(Path("configs/paper_runtime_requirements.json").read_text(encoding="utf-8"))
     assert payload["schema_version"] == 2
     assert {"ms_graphrag", "lightrag", "gfm_rag", "linear_rag"} <= payload.keys()
-
-
-def test_admission_bindings_change_with_result_or_details(tmp_path):
-    result = tmp_path / "result.json"
-    details = tmp_path / "result.details.jsonl"
-    payload = {"index_provenance": {"policy_sha256": "a" * 64, "code": {"revision": "x"}}}
-    result.write_text(json.dumps(payload), encoding="utf-8")
-    details.write_text('{"idx":1}\n', encoding="utf-8")
-    first = admission_bindings(result, payload)
-    result.write_text(json.dumps({**payload, "status": "changed"}), encoding="utf-8")
-    second = admission_bindings(result, payload)
-    assert first["result_sha256"] != second["result_sha256"]
-    details.write_text('{"idx":2}\n', encoding="utf-8")
-    third = admission_bindings(result, payload)
-    assert second["details_sha256"] != third["details_sha256"]
 
 
 def test_admission_verifier_identity_covers_transitive_policy_inputs():

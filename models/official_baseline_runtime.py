@@ -22,7 +22,6 @@ from core.strategy_registry import BY_NAME, EXTERNAL_STRATEGIES, get_strategy
 from utils.io import _write_json
 
 OFFICIAL_REVISIONS = {name: BY_NAME[name].revision for name in EXTERNAL_STRATEGIES}
-OFFICIAL_REPOSITORIES = {name: BY_NAME[name].repository for name in EXTERNAL_STRATEGIES}
 _RESULT_PREFIX = "__PREHOP_OFFICIAL_RESULT__="
 _ROOT = Path(__file__).resolve().parents[1]
 

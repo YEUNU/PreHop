@@ -348,7 +348,6 @@ async def test_ms_local_search_requests_metric_compatible_short_answer(monkeypat
     adapter._text_units = object()
     adapter._relationships = object()
     adapter._ensure_loaded = Mock()
-    adapter._extraction_audit = Mock(spec=['assert_healthy'])
     adapter._extract_sources = Mock(return_value=[])
 
     answer, sources, trace = await adapter.local_search("Where was the person born?")
@@ -374,7 +373,6 @@ async def test_ms_local_search_marks_unlabelled_provider_response(monkeypatch):
     adapter._text_units = object()
     adapter._relationships = object()
     adapter._ensure_loaded = Mock()
-    adapter._extraction_audit = Mock(spec=['assert_healthy'])
     adapter._extract_sources = Mock(return_value=[])
 
     answer, _sources, _trace = await adapter.local_search("Where was the person born?")

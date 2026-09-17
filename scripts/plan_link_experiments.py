@@ -149,28 +149,6 @@ def make_plan(campaign,mhr_stats,*,multihoprag_reference,adopt=(),updated_refere
         'jobs':jobs}
 
 
-def reconcile_pending(existing, states, latest, completed=None):
-    """Replace pending definitions while preserving active and completed evidence."""
-    from copy import deepcopy
-    plan=deepcopy(existing)
-    previous={j['id']:j for j in existing['jobs']}
-    jobs=[]
-    updated=deepcopy(states)
-    for job in latest['jobs']:
-        key=job['id']
-        state=updated.setdefault(key, {'state':'pending'})
-        jobs.append(deepcopy(previous[key] if state['state'] in {'running','completed'} and key in previous else job))
-    keys={j['id'] for j in jobs}
-    jobs.extend(deepcopy(j) for j in existing['jobs'] if j['id'] not in keys)
-    for key,evidence in (completed or {}).items():
-        if updated.get(key,{}).get('state') != 'running':
-            updated[key]={'state':'completed','reused_evidence':str(evidence)}
-    plan.update({k:deepcopy(v) for k,v in latest.items() if k!='jobs'})
-    plan['jobs']=jobs
-    plan.pop('execution_filter',None)
-    return plan,updated
-
-
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--campaign',required=True)
     p.add_argument('--multihoprag-index-stats',type=Path,required=True);p.add_argument('--adopt',type=Path);p.add_argument('--multihoprag-reference',type=Path,required=True)

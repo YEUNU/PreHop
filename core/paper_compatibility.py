@@ -78,20 +78,6 @@ def context_configuration() -> dict:
                         for strategy in PRIMARY_STRATEGIES for dataset in ('multihoprag', 'hotpotqa')}}
 
 
-def without_realized_runtime(value: dict) -> dict:
-    """Permit setup to realize dependencies, but never change method settings."""
-    from copy import deepcopy
-    result = deepcopy(value)
-    result.pop('runtime', None)
-    targets = result.get('targets', {})
-    if isinstance(targets, dict):
-        for target in targets.values():
-            operational = target.get('operational', {})
-            for key in ('main_runtime', 'runtime_freeze', 'constraints'):
-                operational.pop(key, None)
-    return result
-
-
 def method_identity(strategy: str) -> dict[str, str]:
     if strategy not in METHOD_CONTRACT_VERSIONS:
         return {}  # Reserve/development methods do not acquire a primary paper contract.
