@@ -284,13 +284,13 @@ run_mhr_full_benchmark.sh
 *.tmp.sh
 .DS_Store
 
-# Submission-strategy details (target venue, deadlines, rejection history) —
-# private, local-only. See CLAUDE.md "Sources of truth".
-SUBMISSION_TARGET.md
+# Private submission notes, including local revision copies. See AGENTS.md.
+/SUBMISSION_TARGET*.md
 
 # Working paper draft — keep the editable manuscript local until a release
 # copy is deliberately prepared.
-docs/prehop_paper.md
+/docs/prehop_paper*.md
+/prehop_paper*.md
 
 # Local report and handoff exports. Source documents stay in Markdown; release
 # copies are added deliberately when they are ready to publish.
@@ -314,9 +314,9 @@ docs/acl/*.out
 docs/acl/
 
 # Private research evidence, submission preparation, and paper-only tooling.
-/docs/RESULTS.md
-/docs/PAPER_CHECKLIST.md
-/docs/PAPER_ABLATION_DESIGN.md
+/docs/RESULTS*.md
+/docs/PAPER_CHECKLIST*.md
+/docs/PAPER_ABLATION_DESIGN*.md
 /scripts/render_acl_paper.py
 /scripts/render_paper_figures.py
 # Private research exports at any depth.

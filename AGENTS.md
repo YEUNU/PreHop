@@ -69,8 +69,8 @@ Do not fabricate missing entities, answers, usage or successful completion. See
   full option catalogs, progress counters, or result tables into it.
 - Keep this file prescriptive. Do not duplicate tutorials, architecture maps,
   model tables, queue internals, or live campaign state here.
-- Delete a document only when its entire role is covered by another document;
-  otherwise narrow its scope and preserve links.
+- Delete obsolete or redundant documents after preserving any still-needed
+  content and repairing incoming links; otherwise narrow their scope.
 - Preserve exact code symbols, commands, model IDs, dimensions, dates, metrics,
   and warnings when editing technical prose.
 
@@ -85,9 +85,10 @@ Do not fabricate missing entities, answers, usage or successful completion. See
   requires a distinct semantic identity.
 - Remote generation and embedding use the configured shared LiteLLM gateway.
   Do not introduce ambient-provider or direct-vendor fallback paths.
-- A model, revision, vector dimension, corpus fingerprint, semantic setting, or
-  execution profile change requires compatible new evidence. Never relabel an
-  old artifact as current.
+- Results describe their recorded model, revision, vector dimension, corpus,
+  semantic settings and execution profile. Claims about changed settings need
+  compatible evidence; a code or documentation edit alone does not require a
+  benchmark rerun. Never relabel an old artifact as a newly evaluated setting.
 - Preserve dataset-specific units and denominators. MultiHop-RAG and HotpotQA
   results are not interchangeable.
 
@@ -105,21 +106,30 @@ Do not fabricate missing entities, answers, usage or successful completion. See
 - Keep credentials out of commands, logs, artifacts, and tracked files.
 - Generated corpora, indexes, results, traces, runtime homes, private submission
   notes, and manuscript drafts remain ignored.
-- Before cleanup, resolve exact targets and confirm that no active supervisor or
-  child owns them. Cleanup must be explicit and must not alter upstream source.
+- Before deleting run artifacts, runtime directories or shared state, resolve
+  exact targets and confirm that no active supervisor or child owns them.
+  Routine documentation edits do not require process-ownership checks.
+  Cleanup must not alter upstream source.
 
 ## Verification
 
-Run checks proportional to the change. For documentation-only changes, verify
-Markdown links, referenced files and anchors, terminology, and configuration
-values. Policy-only edits do not require benchmark execution or paper rendering.
-For code or configuration changes, also run the affected tests plus:
+Run checks proportional to the change. For documentation-only changes, check
+affected links, anchors, terminology and any configuration values described by
+the edit. Policy-only edits do not require benchmarks, runtime tests or rendering.
+For code or configuration changes, run relevant tests and lint on affected code.
+Use the full suite for cross-cutting changes, dependency or environment changes,
+or an explicitly requested repository-wide validation:
 
 ```bash
 uv run --extra dev ruff check .
 uv run --extra dev python -m compileall -q core cli models utils scripts main.py
 uv run --extra dev pytest -q
 ```
+
+Do not run the same tests once in isolation and again in a planned full-suite
+run without a reason. Reuse prior checks when their relevant inputs are unchanged;
+expand verification when a failure, changed dependency or unresolved concern
+justifies it. Stop once the checks needed for the requested change pass.
 
 If a required check cannot run, report the command and the concrete blocker;
 do not present it as passed. Do not launch a benchmark merely to validate a

@@ -70,10 +70,10 @@ when revising prose. They do not prohibit implementation detail in developer doc
 - Prefer a short scientific explanation to a bookkeeping table. Merge tables
   only when the resulting comparison remains readable and metric definitions
   remain distinct; preserve measured values and unmeasured cells.
-- Before rendering, review every section and caption for repository-specific
-  narration, operational instructions, redundant status text, and unsupported
-  claims. Check result preservation, references, and rendered layout. This is
-  an editorial check, not a runtime approval or benchmark execution gate.
+- Review changed passages and dependent claims or captions for operational
+  narration, redundancy and unsupported claims. Apply a whole-manuscript review
+  for a global revision, submission preparation or an explicit audit request.
+  This is an editorial check, not a runtime or benchmark execution gate.
 
 - In manuscript CI reporting, retain the confidence level, paired/cluster
   procedure, resample count, and seed. Do not add explanatory prose about what
@@ -117,8 +117,10 @@ when revising prose. They do not prohibit implementation detail in developer doc
 - Apply [retrieval terminology](../AGENTS.md#retrieval-terminology) across prose,
   table headers, captions, diagram nodes, graph axes, legends, and speaker notes.
   Distinguish the original query from passage body text, starting passages from
-  source documents, and primary Prehop from the common representation-comparison
-  policy. Use descriptive conditions rather than unexplained A/B/C labels.
+  source documents, and the current Ours configuration from alternative
+  representations and separately matched historical references. Question links
+  with multi-channel search use the current Ours result; they are not a second
+  method. Use descriptive conditions rather than unexplained A/B/C labels.
 - Keep system names consistent with the registry and use the display order below.
   Keep representation-condition order stable across tables and graphs. Do not
   silently reorder by score or mix primary and alternative-policy results.
@@ -147,6 +149,9 @@ when revising prose. They do not prohibit implementation detail in developer doc
   completeness would otherwise make figure labels too small.
 - Keep completed numerical evidence traceable in `docs/RESULTS.md` when a table
   is replaced by a graph. Retain pending result slots and consequential findings.
+  Keep the live register focused on sources used by current deliverables; remove
+  superseded result tables and obsolete reporting instructions. An older source
+  still used for a matched comparison retains its explicit reference identity.
 
 ## Synchronized research deliverables
 
@@ -157,17 +162,25 @@ when revising prose. They do not prohibit implementation detail in developer doc
   preview exports, and replace embedded presentation images. Updating a caption
   or an external image file alone does not update an embedded slide image.
 - When a research edit changes shared claims, terminology, visuals, or numbering,
-  update the manuscript, presentation, captions, internal references, and
-  speaker notes together.
-  Re-export both PDFs; verify the actual files delivered, not only source text.
-- Check embedded images against current assets, exported text completeness,
-  font embedding, figure/table references, clipping, overlap, blank pages, and
-  final-size legibility. Check the current venue's page limit without modifying
-  official style files or shrinking the prescribed type size.
+  update affected occurrences in the manuscript, presentation, captions,
+  references and notes. Regenerate PDFs whose source changed; a deck-only layout
+  edit does not require rebuilding the unchanged paper, or vice versa.
+- Inspect changed pages/slides and any downstream reflow or renumbering in the
+  delivered export. Check affected images, text completeness, references and
+  legibility. Recheck fonts and page geometry when the renderer, template or
+  fonts change. A global revision or submission audit covers the full exports
+  and venue page limit. Preserve official style files and prescribed type sizes.
+- Recheck changed result sources and dependent calculations. Do not rescore all
+  experiments or rehash unchanged benchmark artifacts for a prose, policy or
+  layout edit. Prior evidence remains usable within its verified scope; new
+  data, changed analysis or conflicting evidence requires the affected checks.
 - Keep durable editing rules in this policy. `docs/PAPER_CHECKLIST.md` records
-  evidenced checks and outstanding requirements; keep transient audit outputs
-  outside `docs/`. Do not declare a criterion satisfied without checking the
-  current artifact. These checks do not authorize benchmark reruns or restore
+  the latest evidenced checks, outstanding requirements and current placement
+  map. Remove superseded verification entries from the live checklist; keep
+  historical audit outputs in their existing artifact directories outside `docs/`.
+  Record verification when its evidence or scope changes; do not create a new
+  audit report for every edit. Claim completion only for checks supported by
+  applicable evidence. These checks do not authorize benchmark reruns or restore
   automatic execution/approval gates.
 
 ## Retrieval-focused evaluation and reader outcomes
@@ -176,10 +189,14 @@ when revising prose. They do not prohibit implementation detail in developer doc
   Keep native-reader Answer/Joint outcomes and response diagnostics in paper
   appendices, with consequential qualifications in the main argument and
   Limitations. Present all result families in the presentation's main flow.
-- MultiHop-RAG retains all four official retrieval metrics. HotpotQA may add
-  explicitly defined retrieval diagnostics at common rank cutoffs; these are
-  not official fullwiki QA scores. Preserve sentence precision and F1 alongside
-  recall and disclose actual returned counts. A rank cap does not equalize
+- Compare both datasets using Hits@4, Hits@10, MRR@10 and the MultiHop-RAG
+  MAP@10 definition, with supplementary distinct-gold Recall@10. The four
+  ranking measures are official for MultiHop-RAG and adapted to supporting
+  sentence identities for HotpotQA. Never label them official HotpotQA metrics.
+  Preserve the original official support/answer results in the appendices,
+  and retain sentence precision/F1 and actual returned counts as supplementary
+  evidence diagnostics. Apply the common measures to all reported retrieval
+  conditions, including selection ablations and stratified results. A rank cap does not equalize
   output count, passage length, compute or native retrieval units.
 - Supporting Fact metrics derived from returned passages evaluate evidence,
   not answer generation. Do not attribute low support precision or exact-set

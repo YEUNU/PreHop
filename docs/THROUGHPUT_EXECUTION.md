@@ -57,7 +57,6 @@ request limit.
 | `index_prefetch_documents` | 120 |
 | `prehop_chunk_concurrency` | 8 |
 | `lightrag_document_concurrency` | 32 |
-| `youtu_document_concurrency` | 60, inactive compatibility field |
 
 Generation and embedding compete for the same 120 slots, with no per-kind
 reservation. Queue snapshots expose the measured aggregate peak plus per-kind
@@ -162,8 +161,11 @@ the failure-inclusive retrieval denominator and must be reported separately.
 HotpotQA supporting-fact scores use a shared, gold-independent projection of
 complete returned corpus sentences to original title/index pairs. Report mapping
 coverage; distinguish these predictions from native sentence selection and from
-additional passage-coverage diagnostics. AllFacts and literal fact recall are additional diagnostics,
-not official leaderboard metrics.
+additional passage-coverage diagnostics. Saved-output research comparisons
+use the four MultiHop-RAG rank measures plus distinct-gold Recall@10 on both
+datasets; the HotpotQA adaptation is defined in
+[HOTPOTQA](HOTPOTQA.md#common-passage-retrieval-metrics). These offline measures
+do not replace native benchmark output fields or become official HotpotQA metrics.
 
 - **Index wall time:** original successful index-pipeline wall seconds, including
   waiting, retries, and native work. `amortized_indexing_cost` divides this by
@@ -208,7 +210,7 @@ from the saved state instead of restarting the task graph.
 Exclusive timing tasks wait for an idle campaign, while ready non-timing work
 can continue. Primary benchmark tasks follow their completed index. Shared
 inference capacity remains 120; connection replays process one query at a time.
-No additional natural end-to-end timing benchmarks are scheduled. Reference
+The connection estimator does not dispatch online end-to-end benchmarks. Reference
 traces supply matched starting passages for connection-only measurements;
 offline analysis adds their per-query deltas to existing measured full-query
 latencies. Estimated latency is separate from measured latency and cannot
@@ -234,12 +236,9 @@ scores outside this document and the final result tables. A pending task has
 no measured duration yet, so a campaign-wide completion time may be unavailable.
 
 
-Post-hoc analysis scripts are loaded when their scheduled subprocesses start.
-Pending connectivity comparisons discover the full metric set from version-3
-analysis artifacts, including the source-document-excluded score and signed
-observed-minus-random differences. Older plan commands therefore acquire these
-analyses without restarting an active benchmark, indexer, or controller.
-The artifact structure is documented in [ARCHITECTURE](ARCHITECTURE.md#post-hoc-connection-analysis).
+Post-hoc analysis reads completed artifacts without restarting benchmarks.
+The artifact formats and analysis modules are documented in
+[Architecture](ARCHITECTURE.md#post-hoc-connection-analysis).
 
 ### HopRAG edge blocks
 

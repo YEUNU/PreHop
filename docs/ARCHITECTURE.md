@@ -185,7 +185,9 @@ is unchanged; each condition has a distinct run-local component identity.
 `body_body`, and `body_full`. All use original queries, all-seed HOP activation, body-only
 semantic scoring, depth one, and the existing final selector. Under all-seed
 activation, HOP targets inherit the source's total representation score.
-These settings are not the historical primary benchmark baseline.
+The question-link/multi-channel profile has the current primary retrieval
+settings. A matching configuration does not make separately executed source
+artifacts interchangeable. Older Q+-restricted runs retain their recorded policy.
 
 Both question-based linking conditions can read an existing compatible question graph through
 `--reuse-existing-index`. They retain its namespace and exact index-stat
@@ -203,7 +205,14 @@ The launcher prints a plan unless `--execute` is supplied. Its metadata uses
 the local-only `docs/PAPER_ABLATION_DESIGN.md` for commands, controls, and
 permitted interpretations.
 
+<a id="legacy-external-modules"></a>
+
 ## HopRAG indexing and reference checkout
+
+HopRAG is part of the current primary comparison set. The root reference
+checkout's README describes an older integration, including retired adapter
+paths and datasets; it does not define current strategy membership or launch
+procedures. Use [the runtime guide](RUNTIME_REQUIREMENTS.md#hoprag-runtime).
 
 `models/hoprag/native_runtime.py` loads the pinned prepared HopRAG installation.
 The root `third_party/HopRAG` is reference-only and does not define the active
@@ -223,11 +232,7 @@ vector array once per edge group and reuses it across pending blocks.
 `RAG_HOP_EDGE_BLOCK_SIZE` defaults to 128; only the current block of pair scores
 is allocated. Sparse weights, same-node exclusion, tie ordering and final
 sort/deduplication remain unchanged. No complete question cross join is built.
-The older approximate dense-top-k helper
-remains unused. Small groups use the native constructor.
-
-<a id="legacy-external-modules"></a>
-The historical external-module anchor resolves here for reference-checkout links.
+Small groups use the native constructor.
 
 ## Adapter producer parallelism
 
@@ -267,7 +272,9 @@ External compatibility aliases are configured in native child processes.
 with legacy dataset metrics retained in code. The HotpotQA adapter projects complete returned corpus sentences to title/index pairs via
 `utils/hotpotqa.py`, then applies Answer, Supporting Fact, and Joint scoring
 rules. The projection is gold-independent and shared across systems. Official
-scorer parity is tested.
+scorer parity is tested. Saved-output common retrieval analysis uses
+`scripts/evaluate_saved_retrieval.py`; its HotpotQA identity projection and
+rank measures are defined in [HOTPOTQA](HOTPOTQA.md#common-passage-retrieval-metrics).
 Normalized/fuzzy and literal exact-fact recall are separate diagnostics; neither
 redefines the official benchmark metrics. Missing metric applicability is `-1`; evaluated
 nonmatches are zero. Terminal failures receive zero primary quality scores and

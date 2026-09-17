@@ -1,4 +1,4 @@
-# Prehop: Role-Activated Retrieval over Offline Question Links
+# Prehop: Precomputed Question Links for Multi-Hop Retrieval
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -10,13 +10,14 @@ for answer synthesis. The incoming/outgoing question formulation follows
 [HopRAG](https://arxiv.org/html/2502.12442v2#S3.S2); Prehop uses its own
 original-query role search, stored-link expansion, and evidence selection.
 The implementation uses the original question at every input length and runs
-retrieval once. Initial query rewriting and evidence-conditioned re-search have
-been removed.
+retrieval once.
 
 The primary comparison set is Prehop, Naive RAG, HopRAG, MS GraphRAG,
 LightRAG, GFM-RAG, and LinearRAG. Strategy identities and pinned
 revisions come from `core/strategy_registry.py`. HopRAG uses a separately
 prepared runtime; see [runtime requirements](docs/RUNTIME_REQUIREMENTS.md#hoprag-runtime).
+The root `third_party/HopRAG` checkout and its README describe a historical
+integration; use the runtime guide for the supported HopRAG comparison.
 
 ## Installation
 
