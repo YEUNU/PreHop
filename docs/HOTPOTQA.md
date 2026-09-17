@@ -45,6 +45,35 @@ in the original evaluation denominator. The protocol identity is
 
 ## Evaluation
 
+### Common passage-retrieval metrics
+
+Research comparisons use Hits@4, Hits@10, MRR@10 and the MultiHop-RAG
+MAP@10 formula, plus distinct-gold Recall@10. A gold item is a supporting
+sentence identified by its original article title and sentence index. A
+returned passage matches that item only when the shared projection recovers
+that complete sentence from the same article. Unknown source identities
+receive no credit and remain in the denominator. Retain passage order and
+actual counts without padding. These are adapted retrieval measures, not
+official HotpotQA QA metrics.
+
+At rank r, count only gold items not recovered at an earlier rank. MAP@10
+is the sum of these counts divided by r, normalized by min(gold count, 10).
+Recall@10 is the number of distinct recovered gold items divided by the full
+gold count. Hits measures any-hit success; MRR uses the first matching rank.
+The score means weight release rows equally. Confidence intervals resample
+original-question clusters, retaining their occurrences.
+
+`scripts/evaluate_saved_retrieval.py` evaluates saved outputs without model
+calls. Invoke it as `python -m scripts.evaluate_saved_retrieval --help` for
+its explicit manifest, query, sentence-store and output arguments. The manifest
+maps dataset names (`multihoprag`, `hotpotqa`) to named conditions with `path`,
+`sha256`, and optional `sources_field` (default `retrieved_sources`). Inputs
+remain unchanged; the output records source hashes, per-question measures,
+means and 95% intervals from 10,000 cluster draws with seed 42. Gold annotations
+are used only for scoring.
+
+### Official support and answer scoring
+
 Use the official HotpotQA Answer, Supporting Fact and Joint EM/F1 rules through
 `utils/hotpotqa.py`. The common adapter predicts all complete original corpus
 sentences present in returned passage text, mapped to title and sentence index.
