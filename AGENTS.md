@@ -29,6 +29,8 @@ them; an intentional research release requires explicit authorization.
 ## Sources of truth
 
 - [User setup](README.md) owns installation and quick-start examples.
+- [Experiment reproduction](docs/REPRODUCING.md) maps research comparisons to
+  public commands and output files, using the runtime settings owned below.
 - [Strategy registry](core/strategy_registry.py) owns strategy identity, primary order, upstream
   revision, runtime worker, output root, transport profile, and legacy status.
   Do not restore retired strategy branches outside the registered comparison set.

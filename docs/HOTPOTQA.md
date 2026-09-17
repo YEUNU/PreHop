@@ -85,9 +85,9 @@ scoring rules on the declared reduced-corpus protocol, not a leaderboard score.
 ```
 
 Here `full` means all **1,000 rows of the active prepared release**. Apply the
-same inputs to every registered comparison method. Paired research contrasts
-and completed evidence are maintained in the local-only experiment design and
-result register described by [research policy](RESEARCH_POLICY.md).
+same inputs to every registered comparison method. The
+[reproduction guide](REPRODUCING.md) provides comparison commands and
+[saved-result evaluation](REPRODUCING.md#evaluate-saved-results).
 
 The discontinued fullwiki corpus and its preparation tools have been removed.
 The official evaluator remains available locally for scoring parity tests.

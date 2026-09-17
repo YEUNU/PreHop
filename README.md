@@ -1,95 +1,130 @@
 # Prehop: Precomputed Question Links for Multi-Hop Retrieval
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Prehop builds question-guided links between corpus chunks during indexing and
-uses those stored links for multi-hop evidence retrieval. It generates Q−
-(answered here) and Q+ (needed elsewhere) representations, connects Q+ to a
-Q− owner in another source file, expands links from all retrieved starts, and selects evidence
-for answer synthesis. The incoming/outgoing question formulation follows
-[HopRAG](https://arxiv.org/html/2502.12442v2#S3.S2); Prehop uses its own
-original-query role search, stored-link expansion, and evidence selection.
-The implementation uses the original question at every input length and runs
-retrieval once.
+Prehop investigates how far multi-hop evidence retrieval can be supported by
+connections built before a user query arrives. During indexing, it generates
+questions for each passage and matches them to passages in other sources.
+At query time, it retrieves starting passages, expands their stored connections
+once, and selects evidence with an LLM before generating an answer.
 
-The primary comparison set is Prehop, Naive RAG, HopRAG, MS GraphRAG,
-LightRAG, GFM-RAG, and LinearRAG. Strategy identities and pinned
-revisions come from `core/strategy_registry.py`. HopRAG uses a separately
-prepared runtime; see [runtime requirements](docs/RUNTIME_REQUIREMENTS.md#hoprag-runtime).
-The root `third_party/HopRAG` checkout and its README describe a historical
-integration; use the runtime guide for the supported HopRAG comparison.
+[Reproduce the experiments](docs/REPRODUCING.md) ·
+[Method and implementation](docs/ARCHITECTURE.md) ·
+[Runtime setup](docs/RUNTIME_REQUIREMENTS.md)
+
+## How it works
+
+Each passage has two question representations:
+
+- **Q−:** questions whose answers are in this passage.
+- **Q+:** questions that seek information beyond this passage.
+
+Index-time matching connects a passage's Q+ to a Q− belonging to a passage in
+another source. These directed **HOP** links complement **NEXT** links between
+adjacent passages in the same source. The question-role formulation follows
+[HopRAG](https://arxiv.org/html/2502.12442v2#S3.S2).
+
+```mermaid
+flowchart TB
+    subgraph Indexing
+        direction LR
+        D[Documents] --> P[Passages]
+        P --> Q[Generate Q- and Q+]
+        Q --> M[Match Q+ to another source's Q-]
+        M --> H[Store HOP links]
+        P --> N[Store adjacent NEXT links]
+    end
+    subgraph Retrieval
+        direction LR
+        U[Original user query] --> R[Search body, Q- and Q+]
+        R --> S[Starting passages]
+        S --> E[Expand HOP and NEXT once]
+        S --> C[Direct and expanded candidates]
+        E --> C
+        C --> L[LLM selects up to 12 passages]
+        L --> A[Generate answer]
+    end
+    H --> E
+    N --> E
+```
+
+The query searches all three representations and combines their passage ranks.
+Every retrieved starting passage can activate its stored links. Direct passages
+remain candidates; graph-discovered passages are not expanded again. Stored
+links are candidate connections, not complete answer paths: query-dependent
+retrieval, scoring and selection still determine the final evidence.
 
 ## Installation
 
-Requirements: Python 3.12, `uv`, Docker, Neo4j 5.26.21, and an
-OpenAI-compatible LiteLLM gateway that serves the configured generation and
-embedding models.
+Prehop requires Python 3.12, `uv`, Neo4j 5.26.21, and an OpenAI-compatible
+LiteLLM gateway serving generation and embedding models. Docker is one way to
+run Neo4j:
 
 ```bash
 uv sync --locked
+cp .env.example .env
 
 docker run -d --name prehop-neo4j -p 7474:7474 -p 7687:7687 \
   -e 'NEO4J_AUTH=neo4j/<your_password>' neo4j:5.26.21-community
-
-cp .env.example .env
 ```
 
-Set `NEO4J_PASSWORD`, `RAG_INFERENCE_BASE_URL`, `RAG_INFERENCE_API_KEY`,
-`RAG_GENERATION_MODEL`, and `RAG_EMBEDDING_MODEL` in `.env`. The current remote
-contract uses `gemma-4-31b-it` and `qwen3-embedding-4b` (2,560 dimensions).
-`run_servers.sh` starts or validates Neo4j and validates the gateway; it does
-not start model servers.
+Set the same password in `NEO4J_PASSWORD`, and configure
+`RAG_INFERENCE_BASE_URL`, `RAG_INFERENCE_API_KEY`, `RAG_GENERATION_MODEL` and
+`RAG_EMBEDDING_MODEL` in `.env`. The experiment configuration uses
+`gemma-4-31b-it` and `qwen3-embedding-4b` with 2,560-dimensional embeddings.
+Model services are supplied separately; `run_servers.sh` does not start them.
+External comparison systems need their [own runtimes](docs/RUNTIME_REQUIREMENTS.md#pinned-external-runtimes).
 
 ## Quick start
+
+From the repository root, prepare MultiHop-RAG and run Prehop on its full query
+set. These commands construct an index and call the configured model services:
 
 ```bash
 .venv/bin/python scripts/datasets/prepare_multihoprag.py
 ./run_servers.sh all
-
-./run_index.sh --model prehop \
-  --dataset data/multihoprag_corpus --corpus-tag multihoprag
-
-./run_benchmark.sh --model prehop \
-  --queries data/multihoprag_queries.json --corpus-tag multihoprag
-
-./stop_servers.sh all
+./run_multihoprag.sh all --model prehop --queries full
 ```
 
-Dataset wrappers provide the representative full flows:
+Preparation writes `data/multihoprag_corpus/` and
+`data/multihoprag_queries.json`. The benchmark writes saved answers, retrieved
+passages and per-question scores under `data/results/`; index metadata is under
+`data/index_stats/`. Use [the experiment guide](docs/REPRODUCING.md) for named
+runs, comparison settings, ablations and scoring saved passage lists.
 
-```bash
-./run_multihoprag.sh index --model prehop
-./run_multihoprag.sh benchmark --model prehop --queries full
-```
+## Evaluation
 
-The second benchmark uses the original HippoRAG HotpotQA release: 9,221 passages
-and 1,000 query rows (944 unique original questions). Preparation, duplicate-row
-handling, and official scoring rules are described in
-[HOTPOTQA](docs/HOTPOTQA.md). This is a reduced retrieval corpus, not the official fullwiki setting.
+Experiments compare Prehop, HopRAG, MS GraphRAG, LightRAG, GFM-RAG, LinearRAG
+and Naive RAG on MultiHop-RAG and the HippoRAG HotpotQA release. MultiHop-RAG
+uses 609 documents and 2,556 questions; retrieval scores use its 2,255 questions
+with gold evidence. HotpotQA uses a pooled corpus of 9,221 passages and 1,000
+released occurrences, representing 944 original questions. This is a reduced
+retrieval corpus, not the official HotpotQA fullwiki setting.
 
-Generated indexes, logs, traces, and results stay under ignored local data and
-log directories. Do not treat a smoke run or an indexing completion as a full
-benchmark result.
+The common retrieval measures are Hits@4, Hits@10, MRR@10 and the MultiHop-RAG
+MAP@10 definition, plus supplementary distinct-gold Recall@10. The four ranking
+measures are official for MultiHop-RAG and adapted to supporting-sentence
+identities for HotpotQA. Native answer and supporting-fact scores remain
+separate outcomes. See [evaluation and outputs](docs/REPRODUCING.md#evaluate-saved-results)
+for definitions and commands.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md): implementation modules and behavior.
-- [Runtime requirements](docs/RUNTIME_REQUIREMENTS.md): external runtimes,
-  transport, and native output recording.
-- [Execution and measurement](docs/THROUGHPUT_EXECUTION.md): profiles, launch
-  procedures, recovery, and cost definitions.
-- [Maintainer policy](AGENTS.md): repository maintenance rules.
-- [HotpotQA data](docs/HOTPOTQA.md): corpus preparation and evaluation mapping.
+- [Reproducing experiments](docs/REPRODUCING.md): settings, runs, ablations and evaluation.
+- [Architecture](docs/ARCHITECTURE.md): indexing, retrieval and code organization.
+- [HotpotQA data and metrics](docs/HOTPOTQA.md): source, preparation and sentence identities.
+- [Runtime requirements](docs/RUNTIME_REQUIREMENTS.md): models and external environments.
+- [Execution and measurement](docs/THROUGHPUT_EXECUTION.md): scheduling, recovery and timing scope.
 
-Research results, experiment plans, submission checklists, manuscripts, and
-presentation exports are maintained locally and excluded from the public tree.
+The root `third_party/HopRAG` checkout is historical reference material; the
+runtime guide describes the supported HopRAG execution. Run-generated data,
+indexes and traces are local outputs. They are not bundled with this source
+release. Code checks are described in [the contributor instructions](AGENTS.md#verification).
 
-## Verification
+## License and attribution
 
-See [maintainer verification](AGENTS.md#verification) for lint, compilation,
-and test commands.
-
-## License
-
-MIT. External methods retain their upstream licenses and run in isolated
-environments where required.
+Repository-owned code is released under the [MIT License](LICENSE).
+External implementations and datasets retain their respective licenses.
+Method sources and pinned revisions are listed in
+[the strategy registry](core/strategy_registry.py); HotpotQA source attribution
+is documented in [the dataset guide](docs/HOTPOTQA.md#source-and-population).

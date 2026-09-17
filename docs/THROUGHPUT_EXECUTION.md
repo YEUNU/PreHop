@@ -194,8 +194,8 @@ phase wall time; trace files are excluded from retrieval-index storage size.
 Paired quality analyses require matched query IDs and explicit method controls.
 Query bootstrap intervals do not capture generation/index-build variability or
 selection bias. Latency comparisons require a declared common serving/load
-window. The local-only `docs/PAPER_ABLATION_DESIGN.md` defines the representation
-comparisons and their unequal initial search budgets.
+window. [Representation comparisons](REPRODUCING.md#compare-link-and-search-representations)
+describe their controls and unequal initial search budgets.
 
 ## Controlled link experiments
 
@@ -215,7 +215,8 @@ traces supply matched starting passages for connection-only measurements;
 offline analysis adds their per-query deltas to existing measured full-query
 latencies. Estimated latency is separate from measured latency and cannot
 replace measured batch wall time or throughput.
-See the local-only `docs/PAPER_ABLATION_DESIGN.md` for measurement scope and
+See [connection timing](REPRODUCING.md#measure-stored-versus-online-connection-processing)
+for commands and measurement scope, and
 [HOTPOTQA](HOTPOTQA.md) for the active corpus. The JSON timing-store file points
 to Neo4j HOP_TIMING relationships and contains no destination table.
 

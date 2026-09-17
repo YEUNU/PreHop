@@ -202,8 +202,8 @@ Question representations supply initial retrieval but do not construct body link
 
 The launcher prints a plan unless `--execute` is supplied. Its metadata uses
 `prehop-representation-ablation-v1`. See
-the local-only `docs/PAPER_ABLATION_DESIGN.md` for commands, controls, and
-permitted interpretations.
+[experiment reproduction](REPRODUCING.md#compare-link-and-search-representations)
+for commands, controls and comparison scope.
 
 <a id="legacy-external-modules"></a>
 
@@ -360,8 +360,8 @@ preparation costs, not graph destinations.
 `scripts/analyze_evidence_connections.py` reads gold only after construction and
 measures co-evidence reachability plus a degree-matched random null. It never
 writes gold-driven links. `scripts/ablation_statistics.py` resamples original
-question clusters, retaining duplicate release occurrences. The task graph and
-measurement constraints are owned by the local-only `docs/PAPER_ABLATION_DESIGN.md`.
+question clusters, retaining duplicate release occurrences. Public experiment
+commands and measurement boundaries are in [Reproducing experiments](REPRODUCING.md).
 
 
 ## Post-hoc connection analysis
@@ -378,7 +378,8 @@ questions. For version-3 connectivity inputs it discovers the complete metric
 list, including signed differences, from `comparison_metrics`.
 `scripts/analyze_ablation_links.py` uses the same inference function for
 query-conditioned utility, with its successful-query denominator retained.
-The scientific definitions belong in the local-only `docs/PAPER_ABLATION_DESIGN.md`.
+The [analysis guide](REPRODUCING.md#additional-analyses-and-release-scope)
+distinguishes observed link use from gold-evidence connectivity.
 
 `scripts/prepare_reference_timing.py` reads original full-run traces to recover
 actual connection starts, exclusions, settings and historical destinations.
