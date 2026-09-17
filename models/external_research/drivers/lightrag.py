@@ -102,20 +102,56 @@ class LightRAGDriver:
                 if 'lightrag_document_concurrency' in settings else {})
 
     def index(self) -> dict[str, Any]:
-        track_id = self.loop.run_until_complete(
-            self.engine.ainsert(
-                [f"{row['title']}\n{row['text']}" for row in self.rows],
-                ids=[row["source_id"] for row in self.rows],
-                file_paths=[row["source_id"] for row in self.rows],
-            )
-        )
-        statuses = self.loop.run_until_complete(self.engine.aget_docs_by_track_id(track_id))
-        if len(statuses) != len(self.rows) or any(str(getattr(status, "status", "")).lower().split(".")[-1] != "processed" for status in statuses.values()):
-            raise RuntimeError("LightRAG did not mark every staged source as processed")
+        self.loop.run_until_complete(self._index_async())
         return {"source_count": len(self.rows), "coverage_complete": True, "query_mode": self.param.mode,
                 "native_top_k": self.param.top_k, "document_concurrency": self.engine.max_parallel_insert,
                 "native_llm_timeout_seconds": self.engine.default_llm_timeout,
                 "native_embedding_timeout_seconds": self.engine.default_embedding_timeout}
+
+    async def _index_async(self):
+        ids = [row["source_id"] for row in self.rows]
+        existing = await self.engine.doc_status.get_by_ids(ids)
+        if any(row and row.get("status") == "failed" for row in existing):
+            await self._retry_failed()
+        missing = [row for row, status in zip(self.rows, existing) if status is None]
+        if missing:
+            await self.engine.ainsert(
+                [f"{row['title']}\n{row['text']}" for row in missing],
+                ids=[row["source_id"] for row in missing],
+                file_paths=[row["source_id"] for row in missing],
+            )
+        else:
+            await self.engine.apipeline_process_enqueue_documents()
+        # Native retries retain their original track IDs. Observe source IDs,
+        # excluding duplicate-attempt stubs created by previous insert calls.
+        statuses = await self.engine.doc_status.get_by_ids(ids)
+        incomplete = [key for key, row in zip(ids, statuses)
+                      if not row or row.get("status") != "processed"]
+        if incomplete:
+            raise RuntimeError(
+                f"LightRAG left {len(incomplete)}/{len(ids)} sources unprocessed: "
+                + ", ".join(incomplete[:10])
+            )
+
+    async def _retry_failed(self):
+        from uuid import uuid4
+
+        from lightrag.kg.shared_storage import (
+            commit_manual_retry_request,
+            get_namespace_data,
+            get_namespace_lock,
+            get_pipeline_ingress,
+        )
+        workspace = self.engine.workspace
+        status = await get_namespace_data("pipeline_status", workspace=workspace)
+        lock = get_namespace_lock("pipeline_status", workspace=workspace)
+        ingress = await get_pipeline_ingress(workspace)
+        refusal = await commit_manual_retry_request(
+            status, lock, ingress, uuid4().hex, {}
+        )
+        if refusal:
+            raise RuntimeError(refusal)
+        await self.engine.apipeline_process_enqueue_documents()
 
     def query(self, question: str) -> dict[str, Any]:
         return self.loop.run_until_complete(self._query_async(question))

@@ -58,7 +58,7 @@ seed of 42. Historical results keep their recorded generation settings.
 
 ## Source and setup isolation
 
-Pinned upstream checkouts are immutable. Package setup exports the approved
+Pinned upstream checkouts are immutable. Package setup exports the pinned
 revision into a unique build directory before installation and checks original
 source integrity. `RAG_OFFICIAL_BASELINE_HOME` selects the shared
 `<home>/<strategy>/{source,artifacts,venv}` layout. Source and interpreter
@@ -227,3 +227,11 @@ worker watchdog behavior remains unchanged; the HTTP deadline alone does not
 configure these internal wrappers. Index receipts record the applied values.
 External index completion no longer invokes the removed extraction-validation
 function. Native extraction observations and actual errors remain available.
+
+LightRAG resume reads native status by staged source ID. Existing failed sources
+receive one explicit native manual-retry request per invocation; ordinary insert
+calls do not retry them. Only absent sources are inserted. Processed sources and
+native caches remain in place, and pending work is drained by the native pipeline.
+Completion uses source IDs because retries retain their original track IDs;
+duplicate-attempt status stubs are not corpus sources. A repeated native failure
+remains an error rather than being relabeled as successful processing.

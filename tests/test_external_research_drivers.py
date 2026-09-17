@@ -1,7 +1,10 @@
+import asyncio
 import json
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 from models.external_research.drivers.base import canonical_semantic_env
 
@@ -45,11 +48,17 @@ def test_lightrag_uses_pinned_async_contract_and_exact_file_path(monkeypatch, tm
             calls["config"] = kwargs
             self.__dict__.update(kwargs)
             self.max_parallel_insert = kwargs.get("max_parallel_insert", 2)
+            self.doc_status = self
+            self.inserted = False
+
+        async def get_by_ids(self, ids):
+            return [{"status": "processed"} if self.inserted else None for _ in ids]
 
         async def initialize_storages(self):
             calls["initialized"] = True
 
         async def ainsert(self, docs, **kwargs):
+            self.inserted = True
             calls["insert"] = (docs, kwargs)
             return "track-1"
 
@@ -188,3 +197,40 @@ def test_linear_constructor_uses_published_runner_query_defaults(monkeypatch, tm
                     if arg.arg == 'default' and flag.removeprefix('--') in expected:
                         defaults[flag.removeprefix('--')] = ast.literal_eval(arg.value)
         assert defaults == expected
+
+@pytest.mark.parametrize("retry_succeeds", [True, False])
+def test_lightrag_resume_preserves_processed_and_retries_failed(retry_succeeds):
+    from models.external_research.drivers.lightrag import LightRAGDriver
+
+    class Engine:
+        def __init__(self):
+            self.doc_status = self
+            self.states = {"done": {"status": "processed"}, "old": {"status": "failed"}}
+            self.inserted = []
+
+        async def get_by_ids(self, ids):
+            return [self.states.get(key) for key in ids]
+
+        async def ainsert(self, texts, ids, file_paths):
+            self.inserted.extend(ids)
+            self.states.update({key: {"status": "processed"} for key in ids})
+
+    driver = LightRAGDriver.__new__(LightRAGDriver)
+    driver.engine = Engine()
+    driver.rows = [{"source_id": key, "title": key, "text": "text"}
+                   for key in ("done", "old", "new")]
+    retries = []
+
+    async def retry():
+        retries.append(True)
+        if retry_succeeds:
+            driver.engine.states["old"] = {"status": "processed"}
+
+    driver._retry_failed = retry
+    if retry_succeeds:
+        asyncio.run(driver._index_async())
+    else:
+        with pytest.raises(RuntimeError, match="1/3 sources unprocessed: old"):
+            asyncio.run(driver._index_async())
+    assert retries == [True]
+    assert driver.engine.inserted == ["new"]
