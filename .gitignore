@@ -326,6 +326,11 @@ docs/acl/
 **/prehop_presentation*.pdf
 # Local credentials and editor/agent state.
 .codex/
+# Machine-specific MCP configuration and personal instruction overrides.
+/.mcp.json
+/.mcp.*.json
+!/.mcp.example.json
+/AGENTS.override.md
 # Locally installed agent skills; not part of the experiment implementation.
 /.agents/skills/
 *.pem
