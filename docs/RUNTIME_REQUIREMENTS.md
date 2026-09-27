@@ -6,8 +6,9 @@ completion behavior belongs in [Execution](THROUGHPUT_EXECUTION.md).
 
 `core/strategy_registry.py` defines supported methods, pinned upstream revisions,
 and paper policies. `configs/paper_runtime_requirements.json` defines required
-Python versions, packages, local model revisions, and content hashes. This guide
-explains how to prepare and use those runtimes.
+Python versions, dependency-constraint references, local model revisions, and
+content hashes. Package versions are owned by the referenced constraints and
+the main environment's lockfile. This guide explains how to prepare those runtimes.
 
 ## Main Python environment
 
@@ -125,8 +126,8 @@ from the remote generation/embedding gateway.
 
 LinearRAG loads `sentence-transformers/all-mpnet-base-v2` at
 `e8c3b32edf5434bc2275fc9bab85f82640a19130` from a local snapshot. Its GPL upstream
-source remains process-isolated from this repository. Its controlled Qwen mode
-is a separate configuration, not the primary MPNet result mode.
+source remains process-isolated from this repository. The adapter uses this
+pinned local embedding model.
 
 ### HopRAG runtime
 
@@ -198,8 +199,8 @@ Adapters preserve native source and declare response interventions separately.
 
 Prehop's `prehop-native-json-retry-v3` metadata describes JSON decoding failures:
 invalid JSON syntax or an invalid raw input type. Transport and decoding retries
-share the configured maximum of five wire attempts, with unchanged requests and
-SDK retries disabled. Decodable duplicate properties, nonfinite values or
+share the configured wire-attempt budget (five by default), with unchanged
+requests and SDK retries disabled. Decodable duplicate properties, nonfinite values or
 schema-mismatched values are not rejected by an additional local validator.
 Question generation has no outer retry loop, and optional synchronous judge
 calls use their dedicated JSON path without prompt-repair retries. The updated
@@ -259,7 +260,7 @@ does not establish completed indexing.
 Large HopRAG edge groups use bounded exhaustive scoring in the adapter. All
 answerable candidates are scored; no dense-only top-k prefilter is used. Native
 document-pair sparse scores, duplicate-question grouping, tie order and final
-edge selection are retained. Twenty-four fixtures matched native edge outputs
+edge selection are retained. Sixty-four fixtures matched native edge outputs
 under the pinned pandas 2 runtime, including tied scores. This is validation of
 those fixtures, not a guarantee of every possible numerical boundary case.
 Cached nodes are reused; recovery costs retain prior attempt time separately.

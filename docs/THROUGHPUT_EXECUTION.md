@@ -153,8 +153,11 @@ TERM and a bounded wait, without KILL escalation. Surviving owned processes
 block restart. Reboot recovery and automatic chat notifications are not claimed.
 
 `paper_campaign.py` and `run_paper_matrix.sh` also retain a separate legacy
-full-matrix evidence-ledger workflow. Its ledger records executed stages without prerequisite approval checks. Legacy
-stage names do not change the registry's target count. It is not an automatic final validation step.
+full-matrix evidence-ledger workflow. Its ledger records executed stages without
+prerequisite approval checks. The `resume_continuation` stage exercises interruption
+and continuation of a saved checkpoint; it does not test configuration rejection.
+Legacy stage names in historical receipts do not change the registry's target
+count. This workflow is not an automatic final validation step.
 
 ### Cancelling queued work
 

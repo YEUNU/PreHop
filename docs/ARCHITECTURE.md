@@ -1,8 +1,10 @@
 # Architecture
 
-This document describes implementation behavior. `core/config.py` owns runtime
-defaults; `core/strategy_registry.py` owns supported methods, primary order,
-upstream revisions, and benchmark policies. Launch procedures are defined in
+This document describes implementation behavior. `core/config.py` owns retrieval
+and evaluation settings; `core/strategy_registry.py` owns method and transport
+defaults, supported methods, primary order, upstream revisions, and benchmark
+policies. `core/inference_transport.py` resolves effective request settings.
+Launch procedures are defined in
 [THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md).
 
 ## Strategy dispatch and indexing branches
@@ -295,10 +297,11 @@ one OpenAI-compatible LiteLLM base. Shell launchers reject legacy provider
 input variables. Paper mode omits LLM seeds; evaluation/sampling seed 42 is separate.
 Existing result artifacts retain their historical generation settings.
 
-Embedding responses must contain one finite, correctly sized vector per input
-with unique, gap-free response indices. Context-size or HTTP 413 errors allow
-order-preserving bisection; unrelated errors and failing singletons propagate.
-External compatibility aliases are configured in native child processes.
+The shared embedding decoder orders returned vectors by response index without
+an additional count, dimension, finite-value or uniqueness validator. Consumers
+retain their own shape requirements and errors. Context-size or HTTP 413 errors
+allow order-preserving bisection; unrelated errors and failing singletons
+propagate. External compatibility aliases are configured in native child processes.
 
 ## Evaluation output contract
 
@@ -343,11 +346,12 @@ Offline exports bind the original result with its SHA256. Historical main
 artifacts retain their existing fields; official and auxiliary sidecars provide
 separate reporting contracts.
 
-The default checkpoint interval is ten completed queries. Resume reads the
-existing result without configuration or identity validation. It runs missing IDs only, preserving both
-successful and terminal-error rows. A resumed batch is not an uninterrupted
-throughput measurement. The representation-ablation launcher itself does not
-provide resume.
+The default checkpoint interval is ten completed queries. Resume restores saved
+rows and their traces in the current input order without configuration or
+identity validation. It runs missing IDs only, preserving both successful and
+terminal-error rows, prior provenance and accumulated segment timing. A resumed
+batch is not an uninterrupted throughput measurement. The representation-ablation
+launcher itself does not provide resume.
 
 `record_paper_completion.py` records finished execution without final paper-policy
 validation. Receipt fields, accepted result states and resume behavior are
