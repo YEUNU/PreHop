@@ -95,6 +95,8 @@ def test_code_provenance_excludes_failed_and_generated_output_roots_without_read
         "configs/runtime_constraints/lightrag.txt",
         "configs/runtime_constraints/gfm_rag.txt",
         "configs/runtime_constraints/linear_rag.txt",
+        "configs/runtime_constraints/hoprag_main.txt",
+        "configs/runtime_constraints/hoprag_pos.txt",
     } <= {path.relative_to(Path.cwd()).as_posix() for path in verifier_sources()}
 
 
@@ -110,12 +112,11 @@ def test_hoprag_cli_selects_its_pinned_runtime_without_resolving_launcher(tmp_pa
     import sys
 
     from core import runtime_requirements as runtime
-    from models.hoprag import native_runtime
     runtime_home = tmp_path / "hoprag"
     launcher = runtime_home / "main-env/bin/python"
     launcher.parent.mkdir(parents=True)
     launcher.symlink_to(sys.executable)
-    monkeypatch.setattr(native_runtime, "RUNTIME_HOME", runtime_home)
+    monkeypatch.setenv("RAG_OFFICIAL_BASELINE_HOME", str(tmp_path))
     argv = ["scripts/paper_cold_canary.py", "fixture", "hoprag", "hotpotqa", "--attempt", "a1"]
     monkeypatch.setattr(sys, "argv", argv)
     captured = {}

@@ -237,6 +237,8 @@ def _write_model_report_artifacts(
                                       line; join key = idx
       <stem>.failures_topk.jsonl    — bottom 30 by deterministic primary score
       <stem>.stage_diagnostics.json — execution-stage call rates
+      <stem>.official.json          — dataset-specific official metrics
+      <stem>.diagnostics.json       — auxiliary evidence/answer diagnostics
 
     Markdown variants (.summary.md / .failures_topk.md / .stage_diagnostics.md)
     are no longer generated — derived from JSON on demand.
@@ -255,6 +257,11 @@ def _write_model_report_artifacts(
     stage_diag_json_file = result_file.with_name(f"{stem}.stage_diagnostics.json")
 
     _write_json(summary_json_file, overview)
+
+    dataset = str(summary.get("dataset", "")).lower().replace("-", "").replace("_", "")
+    if details and dataset in {"multihoprag", "hotpotqa"}:
+        from utils.official_results import write_reports
+        write_reports(summary, result_file)
 
     detail_rows: list[dict[str, Any]] = []
     trace_rows: list[dict[str, Any]] = []

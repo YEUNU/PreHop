@@ -11,6 +11,9 @@ repo_root=$(cd "$(dirname "$0")/.." && pwd)
 runtime_root=${RAG_OFFICIAL_BASELINE_HOME:-"$repo_root/data/official_baselines"}
 export PYTHONDONTWRITEBYTECODE=1
 mkdir -p "$runtime_root"
+if [ "$mode" = --primary ] || [ "$mode" = --all ]; then
+    python3 "$repo_root/scripts/setup_hoprag_runtime.py"
+fi
 exec 9>"$runtime_root/.runtime.lock"
 flock -x 9
 declare -A official_repo official_revision
@@ -175,9 +178,7 @@ write_snapshot_manifest linear_rag embedding "$linear_model" "$linear_revision"
 
 fi
 
-# Freeze the complete resolved environment after every install. Preflight
-# compares this lock with the installed environment, catching ambient package
-# changes that source-revision checks cannot detect.
+# Record the complete installed environment for runtime provenance.
 for strategy in "${installed_strategies[@]}"; do
     python3 "$repo_root/scripts/build_official_package.py" --check-only \
         --source "$runtime_root/$strategy/source" --revision "${official_revision[$strategy]}"

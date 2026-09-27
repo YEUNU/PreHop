@@ -23,9 +23,13 @@ def runtime_compatibility(value: dict) -> dict:
 
 
 def prompt_configuration(strategy: str) -> dict[str, Any]:
-    from utils.prompts import evidence_ranking, indexing, shared
+    from utils.prompts import evidence_ranking, indexing, prehop_answer, shared
     result = {}
-    if strategy in {'prehop', 'naive', 'gfm_rag'}:
+    if strategy == 'prehop':
+        result['answer'] = prehop_answer.build_answer_prompt('{context}', '{query}')
+        result['answer_messages'] = prehop_answer.build_answer_messages('{context}', '{query}')
+        result['answer_version'] = prehop_answer.SYNTHESIS_PROMPT_VERSION
+    elif strategy in {'naive', 'gfm_rag'}:
         result['answer'] = shared.build_answer_prompt('{context}', '{query}')
     if strategy in {'prehop', 'naive'}:
         result['index'] = {key: value for key, value in vars(indexing).items()

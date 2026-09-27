@@ -16,8 +16,8 @@ PATH = Path(__file__).resolve().parents[1] / "configs/paper_runtime_requirements
 def method_main_python(strategy: str, default: str | None = None) -> str:
     """Select the prepared coordinator runtime without resolving venv symlinks."""
     if strategy == "hoprag":
-        from models.hoprag.native_runtime import RUNTIME_HOME
-        executable = RUNTIME_HOME / "main-env/bin/python"
+        from models.hoprag.runtime_paths import runtime_home
+        executable = runtime_home() / "main-env/bin/python"
         return str(executable.absolute())
     return os.path.abspath(default or sys.executable)
 
@@ -89,8 +89,9 @@ def runtime_identity(strategy: str) -> dict[str, Any]:
         "installed_sha256": hashlib.sha256(json.dumps(installed, separators=(",", ":")).encode()).hexdigest(),
     }
     if strategy == 'hoprag':
-        main_runtime['pos_runtime_freeze'] = identity(root / 'data/runtime_envs/hoprag-paper-20260908/pos-env.freeze.txt')
-        main_runtime['main_runtime_freeze'] = identity(root / 'data/runtime_envs/hoprag-paper-20260908/main-env.freeze.txt')
+        from models.hoprag.runtime_paths import runtime_home
+        main_runtime['pos_runtime_freeze'] = identity(runtime_home() / 'pos-env.freeze.txt')
+        main_runtime['main_runtime_freeze'] = identity(runtime_home() / 'main-env.freeze.txt')
         main_runtime['upstream_revision'] = get_strategy(strategy).revision
     return {
         "main_runtime": main_runtime,

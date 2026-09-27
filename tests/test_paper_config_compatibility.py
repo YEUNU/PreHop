@@ -66,10 +66,26 @@ def test_actual_consumer_cap_changes_method_policy(monkeypatch):
     from core.generation_profiles import request_settings
     before = canonical_semantic_index_policy('prehop', 'hotpotqa')
     query_before = compatibility.method_identity('prehop')
-    monkeypatch.setattr(RAGConfig, 'SYNTHESIS_MAX_OUTPUT_TOKENS', 64)
-    assert request_settings('answer')['max_tokens'] == 64
+    naive_before = compatibility.method_identity('naive')
+    naive_settings = request_settings('answer')
+    monkeypatch.setattr(RAGConfig, 'PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS', 64)
+    assert request_settings('prehop_answer')['max_tokens'] == 64
     assert before == canonical_semantic_index_policy('prehop', 'hotpotqa')
     assert query_before != compatibility.method_identity('prehop')
+    assert naive_before == compatibility.method_identity('naive')
+    assert naive_settings == request_settings('answer')
+
+
+def test_prehop_answer_change_preserves_index_and_other_readers(monkeypatch):
+    from utils.prompts import prehop_answer
+
+    index_before = canonical_semantic_index_policy('prehop', 'hotpotqa')
+    query_before = compatibility.method_identity('prehop')
+    naive_before = compatibility.method_identity('naive')
+    monkeypatch.setattr(prehop_answer, 'ANSWER_INSTRUCTIONS', prehop_answer.ANSWER_INSTRUCTIONS + '\nNew instruction.')
+    assert query_before != compatibility.method_identity('prehop')
+    assert index_before == canonical_semantic_index_policy('prehop', 'hotpotqa')
+    assert naive_before == compatibility.method_identity('naive')
 
 
 

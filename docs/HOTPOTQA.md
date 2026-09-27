@@ -99,3 +99,7 @@ same inputs to every registered comparison method. The
 
 The discontinued fullwiki corpus and its preparation tools have been removed.
 The official evaluator remains available locally for scoring parity tests.
+Benchmark output also includes an `.official.json` report containing only
+the twelve official HotpotQA scores. Auxiliary retrieval measures are stored
+separately. See the [evaluation output contract](ARCHITECTURE.md#evaluation-output-contract)
+for file layout, prediction adapters and offline export.

@@ -392,24 +392,27 @@ def calculate_retrieval_ranking_metrics(
     # Exact translation of the official ranking evaluator: a rank contributes
     # each *new* matched fact divided by its 1-based rank.  Multiple newly
     # found facts in one chunk all contribute at that rank.
-    covered: set[int] = set()
+    covered: set[str] = set()
+    covered_annotations: set[int] = set()
     first_hit_rank: int | None = None
     ap_sum = 0.0
     for rank, chunk in enumerate(chunks[:10], start=1):
-        newly = {
-            idx
+        matches = {
+            idx: fact.replace(" ", "").replace("\n", "")
             for idx, fact in enumerate(gold_raw)
-            if idx not in covered and _official_multihoprag_fact_match(fact, chunk)
+            if _official_multihoprag_fact_match(fact, chunk)
         }
+        covered_annotations.update(matches)
+        newly = set(matches.values()) - covered
         if newly:
             if first_hit_rank is None:
                 first_hit_rank = rank
             covered |= newly
             ap_sum += len(newly) / rank
     result["official_mrr@10"] = 1.0 / first_hit_rank if first_hit_rank else 0.0
-    result["official_map@10"] = ap_sum / total_gold
-    result["exact_fact_recall@10"] = len(covered) / total_gold
-    result["all_facts@10"] = float(len(covered) == total_gold)
+    result["official_map@10"] = ap_sum / min(total_gold, 10)
+    result["exact_fact_recall@10"] = len(covered_annotations) / total_gold
+    result["all_facts@10"] = float(len(covered_annotations) == total_gold)
 
     for k in ks:
         top_raw = chunks[:k]

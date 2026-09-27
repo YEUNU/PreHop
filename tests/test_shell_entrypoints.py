@@ -8,6 +8,16 @@ from models.ms_graphrag import official_indexer
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_service_and_dataset_help_need_no_configuration(tmp_path):
+    env = {"PATH": os.environ["PATH"], "RAG_SKIP_PROJECT_ENV": "true"}
+    for script in ("run_servers.sh", "run_multihoprag.sh"):
+        result = subprocess.run(["bash", str(ROOT / script), "--help"], cwd=tmp_path,
+                                env=env, capture_output=True, text=True, check=True)
+        assert "Usage:" in result.stdout
+        assert "browsenet" not in result.stdout
+        assert "proprag" not in result.stdout
+
+
 def _fake_python(tmp_path: Path) -> Path:
     executable = tmp_path / "python"
     executable.write_text('#!/bin/sh\nif [ "$1" = -c ]; then exec '+sys.executable+' "$@"; fi\nprintf "<%s>\\n" "$@"\n', encoding="utf-8")

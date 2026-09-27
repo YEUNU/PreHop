@@ -21,7 +21,7 @@ or run lock. Run-scoped namespaces provide artifact isolation.
 | Method | Index construction | Query path |
 |---|---|---|
 | Prehop | Six-sentence passages, Q−/Q+ nodes, NEXT and directed HOP links | Representation search, activated links, LLM evidence selection |
-| Naive RAG | The same six-sentence passages and body embeddings | Dense body search and shared answer synthesis |
+| Naive RAG | The same six-sentence passages and body embeddings | Dense body search and the original answer synthesis prompt |
 | HopRAG | Native question-linked passage graph over the complete staged corpus | Native BFS, five hops, top-k eight |
 | MS GraphRAG | Standard indexing: text units, entities, relations, communities, reports | Native LocalSearch |
 | LightRAG | Native insertion and graph storage | Mix retrieval, top-k 40, chunk top-k 20, native answer |
@@ -121,10 +121,12 @@ fields, have been removed.
 `prehop-json-schema-v3` does not emit `uniqueItems`. Materialized schemas and
 existing provenance digests retain their recorded identities; the historical
 validation-contract label in the digest is not an active local validator.
-The controlled format-retry profile retries the same
-request under one shared maximum of five wire attempts, including transport
-retries. Discarded responses and available usage remain recorded; retries do
-not select among valid outputs by quality. Final synthesis remains text output.
+The `prehop-native-json-retry-v2` profile retries JSON decoding failures with the
+same request under one shared maximum of five wire attempts, including transport
+retries. Decodable duplicate properties, nonfinite values and schema-mismatched
+values do not trigger local validation retries. Discarded responses and available
+usage remain recorded; retries do not select among valid outputs by quality.
+Final synthesis remains text output.
 
 ## Prehop query path and branches
 
@@ -142,6 +144,26 @@ identity hashes cover index prompts and schemas independently of query prompts.
 4. Score the complete candidate union and select up to 12 passages by LLM.
 5. Synthesize a short answer from selected evidence, or return the fixed
    insufficient-evidence response for empty context.
+
+Prehop's answer instructions live in `utils/prompts/prehop_answer.py`
+(`prehop-evidence-check-v3`). A system message asks the reader to check up to
+three decisive facts, connect them to the question, and end with a labelled
+`Final Answer:`. The user message puts the original question before the
+selected passages. Instructions preserve entity names, time periods and units;
+binary answers use bare `Yes` or `No`. Missing essential evidence calls for
+abstention. The reader uses one non-thinking call at temperature zero with a
+256-token output cap. Context fitting counts both messages and accepts whole
+passages in rank order, including the client's 1,024-token completion reserve.
+Naive RAG and generic adapters retain the
+original prompt in `utils/prompts/shared.py`; native external readers retain
+their own procedures. Answer scores across these readers do not isolate
+retrieval quality.
+
+The materialized messages, output budget and prompt version contribute to query identity.
+Index identity excludes answer prompts. A synthesis-only replay can therefore
+reuse recorded selected passages and their retrieval scores, provided their
+text and order are preserved. Its generation time is a separate measurement
+from the original full query.
 
 `retrieval/hybrid.py` sorts vector and lexical results independently by raw
 score and stable identity, then combines reciprocal ranks `1 / (rank + 1)`.
@@ -172,6 +194,8 @@ candidate count and final top-k. Returned IDs are mapped directly to candidates;
 unknown IDs fail at lookup. A short ranking is filled from the existing candidate
 order until top-k, then the query adapter builds unique source records. There
 is no separate local uniqueness or length validation of the model's ranking.
+The runtime and recorded-input selection comparison share candidate ordering and
+short-ranking completion in `retrieval/scoring.py` to keep those behaviors aligned.
 
 Depth zero disables graph expansion while preserving passage selection.
 Experimental channel, edge, reciprocal-filter, semantic-scoring, and
@@ -221,6 +245,8 @@ paths and datasets; it does not define current strategy membership or launch
 procedures. Use [the runtime guide](RUNTIME_REQUIREMENTS.md#hoprag-runtime).
 
 `models/hoprag/native_runtime.py` loads the pinned prepared HopRAG installation.
+`models/hoprag/runtime_paths.py` shares its location across the coordinator, POS
+worker and provenance collection, using the existing baseline-home setting.
 The root `third_party/HopRAG` is reference-only and does not define the active
 runtime. The adapter stages the complete corpus as one edge-construction group;
 queries and gold evidence do not determine edge groups. Native generation may
@@ -285,6 +311,35 @@ Normalized/fuzzy and literal exact-fact recall are separate diagnostics; neither
 redefines the official benchmark metrics. Missing metric applicability is `-1`; evaluated
 nonmatches are zero. Terminal failures receive zero primary quality scores and
 remain visible in failure counts. Actual execution failures remain recorded.
+
+`utils/official_results.py` writes dataset-specific `<stem>.official.json`
+alongside each benchmark result. MultiHop-RAG stores Hits@4, Hits@10, MRR@10,
+MAP@10 and official QA precision/recall/F1/accuracy. Its QA values are the same
+per-question success rate under the upstream token-intersection rule. QA
+includes null questions and also reports question-type and non-null groups;
+retrieval excludes null questions. HotpotQA stores the twelve official Answer,
+Supporting Fact and Joint EM/F1/precision/recall values. Repeated original IDs
+retain distinct release-occurrence IDs and their original denominator.
+
+`<stem>.diagnostics.json` holds auxiliary measures, including MultiHop-RAG
+normalized answer EM/F1, refusal and evidence-coverage diagnostics. Adapted
+HotpotQA passage-ranking measures belong here when present in the source;
+they are not official HotpotQA metrics. Values in both files remain unscaled.
+The official report records the pinned upstream evaluator revision and the
+shared final-answer extraction and sentence-projection adapters. It preserves
+the source status and expected/evaluated counts, so a checkpoint is not
+presented as a completed benchmark.
+
+To export the same two files from an existing result without changing it or
+calling a model, run:
+
+```bash
+python -m scripts.export_official_results path/to/result.json --output-dir path/to/reports
+```
+
+Offline exports bind the original result with its SHA256. Historical main
+artifacts retain their existing fields; official and auxiliary sidecars provide
+separate reporting contracts.
 
 The default checkpoint interval is ten completed queries. Resume reads the
 existing result without configuration or identity validation. It runs missing IDs only, preserving both

@@ -107,3 +107,28 @@ def test_retry_changes_only_prehop_identity_and_its_chunk_cache(monkeypatch):
     assert method_identity('naive') == naive
     assert method_identity('prehop') != prehop
     assert _generation_signature('gemma-4-31b-it') != cache
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('content', ['{"q_minus":[],"q_minus":["last"]}', '{"value":NaN}', '[1,1]'])
+async def test_decodable_native_outputs_do_not_trigger_advertised_retries(monkeypatch, content):
+    from core.generation_profiles import structured_retry_profile
+    profile = structured_retry_profile()
+    assert profile['profile'] == 'prehop-native-json-retry-v2'
+    assert profile['eligible'] == ['json_syntax', 'invalid_raw_type']
+    requests = []
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={'id': 'fixture', 'object': 'chat.completion', 'created': 0,
+            'model': 'gemma-4-31b-it', 'choices': [{'index': 0, 'finish_reason': 'stop',
+                'message': {'role': 'assistant', 'content': content}}]})
+    sdk = AsyncOpenAI(base_url='http://retry.test/v1', api_key='synthetic',
+                     http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
+    client = configured_client(monkeypatch, sdk)
+    try:
+        value = await client.generate_json([{'role': 'user', 'content': 'unchanged'}],
+                                          structured_contract=question_contract('index'), max_tokens=4096)
+        assert json.dumps(value) == json.dumps(json.loads(content))
+        assert len(requests) == 1
+    finally:
+        await sdk.close()

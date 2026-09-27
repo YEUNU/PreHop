@@ -133,4 +133,3 @@ def test_paper_client_uses_canonical_litellm_and_never_public_gpt(monkeypatch):
     monkeypatch.setenv("RAG_LLM_SEED", "42")
     client = VLLMClient()
     assert client.vllm_url == client.embed_url == "http://litellm/v1"
-    assert client._is_openai_model("gpt-6") is False

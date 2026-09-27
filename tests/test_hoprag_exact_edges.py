@@ -1,5 +1,4 @@
 import ast
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,8 +6,9 @@ import pandas as pd
 import pytest
 
 from models.hoprag.exact_edges import exact_edges
+from models.hoprag.runtime_paths import runtime_home
 
-SOURCE=Path('data/runtime_envs/hoprag-paper-20260908/source/third_party/HopRAG/HopBuilder.py')
+SOURCE=runtime_home() / 'source/HopBuilder.py'
 def dense(p,a):return (np.array(p.embedding.tolist())@np.array(a.embedding.tolist()).T).flatten().tolist()
 def sparse(a,b):return len(a&b)/len(a|b)
 class Session:

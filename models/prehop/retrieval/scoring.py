@@ -156,6 +156,49 @@ class SimilarityScoringMixin:
             timing_sink["candidate_order_ms"] = (time.perf_counter() - ordering_started) * 1000
         return selected, ordered
 
+    @classmethod
+    def _prepare_ranking_candidates(
+        cls,
+        query_text: str,
+        ordered: list[dict[str, Any]],
+        input_order: str,
+        shuffle_seed: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Share native candidate identity and ordering with recorded-input replay."""
+        pool: list[dict[str, Any]] = []
+        seen_node_ids: set[str] = set()
+        for node in ordered:
+            node_id = cls._node_identity(node)
+            if node_id and node_id not in seen_node_ids:
+                seen_node_ids.add(node_id)
+                pool.append(node)
+        canonical_pool = list(pool)
+        if input_order == "reverse":
+            pool.reverse()
+        elif input_order == "hash_shuffle":
+            def shuffle_key(node: dict[str, Any]) -> tuple[bytes, str]:
+                node_id = cls._node_identity(node)
+                payload = f"{shuffle_seed}\0{query_text}\0{node_id}".encode()
+                return hashlib.sha256(payload).digest(), node_id
+
+            pool.sort(key=shuffle_key)
+        return canonical_pool, pool
+
+    @classmethod
+    def _complete_ranking(
+        cls, selected: list[dict[str, Any]], ordered: list[dict[str, Any]], top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Fill short rankings in canonical order, preserving returned duplicates."""
+        selected_ids = {cls._node_identity(node) for node in selected}
+        for node in ordered:
+            node_id = cls._node_identity(node)
+            if len(selected) >= top_k:
+                break
+            if node_id and node_id not in selected_ids:
+                selected.append(node)
+                selected_ids.add(node_id)
+        return selected
+
     @traced
     async def _role_body_list_ranking(
         self,
@@ -166,29 +209,11 @@ class SimilarityScoringMixin:
         """Rank the complete established candidate pool by opaque paragraph ID."""
         if not query_text.strip():
             raise ValueError("Body evidence candidate ordering requires the original query text")
-
-        pool: list[dict[str, Any]] = []
-        seen_node_ids: set[str] = set()
-        for node in ordered:
-            node_id = self._node_identity(node)
-            if node_id and node_id not in seen_node_ids:
-                seen_node_ids.add(node_id)
-                pool.append(node)
+        canonical_pool, pool = self._prepare_ranking_candidates(
+            query_text, ordered, RAGConfig.CANDIDATE_ORDER_INPUT_ORDER, RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,
+        )
         if not pool:
             return ordered[:top_k]
-
-        canonical_pool = list(pool)
-        if RAGConfig.CANDIDATE_ORDER_INPUT_ORDER == "reverse":
-            pool.reverse()
-        elif RAGConfig.CANDIDATE_ORDER_INPUT_ORDER == "hash_shuffle":
-            seed = RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED
-
-            def shuffle_key(node: dict[str, Any]) -> tuple[bytes, str]:
-                node_id = self._node_identity(node)
-                payload = f"{seed}\0{query_text}\0{node_id}".encode()
-                return hashlib.sha256(payload).digest(), node_id
-
-            pool.sort(key=shuffle_key)
 
         candidate_ids = [f"C{index:03d}" for index in range(len(pool))]
         node_by_candidate_id = dict(zip(candidate_ids, pool, strict=True))
@@ -271,15 +296,7 @@ class SimilarityScoringMixin:
             line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
             async with _CANDIDATE_ORDER_TRACE_LOCK:
                 await asyncio.to_thread(_append_jsonl, Path(trace_path), line)
-        selected_ids = {self._node_identity(node) for node in selected}
-        for node in ordered:
-            node_id = self._node_identity(node)
-            if len(selected) >= top_k:
-                break
-            if node_id and node_id not in selected_ids:
-                selected.append(node)
-                selected_ids.add(node_id)
-        return selected
+        return self._complete_ranking(selected, ordered, top_k)
 
     @classmethod
     def _role_body_rounds(

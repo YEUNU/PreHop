@@ -180,6 +180,24 @@ def test_multihoprag_official_map_counts_new_facts_at_their_rank():
     assert metrics["official_map@10"] == (1 / 1 + 1 / 3) / 2
 
 
+def test_multihoprag_official_map_caps_denominator_without_clipping_score():
+    facts = [f"fact{i}!" for i in range(12)]
+    metrics = calculate_retrieval_ranking_metrics([{"text": " ".join(facts)}], facts)
+
+    assert metrics["official_map@10"] == 1.2
+    assert metrics["exact_fact_recall@10"] == 1.0
+
+
+def test_multihoprag_official_map_counts_duplicate_compact_fact_once():
+    metrics = calculate_retrieval_ranking_metrics(
+        [{"text": "same fact"}], ["same fact", "same\nfact"]
+    )
+
+    assert metrics["official_map@10"] == 0.5
+    assert metrics["official_hits@4"] == 1.0
+    assert metrics["exact_fact_recall@10"] == 1.0
+
+
 def test_evidence_doc_metrics_deduplicate_retrieved_chunks():
     metrics = calculate_evidence_doc_metrics(
         [

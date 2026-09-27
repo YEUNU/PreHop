@@ -20,12 +20,8 @@ from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
 from models.prehop.retrieval import RetrievalPipeline
 from models.prehop.tracing import TracedNeo4j, TraceRecorder, attach_client, traced
-from utils.prompts.shared import (
-    build_answer_prompt as build_shared_answer_prompt,
-)
-from utils.prompts.shared import (
-    mark_answer_boundary,
-)
+from utils.prompts.prehop_answer import build_answer_messages, build_answer_prompt
+from utils.prompts.shared import mark_answer_boundary
 
 logger = logging.getLogger(__name__)
 
@@ -152,23 +148,24 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
 
     @staticmethod
     def _build_answer_prompt(context: str, user_query: str) -> str:
-        # Use the same single-pass synthesis prompt as controlled baselines.
-        # to the HopRAG / naive baseline prompts so any score gap traces back
-        # to retrieval, not synthesis-prompt asymmetry. The role is
-        # dataset-neutral. MS GraphRAG owns synthesis inside its
-        # official local/global search API and is the documented exception.
-        return build_shared_answer_prompt(context, user_query)
+        return build_answer_prompt(context, user_query)
 
     def _fit_ranked_context(self, nodes: list[dict[str, Any]], query: str) -> str:
         """Add ranked chunks until the actual synthesis prompt reaches its budget."""
         accepted: list[dict[str, Any]] = []
+        client_limit = getattr(self.llm, "_generation_max_context_tokens", RAGConfig.MAX_CONTEXT_LENGTH)
+        if not isinstance(client_limit, int):
+            client_limit = RAGConfig.MAX_CONTEXT_LENGTH
+        # Keep the question-first message intact through the client's 1,024-token reserve.
+        input_limit = min(RAGConfig.MAX_CONTEXT_LENGTH, client_limit) - max(
+            RAGConfig.PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS, 1024
+        )
         for node in nodes:
             candidate = self._build_context_from_nodes([*accepted, node])
-            prompt = self._build_answer_prompt(candidate, query)
-            messages = [{"role": "user", "content": prompt}]
+            messages = build_answer_messages(candidate, query)
             counted = self.llm._count_tokens(messages)
-            prompt_tokens = counted if isinstance(counted, int) else max(1, len(prompt) // 4)
-            if prompt_tokens + RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS > RAGConfig.MAX_CONTEXT_LENGTH:
+            prompt_tokens = counted if isinstance(counted, int) else max(1, sum(len(m["content"]) for m in messages) // 4)
+            if prompt_tokens > input_limit:
                 break
             accepted.append(node)
         return self._build_context_from_nodes(accepted)
@@ -183,11 +180,10 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         """Run retrieval, traversal, and one synthesis call.
 
         The default path is:
-          1. Parallel role-based retrieve (Q-/body evidence, Q+ dependency seeds).
-          2. External-embedding cosine top-k ordering.
-          3. Deterministic 1-hop bidirectional-NEXT/outgoing-HOP_ANSWER traversal
-             (when RAG_GRAPH_HOP_DEPTH is 1, default).
-          4. Single LLM synthesis call.
+          1. Retrieve starting passages through body, Q- and Q+ representations.
+          2. Expand their stored NEXT/HOP_ANSWER connections once.
+          3. Score the candidate union and select evidence with one LLM call.
+          4. Generate an answer from that evidence with one synthesis call.
         """
         _ = history
         retrieval_query = self._strip_format_instruction(user_query)
@@ -252,12 +248,11 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
                 {"step": "synthesis", "output": {"answer": answer, "reason": "context_budget"}, "synthesis_ms": 0.0}
             )
             return answer, sources, trace
-        prompt = self._build_answer_prompt(context, retrieval_query)
-        messages = [{"role": "user", "content": prompt}]
+        messages = build_answer_messages(context, retrieval_query)
         t_synthesis0 = time.perf_counter()
         raw = await self.llm.generate_response(
             messages,
-            **request_settings("answer"),
+            **request_settings("prehop_answer"),
         )
         synthesis_ms = (time.perf_counter() - t_synthesis0) * 1000
         if not str(raw or "").strip():

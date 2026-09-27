@@ -82,6 +82,12 @@
       "pandas": "2.2.3",
       "numpy": "2.2.6",
       "torch": "2.14.0+cpu"
-    }
+    },
+    "constraints_file": "configs/runtime_constraints/hoprag_main.txt",
+    "constraints_sha256": "4b6ac823890b87c253d7cbbc06920789d85d4842680df3cf3d2cbcd4c15eceb7",
+    "native_pos_constraints_file": "configs/runtime_constraints/hoprag_pos.txt",
+    "native_pos_constraints_sha256": "e6658f03f2b97f1a1968c5cb8971938b94708fef0043c80df689c07b61dd7a0f",
+    "native_pos_python_version": "3.10",
+    "native_pos_model_base_url": "https://bj.bcebos.com/paddlenlp/taskflow/lexical_analysis/lac/"
   }
 }

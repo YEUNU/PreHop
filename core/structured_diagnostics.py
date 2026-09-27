@@ -50,14 +50,6 @@ def caller_metadata() -> dict:
     return dict(_CALLER.get() or {})
 
 
-class DuplicateJSONPropertyError(ValueError):
-    pass
-
-
-class NonfiniteJSONConstantError(ValueError):
-    pass
-
-
 def parse_failure_metadata(error: Exception, raw: Any) -> dict:
     if isinstance(error, json.JSONDecodeError):
         known = {
@@ -73,10 +65,6 @@ def parse_failure_metadata(error: Exception, raw: Any) -> dict:
         }
         result = {'category': 'json_syntax', 'reason': known.get(error.msg, 'other_json_syntax'),
                   'offset': error.pos, 'line': error.lineno, 'column': error.colno}
-    elif isinstance(error, DuplicateJSONPropertyError):
-        result = {'category': 'duplicate_property'}
-    elif isinstance(error, NonfiniteJSONConstantError):
-        result = {'category': 'nonfinite_constant'}
     else:
         result = {'category': 'invalid_raw_type' if isinstance(error, TypeError) else 'other_parse_error'}
     if isinstance(raw, str):

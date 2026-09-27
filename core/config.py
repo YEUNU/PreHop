@@ -51,10 +51,10 @@ class RAGConfig:
     # Indexing prompts for Q-/Q+ generation rarely exceed 1–2K output;
     # 4K is comfortable headroom.
     MAX_OUTPUT_TOKENS = 4096
-    # The benchmark contract requests a short final answer, not free-form
-    # generation. This fixed cap reserves context space and bounds latency; it
-    # is shared by controlled answer-synthesis paths and is not swept.
+    # Reader-specific caps also reserve space during context fitting.
     SYNTHESIS_MAX_OUTPUT_TOKENS = 128
+    # Prehop emits a brief evidence check before its labelled final answer.
+    PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS = 256
     MAX_EMBEDDING_LENGTH = int(os.environ.get("MAX_EMBEDDING_LENGTH", "32768"))
     EMBEDDING_QUERY_INSTRUCTION = os.environ.get(
         "EMBEDDING_QUERY_INSTRUCTION",

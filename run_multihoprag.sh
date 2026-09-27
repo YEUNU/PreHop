@@ -17,11 +17,16 @@
 #   ./run_multihoprag.sh benchmark --model prehop --queries full
 #
 # Options:
-#   --model   {prehop|naive|hoprag|ms_graphrag|browsenet|proprag} default: prehop
+#   --model   registered strategy                    default: prehop
 #   --queries {sample200|full}                         default: sample200
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
 set -e
+usage() {
+    echo "Usage: $0 <index|benchmark|all> [--model STRATEGY] [--queries sample200|full] [run-script flags]"
+    echo "Defaults: --model prehop --queries sample200. Strategies are listed in core/strategy_registry.py."
+}
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 ulimit -n 65536 2>/dev/null || true
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"; cd "$SCRIPT_DIR"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
@@ -71,5 +76,5 @@ case "$STAGE" in
     index)           do_index ;;
     benchmark|bench) do_benchmark ;;
     all)             do_index; do_benchmark ;;
-    *) echo "Usage: $0 <index|benchmark|all> [--model prehop|naive|hoprag|ms_graphrag|browsenet|proprag] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
+    *) usage >&2; exit 1 ;;
 esac

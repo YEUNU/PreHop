@@ -20,10 +20,10 @@ def answer_role() -> str:
 
 
 def build_answer_prompt(context: str, query: str) -> str:
-    """Shared synthesis prompt for in-repo and adapted retrieval methods.
+    """Original synthesis prompt retained by Naive and generic adapters.
 
-    Keeping this in one function ensures retrieval, rather than prompt wording,
-    is the variable being compared across Prehop, Naive, and HopRAG.
+    Prehop's current reader is versioned separately in ``prehop_answer``.
+    Native external readers retain their upstream answer procedures.
     """
     return (
         f"You are {answer_role()}. Answer the question using only the provided context.\n"

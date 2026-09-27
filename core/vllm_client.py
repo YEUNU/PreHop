@@ -533,11 +533,6 @@ class VLLMClient:
     def judge_client(self):
         return self.client
 
-    @staticmethod
-    def _is_openai_model(model: str) -> bool:
-        _ = model
-        return False
-
     def think_strip(self, message: str | None) -> str:
         if not message:
             return ""
@@ -600,7 +595,6 @@ class VLLMClient:
     ) -> Any:
         try:
             failure_metadata = kwargs.pop("_structured_failure_metadata", None)
-            expected_request = kwargs.pop('_structured_expected_request', None)
             apply_default_sampling = bool(kwargs.pop("apply_default_sampling", True))
             # Truncate messages to fit context window
             truncated_messages = self._truncate_messages(messages)
@@ -630,14 +624,8 @@ class VLLMClient:
                 else {"chat_template_kwargs": {"enable_thinking": False}}
             )
 
-            is_openai = self._is_openai_model(str(params["model"]))
-            if is_openai:
-                params.pop("extra_body", None)
-            request_client = self.judge_client if is_openai else self.client
-            if expected_request is not None:
-                from core.structured_diagnostics import json_sha256
             started = time.perf_counter()
-            response = await self._create_generation_request(request_client, params)
+            response = await self._create_generation_request(self.client, params)
             strict_schema = (kwargs.get("response_format") or {}).get("type") == "json_schema"
             if strict_schema:
                 from core.structured_diagnostics import json_sha256
@@ -649,7 +637,6 @@ class VLLMClient:
                                  'elapsed_seconds': time.perf_counter() - started})
                 if isinstance(failure_metadata, dict):
                     failure_metadata.update(metadata)
-                json.dumps(metadata, sort_keys=True, separators=(',', ':'))
                 message = response.choices[0].message
                 return message.content
             msg = response.choices[0].message
@@ -814,8 +801,7 @@ class VLLMClient:
                 "max_tokens": self._resolve_output_token_limit(requested_max_tokens),
                 "temperature": 0.0,
             }
-            if not self._is_openai_model(str(model)):
-                params["extra_body"] = kwargs.get("extra_body") or {"chat_template_kwargs": {"enable_thinking": False}}
+            params["extra_body"] = kwargs.get("extra_body") or {"chat_template_kwargs": {"enable_thinking": False}}
             if RAGConfig.LLM_SEED is not None:
                 params["seed"] = RAGConfig.LLM_SEED
             response = await self._create_generation_request(self.judge_client, params)

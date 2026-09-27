@@ -20,7 +20,7 @@ For a new main environment:
 
 ```bash
 export UV_PROJECT_ENVIRONMENT=/absolute/new/main-venv
-uv sync --frozen --no-install-project
+uv sync --locked --python 3.12
 export PYTHON_BIN="$UV_PROJECT_ENVIRONMENT/bin/python"
 ```
 
@@ -69,22 +69,30 @@ seed of 42. Historical results keep their recorded generation settings.
 
 Pinned upstream checkouts are immutable. Package setup exports the pinned
 revision into a unique build directory before installation and checks original
-source integrity. `RAG_OFFICIAL_BASELINE_HOME` selects the shared
-`<home>/<strategy>/{source,artifacts,venv}` layout. Source and interpreter
-overrides select the runtime whose actual identity is recorded. Use a fresh
-runtime home when preparing a replacement; setup does not clean an existing
-attempt.
+source integrity. Run setup from a Linux x86-64 host with Bash, Git, `flock`
+(util-linux), `uv` and internet access. The native package pins target this
+platform. Setup installs the required Python versions through `uv` and fetches
+sources and model files; gateway credentials and Neo4j are not needed until
+indexing or querying.
+
+`RAG_OFFICIAL_BASELINE_HOME` selects the installation directory, defaulting to
+`data/official_baselines` under the repository root. Export an absolute path
+before both setup and execution to use another location. LightRAG, GFM-RAG and
+LinearRAG use `<home>/<strategy>/{source,artifacts,venv}`. HopRAG's layout is
+described [below](#hoprag-runtime). Use a fresh runtime home when preparing a
+replacement; setup does not clean an existing attempt.
 
 ```bash
 ./scripts/setup_official_baselines.sh --primary
 ```
 
-This provisions **LightRAG, GFM-RAG and LinearRAG** using registry revisions.
-MS GraphRAG is installed with the main environment. The script does not
-provision HopRAG's separate main/POS environments. The three external runtimes
-record `runtime.freeze.txt`. Setup checks source integrity, declared constraints
-and installed dependencies. The freeze records installed metadata; it is not
-an automatic dispatch check or a universal cross-platform lock.
+This provisions **HopRAG, LightRAG, GFM-RAG and LinearRAG** using registry
+revisions. MS GraphRAG is installed with the main environment. The latter three
+runtimes record `runtime.freeze.txt`; HopRAG records separate main/POS freezes.
+Setup checks source integrity, declared constraints and installed dependencies.
+The freeze records installed metadata; it is not an automatic dispatch check
+or a universal cross-platform lock. Large checkpoint downloads can take time;
+completion is reported only after installation checks pass.
 
 ## Pinned external runtimes
 
@@ -101,6 +109,11 @@ GFM-RAG loads `rmanluo/GFM-RAG-8M` at revision
 `colbert-ir/colbertv2.0` at `c1e84128e85ef755c096a95bdb06b47793b13acf`.
 Required checkpoint and model-file hashes are in the runtime manifest. Mutable
 PLAID caches use run-local storage rather than modifying the pinned snapshot.
+Its pinned upstream requires a CUDA development toolkit (CUDA 12 or newer;
+upstream recommends 12.6.3) and a C++ compiler for native graph operations.
+Provision these host tools before running GFM-RAG; Python package setup does not
+install a GPU driver or system compiler. These local components are separate
+from the remote generation/embedding gateway.
 
 LinearRAG loads `sentence-transformers/all-mpnet-base-v2` at
 `e8c3b32edf5434bc2275fc9bab85f82640a19130` from a local snapshot. Its GPL upstream
@@ -109,15 +122,42 @@ is a separate configuration, not the primary MPNet result mode.
 
 ### HopRAG runtime
 
-The native upstream revision is `a6e425b8f8a5d8131dd7805db40185ac76e09903`.
-`models/hoprag/native_runtime.py` currently selects the repository-relative
-`data/runtime_envs/hoprag-paper-20260908/` installation, including `main-env`,
-`pos-env`, and immutable `source/third_party/HopRAG`. This path is fixed in the
-adapter; `RAG_OFFICIAL_BASELINE_HOME` does not relocate it. The public setup
-script does not recreate these environments or download the POS model. Prepare
-this layout and its declared dependencies before choosing HopRAG. The repository's
-root `third_party/HopRAG` is reference-only. POS model hashes are bound by
-`configs/hoprag_pos_model.json`; generated POS files use run-local directories.
+HopRAG is included in the primary setup command. To install only HopRAG:
+
+```bash
+python3 scripts/setup_hoprag_runtime.py
+```
+
+The installer fetches native upstream revision
+`a6e425b8f8a5d8131dd7805db40185ac76e09903`, creates Python 3.12 main and Python
+3.10 POS environments, and downloads the native PaddleNLP POS model. Package
+versions are pinned in `configs/runtime_constraints/hoprag_main.txt` and
+`hoprag_pos.txt`; their digests are declared in the runtime manifest. The main
+environment uses CPU PyTorch. Model files must match
+`configs/hoprag_pos_model.json`.
+
+`models/hoprag/runtime_paths.py` owns the shared `<home>/hoprag` location:
+
+| Path | Contents |
+| --- | --- |
+| `main-env/bin/python` | Coordinator and native HopRAG imports |
+| `pos-env/bin/python` | PaddleNLP/PaddlePaddle CPU POS worker |
+| `source/` | Unmodified pinned HopRAG checkout |
+| `pos-model/` | Downloaded, hash-checked native model inputs |
+| `main-env.freeze.txt`, `pos-env.freeze.txt` | Installed package identities |
+| `setup.json` | Successful setup receipt |
+
+Setup first builds under `<home>/.builds/` and checks package compatibility,
+native imports, source integrity and an actual POS request. It then publishes
+`<home>/hoprag` as a symlink to the verified build, preserving virtualenv
+interpreter paths. Repeating the command verifies and reuses that installation.
+A failed build remains unpublished for inspection. A mismatched existing
+installation is left intact; select a fresh `RAG_OFFICIAL_BASELINE_HOME` and
+rerun setup. No existing runtime is upgraded or removed by this command.
+
+The repository's root `third_party/HopRAG` is reference-only. Generated POS
+files use run-local directories; the downloaded model and upstream checkout
+remain unchanged. Launchers automatically select the prepared main interpreter.
 
 `scripts/run_hoprag_scheduled.py` performs a 16-document source canary, full
 MultiHop-RAG indexing, query benchmarking, and completion recording. The canary
@@ -148,6 +188,13 @@ Adapters preserve native source and declare response interventions separately.
 | LightRAG | Native extraction and document status; failed insertion is not successful processing |
 | LinearRAG | Native local NER and QA text without an additional answer-quality gate |
 
+Prehop's `prehop-native-json-retry-v2` metadata describes JSON decoding failures:
+invalid JSON syntax or an invalid raw input type. Transport and decoding retries
+share the configured maximum of five wire attempts, with unchanged requests and
+SDK retries disabled. Decodable duplicate properties, nonfinite values or
+schema-mismatched values are not rejected by an additional local validator.
+This metadata correction does not change parsing behavior or relabel saved runs.
+
 HopRAG retains raw wire, embedding, and recovery records. Recovery does not
 invent questions or facts. Other native observation records distinguish returned
 responses from native exceptions; observation alone does not establish indexing
@@ -156,7 +203,8 @@ Missing response or cost telemetry remains unavailable.
 
 | Method | Generation output policy | Retrieval settings |
 |---|---|---|
-| Prehop / Naive | Prehop index questions: 4,096 tokens; shared synthesis: 128 | Six-sentence passages; final top-k 12 |
+| Prehop | Index questions: 4,096 tokens; non-thinking answer synthesis: 256, with versioned system instructions and a question-first user message | Six-sentence passages; final top-k 12 |
+| Naive RAG | Answer synthesis: 128 tokens, using the shared answer prompt | Six-sentence passages; final top-k 12 |
 | MS GraphRAG | Native omission of client output caps and temperature | LocalSearch: 10 entities, 10 relationships, 12,000 context tokens; one glean |
 | LightRAG | Native completion arguments | Mix mode; top-k 40; chunk top-k 20 |
 | GFM-RAG | NER 300; triples 4,096; single-pass QA omits output cap | Native QA top-k five |

@@ -56,12 +56,13 @@ retrieval, scoring and selection still determine the final evidence.
 
 ## Installation
 
-Prehop requires Python 3.12, `uv`, Neo4j 5.26.21, and an OpenAI-compatible
-LiteLLM gateway serving generation and embedding models. Docker is one way to
-run Neo4j:
+Run the commands below from the repository root on Linux with Bash, Git and
+`uv` installed. `uv` can provision Python 3.12. Prehop also requires Neo4j
+5.26.21 and an OpenAI-compatible LiteLLM gateway serving generation and
+embedding models. Docker is one way to run Neo4j:
 
 ```bash
-uv sync --locked
+uv sync --locked --python 3.12
 cp .env.example .env
 
 docker run -d --name prehop-neo4j -p 7474:7474 -p 7687:7687 \
@@ -70,12 +71,22 @@ docker run -d --name prehop-neo4j -p 7474:7474 -p 7687:7687 \
 
 Set the same password in `NEO4J_PASSWORD`, and configure
 `RAG_INFERENCE_BASE_URL`, `RAG_INFERENCE_API_KEY`, `RAG_GENERATION_MODEL` and
-`RAG_EMBEDDING_MODEL` in `.env`. The experiment configuration uses
+`RAG_EMBEDDING_MODEL` in `.env`. Use the gateway's API base URL, including its
+`/v1` path when applicable. The experiment configuration uses
 `gemma-4-31b-it` and `qwen3-embedding-4b` with 2,560-dimensional embeddings.
 Model services are supplied separately; `run_servers.sh` does not start them.
-External comparison systems need their [own runtimes](docs/RUNTIME_REQUIREMENTS.md#pinned-external-runtimes).
-The external setup script prepares LightRAG, GFM-RAG and LinearRAG; MS GraphRAG
-uses the main environment and HopRAG requires a separately prepared runtime.
+For the full comparison, prepare the additional runtimes once:
+
+```bash
+./scripts/setup_official_baselines.sh --primary
+```
+
+This installs HopRAG, LightRAG, GFM-RAG and LinearRAG from pinned sources and
+downloads their required local models. MS GraphRAG uses the main environment.
+The pinned native runtimes target Linux x86-64. See
+[runtime setup](docs/RUNTIME_REQUIREMENTS.md#source-and-setup-isolation) for
+installation paths, GFM-RAG's CUDA/compiler prerequisites, and the command to
+install only HopRAG.
 
 ## Quick start
 

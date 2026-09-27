@@ -114,15 +114,11 @@ def test_build_unique_sources_preserves_retrieval_provenance():
 
 
 def test_build_answer_prompt_contains_context_and_query():
-    prompt = GraphRAG._build_answer_prompt("CTX_BLOCK", "QUESTION_TEXT")
-    assert "CTX_BLOCK" in prompt
-    assert "QUESTION_TEXT" in prompt
-    # Dataset-neutral multi-hop synthesis with conservative abstention.
-    assert "only the provided context" in prompt
-    assert "connect the intermediate entities and relationships" in prompt
-    assert "do not show reasoning" in prompt
-    assert "lacks a required link" in prompt
-    assert "do not refuse merely because multiple passages must be combined" in prompt
+    context = "[[First]]\nA {literal} fact.\n\n[[Second]]\nAnother fact."
+    question = "How are these facts connected?"
+    prompt = GraphRAG._build_answer_prompt(context, question)
+    assert f"<context>\n{context}\n</context>" in prompt
+    assert f"<question>{question}</question>" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +192,9 @@ async def test_run_workflow_strips_benchmark_format_marker_before_retrieving():
         call_kwargs = rag.graph_search.await_args.kwargs
         assert "[Benchmark Output Format]" not in (call_kwargs.get("user_query") or "")
         assert "[Benchmark Output Format]" not in (call_kwargs.get("entities") or [""])[0]
-        synthesis_prompt = rag.llm.generate_response.await_args.args[0][0]["content"]
-        assert "[Benchmark Output Format]" not in synthesis_prompt
+        messages = rag.llm.generate_response.await_args.args[0]
+        assert all("[Benchmark Output Format]" not in m["content"] for m in messages)
+        assert messages[-1]["content"].startswith("<question>What was Apple's FY2022 revenue?</question>")
     finally:
         p.stop()
 
@@ -259,6 +256,50 @@ def test_naive_context_budget_keeps_complete_chunks_in_rank_order(monkeypatch):
     assert accepted == [nodes[0]]
     assert "first body" in context
     assert "second body" not in context
+
+
+def test_prehop_context_fit_reserves_client_headroom_and_keeps_whole_passages(monkeypatch):
+    from utils.prompts.prehop_answer import build_answer_messages
+
+    monkeypatch.setattr(RAGConfig, "MAX_CONTEXT_LENGTH", 2000)
+    monkeypatch.setattr(RAGConfig, "PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS", 256)
+    rag = GraphRAG(strategy="prehop")
+    rag.llm = MagicMock()
+    rag.llm._generation_max_context_tokens = 1900
+    rag.llm._count_tokens.side_effect = [800, 900]
+    nodes = [
+        {"title": "First", "text": "first body", "sent_id": 0},
+        {"title": "Second", "text": "second body", "sent_id": 1},
+    ]
+
+    context = rag._fit_ranked_context(nodes, "question")
+
+    assert context == rag._build_context_from_nodes(nodes[:1])
+    assert rag.llm._count_tokens.call_args_list[0].args[0] == build_answer_messages(context, "question")
+    assert "second body" not in context
+
+
+@pytest.mark.asyncio
+async def test_prehop_synthesis_uses_versioned_messages_budget_and_final_answer_boundary():
+    from utils.metrics import extract_final_answer
+    from utils.prompts.prehop_answer import build_answer_messages
+
+    nodes = [
+        {"title": "First", "text": "first body", "sent_id": 0},
+        {"title": "Second", "text": "second body", "sent_id": 1},
+    ]
+    rag, p = _make_rag_with_mocks(nodes=nodes, llm_answer="Evidence check.\nFinal Answer: complete name")
+    rag.llm._count_tokens.return_value = 100
+    try:
+        answer, sources, _ = await rag.run_workflow("question")
+        call = rag.llm.generate_response.await_args
+        assert call.args[0] == build_answer_messages(rag._build_context_from_nodes(nodes), "question")
+        assert call.kwargs["max_tokens"] == RAGConfig.PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS
+        assert call.kwargs["temperature"] == 0.0
+        assert extract_final_answer(answer) == "complete name"
+        assert [source["text"] for source in sources] == [node["text"] for node in nodes]
+    finally:
+        p.stop()
 
 
 def test_hoprag_adapter_keeps_official_top_k():

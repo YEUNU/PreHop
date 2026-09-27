@@ -36,7 +36,6 @@ async def test_actual_sdk_parse_failure_has_only_safe_metadata_and_bounded_ident
     monkeypatch.setattr(client, '_get_cached_client', lambda url: sdk)
     monkeypatch.setattr(client, '_truncate_messages', lambda messages: messages[-1:])
     monkeypatch.setattr(client, '_resolve_output_token_limit', lambda value: value)
-    monkeypatch.setattr(client, '_is_openai_model', lambda model: False)
     async def create(request_client, params):
         sdk_parameters.append(params)
         return await request_client.chat.completions.create(**params)

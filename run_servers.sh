@@ -8,14 +8,21 @@
 
 set -e
 
+case "${1:-}" in
+    -h|--help) echo "Usage: $0 {neo4j|gen|embed|all}"; exit 0 ;;
+    neo4j|gen|embed|all) ;;
+    *) echo "Usage: $0 {neo4j|gen|embed|all}" >&2; exit 1 ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 . "$SCRIPT_DIR/scripts/lib.sh"
 load_project_env "$SCRIPT_DIR/.env"
-: "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}"
-
 SERVICE=$1
+if [ "$SERVICE" = neo4j ] || [ "$SERVICE" = all ]; then
+    : "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}"
+fi
 if [ "$SERVICE" = gen ] || [ "$SERVICE" = embed ] || [ "$SERVICE" = all ]; then
     canonicalize_inference_transport || exit 1
 fi
@@ -57,7 +64,9 @@ endpoint_has_model() {
     if ! payload="$(curl_with_auth "${base_url}/models")"; then
         return 1
     fi
-    MODEL_ID="$model_id" PAYLOAD="$payload" "$SCRIPT_DIR/.venv/bin/python" -c '
+    local service_python
+    service_python="$(resolve_python "$SCRIPT_DIR")" || return 1
+    MODEL_ID="$model_id" PAYLOAD="$payload" "$service_python" -c '
 import json, os
 payload = json.loads(os.environ["PAYLOAD"])
 raise SystemExit(0 if os.environ["MODEL_ID"] in {str(row.get("id", "")) for row in payload.get("data", [])} else 1)
@@ -139,7 +148,7 @@ start_neo4j_docker() {
         -e NEO4J_server_memory_heap_initial__size=8g \
         -e NEO4J_server_memory_heap_max__size=16g \
         -e NEO4J_dbms_memory_transaction_total_max=10g \
-        neo4j:5-community > /dev/null
+        neo4j:5.26.21-community > /dev/null
 }
 
 start_neo4j() {

@@ -540,8 +540,14 @@ def test_debug_output_is_namespaced_by_run_strategy_and_corpus(monkeypatch):
     assert "/data/debug/manual_run_one/prehop/multi_hop_" in "/" + rag.debug_output_dir
 
 
-def test_shared_answer_prompt_is_the_prehop_prompt():
-    assert GraphRAG._build_answer_prompt("context", "question") == build_answer_prompt("context", "question")
+def test_prehop_reader_matches_its_recorded_prompt_identity():
+    from core.paper_compatibility import prompt_configuration
+    from utils.prompts.prehop_answer import build_answer_messages
+
+    assert GraphRAG._build_answer_prompt("{context}", "{query}") == prompt_configuration('prehop')['answer']
+    assert build_answer_messages("{context}", "{query}") == prompt_configuration('prehop')['answer_messages']
+    assert prompt_configuration('naive')['answer'] == build_answer_prompt("{context}", "{query}")
+    assert prompt_configuration('prehop')['answer'] != prompt_configuration('naive')['answer']
 
 
 def test_aggregate_numeric_keys_are_union_of_all_rows():

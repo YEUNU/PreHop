@@ -42,7 +42,6 @@ async def test_real_sdk_strict_raw_response_has_no_repair_or_downgrade(monkeypat
     client.logger = logging.getLogger('structured_test')
     monkeypatch.setattr(client, '_truncate_messages', lambda messages: messages)
     monkeypatch.setattr(client, '_resolve_output_token_limit', lambda value: value or 512)
-    monkeypatch.setattr(client, '_is_openai_model', lambda model: False)
     async def create(sdk, params):
         return await sdk.chat.completions.create(**params)
     monkeypatch.setattr(client, '_create_generation_request', create)

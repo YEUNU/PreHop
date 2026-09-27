@@ -4,11 +4,11 @@ from __future__ import annotations
 
 def structured_retry_profile() -> dict:
     from core.config import RAGConfig
-    return {'profile': 'prehop-controlled-format-retry-v1',
+    return {'profile': 'prehop-native-json-retry-v2',
             'max_total_attempts': RAGConfig.LLM_MAX_RETRIES,
             'budget_scope': 'transport-and-format-shared',
             'sdk_automatic_retries': 0,
-            'eligible': ['raw_json_syntax', 'duplicate_property', 'nonfinite_constant', 'registered_schema'],
+            'eligible': ['json_syntax', 'invalid_raw_type'],
             'request_identity': 'unchanged', 'response_repair': False}
 
 
@@ -26,6 +26,7 @@ def request_settings(consumer: str) -> dict:
         'question_index': {'temperature': 0.0, 'max_tokens': RAGConfig.MAX_OUTPUT_TOKENS},
         'ranking': {'temperature': 0.0, 'max_tokens': 1024},
         'answer': {'temperature': 0.0, 'max_tokens': RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS},
+        'prehop_answer': {'temperature': 0.0, 'max_tokens': RAGConfig.PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS},
         'linear_native_qa': {'temperature': 0, 'max_tokens': 2000},
         'gfm_construction': {'temperature': 0.0},
     }
@@ -39,6 +40,7 @@ def generation_profiles(strategy: str) -> dict:
     if strategy in {'prehop', 'naive'}:
         profiles = {key: request_settings(key) for key in ('question_index', 'ranking', 'answer')}
         if strategy == 'prehop':
+            profiles['answer'] = request_settings('prehop_answer')
             profiles['structured_format_retry'] = structured_retry_profile()
     elif strategy == 'hoprag':
         profiles = {'native_defaults': {'owner': 'pinned_upstream', 'revision': spec.revision, 'temperature': 0.1, 'max_tokens': 4096, 'frequency_penalty': 0.0, 'presence_penalty': 0.0, 'seed': None, 'response_parser': 'adapter-json-recovery-v2'}}

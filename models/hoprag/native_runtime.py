@@ -13,10 +13,10 @@ import threading
 import types
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_HOME = ROOT / 'data/runtime_envs/hoprag-paper-20260908'
-UPSTREAM = RUNTIME_HOME / 'source/third_party/HopRAG'
-REVISION = 'a6e425b8f8a5d8131dd7805db40185ac76e09903'
+from core.strategy_registry import get_strategy
+from models.hoprag.runtime_paths import ROOT, runtime_home
+
+REVISION = get_strategy('hoprag').revision
 _pos_lock = threading.Lock()
 _pos_process = None
 _setup_tag = None
@@ -51,7 +51,7 @@ def _tag(text):
             log = Path(os.environ['RAG_HOP_OUTPUT_ROOT']) / 'pos.stderr.log'
             log.parent.mkdir(parents=True, exist_ok=True)
             with log.open('a') as stream:
-                _pos_process = subprocess.Popen([str(RUNTIME_HOME/'pos-env/bin/python'), '-B', str(ROOT/'models/hoprag/pos_worker.py')],
+                _pos_process = subprocess.Popen([str(runtime_home()/'pos-env/bin/python'), '-B', str(ROOT/'models/hoprag/pos_worker.py')],
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stream, text=True, bufsize=1,
                     env={**os.environ, 'OMP_NUM_THREADS':'1', 'CUDA_VISIBLE_DEVICES':''})
         _pos_process.stdin.write(json.dumps(text)+'\n');_pos_process.stdin.flush()
@@ -71,6 +71,7 @@ def _unused(*args, **kwargs):
 def _install_import_bridges():
     # Only the provider-specific local loaders are unavailable. POS calls use
     # the actual unchanged PaddleNLP implementation in its pinned CPU process.
+    sys.dont_write_bytecode = True
     for name, attrs in [('paddlenlp', {'Taskflow':_taskflow}),
                         ('sentence_transformers', {'SentenceTransformer':_unused}),
                         ('modelscope', {'AutoModelForCausalLM':_unused,'AutoTokenizer':_unused,'AutoModelForSequenceClassification':_unused})]:
@@ -101,7 +102,8 @@ def setup(corpus_tag):
     from core.inference_transport import InferenceTransport
     transport=InferenceTransport.resolve('hoprag')
     _install_import_bridges()
-    sys.path.insert(0,str(UPSTREAM))
+    upstream = runtime_home() / 'source'
+    sys.path.insert(0,str(upstream))
     with contextlib.redirect_stdout(io.StringIO()):config=importlib.import_module('config')
     safe=index_namespace(corpus_tag)
     config.local_model_name=transport.generation_model
@@ -127,7 +129,7 @@ def setup(corpus_tag):
     config.exception_log_path=str(Path(os.environ['RAG_HOP_OUTPUT_ROOT'])/'native_exceptions.log')
     Path(config.exception_log_path).parent.mkdir(parents=True,exist_ok=True)
     # Only replace the schema names baked into native Cypher templates.
-    original=importlib.util.spec_from_file_location('_hoprag_original_config',UPSTREAM/'config.py')
+    original=importlib.util.spec_from_file_location('_hoprag_original_config',upstream/'config.py')
     module=importlib.util.module_from_spec(original)
     with contextlib.redirect_stdout(io.StringIO()):original.loader.exec_module(module)
     replacements={module.edge_name:config.edge_name,module.node_name:config.node_name}
