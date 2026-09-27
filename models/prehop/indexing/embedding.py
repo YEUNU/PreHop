@@ -8,7 +8,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from core.config import RAGConfig
+from core.inference_transport import InferenceTransport
 
 _EMBEDDING_CACHE_LOCK = threading.Lock()
 
@@ -25,14 +25,15 @@ class SparseEmbeddingMixin:
         return root / "embeddings.sqlite3"
 
     def _embedding_cache_key(self, text: str, encoding_type: str) -> str:
+        transport = InferenceTransport.resolve("core")
         identity = {
-            "model": RAGConfig.EMBEDDING_MODEL,
+            "model": transport.embedding_model,
             "dimensions": self.vector_dimensions,
-            "max_input_tokens": RAGConfig.MAX_EMBEDDING_LENGTH,
+            "max_input_tokens": transport.embedding_max_input_tokens,
             "encoding_type": encoding_type,
-            "endpoint": RAGConfig.VLLM_EMBED_URL,
+            "endpoint": transport.embedding_base_url,
             "revision": os.environ.get("RAG_EMBEDDING_REVISION", ""),
-            "query_instruction": RAGConfig.EMBEDDING_QUERY_INSTRUCTION,
+            "query_instruction": transport.embedding_query_instruction,
             "text": text,
         }
         payload = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

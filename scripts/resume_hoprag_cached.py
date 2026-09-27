@@ -24,7 +24,7 @@ def configure_recovery_environment():
                  'RAG_HOP_BUILD_CONCURRENCY', 'RAG_HOP_SEMANTIC_VARIANT',
                  'RAG_HOP_EDGE_FILTER'):
         os.environ.pop(name, None)
-    for _field, name, value in get_strategy('hoprag').paper_index_environment:
+    for name, value in get_strategy('hoprag').index_environment_defaults().items():
         os.environ[name] = str(value).lower() if isinstance(value, bool) else str(value)
     configure_target_environment('hoprag','multihoprag',CAM)
 

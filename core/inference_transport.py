@@ -30,7 +30,6 @@ _FORBIDDEN_AMBIENT_PROVIDER_KEYS = (
 def preserve_provider_environment(environment=None) -> None:
     """Freeze the already-canonical paper environment before native imports."""
     environment = os.environ if environment is None else environment
-    sorted(name for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS if environment.get(name))
     for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS:
         environment.setdefault(name, '')
     # Public LiteLLM configuration prevents DEV-mode load_dotenv from reading
@@ -124,7 +123,6 @@ class InferenceTransport:
         generation_max_context_tokens = int(
             os.environ.get("RAG_MAX_CONTEXT_LENGTH", str(PAPER_TRANSPORT.generation_context_tokens))
         )
-        paper_mode = parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
         endpoint = _normalized_endpoint(_required("RAG_INFERENCE_BASE_URL"))
         generation_model = _required("RAG_GENERATION_MODEL")
         embedding_model = _required("RAG_EMBEDDING_MODEL")

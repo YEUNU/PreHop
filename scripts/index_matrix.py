@@ -74,7 +74,7 @@ def child(campaign, strategy, dataset, phase):
 def supervise(plan_path):
     from core.inference_queue import OwnedQueue
     from scripts.paper_campaign import atomic_json, identity, lock, resource_lock_path, run_child, safe_environment
-    from scripts.paper_detached_runtime import register_owner, session_processes, terminate_owned
+    from scripts.paper_detached_runtime import register_owner, terminate_owned
     plan = json.loads(plan_path.read_text())
     base = plan_path.parent
     owner = register_owner(plan_path)
@@ -120,7 +120,6 @@ def supervise(plan_path):
                 code = run_child(command, env, log, handle, update)
                 queue.drain()
                 queue.persist()
-                [process for process in session_processes(owner) if process['pid'] != os.getpid()]
                 current_target.update({f'{phase}_exit_code': code, 'state': f'{phase}_complete' if code == 0 else f'{phase}_failed',
                                        'finished_at': time.time()})
                 update({'child': None})
@@ -145,9 +144,6 @@ def supervise(plan_path):
 def launch(campaign):
     from core.paper_compatibility import context_configuration
     from scripts.paper_campaign import alive, atomic_json, lock, resource_lock_path, safe_environment
-    from scripts.paper_stage_runner import selected_python_environment, validate_name
-    validate_name(campaign)
-    selected_python_environment()
     base = ROOT / 'data/results' / campaign / 'index-supervisor'
     base.mkdir(parents=True, exist_ok=False)
     plan = {'version': 1, 'kind': 'index_only', 'campaign': campaign, 'targets': targets(campaign),

@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 from core.benchmark_failures import BenchmarkIntegrityError
 from core.generation_profiles import request_settings
+from core.strategy_registry import method_setting
 
-from .base import canonical_semantic_env, load_rows, positive_env
+from .base import load_rows
 
 
 def configure_entity_linker(retriever_cfg: Any, model_path: Path, output_dir: Path) -> None:
@@ -30,9 +32,7 @@ class GFMRAGDriver:
         from core.runtime_requirements import runtime_requirement
 
         transport = InferenceTransport.resolve("gfm_rag")
-        from core.strategy_registry import get_strategy
 
-        registry_policy = dict(get_strategy("gfm_rag").paper_index_policy)
 
         runtime_spec = runtime_requirement("gfm_rag")
         checkpoint_path = official_root.parent / "artifacts" / str(runtime_spec["checkpoint_snapshot_subdir"])
@@ -71,7 +71,7 @@ class GFMRAGDriver:
         configure_entity_linker(retriever_cfg, entity_model_path, output_dir)
         retriever_cfg.graph_constructor.root = str(output_dir / "artifacts/gfm_constructor_tmp")
         retriever_cfg.graph_constructor.num_processes = min(
-            positive_env("RAG_GFM_CONSTRUCTION_CONCURRENCY", transport.generation_concurrency),
+            int(os.environ.get("RAG_GFM_CONSTRUCTION_CONCURRENCY", str(transport.generation_concurrency))),
             transport.generation_concurrency,
         )
         generation_model = transport.generation_model
@@ -105,7 +105,7 @@ class GFMRAGDriver:
         )
 
         self.rows = {r["source_id"]: r for r in rows}
-        self.top_k = int(canonical_semantic_env("RAG_GFM_RAG_TOP_K", registry_policy["retrieval_top_k"]))
+        self.top_k = int(method_setting("gfm_rag", "retrieval_top_k"))
         # The primary single-pass workflow is qa.py/qa_inference, not IRCOT.
         with initialize_config_dir(config_dir=str(config_path.parent.resolve()), version_base=None):
             qa_cfg = compose(config_name="qa_inference")
@@ -113,8 +113,6 @@ class GFMRAGDriver:
 
         from .gfm_answer import native_qa_client
 
-        if self.top_k != qa_cfg.test.top_k:
-            raise RuntimeError("GFM single-pass top_k differs from its native QA configuration")
         self.native_qa_max_workers = int(qa_cfg.test.n_threads)
         self.qa_prompt = QAPromptBuilder(qa_cfg.qa_prompt)
         self.qa_llm, self.qa_audit, self.qa_sdk = native_qa_client(

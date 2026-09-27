@@ -6,8 +6,10 @@ from typing import Any
 
 from core.benchmark_failures import BenchmarkIntegrityError
 from core.generation_profiles import request_settings
+from core.inference_transport import InferenceTransport
+from core.strategy_registry import method_setting
 
-from .base import canonical_semantic_env, load_rows, positive_env
+from .base import load_rows
 
 
 def resolve_pinned_model_path(official_root: Path) -> str:
@@ -28,8 +30,6 @@ class LinearNativeInference:
 
         self.audit = ExtractionAudit(audit_path, profile="native-observation-v1") if audit_path is not None else None
         from openai import OpenAI
-
-        from core.inference_transport import InferenceTransport
 
         self.transport = InferenceTransport.resolve("linear_rag")
         self.client = OpenAI(base_url=self.transport.generation_base_url, api_key=self.transport.api_key,
@@ -55,22 +55,12 @@ class LinearRAGDriver:
         from core.strategy_registry import get_strategy
 
         strategy_spec = get_strategy("linear_rag")
-        registry_policy = dict(strategy_spec.paper_index_policy)
         query_policy = {field: value for field, _, value in strategy_spec.paper_query_policy}
-        canonical_semantic_env("RAG_LINEAR_RAG_BACKBONE_MODE", registry_policy["backbone_mode"])
         sys.path.insert(0, str(official_root))
         from sentence_transformers import SentenceTransformer
         from src.config import LinearRAGConfig
         from src.LinearRAG import LinearRAG
 
-        str(
-            canonical_semantic_env(
-                "RAG_LINEAR_RAG_MPNET_REVISION", registry_policy["official_embedding_revision"]
-            )
-        )
-        str(
-            canonical_semantic_env("RAG_LINEAR_RAG_MPNET_MODEL", registry_policy["official_embedding_model"])
-        )
         pinned_model_path = resolve_pinned_model_path(official_root)
 
         self.rows = load_rows(output_dir)
@@ -79,31 +69,17 @@ class LinearRAGDriver:
         # never inject provenance markers into text seen by NER/embeddings.
         self.passages = [f"{i}:{r['title']}\n{r['text']}" for i, r in enumerate(self.rows)]
         self.by_index = {i: r for i, r in enumerate(self.rows)}
-        class ValidatedSentenceTransformer(SentenceTransformer):
-            def encode(self, sentences, *args, **kwargs):
-                import numpy as np
-
-                vectors = super().encode(sentences, *args, **kwargs)
-                array = np.asarray(vectors)
-                expected = (768,) if isinstance(sentences, str) else (len(sentences), 768)
-                if len(sentences) == 0 and not isinstance(sentences, str):
-                    if array.size:
-                        raise ValueError("LinearRAG empty embedding input returned vectors")
-                elif array.shape != expected or not np.isfinite(array).all():
-                    raise ValueError("LinearRAG embedding count, dimension or finite-value check failed")
-                return vectors
-
         config = LinearRAGConfig(
             dataset_name="corpus",
-            embedding_model=ValidatedSentenceTransformer(
+            embedding_model=SentenceTransformer(
                 pinned_model_path,
             ),
             llm_model=LinearNativeInference(output_dir / "artifacts" / "answer_audit.jsonl"),
-            spacy_model=str(canonical_semantic_env("RAG_LINEAR_RAG_SPACY_MODEL", registry_policy["spacy_model"])),
+            spacy_model=str(method_setting("linear_rag", "spacy_model")),
             working_dir=str(output_dir / "artifacts"),
-            batch_size=positive_env("RAG_EMBEDDING_BATCH_SIZE", 16),
-            retrieval_top_k=int(canonical_semantic_env("RAG_LINEAR_RAG_TOP_K", registry_policy["retrieval_top_k"])),
-            use_vectorized_retrieval=bool(canonical_semantic_env("RAG_LINEAR_RAG_VECTORIZED", registry_policy["vectorized_retrieval"])),
+            batch_size=InferenceTransport.resolve("linear_rag").embedding_batch_size,
+            retrieval_top_k=int(method_setting("linear_rag", "retrieval_top_k")),
+            use_vectorized_retrieval=bool(method_setting("linear_rag", "vectorized_retrieval")),
             iteration_threshold=query_policy["iteration_threshold"],
             passage_ratio=query_policy["passage_ratio"],
             top_k_sentence=query_policy["top_k_sentence"],

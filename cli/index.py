@@ -11,11 +11,9 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from core.config import RAGConfig
-from core.embedding_policy import EmbeddingOperationalConfig
 from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
-from core.semantic_config import parse_strict_bool
-from core.strategy_registry import EXTERNAL_STRATEGIES, RESEARCH_EXTERNAL_STRATEGIES, get_strategy
+from core.strategy_registry import EXTERNAL_STRATEGIES, get_strategy
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing.chunking import parse_pages_offline
@@ -87,183 +85,67 @@ def _artifact_run_id() -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._-") or "run"
 
 
-def _resolved_paper_index_policy(strategy: str, corpus_tag: str) -> dict:
-    from core.paper_policy import canonical_operational_policy, canonical_semantic_index_policy
-
-    policy = canonical_semantic_index_policy(strategy, corpus_tag)
-    if strategy in {"prehop", "naive"} and os.environ.get("RAG_INDEX_NAMESPACE", "").strip():
-        policy["index_namespace"] = index_namespace("default")
-    if strategy == "gfm_rag":
-        from core.runtime_requirements import runtime_requirement
-        from models.official_baseline_runtime import official_root
-
-        runtime_spec = runtime_requirement(strategy)
-        checkpoint = official_root(strategy).parent / "artifacts" / runtime_spec["checkpoint_snapshot_subdir"]
-        model_path = checkpoint / "model.pth"
-        config_path = checkpoint / "config.json"
-        policy.update(
-            {
-                "gfm_checkpoint": str(checkpoint),
-                "gfm_checkpoint_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
-                "gfm_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
-            }
-        )
-    policy["operational_config"] = canonical_operational_policy(strategy)
-    return policy
-
-
 def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: str | None = None) -> dict:
-    """Record semantic index settings separately from throughput controls."""
-    if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE"):
-        return _resolved_paper_index_policy(strategy, corpus_tag or "")
-    if strategy == "prehop":
-        resolved_generation_model = RAGConfig.DEFAULT_MODEL if indexing_model_id == "default" else indexing_model_id
-    elif strategy in {"hoprag", "ms_graphrag", *EXTERNAL_STRATEGIES}:
-        resolved_generation_model = RAGConfig.DEFAULT_MODEL
-    else:
-        resolved_generation_model = None
-    if strategy == "hoprag":
-        embedding_model = os.environ.get("RAG_HOP_EMBED_MODEL_NAME", RAGConfig.EMBEDDING_MODEL)
-        embedding_dimensions = RAGConfig.EMBEDDING_DIMENSIONS
-    elif strategy == "linear_rag":
-        embedding_model = get_strategy(strategy).paper_embedding_model
-        embedding_dimensions = 768
-        embedding_revision = get_strategy(strategy).local_embedding_revision
-    elif strategy == "gfm_rag":
-        embedding_model = "checkpoint-defined"
-        embedding_dimensions = None
-    else:
-        embedding_model = RAGConfig.EMBEDDING_MODEL
-        embedding_dimensions = RAGConfig.EMBEDDING_DIMENSIONS
-    if strategy != "linear_rag":
-        embedding_revision = (
-            None if strategy == "gfm_rag" else os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None
-        )
-    policy = {
-        "strategy": strategy,
-        "index_namespace": (
-            index_namespace("default")
-            if strategy in {"prehop", "naive", "hoprag"} and os.environ.get("RAG_INDEX_NAMESPACE", "").strip()
-            else None
-        ),
-        "indexing_model": resolved_generation_model,
-        "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
-        "generation_seed": RAGConfig.LLM_SEED,
-        "embedding_model": embedding_model,
-        "embedding_revision": embedding_revision,
-        "embedding_query_instruction": RAGConfig.EMBEDDING_QUERY_INSTRUCTION,
-        "embedding_dimensions": embedding_dimensions,
-        "embedding_max_input_tokens": RAGConfig.MAX_EMBEDDING_LENGTH,
+    """Record the settings actually used by both ordinary and comparison runs."""
+    from core.inference_transport import InferenceTransport
+    from core.paper_policy import canonical_semantic_index_policy
+    from core.runtime_requirements import runtime_identity, runtime_requirement
+    from core.strategy_registry import method_setting
+
+    spec = get_strategy(strategy)
+    transport = InferenceTransport.resolve(strategy)
+    policy = canonical_semantic_index_policy(strategy, corpus_tag or "")
+    local_embedding = spec.local_embedding_revision is not None or strategy == "gfm_rag"
+    model = transport.generation_model
+    if strategy == "prehop" and indexing_model_id not in {None, "", "default"}:
+        model = indexing_model_id
+    policy.update({
+        "index_namespace": index_namespace("default") if os.environ.get("RAG_INDEX_NAMESPACE", "").strip() else None,
+        "indexing_model": None if strategy == "naive" else model,
+        "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or model,
+        "generation_seed": transport.generation_seed,
+        "embedding_model": spec.paper_embedding_model if local_embedding else transport.embedding_model,
+        "embedding_revision": spec.local_embedding_revision if local_embedding else os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or transport.embedding_model,
+        "embedding_query_instruction": None if local_embedding else transport.embedding_query_instruction,
+        "embedding_query_template": None if local_embedding else transport.embedding_query_template,
+        "embedding_dimensions": spec.paper_embedding_dimensions if local_embedding else transport.embedding_dimensions,
+        "embedding_max_input_tokens": transport.embedding_max_input_tokens,
+        "embedding_token_reserve": transport.embedding_token_reserve,
+        "generation_max_context_tokens": transport.generation_max_context_tokens,
         "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
-    }
+    })
+    policy.update({field: method_setting(strategy, field) for field, _ in spec.paper_index_environment})
     if strategy in {"prehop", "naive"}:
-        policy["chunk_sentences"] = RAGConfig.CHUNK_SENTENCES
-        policy["default_top_k"] = RAGConfig.DEFAULT_TOP_K
+        policy.update(chunk_sentences=RAGConfig.CHUNK_SENTENCES, default_top_k=RAGConfig.DEFAULT_TOP_K)
     if strategy == "prehop":
-        policy.update(
-            {
-                "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
-                "question_schema": RAGConfig.QUESTION_SCHEMA,
-                "q_minus_enabled": RAGConfig.ABLATION_Q_MINUS,
-                "q_plus_enabled": RAGConfig.ABLATION_Q_PLUS,
-                "sentence_channel_enabled": RAGConfig.SENTENCE_CHANNEL_ENABLED,
-                "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
-                "continuation_edges_materialized": RAGConfig.QUESTION_SCHEMA == "linked_v2",
-                "continuation_anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY,
-                "hop_construction": (
-                    "qplus_to_qminus_owner+shared_grounded_answer_mentions"
-                    if RAGConfig.QUESTION_SCHEMA == "linked_v2" and RAGConfig.ABLATION_Q_MINUS
-                    else ("qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation")
-                ),
-            }
-        )
+        policy.update({
+            "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
+            "question_schema": RAGConfig.QUESTION_SCHEMA,
+            "q_minus_enabled": RAGConfig.ABLATION_Q_MINUS,
+            "q_plus_enabled": RAGConfig.ABLATION_Q_PLUS,
+            "sentence_channel_enabled": RAGConfig.SENTENCE_CHANNEL_ENABLED,
+            "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
+            "continuation_edges_materialized": RAGConfig.QUESTION_SCHEMA == "linked_v2",
+            "continuation_anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY,
+            "hop_construction": (
+                "qplus_to_qminus_owner+shared_grounded_answer_mentions"
+                if RAGConfig.QUESTION_SCHEMA == "linked_v2" and RAGConfig.ABLATION_Q_MINUS
+                else ("qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation")
+            ),
+        })
         if RAGConfig.HOP_LINK_VARIANT == "body":
             from core.prehop_ablation import ablation_identity
-            policy.update({
-                "hop_construction": "body_to_body",
-                "body_link_reference_sha256": ablation_identity()["body_link_reference_sha256"],
-                "body_link_degree_policy": "reference_per_node",
-            })
-    elif strategy == "ms_graphrag":
-        policy.update(
-            {
-                "official_revision": get_strategy(strategy).revision,
-                "extract_max_tokens": 1500,
-                "report_max_tokens": int(os.environ.get("RAG_MS_REPORT_MAX_TOKENS", "4096")),
-                "local_search_top_k_entities": 10,
-                "local_search_top_k_relationships": 10,
-                "local_search_max_context_tokens": 12000,
-            }
-        )
-    elif strategy == "hoprag":
-        policy.update({"max_hop": 4, "retrieval_top_k": 20})
-    elif strategy in RESEARCH_EXTERNAL_STRATEGIES:
-        from models.official_baseline_runtime import OFFICIAL_REVISIONS
-
-        policy.update(
-            {
-                "official_revision": OFFICIAL_REVISIONS[strategy],
-                "backbone_mode": os.environ.get(f"RAG_{strategy.upper()}_BACKBONE_MODE", "official_faithful"),
-                "native_retrieval": True,
-            }
-        )
-        if strategy == "linear_rag":
-            policy.update(
-                {
-                    "spacy_model": "en_core_web_trf",
-                    "official_embedding_model": get_strategy(strategy).paper_embedding_model,
-                    "official_embedding_revision": embedding_revision,
-                    "retrieval_top_k": int(os.environ.get("RAG_LINEAR_RAG_TOP_K", "5")),
-                    "vectorized_retrieval": parse_strict_bool(
-                        os.environ.get("RAG_LINEAR_RAG_VECTORIZED", "false"),
-                        name="RAG_LINEAR_RAG_VECTORIZED",
-                    ),
-                }
-            )
-        elif strategy == "gfm_rag":
-            from huggingface_hub import snapshot_download
-
-            from core.runtime_requirements import runtime_requirement
-
-            runtime_spec = runtime_requirement(strategy)
-            checkpoint = Path(
-                snapshot_download(
-                    repo_id=runtime_spec["checkpoint_model"],
-                    revision=runtime_spec["checkpoint_revision"],
-                    local_files_only=True,
-                )
-            )
-            model_path = checkpoint / "model.pth"
-            config_path = checkpoint / "config.json"
-            policy.update(
-                {
-                    "retrieval_top_k": int(os.environ.get("RAG_GFM_RAG_TOP_K", "5")),
-                    "gfm_checkpoint": str(checkpoint),
-                    "gfm_checkpoint_model": runtime_spec["checkpoint_model"],
-                    "gfm_checkpoint_revision": runtime_spec["checkpoint_revision"],
-                    "gfm_checkpoint_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
-                    "gfm_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
-                    "ner_model": "official_hydra_qa_ircot",
-                    "entity_linker": "official_hydra_qa_ircot",
-                    "entity_linker_model": runtime_spec["entity_linker_model"],
-                    "entity_linker_revision": runtime_spec["entity_linker_revision"],
-                }
-            )
-        elif strategy == "lightrag":
-            policy.update(
-                {
-                    "query_mode": os.environ.get("RAG_LIGHTRAG_QUERY_MODE", "mix"),
-                    "retrieval_top_k": int(os.environ.get("RAG_LIGHTRAG_TOP_K", "60")),
-                    "chunk_top_k": int(os.environ.get("RAG_LIGHTRAG_CHUNK_TOP_K", "20")),
-                    "embedding_max_token_size": int(os.environ.get("RAG_EMBEDDING_MAX_TOKENS", "8192")),
-                }
-            )
-    policy["operational_config"] = {
-        **EmbeddingOperationalConfig.resolve(strategy).as_dict(),
-        "generation_concurrency": RAGConfig.MAX_CONCURRENT_LLM_CALLS,
-        "inference_retry_attempts": RAGConfig.LLM_MAX_RETRIES,
-        "transport_profile": get_strategy(strategy).transport_profile,
-    }
+            policy.update(hop_construction="body_to_body",
+                          body_link_reference_sha256=ablation_identity()["body_link_reference_sha256"],
+                          body_link_degree_policy="reference_per_node")
+    if strategy == "gfm_rag":
+        from models.official_baseline_runtime import official_root
+        runtime_spec = runtime_requirement(strategy)
+        checkpoint = official_root(strategy).parent / "artifacts" / runtime_spec["checkpoint_snapshot_subdir"]
+        policy.update(gfm_checkpoint=str(checkpoint),
+                      gfm_checkpoint_sha256=hashlib.sha256((checkpoint / "model.pth").read_bytes()).hexdigest(),
+                      gfm_config_sha256=hashlib.sha256((checkpoint / "config.json").read_bytes()).hexdigest())
+    policy["operational_config"] = {**transport.policy_dict(), **runtime_identity(strategy)}
     return policy
 
 

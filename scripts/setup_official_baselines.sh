@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mode=${1:---primary}
-case "$mode" in
-    --primary|--legacy|--all) ;;
-    *) echo "Usage: $0 [--primary|--legacy|--all]" >&2; exit 2 ;;
+case "${1:-}" in
+    "") ;;
+    -h|--help) echo "Usage: $0"; exit 0 ;;
+    *) echo "Usage: $0" >&2; exit 2 ;;
 esac
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 runtime_root=${RAG_OFFICIAL_BASELINE_HOME:-"$repo_root/data/official_baselines"}
 export PYTHONDONTWRITEBYTECODE=1
 mkdir -p "$runtime_root"
-if [ "$mode" = --primary ] || [ "$mode" = --all ]; then
-    python3 "$repo_root/scripts/setup_hoprag_runtime.py"
-fi
+python3 "$repo_root/scripts/setup_hoprag_runtime.py"
 exec 9>"$runtime_root/.runtime.lock"
 flock -x 9
 declare -A official_repo official_revision
@@ -125,7 +123,6 @@ install_source_package() {
         --constraint "$constraints" "$@"
 }
 
-if [ "$mode" = --primary ] || [ "$mode" = --all ]; then
 
 install_checkout lightrag "${official_repo[lightrag]}" "${official_revision[lightrag]}" "$(runtime_field lightrag python_version)"
 lightrag_constraints=$(constraint_path lightrag)
@@ -175,8 +172,6 @@ snapshot_download(repo_id=os.environ["HF_MODEL"], revision=os.environ["HF_REVISI
 PY
 write_snapshot_manifest linear_rag embedding "$linear_model" "$linear_revision"
 
-
-fi
 
 # Record the complete installed environment for runtime provenance.
 for strategy in "${installed_strategies[@]}"; do

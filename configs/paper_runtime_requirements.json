@@ -1,31 +1,15 @@
 {
   "schema_version": 2,
   "ms_graphrag": {
-    "python_version": "3.12",
-    "required_imports": [
-      "graphrag",
-      "litellm"
-    ],
-    "distribution_versions": {
-      "graphrag": "3.1.2"
-    }
+    "python_version": "3.12"
   },
   "lightrag": {
     "python_version": "3.10",
-    "required_imports": [
-      "lightrag",
-      "openai"
-    ],
     "constraints_file": "configs/runtime_constraints/lightrag.txt",
     "constraints_sha256": "76ee427b5a6d182e9db8347ee6d69969c4940122fc25da2bbbd83899d49a3322"
   },
   "gfm_rag": {
     "python_version": "3.12",
-    "required_imports": [
-      "gfmrag",
-      "hydra",
-      "langchain_openai"
-    ],
     "checkpoint_model": "rmanluo/GFM-RAG-8M",
     "checkpoint_revision": "4da9e4655d126a783ae2b795ab73b7c7a7c3f4ac",
     "checkpoint_files": [
@@ -48,11 +32,6 @@
   },
   "linear_rag": {
     "python_version": "3.9",
-    "required_imports": [
-      "numpy",
-      "sentence_transformers",
-      "spacy"
-    ],
     "spacy_model": "en_core_web_trf",
     "spacy_distribution": "en_core_web_trf-3.6.1",
     "embedding_model": "sentence-transformers/all-mpnet-base-v2",
@@ -66,23 +45,6 @@
   },
   "hoprag": {
     "python_version": "3.12",
-    "required_imports": [
-      "openai",
-      "numpy",
-      "neo4j",
-      "torch"
-    ],
-    "native_pos_python": "../pos-env/bin/python",
-    "native_pos_distribution_versions": {
-      "paddlenlp": "2.8.1",
-      "paddlepaddle": "2.6.2"
-    },
-    "upstream_revision": "a6e425b8f8a5d8131dd7805db40185ac76e09903",
-    "distribution_versions": {
-      "pandas": "2.2.3",
-      "numpy": "2.2.6",
-      "torch": "2.14.0+cpu"
-    },
     "constraints_file": "configs/runtime_constraints/hoprag_main.txt",
     "constraints_sha256": "4b6ac823890b87c253d7cbbc06920789d85d4842680df3cf3d2cbcd4c15eceb7",
     "native_pos_constraints_file": "configs/runtime_constraints/hoprag_pos.txt",

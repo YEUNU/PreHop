@@ -49,8 +49,10 @@ All paths in this file are repository-relative.
 - [Strategy registry](core/strategy_registry.py) owns strategy identity, primary order, upstream
   revision, runtime worker, output root, transport profile, and supported membership.
   Do not restore retired strategy branches outside the registered comparison set.
-- [Runtime configuration](core/config.py) and checked-in configuration files own runtime defaults and
-  semantic settings. Documentation must describe them, not redefine them.
+- [Runtime configuration](core/config.py) owns retrieval and evaluation settings;
+  [inference transport](core/inference_transport.py) resolves request settings from
+  the strategy registry and environment. Checked-in runtime manifests own pinned
+  dependencies and model artifacts. Do not duplicate defaults in consumers or docs.
 - [Architecture](docs/ARCHITECTURE.md) owns module boundaries and indexing/query behavior.
 - [Runtime requirements](docs/RUNTIME_REQUIREMENTS.md) owns pinned environments and gateway checks.
 - [Execution profiles](docs/THROUGHPUT_EXECUTION.md) owns execution-profile fields, queue semantics,

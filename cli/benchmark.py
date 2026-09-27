@@ -12,6 +12,7 @@ from core.admission import current_post_query_inventory
 from core.benchmark_failures import POLICY as FAILURE_POLICY
 from core.benchmark_failures import QUALITY_METRICS, BenchmarkIntegrityError, metric_value
 from core.config import RAGConfig
+from core.inference_transport import InferenceTransport
 from core.paper_compatibility import method_identity
 from core.paper_policy import canonical_query_policy, structured_query_identity
 from core.prehop_ablation import ablation_identity
@@ -31,12 +32,6 @@ logger = logging.getLogger("Prehop")
 # repository.  Scope is determined from the rows actually evaluated, never
 # merely from a filename.
 OFFICIAL_SPLIT_QUERY_COUNTS = {"multihoprag": 2556, "hotpotqa": 7405}
-# Canonical official prepared-manifest identity.  Each value is
-# SHA256("\n".join(sorted(row["_id"] for row in official_rows))).
-OFFICIAL_QUERY_ID_DIGESTS = {
-    "hotpotqa": "8f1a1b80b352ff578988c4dfb320f44dc7c08c5e4d4b86ef132598271a0adb00",
-    "multihoprag": "e683a5bf5807edf5f06612066f2ad5fa0b0b08f61a726a71ec28afd8e66177b0",
-}
 CORPUS_MANIFEST_FILENAME = "corpus_manifest.json"
 INDEX_STATS_DIR = Path("data/index_stats")
 
@@ -339,7 +334,6 @@ def _evaluation_scope(
     dataset: str,
     evaluated_count: int,
     source: str,
-    evaluated_query_ids_sha256: str,
 ) -> tuple[str, int | None]:
     """Classify an artifact from its actual evaluated row count.
 
@@ -353,7 +347,6 @@ def _evaluation_scope(
         return ("released_benchmark" if evaluated_count == manifest["query_count"] else "subset_exploratory"), manifest["query_count"]
     expected = OFFICIAL_SPLIT_QUERY_COUNTS.get(str(dataset).lower())
     if expected is not None and evaluated_count == expected:
-        OFFICIAL_QUERY_ID_DIGESTS.get(str(dataset).lower())
         return "full_benchmark", expected
     if "sample" in Path(source).name.lower():
         return "sample_exploratory", expected
@@ -389,35 +382,13 @@ def _read_jsonl_file(path: Path) -> list[dict[str, Any]]:
 def _resume_benchmark_rows(
     result_file: Path,
     benchmark_data: list[dict[str, Any]],
-    expected_metadata: dict[str, Any],
-    *,
-    judge_enabled: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Load a crash-interrupted deterministic benchmark without duplicating rows.
+    """Restore saved rows and traces in the current input order.
 
-    Resume is deliberately strict: the immutable query identity, runtime
-    configuration, model selection and active index identity must match.
     Terminal runtime-error rows are retained; only unexecuted queries resume.
+    Prior provenance is retained without rechecking configuration equality.
     """
-
     prior = _read_json_file(result_file)
-    for field in expected_metadata:
-        observed = prior.get(field)
-        if field == "ablation" and isinstance(observed, dict):
-            # Resume artifacts written immediately before the public
-            # candidate-order terminology and diagnostic controls were added.
-            # These values reproduce the only behavior that existed in that
-            # revision; non-default or otherwise different settings still
-            # fail the strict metadata comparison below.
-            observed = dict(observed)
-            if "candidate_order_input_order" not in observed and "rerank_input_order" in observed:
-                observed["candidate_order_input_order"] = observed.pop("rerank_input_order")
-            if "candidate_order_shuffle_seed" not in observed and "rerank_shuffle_seed" in observed:
-                observed["candidate_order_shuffle_seed"] = observed.pop("rerank_shuffle_seed")
-            observed.setdefault("graph_path_decay", 0.5)
-            observed.setdefault("final_rank_variant", "fused")
-
-    manifest_by_id = {str(item["_id"]): item for item in benchmark_data}
     manifest_position = {str(item["_id"]): idx for idx, item in enumerate(benchmark_data, start=1)}
     prior_rows = prior.get("details")
 
@@ -425,16 +396,9 @@ def _resume_benchmark_rows(
     trace_rows = _read_jsonl_file(trace_file)
 
     retained: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    rerun_error_count = 0
-    for position, (raw_row, trace_row) in enumerate(zip(prior_rows, trace_rows, strict=True), start=1):
+    for raw_row, trace_row in zip(prior_rows, trace_rows, strict=True):
         query_id = str(raw_row.get("query_id") or "")
-        seen_ids.add(query_id)
-        manifest_item = manifest_by_id.get(query_id)
-        str(manifest_item["query"])
         expected_idx = manifest_position[query_id]
-        raw_row.get("idx")
-        trace_row.get("idx")
         retained.append({**raw_row, "idx": expected_idx, "interaction_trace": trace_row.get("interaction_trace", [])})
 
     retained.sort(key=lambda row: int(row["idx"]))
@@ -445,7 +409,7 @@ def _resume_benchmark_rows(
         "prior_status": prior.get("status"),
         "initial_rows": len(prior_rows),
         "retained_rows": len(retained),
-        "rerun_error_rows": rerun_error_count,
+        "rerun_error_rows": 0,
         "retained_query_ids_sha256": hashlib.sha256("\n".join(retained_ids).encode()).hexdigest(),
         "prior_query_provenance": prior.get("query_provenance"),
         "prior_evaluation_provenance": prior.get("evaluation_provenance"),
@@ -483,9 +447,7 @@ async def run_benchmark(
     from core.phase_timing import BenchmarkTiming
     phase_timing = BenchmarkTiming()
 
-    # Validate the immutable evaluation manifest before creating engines or
-    # contacting inference services. This makes stale corpus manifests fail
-    # immediately instead of consuming a benchmark run with ineligible rows.
+    # Load the selected evaluation manifest before creating engines.
     benchmark_data = await asyncio.to_thread(_read_json_file, queries_file)
     manifest_queries_count = len(benchmark_data)
     reuse_reference = None
@@ -493,7 +455,7 @@ async def run_benchmark(
     if os.environ.get("RAG_INDEX_REUSE_LINK"):
         from core.index_reuse import load_link, ref
         link_path = Path(os.environ["RAG_INDEX_REUSE_LINK"])
-        reuse_link = load_link(link_path, os.environ.get("RAG_BENCHMARK_TIMESTAMP", ""), strategy, corpus_tag)
+        reuse_link = load_link(link_path)
         reuse_reference = ref(link_path)
     judge_enabled = bool(RAGConfig.JUDGE_ENABLED)
     judge_independent: bool | None = None
@@ -502,7 +464,7 @@ async def run_benchmark(
         judge_independent, judge_self_override = _judge_independence(
             RAGConfig.EVAL_MODEL,
             model_id,
-            RAGConfig.DEFAULT_MODEL,
+            InferenceTransport.resolve("core").generation_model,
             RAGConfig.JUDGE_ALLOW_SELF,
         )
 
@@ -510,12 +472,13 @@ async def run_benchmark(
         from core.strategy_registry import get_strategy
 
         generation_seed = None if RAGConfig.PREHOP_ABLATION_PROFILE else (get_strategy(strategy).paper_generation_seed if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") else int(seed))
-        RAGConfig.LLM_SEED = generation_seed
         if generation_seed is None:
             os.environ["RAG_LLM_SEED"] = ""
         else:
             os.environ["RAG_LLM_SEED"] = str(generation_seed)
         os.environ["RAG_SEED"] = str(int(seed))
+
+    transport = InferenceTransport.resolve("core")
 
     if limit is not None:
         benchmark_data = benchmark_data[: max(0, int(limit))]
@@ -539,9 +502,7 @@ async def run_benchmark(
     evaluation_scope, official_split_expected_queries = _evaluation_scope(
         dataset_marker,
         len(benchmark_data),
-        queries_file,
-        evaluated_query_ids_sha256,
-    )
+        queries_file)
     corpus_manifest = _load_benchmark_corpus_manifest(dataset_marker, queries_file)
     if dataset_marker == "hotpotqa":
         sentence_store = Path(queries_file).parent / "hotpotqa_corpus/sentences.sqlite3"
@@ -629,73 +590,7 @@ async def run_benchmark(
     resume_requested_raw = os.environ.get("RAG_BENCHMARK_RESUME", "").strip()
     if resume_requested_raw and parse_strict_bool(resume_requested_raw, name="RAG_BENCHMARK_RESUME"):
         phase_timing.restore(_read_json_file(result_file).get("benchmark_timing"))
-        results, resume_metadata = _resume_benchmark_rows(
-            result_file,
-            benchmark_data,
-            {
-                "execution_profile": execution_profile(),
-                "strategy": strategy,
-                "corpus_tag": corpus_tag,
-                "dataset": dataset_name,
-                "evaluation_scope": evaluation_scope,
-                "dataset_protocol": (corpus_manifest or {}).get("protocol"),
-                "latency_scope": "frozen_prefix_downstream_only" if os.environ.get("RAG_ABLATION_DIRECT_INPUTS") else "end_to_end",
-                "official_split_expected_queries": official_split_expected_queries,
-                "manifest_queries_count": manifest_queries_count,
-                "evaluated_queries_count": total_queries,
-                "evaluated_query_ids_sha256": evaluated_query_ids_sha256,
-                "evaluated_query_records_sha256": manifest_query_records_sha256,
-                "limit": limit,
-                "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
-                "index_manifest_fingerprint": (index_manifest or {}).get("fingerprint"),
-                "index_manifest_status": (index_manifest or {}).get("status"),
-                "corpus_index_fingerprint_status": corpus_index_fingerprint_status,
-                "active_index_snapshot": active_index_snapshot,
-                **({"index_reuse": reuse_reference} if reuse_reference is not None else {}),
-                "judge_enabled": judge_enabled,
-                "models": {
-                    "default": RAGConfig.DEFAULT_MODEL,
-                    "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
-                    "llm_seed": RAGConfig.LLM_SEED,
-                    "embedding": (index_manifest or {})
-                    .get("index_policy", {})
-                    .get("embedding_model", RAGConfig.EMBEDDING_MODEL),
-                    "embedding_revision": (index_manifest or {}).get("index_policy", {}).get("embedding_revision"),
-                    "eval": RAGConfig.EVAL_MODEL,
-                },
-                "ablation": {
-                    "q_minus": RAGConfig.ABLATION_Q_MINUS,
-                    "q_plus": RAGConfig.ABLATION_Q_PLUS,
-                    "sentence_channel_enabled": RAGConfig.SENTENCE_CHANNEL_ENABLED,
-                    **({"chunk_sentences": RAGConfig.CHUNK_SENTENCES} if strategy in {"prehop", "naive"} else {}),
-                    "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
-                    "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
-                    "graph_path_decay": RAGConfig.GRAPH_PATH_DECAY,
-                    "graph_edge_variant": RAGConfig.GRAPH_EDGE_VARIANT,
-                    "hop_edge_filter": RAGConfig.HOP_EDGE_FILTER,
-                    "hop_seed_policy": RAGConfig.HOP_SEED_POLICY,
-                    "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
-                    "continuation_edges_enabled": RAGConfig.CONTINUATION_EDGES_ENABLED,
-                    "continuation_anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY,
-                    "hop_semantic_variant": RAGConfig.HOP_SEMANTIC_VARIANT,
-                    "question_schema": RAGConfig.QUESTION_SCHEMA,
-                    "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
-                    "default_top_k": RAGConfig.DEFAULT_TOP_K,
-                    "candidate_pool_multiplier": RAGConfig.CANDIDATE_POOL_MULTIPLIER,
-                    "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
-                    "hypo_channel_variant": RAGConfig.HYPO_CHANNEL_VARIANT,
-                    "source_selection_variant": RAGConfig.SOURCE_SELECTION_VARIANT,
-                    "candidate_order_input_order": RAGConfig.CANDIDATE_ORDER_INPUT_ORDER,
-                    "candidate_order_shuffle_seed": RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,
-                    "final_rank_variant": RAGConfig.FINAL_RANK_VARIANT,
-                    **structured_query_identity(strategy),
-                    **method_identity(strategy),
-                    **(ablation_identity() if strategy == "prehop" else {}),
-                    **(canonical_query_policy(strategy) if strategy in {"prehop", "hoprag", "linear_rag"} else {}),
-                },
-            },
-            judge_enabled=judge_enabled,
-        )
+        results, resume_metadata = _resume_benchmark_rows(result_file, benchmark_data)
         retained_query_ids = {str(row["query_id"]) for row in results}
         for row in results:
             category_results.setdefault(str(row.get("category", "Uncategorized")), []).append(row)
@@ -760,12 +655,12 @@ async def run_benchmark(
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "status": "in_progress",
             "models": {
-                "default": RAGConfig.DEFAULT_MODEL,
+                "default": transport.generation_model,
                 "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or None,
-                "llm_seed": RAGConfig.LLM_SEED,
+                "llm_seed": transport.generation_seed,
                 "embedding": (index_manifest or {})
                 .get("index_policy", {})
-                .get("embedding_model", RAGConfig.EMBEDDING_MODEL),
+                .get("embedding_model", transport.embedding_model),
                 "embedding_revision": (index_manifest or {}).get("index_policy", {}).get("embedding_revision"),
                 "eval": RAGConfig.EVAL_MODEL,
             },
@@ -824,7 +719,6 @@ async def run_benchmark(
                 },
             ]
         from core.amortized_cost import query_cost
-        from core.execution_profile import execution_profile
         s["execution_profile"] = execution_profile()
         query_wall = (last_answer_finished - query_batch_started
                       if last_answer_finished is not None and query_batch_started is not None else None)

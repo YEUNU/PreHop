@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from models.external_research.drivers.base import canonical_semantic_env
+from core.strategy_registry import method_setting
 
 
 def _stage(tmp_path: Path):
@@ -24,12 +24,13 @@ def _stage(tmp_path: Path):
     return target
 
 
-def test_semantic_environment_must_equal_checked_in_policy(monkeypatch):
+def test_semantic_environment_uses_registry_default_and_active_override(monkeypatch):
     monkeypatch.delenv("RAG_LIGHTRAG_QUERY_MODE", raising=False)
-    assert canonical_semantic_env("RAG_LIGHTRAG_QUERY_MODE", "mix") == "mix"
+    assert method_setting("lightrag", "query_mode") == "mix"
     monkeypatch.setenv("RAG_LIGHTRAG_QUERY_MODE", "mix")
-    assert canonical_semantic_env("RAG_LIGHTRAG_QUERY_MODE", "mix") == "mix"
+    assert method_setting("lightrag", "query_mode") == "mix"
     monkeypatch.setenv("RAG_LIGHTRAG_QUERY_MODE", "local")
+    assert method_setting("lightrag", "query_mode") == "local"
 
 
 def test_lightrag_uses_pinned_async_contract_and_exact_file_path(monkeypatch, tmp_path):

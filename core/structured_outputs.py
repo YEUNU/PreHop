@@ -38,8 +38,8 @@ class StructuredContract:
         return {'type': 'json_schema', 'json_schema': {'name': self.name, 'strict': True, 'schema': self.schema()}}
 
 
-def question_contract(stage: str, question_schema: str = 'legacy', limit: int = 3) -> StructuredContract:
-    name = f'prehop_{stage}_{question_schema}_v1'
+def question_contract(question_schema: str = 'legacy', limit: int = 3) -> StructuredContract:
+    name = f'prehop_index_{question_schema}_v1'
     minus: Any = Nonempty
     plus: Any = Nonempty
     if question_schema != 'legacy':
@@ -65,16 +65,14 @@ def ranking_contract(candidate_ids: list[str], top_k: int) -> StructuredContract
 
 
 def structured_bundle_sha256() -> str:
-    """Bind materialized schema contents and explicit validation semantics."""
-    schemas = [question_contract('index', mode).schema() for mode in ('legacy', 'grounded_v1', 'linked_v2')]
+    """Bind the materialized request schemas."""
+    schemas = [question_contract(mode).schema() for mode in ('legacy', 'grounded_v1', 'linked_v2')]
     schemas.append(ranking_contract(['C000', 'C001'], 1).schema())
-    bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas,
-              'validation_contract': 'strict-json-schema-local-unique-v2'}
+    bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas}
     return hashlib.sha256(json.dumps(bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 def structured_index_bundle_sha256() -> str:
-    schemas = [question_contract('index', mode).schema() for mode in ('legacy', 'grounded_v1', 'linked_v2')]
-    bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas,
-              'validation_contract': 'strict-json-schema-local-unique-v2'}
+    schemas = [question_contract(mode).schema() for mode in ('legacy', 'grounded_v1', 'linked_v2')]
+    bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas}
     return hashlib.sha256(json.dumps(bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()

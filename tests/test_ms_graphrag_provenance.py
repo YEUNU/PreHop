@@ -129,7 +129,6 @@ def test_ms_query_embedding_uses_recorded_asymmetric_instruction(monkeypatch):
 
 def test_ms_config_separates_query_embedding_from_index_embeddings(tmp_path, monkeypatch):
     monkeypatch.setattr(ms_official_indexer, "_register_external_models_with_litellm", lambda: None)
-    monkeypatch.setattr(ms_official_indexer, "_install_litellm_router_for_gen", lambda: None)
     monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "16")
     monkeypatch.setenv("RAG_INFERENCE_RETRY_ATTEMPTS", "7")
     monkeypatch.setenv("RAG_INFERENCE_TIMEOUT", "23")
@@ -143,7 +142,6 @@ def test_ms_config_separates_query_embedding_from_index_embeddings(tmp_path, mon
     monkeypatch.setenv("RAG_GENERATION_MODEL", "generation")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding")
     monkeypatch.setattr(ms_official_indexer, "_GEN_API_BASE", "http://generation/v1")
-    monkeypatch.setattr(ms_official_indexer, "_GEN_API_BASES", ["http://generation/v1"])
     monkeypatch.setattr(ms_official_indexer, "_GEN_MODEL_NAME", "generation")
     monkeypatch.setattr(ms_official_indexer, "_EMBED_API_BASE", "http://embedding/v1")
     monkeypatch.setattr(ms_official_indexer, "_EMBED_MODEL_NAME", "embedding")
@@ -165,7 +163,6 @@ def test_ms_config_separates_query_embedding_from_index_embeddings(tmp_path, mon
 
 
 def test_ms_config_registers_typed_default_caps_when_optional_env_is_absent(tmp_path, monkeypatch):
-    monkeypatch.setattr(ms_official_indexer, "_install_litellm_router_for_gen", lambda: None)
     monkeypatch.setattr(ms_official_indexer, "_EMBED_DIM", 2560)
     monkeypatch.setenv("NEO4J_VECTOR_DIMENSIONS", "2560")
     registered = {}
@@ -179,7 +176,6 @@ def test_ms_config_registers_typed_default_caps_when_optional_env_is_absent(tmp_
         "RAG_EMBEDDING_BATCH_SIZE",
         "RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS",
         "VLLM_MAX_NUM_SEQS",
-        "RAG_MS_EMBED_DIM",
         "RAG_MAX_CONTEXT_LENGTH",
         "MAX_EMBEDDING_LENGTH",
     ):

@@ -15,6 +15,7 @@ from typing import Any
 from core.config import RAGConfig
 from core.generation_profiles import request_settings
 from core.index_namespace import index_namespace
+from core.inference_transport import InferenceTransport
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
@@ -61,12 +62,13 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         self.llm = VLLMClient()
         self._index_ready = False
 
-        indexing_model_id = indexing_model_id or RAGConfig.DEFAULT_MODEL
+        transport = InferenceTransport.resolve("core")
+        indexing_model_id = indexing_model_id or transport.generation_model
         self.indexing_model_id = indexing_model_id
         self.indexing_llm = get_llm_client(indexing_model_id)
 
         self.max_retries = RAGConfig.RETRY_COUNT
-        self.vector_dimensions = RAGConfig.EMBEDDING_DIMENSIONS
+        self.vector_dimensions = transport.embedding_dimensions
         self._pending_batch = []
         self._batch_lock = asyncio.Lock()
         self._index_setup_lock = asyncio.Lock()
@@ -153,11 +155,12 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
     def _fit_ranked_context(self, nodes: list[dict[str, Any]], query: str) -> str:
         """Add ranked chunks until the actual synthesis prompt reaches its budget."""
         accepted: list[dict[str, Any]] = []
-        client_limit = getattr(self.llm, "_generation_max_context_tokens", RAGConfig.MAX_CONTEXT_LENGTH)
+        configured_limit = InferenceTransport.resolve("core").generation_max_context_tokens
+        client_limit = getattr(self.llm, "_generation_max_context_tokens", configured_limit)
         if not isinstance(client_limit, int):
-            client_limit = RAGConfig.MAX_CONTEXT_LENGTH
+            client_limit = configured_limit
         # Keep the question-first message intact through the client's 1,024-token reserve.
-        input_limit = min(RAGConfig.MAX_CONTEXT_LENGTH, client_limit) - max(
+        input_limit = min(configured_limit, client_limit) - max(
             RAGConfig.PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS, 1024
         )
         for node in nodes:

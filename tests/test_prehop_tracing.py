@@ -25,9 +25,9 @@ def payloads(trace):
 def client(monkeypatch, trace, handler, sdk_retries=0):
     monkeypatch.setenv('RAG_PAPER_MODE', 'false')
     monkeypatch.delenv('RAG_QUEUE_PROXY_URL', raising=False)
-    monkeypatch.setattr(RAGConfig, 'VLLM_URL', 'http://test/v1')
-    monkeypatch.setattr(RAGConfig, 'VLLM_EMBED_URL', 'http://test/v1')
-    monkeypatch.setattr(RAGConfig, 'LLM_MAX_RETRIES', 2)
+    monkeypatch.setenv('RAG_INFERENCE_BASE_URL', 'http://test/v1')
+    monkeypatch.setenv('RAG_INFERENCE_BASE_URL', 'http://test/v1')
+    monkeypatch.setenv('RAG_INFERENCE_RETRY_ATTEMPTS', str(2))
     monkeypatch.setattr(RAGConfig, 'LLM_RETRY_DELAY', 0)
     sdk = AsyncOpenAI(base_url='http://test/v1', api_key='test-secret-key',
                      max_retries=sdk_retries, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
@@ -51,7 +51,7 @@ async def test_truncation_raw_response_survives_validation_failure(tmp_path, mon
     try:
         with trace_identity(source='source.txt', query_id='q1'), pytest.raises(StructuredOutputError):
             await value.generate_json([{'role': 'user', 'content': 'original input'}],
-                                      structured_contract=question_contract('index'))
+                                      structured_contract=question_contract())
         events = payloads(trace)
         response = next(e['data'] for e in events if e['event'] == 'http.response')
         assert json.loads(response['body'])['choices'][0]['message']['content'] == raw
@@ -76,7 +76,7 @@ async def test_format_retry_keeps_both_original_responses(tmp_path, monkeypatch)
     value, sdk = client(monkeypatch, trace, handler)
     try:
         result = await value.generate_json([{'role': 'user', 'content': 'source'}],
-                                            structured_contract=question_contract('index'))
+                                            structured_contract=question_contract())
         assert result == {'q_minus': ['Who?'], 'q_plus': []}
         assert calls[0] == calls[1]
         events = payloads(trace)
@@ -148,8 +148,8 @@ def test_prehop_default_trace_and_other_strategy_boundary(tmp_path, monkeypatch)
     monkeypatch.delenv('RAG_PREHOP_TRACE', raising=False)
     monkeypatch.setenv('RAG_PREHOP_TRACE_DIR', str(tmp_path))
     monkeypatch.setenv('RAG_PAPER_MODE', 'false')
-    monkeypatch.setattr(RAGConfig, 'VLLM_URL', 'http://test/v1')
-    monkeypatch.setattr(RAGConfig, 'VLLM_EMBED_URL', 'http://test/v1')
+    monkeypatch.setenv('RAG_INFERENCE_BASE_URL', 'http://test/v1')
+    monkeypatch.setenv('RAG_INFERENCE_BASE_URL', 'http://test/v1')
     from models.prehop.graphrag import GraphRAG
     engine = GraphRAG(corpus_tag='test')
     assert engine.save_intermediate

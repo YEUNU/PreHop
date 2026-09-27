@@ -241,7 +241,7 @@ def test_naive_context_budget_keeps_complete_chunks_in_rank_order(monkeypatch):
     from core.config import RAGConfig
     from models.naive.naive_rag import NaiveRAG
 
-    monkeypatch.setattr(RAGConfig, "MAX_CONTEXT_LENGTH", 100)
+    monkeypatch.setenv('RAG_MAX_CONTEXT_LENGTH', str(100))
     monkeypatch.setattr(RAGConfig, "SYNTHESIS_MAX_OUTPUT_TOKENS", 10)
     rag = NaiveRAG(strategy="naive")
     rag.vllm = MagicMock()
@@ -261,7 +261,7 @@ def test_naive_context_budget_keeps_complete_chunks_in_rank_order(monkeypatch):
 def test_prehop_context_fit_reserves_client_headroom_and_keeps_whole_passages(monkeypatch):
     from utils.prompts.prehop_answer import build_answer_messages
 
-    monkeypatch.setattr(RAGConfig, "MAX_CONTEXT_LENGTH", 2000)
+    monkeypatch.setenv('RAG_MAX_CONTEXT_LENGTH', str(2000))
     monkeypatch.setattr(RAGConfig, "PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS", 256)
     rag = GraphRAG(strategy="prehop")
     rag.llm = MagicMock()

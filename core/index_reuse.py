@@ -12,10 +12,6 @@ from core.admission import current_corpus_identity, identity_sha256, sha256_file
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def safe_name(value: str) -> str:
-    return value
-
-
 def local_path(value: str) -> Path:
     return (ROOT / value).resolve()
 
@@ -38,7 +34,7 @@ def inventory(path: Path) -> list[dict]:
     return rows
 
 
-def source_evidence(value: dict, strategy: str, dataset: str) -> tuple[dict, dict]:
+def source_evidence(value: dict) -> tuple[dict, dict]:
     _, evidence = bound(value)
     _, index = bound(evidence['index'])
     _, raw = bound(index['native_index_stats'])
@@ -56,13 +52,13 @@ def configure(link: dict) -> None:
         os.environ[spec.output_env] = str(local_path(link['clone']['query_output_root']))
 
 
-def bootstrap_benchmark(link_path: Path, target: str, strategy: str, dataset: str) -> None:
+def bootstrap_benchmark(link_path: Path) -> None:
     path = local_path(str(link_path))
     configure(json.loads(path.read_text()))
     os.environ['RAG_INDEX_REUSE_LINK'] = str(path)
 
 
-def load_link(link_path: Path, target: str, strategy: str, dataset: str) -> dict:
+def load_link(link_path: Path) -> dict:
     """Load the selected index link and configure its recorded namespace."""
     link = json.loads(local_path(str(link_path)).read_text())
     configure(link)
@@ -75,13 +71,12 @@ def prepare(campaign: str, strategy: str, dataset: str) -> Path:
     from core.paper_policy import configure_target_environment
     from core.strategy_registry import get_strategy
     from scripts.paper_cold_canary import save
-    safe_name(campaign)
     ledger = local_path(f'data/results/{campaign}/gate_ledger.json')
     gate = json.loads(ledger.read_text())['stages']['one_query_matrix_16']
     _, matrix = bound({'path': gate['evidence_path'], 'sha256': gate['evidence_sha256']})
     evidence_ref = matrix['targets'][f'{dataset}/{strategy}']
-    index, raw = source_evidence(evidence_ref, strategy, dataset)
-    target = safe_name(f'{campaign}-{dataset}-{strategy}')
+    index, raw = source_evidence(evidence_ref)
+    target = f'{campaign}-{dataset}-{strategy}'
     base = local_path(f'data/results/{target}')
     configure_target_environment(strategy, dataset, index['run_id'])
     spec = get_strategy(strategy)
@@ -110,11 +105,11 @@ def prepare(campaign: str, strategy: str, dataset: str) -> Path:
              'preparation_elapsed_seconds': time.perf_counter() - started}
     path = base / 'index_link.json'
     save(path, value)
-    load_link(path, target, strategy, dataset)
+    load_link(path)
     return path
 
 
-def completed_source_evidence(value, strategy, dataset):
+def completed_source_evidence(value):
     _, completion = bound(value)
     stats_ref = {'path': completion['stats_path'], 'sha256': completion.get('stats_sha256')}
     _, raw = bound(stats_ref)
@@ -127,9 +122,9 @@ def prepare_completed(campaign, strategy, dataset, completion_path):
     from core.paper_policy import configure_target_environment
     from core.strategy_registry import get_strategy
     from scripts.paper_cold_canary import save
-    target = safe_name(f'{safe_name(campaign)}-{dataset}-{strategy}')
+    target = f'{campaign}-{dataset}-{strategy}'
     evidence = ref(local_path(str(completion_path)))
-    index, raw = completed_source_evidence(evidence,strategy,dataset)
+    index, raw = completed_source_evidence(evidence)
     base = local_path(f'data/results/{target}')
     configure_target_environment(strategy,dataset,index['run_id'])
     spec = get_strategy(strategy)
@@ -153,5 +148,5 @@ def prepare_completed(campaign, strategy, dataset, completion_path):
              'preparation_elapsed_seconds':time.perf_counter()-started}
     path=base/'index_link.json'
     save(path,value)
-    load_link(path,target,strategy,dataset)
+    load_link(path)
     return path

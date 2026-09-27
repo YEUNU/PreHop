@@ -7,7 +7,6 @@ import pandas as pd
 import pytest
 
 from cli.benchmark import (
-    OFFICIAL_QUERY_ID_DIGESTS,
     _aggregate_seed_summaries,
     _apply_judge_label,
     _benchmark_checkpoint_due,
@@ -136,10 +135,7 @@ def test_benchmark_resume_retains_terminal_errors(tmp_path):
 
     retained, metadata = _resume_benchmark_rows(
         result_file,
-        benchmark_data,
-        {"strategy": "hoprag"},
-        judge_enabled=False,
-    )
+        benchmark_data)
 
     assert [row["query_id"] for row in retained] == ["q1", "q2"]
     assert retained[0]["interaction_trace"] == [{"step": "trace-1"}]
@@ -180,15 +176,12 @@ def test_benchmark_resume_reorders_partial_concurrent_checkpoint_by_manifest(tmp
 
     retained, _ = _resume_benchmark_rows(
         result_file,
-        benchmark_data,
-        {"strategy": "hoprag"},
-        judge_enabled=False,
-    )
+        benchmark_data)
 
     assert [(row["idx"], row["query_id"]) for row in retained] == [(1, "q1"), (3, "q3")]
 
 
-def test_benchmark_resume_migrates_behavior_equivalent_candidate_order_metadata(tmp_path):
+def test_benchmark_resume_reads_legacy_metadata_without_reinterpreting_it(tmp_path):
     result_file = _write_resume_fixture(tmp_path, [{"query_id": "q1", "query": "first"}], strategy="prehop")
     payload = json.loads(result_file.read_text(encoding="utf-8"))
     payload["ablation"] = {
@@ -200,32 +193,19 @@ def test_benchmark_resume_migrates_behavior_equivalent_candidate_order_metadata(
 
     retained, _metadata = _resume_benchmark_rows(
         result_file,
-        [{"_id": "q1", "query": "first"}],
-        {
-            "strategy": "prehop",
-            "ablation": {
-                "graph_hop_depth": 0,
-                "graph_path_decay": 0.5,
-                "candidate_order_input_order": "search",
-                "candidate_order_shuffle_seed": 0,
-                "final_rank_variant": "fused",
-            },
-        },
-        judge_enabled=False,
-    )
+        [{"_id": "q1", "query": "first"}])
 
     assert [row["query_id"] for row in retained] == ["q1"]
 
 
 def test_evaluation_scope_uses_actual_evaluated_count_before_filename():
     assert _evaluation_scope(
-        "multihoprag", 2556, "custom_sample_name.json", OFFICIAL_QUERY_ID_DIGESTS["multihoprag"]
-    ) == ("full_benchmark", 2556)
-    assert _evaluation_scope("hotpotqa", 200, "hotpotqa_sample200_queries.json", "subset") == (
+        "multihoprag", 2556, "custom_sample_name.json") == ("full_benchmark", 2556)
+    assert _evaluation_scope("hotpotqa", 200, "hotpotqa_sample200_queries.json") == (
         "sample_exploratory",
         7405,
     )
-    assert _evaluation_scope("hotpotqa", 200, "hotpotqa_queries.json", "subset") == ("subset_exploratory", 7405)
+    assert _evaluation_scope("hotpotqa", 200, "hotpotqa_queries.json") == ("subset_exploratory", 7405)
 
 
 def test_index_artifact_selection_honors_explicit_path_and_run_identity(tmp_path, monkeypatch):
@@ -271,7 +251,6 @@ def test_ms_snapshot_metadata_is_sidecar_and_requires_actual_document_sources(tm
 
     payload = ms_official_indexer._publish_snapshot(
         "hotpotqa",
-        ["hotpotqa_alpha", "hotpotqa_beta"],
         {"fingerprint": "fp", "paragraph_count": 2},
         {"hotpotqa_alpha": "Alpha", "hotpotqa_beta": "Beta"},
     )

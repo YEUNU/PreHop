@@ -24,32 +24,26 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from core.strategy_registry import PAPER_TRANSPORT
+
 logger = logging.getLogger("Prehop")
 
 
-# Paper runs intentionally admit one repository-wide LiteLLM transport only.
-# Strategy-specific endpoints previously allowed silent vendor/public fallback
-# and made cross-method accounting impossible.
-_GEN_API_BASE = os.environ.get("VLLM_API_BASE", os.environ.get("VLLM_URL", "")).strip()
-_GEN_API_BASES = [_GEN_API_BASE] if _GEN_API_BASE else []
-_GEN_MODEL_NAME = os.environ.get("VLLM_SERVED_MODEL_NAME", "").strip()
-_EMBED_API_BASE = os.environ.get("VLLM_EMBED_API_BASE", os.environ.get("VLLM_EMBED_URL", "")).strip()
-_EMBED_MODEL_NAME = os.environ.get("VLLM_SERVED_EMBED_MODEL_NAME", "").strip()
-_GEN_API_KEY = os.environ.get("VLLM_API_KEY", "").strip()
-_GEN_SEED = int(os.environ["RAG_LLM_SEED"]) if os.environ.get("RAG_LLM_SEED", "").lstrip("-").isdigit() else None
-_GEN_CONCURRENCY = 30
-_EMBED_BATCH_SIZE = 16
-_EMBED_CONCURRENCY = 1
-_GEN_MAX_CONTEXT_TOKENS = 262144
-_EMBED_MAX_INPUT_TOKENS = 32768
-_RETRY_ATTEMPTS = 5
-_TIMEOUT_SECONDS: float | None = 600.0
-# Must match the configured embedding model's real output dimension or
-# LanceDB rejects the embedding parquet on a FixedSizeList shape mismatch —
-# same constraint as NEO4J_VECTOR_DIMENSIONS for prehop/naive/hoprag's Neo4j
-# vector indexes (see CLAUDE.md "Model / inference infra"), reused here since
-# it's the same one embedding model across every strategy.
-_EMBED_DIM = int(os.environ.get("RAG_MS_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "2560")))
+# Populated from InferenceTransport before constructing a native configuration.
+_GEN_API_BASE = ""
+_GEN_MODEL_NAME = ""
+_EMBED_API_BASE = ""
+_EMBED_MODEL_NAME = ""
+_GEN_API_KEY = ""
+_GEN_SEED = None
+_GEN_CONCURRENCY = PAPER_TRANSPORT.generation_concurrency
+_EMBED_BATCH_SIZE = PAPER_TRANSPORT.embedding_batch_size
+_EMBED_CONCURRENCY = PAPER_TRANSPORT.embedding_concurrency
+_GEN_MAX_CONTEXT_TOKENS = PAPER_TRANSPORT.generation_context_tokens
+_EMBED_MAX_INPUT_TOKENS = PAPER_TRANSPORT.embedding_max_input_tokens
+_RETRY_ATTEMPTS = PAPER_TRANSPORT.retry_attempts
+_TIMEOUT_SECONDS: float | None = PAPER_TRANSPORT.timeout_seconds
+_EMBED_DIM = PAPER_TRANSPORT.embedding_dimensions
 
 # Where parquet artifacts land. corpus_tag-scoped so different runs don't clobber.
 _OUTPUT_ROOT = Path(os.environ.get("RAG_MS_OUTPUT_ROOT", "data/ms_graphrag_output"))
@@ -72,12 +66,11 @@ def _apply_shared_transport() -> None:
     from core.inference_transport import InferenceTransport
 
     transport = InferenceTransport.resolve("ms_graphrag")
-    global _GEN_API_BASE, _GEN_API_BASES, _GEN_MODEL_NAME
+    global _GEN_API_BASE, _GEN_MODEL_NAME
     global _EMBED_API_BASE, _EMBED_MODEL_NAME, _GEN_API_KEY, _GEN_SEED
     global _GEN_CONCURRENCY, _EMBED_BATCH_SIZE, _EMBED_CONCURRENCY, _EMBED_DIM, _EMBED_REQUEST_SEMAPHORE
     global _GEN_MAX_CONTEXT_TOKENS, _EMBED_MAX_INPUT_TOKENS, _RETRY_ATTEMPTS, _TIMEOUT_SECONDS
     _GEN_API_BASE = transport.generation_base_url
-    _GEN_API_BASES = [_GEN_API_BASE]
     _GEN_MODEL_NAME = transport.generation_model
     _EMBED_API_BASE = transport.embedding_base_url
     _EMBED_MODEL_NAME = transport.embedding_model
@@ -90,7 +83,6 @@ def _apply_shared_transport() -> None:
     _EMBED_MAX_INPUT_TOKENS = transport.embedding_max_input_tokens
     _RETRY_ATTEMPTS = transport.retry_attempts
     _TIMEOUT_SECONDS = transport.timeout_seconds
-    int(os.environ.get("RAG_MS_EMBED_DIM", str(transport.embedding_dimensions)))
     _EMBED_DIM = transport.embedding_dimensions
     _EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(_EMBED_CONCURRENCY)
 
@@ -149,12 +141,8 @@ def _register_query_embedding_model() -> None:
             )
 
         @staticmethod
-        def _validated(response, expected_count: int):
-            data = getattr(response, "data", None)
-            [getattr(item, "index", None) for item in data]
-            data.sort(key=lambda item: item.index)
-            for index, item in enumerate(data):
-                getattr(item, "embedding", None)
+        def _ordered_response(response):
+            response.data.sort(key=lambda item: item.index)
             return response
 
         def embedding(self, /, **kwargs):
@@ -162,8 +150,7 @@ def _register_query_embedding_model() -> None:
                 response = _with_ms_embedding_slot(
                     lambda: super(BoundedLiteLLMEmbedding, self).embedding(**kwargs)
                 )
-                values = kwargs.get("input")
-                return self._validated(response, len(values) if isinstance(values, list) else 1)
+                return self._ordered_response(response)
             except Exception as exc:
                 values = kwargs.get("input")
                 if not self._splittable(exc) or not isinstance(values, list) or len(values) <= 1:
@@ -174,15 +161,14 @@ def _register_query_embedding_model() -> None:
                 left.data.extend(right.data)
                 for index, item in enumerate(left.data):
                     item.index = index
-                return self._validated(left, len(values))
+                return self._ordered_response(left)
 
         async def embedding_async(self, /, **kwargs):
             try:
                 response = await _with_ms_embedding_slot_async(
                     lambda: super(BoundedLiteLLMEmbedding, self).embedding_async(**kwargs)
                 )
-                values = kwargs.get("input")
-                return self._validated(response, len(values) if isinstance(values, list) else 1)
+                return self._ordered_response(response)
             except Exception as exc:
                 values = kwargs.get("input")
                 if not self._splittable(exc) or not isinstance(values, list) or len(values) <= 1:
@@ -193,7 +179,7 @@ def _register_query_embedding_model() -> None:
                 left.data.extend(right.data)
                 for index, item in enumerate(left.data):
                     item.index = index
-                return self._validated(left, len(values))
+                return self._ordered_response(left)
 
     class QueryInstructionEmbedding(BoundedLiteLLMEmbedding):
         @staticmethod
@@ -290,11 +276,6 @@ def _ms_indexable_text(filename: str, content: str) -> tuple[str, str]:
     return display_title, body
 
 
-def _expected_source_ids(staged_input: Path, corpus_manifest: dict | None) -> list[str]:
-    source_ids = sorted(path.stem for path in staged_input.iterdir() if path.suffix in (".txt", ".md"))
-    return source_ids
-
-
 def _write_snapshot_metadata(corpus_tag: str, payload: dict) -> None:
     """Atomically publish state only after the on-disk snapshot is known."""
     path = snapshot_metadata_path(corpus_tag)
@@ -332,12 +313,11 @@ def _set_snapshot_in_progress(corpus_tag: str, corpus_manifest: dict | None) -> 
 
 def _publish_snapshot(
     corpus_tag: str,
-    source_ids: list[str],
     corpus_manifest: dict | None,
     source_titles: dict[str, str] | None = None,
     extraction_evidence: dict | None = None,
 ) -> dict:
-    """Compare actual ``documents.parquet`` sources to the staged corpus."""
+    """Record source identities from the native ``documents.parquet`` output."""
     import pandas as pd
 
     documents_path = output_dir_for(corpus_tag) / "documents.parquet"
@@ -345,7 +325,6 @@ def _publish_snapshot(
     titles = documents["title"].tolist()
     actual_ids = [Path(title).stem for title in titles]
     actual_ids.sort()
-    sorted(source_ids)
     source_titles = dict(source_titles or {})
     source_digest = _source_set_sha256(actual_ids)
     payload = {
@@ -461,60 +440,10 @@ def _register_external_models_with_litellm() -> None:
     )
 
 
-_ROUTER_INSTALLED = False
-
-
-def _install_litellm_router_for_gen() -> None:
-    """Health-check the single configured route without runtime patching."""
-    global _ROUTER_INSTALLED
-    if _ROUTER_INSTALLED:
-        return
-    import json
-    import urllib.error
-    import urllib.request
-
-    # Validate the OpenAI-compatible model registry rather than a proxy-specific
-    # /health route. Busy external servers can legitimately queue a health
-    # response near max_num_seqs, so retry with a realistic timeout.
-    live_bases = []
-    for base in _GEN_API_BASES:
-        models_url = base.rstrip("/") + "/models"
-        for attempt in range(1, 4):
-            try:
-                request = urllib.request.Request(
-                    models_url,
-                    headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
-                )
-                with urllib.request.urlopen(request, timeout=15) as response:
-                    payload = json.load(response)
-                {item.get("id") for item in payload.get("data", [])}
-                live_bases.append(base)
-                break
-            except (OSError, urllib.error.URLError, ValueError, RuntimeError) as exc:
-                if attempt == 3:
-                    logger.warning("MS GraphRAG: generation endpoint rejected after retries: %s (%s)", base, exc)
-                else:
-                    time.sleep(attempt)
-    _ROUTER_INSTALLED = True
-    logger.info("MS GraphRAG: validated one registered LiteLLM route")
-
-
 def build_config(corpus_tag: str, staged_input_dir: Path):
     """Construct a GraphRagConfig pointing LiteLLM at external inference."""
     _apply_shared_transport()
-    [
-        name
-        for name, value in (
-            ("VLLM_API_BASE or VLLM_URL", _GEN_API_BASE),
-            ("VLLM_SERVED_MODEL_NAME", _GEN_MODEL_NAME),
-            ("VLLM_EMBED_API_BASE or VLLM_EMBED_URL", _EMBED_API_BASE),
-            ("VLLM_SERVED_EMBED_MODEL_NAME", _EMBED_MODEL_NAME),
-            ("VLLM_API_KEY", _GEN_API_KEY),
-        )
-        if not value
-    ]
     _register_external_models_with_litellm()
-    _install_litellm_router_for_gen()
     _register_query_embedding_model()
     from models.external_research.extraction_contract import ExtractionAudit
     from models.external_research.native_observation import PROVIDER, register_ms_observer
@@ -668,9 +597,7 @@ async def run_official_index(
     from graphrag.config.enums import IndexingMethod
 
     staged_input, source_titles = _stage_input_files(dataset_path, corpus_tag)
-    source_ids = _expected_source_ids(staged_input, corpus_manifest)
-    # Mark the snapshot incomplete before replacing artifacts so interrupted
-    # builds cannot pass the benchmark provenance gate.
+    # Record an incomplete snapshot while native workflows replace artifacts.
     _set_snapshot_in_progress(corpus_tag, corpus_manifest)
 
     _configure_litellm_client_lifecycle()
@@ -723,7 +650,7 @@ async def run_official_index(
     from models.external_research.extraction_contract import audit_evidence
 
     snapshot = _publish_snapshot(
-        corpus_tag, source_ids, corpus_manifest, source_titles, audit_evidence(_EXTRACTION_AUDIT)
+        corpus_tag, corpus_manifest, source_titles, audit_evidence(_EXTRACTION_AUDIT)
     )
     workflow_timing.timing["active_snapshot_verified"] = 1.0
     workflow_timing.timing["active_snapshot_source_count"] = float(snapshot["source_count"])

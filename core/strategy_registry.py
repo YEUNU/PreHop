@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -32,8 +33,10 @@ class PaperTransportSpec:
 # Also support the dependency-free `python core/strategy_registry.py` CLI.
 if __package__ in {None, ""}:
     from execution_profile import execution_profile, transport_settings
+    from runtime_requirements import runtime_requirement
 else:
     from core.execution_profile import execution_profile, transport_settings
+    from core.runtime_requirements import runtime_requirement
 
 PAPER_TRANSPORT = replace(PaperTransportSpec(), **{
     key: value for key, value in transport_settings(execution_profile()).items()
@@ -61,12 +64,15 @@ class StrategySpec:
     paper_embedding_dimensions: int | None = PAPER_TRANSPORT.embedding_dimensions
     local_embedding_revision: str | None = None
     paper_index_policy: tuple[tuple[str, Any], ...] = ()
-    # (semantic field, controlling environment variable, canonical value).
-    paper_index_environment: tuple[tuple[str, str, Any], ...] = ()
+    # (semantic field, controlling environment variable); defaults live in the policy.
+    paper_index_environment: tuple[tuple[str, str], ...] = ()
     # (provenance field, controlling environment variable, canonical value).
-    # Keeping all three together prevents preflight and admission from
-    # drifting into separate, partial method-policy lists.
+    # Query policies also describe historical ablation controls.
     paper_query_policy: tuple[tuple[str, str | None, Any], ...] = ()
+
+    def index_environment_defaults(self) -> dict[str, Any]:
+        policy = dict(self.paper_index_policy)
+        return {name: policy[field] for field, name in self.paper_index_environment}
 
 
 def _external(
@@ -85,7 +91,7 @@ def _external(
     paper_embedding_dimensions: int | None = PAPER_TRANSPORT.embedding_dimensions,
     local_embedding_revision: str | None = None,
     paper_index_policy: tuple[tuple[str, Any], ...] = (),
-    paper_index_environment: tuple[tuple[str, str, Any], ...] = (),
+    paper_index_environment: tuple[tuple[str, str], ...] = (),
     paper_query_policy: tuple[tuple[str, str | None, Any], ...] = (),
 ) -> StrategySpec:
     return StrategySpec(
@@ -109,6 +115,10 @@ def _external(
         paper_index_environment=paper_index_environment,
         paper_query_policy=paper_query_policy,
     )
+
+
+_GFM_RUNTIME = runtime_requirement('gfm_rag')
+_LINEAR_RUNTIME = runtime_requirement('linear_rag')
 
 
 _CORE_QUERY_POLICY: tuple[tuple[str, str | None, Any], ...] = (
@@ -185,7 +195,9 @@ STRATEGIES = (
                             ("edge_input_scope", "whole-corpus-without-query-or-gold"),
                             ("native_chunk_workers", 1), ("document_workers", 10), ("native_retry_attempts", 2),
                             ("pos_tagger", "paddlenlp-2.8.1-pos_tagging")),
-        paper_index_environment=(("document_workers", "RAG_HOP_DOC_WORKERS", 10),),
+        paper_index_environment=(
+            ('document_workers', 'RAG_HOP_DOC_WORKERS'),
+        ),
         paper_query_policy=(("max_hop", None, 5), ("topk", None, 8),
                             ("entry_type", None, "node"), ("tol", None, 20),
                             ("traversal", None, "bfs"), ("mode", None, "common"))),
@@ -206,9 +218,6 @@ STRATEGIES = (
             ("local_search_top_k_relationships", 10),
             ("local_search_max_context_tokens", 12000),
         ),
-        paper_index_environment=(
-            ("embedding_dimensions", "RAG_MS_EMBED_DIM", 2560),
-        ),
     ),
     _external(
         "lightrag",
@@ -226,12 +235,10 @@ STRATEGIES = (
             ("embedding_max_token_size", 8192),
         ),
         paper_index_environment=(
-            ("backbone_mode", "RAG_LIGHTRAG_BACKBONE_MODE", "official_faithful"),
-            ("native_retrieval", "RAG_LIGHTRAG_NATIVE_RETRIEVAL", True),
-            ("query_mode", "RAG_LIGHTRAG_QUERY_MODE", "mix"),
-            ("retrieval_top_k", "RAG_LIGHTRAG_TOP_K", 40),
-            ("chunk_top_k", "RAG_LIGHTRAG_CHUNK_TOP_K", 20),
-            ("embedding_max_token_size", "RAG_EMBEDDING_MAX_TOKENS", 8192),
+            ('query_mode', 'RAG_LIGHTRAG_QUERY_MODE'),
+            ('retrieval_top_k', 'RAG_LIGHTRAG_TOP_K'),
+            ('chunk_top_k', 'RAG_LIGHTRAG_CHUNK_TOP_K'),
+            ('embedding_max_token_size', 'RAG_EMBEDDING_MAX_TOKENS'),
         ),
     ),
     _external(
@@ -253,29 +260,13 @@ STRATEGIES = (
             ("qa_generation_profile", "native-qa-inference-v1"),
             ("qa_max_tokens", None),
             ("entity_linker", "official_hydra_qa_ircot"),
-            ("entity_linker_model", "colbert-ir/colbertv2.0"),
-            ("entity_linker_revision", "c1e84128e85ef755c096a95bdb06b47793b13acf"),
-            ("gfm_checkpoint_model", "rmanluo/GFM-RAG-8M"),
-            ("gfm_checkpoint_revision", "4da9e4655d126a783ae2b795ab73b7c7a7c3f4ac"),
+            ("entity_linker_model", _GFM_RUNTIME["entity_linker_model"]),
+            ("entity_linker_revision", _GFM_RUNTIME["entity_linker_revision"]),
+            ("gfm_checkpoint_model", _GFM_RUNTIME["checkpoint_model"]),
+            ("gfm_checkpoint_revision", _GFM_RUNTIME["checkpoint_revision"]),
         ),
         paper_index_environment=(
-            ("backbone_mode", "RAG_GFM_RAG_BACKBONE_MODE", "official_faithful"),
-            ("native_retrieval", "RAG_GFM_RAG_NATIVE_RETRIEVAL", True),
-            ("retrieval_top_k", "RAG_GFM_RAG_TOP_K", 5),
-            ("ner_model", "RAG_GFM_RAG_NER_MODEL", "official_hydra_qa_ircot"),
-            ("entity_linker", "RAG_GFM_RAG_ENTITY_LINKER", "official_hydra_qa_ircot"),
-            ("entity_linker_model", "RAG_GFM_RAG_COLBERT_MODEL", "colbert-ir/colbertv2.0"),
-            (
-                "entity_linker_revision",
-                "RAG_GFM_RAG_COLBERT_REVISION",
-                "c1e84128e85ef755c096a95bdb06b47793b13acf",
-            ),
-            ("gfm_checkpoint_model", "RAG_GFM_RAG_CHECKPOINT_MODEL", "rmanluo/GFM-RAG-8M"),
-            (
-                "gfm_checkpoint_revision",
-                "RAG_GFM_RAG_CHECKPOINT_REVISION",
-                "4da9e4655d126a783ae2b795ab73b7c7a7c3f4ac",
-            ),
+            ('retrieval_top_k', 'RAG_GFM_RAG_TOP_K'),
         ),
     ),
     _external(
@@ -286,35 +277,23 @@ STRATEGIES = (
         worker="research_baseline_worker.py",
         driver="models.external_research.drivers.linear_rag:LinearRAGDriver",
         license_note="GPL upstream remains process-isolated",
-        paper_embedding_model="sentence-transformers/all-mpnet-base-v2",
+        paper_embedding_model=_LINEAR_RUNTIME["embedding_model"],
         paper_embedding_dimensions=768,
-        local_embedding_revision="e8c3b32edf5434bc2275fc9bab85f82640a19130",
+        local_embedding_revision=_LINEAR_RUNTIME["embedding_revision"],
         paper_index_policy=(
             ("index_validation_profile", "strict-linear-stores-v1"),
             ("backbone_mode", "official_faithful"),
             ("native_retrieval", True),
             ("spacy_model", "en_core_web_trf"),
-            ("official_embedding_model", "sentence-transformers/all-mpnet-base-v2"),
-            ("official_embedding_revision", "e8c3b32edf5434bc2275fc9bab85f82640a19130"),
+            ("official_embedding_model", _LINEAR_RUNTIME["embedding_model"]),
+            ("official_embedding_revision", _LINEAR_RUNTIME["embedding_revision"]),
             ("retrieval_top_k", 5),
             ("vectorized_retrieval", False),
         ),
         paper_index_environment=(
-            ("backbone_mode", "RAG_LINEAR_RAG_BACKBONE_MODE", "official_faithful"),
-            ("native_retrieval", "RAG_LINEAR_RAG_NATIVE_RETRIEVAL", True),
-            ("spacy_model", "RAG_LINEAR_RAG_SPACY_MODEL", "en_core_web_trf"),
-            (
-                "official_embedding_model",
-                "RAG_LINEAR_RAG_MPNET_MODEL",
-                "sentence-transformers/all-mpnet-base-v2",
-            ),
-            (
-                "official_embedding_revision",
-                "RAG_LINEAR_RAG_MPNET_REVISION",
-                "e8c3b32edf5434bc2275fc9bab85f82640a19130",
-            ),
-            ("retrieval_top_k", "RAG_LINEAR_RAG_TOP_K", 5),
-            ("vectorized_retrieval", "RAG_LINEAR_RAG_VECTORIZED", False),
+            ('spacy_model', 'RAG_LINEAR_RAG_SPACY_MODEL'),
+            ('retrieval_top_k', 'RAG_LINEAR_RAG_TOP_K'),
+            ('vectorized_retrieval', 'RAG_LINEAR_RAG_VECTORIZED'),
         ),
         paper_query_policy=(
             ("iteration_threshold", None, 0.4),
@@ -336,6 +315,27 @@ def get_strategy(name: str) -> StrategySpec:
         return BY_NAME[name]
     except KeyError as exc:
         raise ValueError(f"unknown strategy: {name}") from exc
+
+
+def method_setting(strategy: str, field: str) -> str | int | bool:
+    """Resolve active overrides from the same registry used for provenance."""
+    from core.semantic_config import parse_strict_bool
+    spec = get_strategy(strategy)
+    expected = dict(spec.paper_index_policy)[field]
+    name = dict(spec.paper_index_environment).get(field)
+    raw = os.environ.get(name) if name else None
+    if raw is None or not raw.strip():
+        return expected
+    if isinstance(expected, bool):
+        try:
+            normalized: str | int | bool = parse_strict_bool(raw, name=name)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+    elif isinstance(expected, int):
+        normalized = int(raw)
+    else:
+        normalized = raw.strip()
+    return normalized
 
 
 def paper_environment_defaults() -> dict[str, str]:

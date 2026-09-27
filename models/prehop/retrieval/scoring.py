@@ -12,7 +12,6 @@ from typing import Any
 from core.config import RAGConfig
 from core.generation_profiles import request_settings
 from core.structured_outputs import ranking_contract
-from models.prehop.llm_json import generate_json_or_raise
 from models.prehop.tracing import traced
 from utils.prompts.evidence_ranking import build_evidence_ranking_prompt
 from utils.similarity import cosine_similarity
@@ -240,11 +239,9 @@ class SimilarityScoringMixin:
             top_k,
         )
         contract = ranking_contract(candidate_ids, top_k)
-        payload = await generate_json_or_raise(
-            self.llm,
+        payload = await self.llm.generate_json(
             [{"role": "user", "content": prompt}],
-            "evidence ranking",
-            f"query={query_text!r}",
+            json_debug_label="evidence ranking",
             structured_contract=contract,
             **request_settings("ranking"),
         )

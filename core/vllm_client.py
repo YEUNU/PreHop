@@ -4,8 +4,6 @@ import inspect
 import json
 import logging
 import math
-import os
-import re
 import threading
 import time
 from typing import Any, ClassVar
@@ -19,7 +17,8 @@ from utils.parsers import clean_and_unwrap_json
 
 from .config import RAGConfig
 from .inference_telemetry import record as record_inference
-from .semantic_config import parse_strict_bool
+from .inference_transport import InferenceTransport
+from .strategy_registry import PAPER_TRANSPORT
 
 
 class VLLMClient:
@@ -47,55 +46,23 @@ class VLLMClient:
         # round trips; document batches are never cached since their content
         # differs per call.
         self._query_embed_cache: dict[str, list[float]] = {}
-        paper_mode = parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
-        if paper_mode:
-            from core.inference_transport import InferenceTransport
-
-            transport = InferenceTransport.resolve("core")
-            self.vllm_url = transport.generation_base_url
-            self.embed_url = transport.embedding_base_url
-            if model_name is not None and model_name != transport.generation_model:
-                raise RuntimeError("paper generation model override is not registered in the transport policy")
-            self.model_name = transport.generation_model
-            self.embed_model_name = transport.embedding_model
-            self.api_key = transport.api_key
-            timeout_val = transport.timeout_seconds or 0
-            self._embedding_concurrency = transport.embedding_concurrency
-            self._embedding_batch_size = transport.embedding_batch_size
-            self._generation_concurrency = transport.generation_concurrency
-            self._retry_attempts = transport.retry_attempts
-            self._embedding_query_instruction = transport.embedding_query_instruction
-            self._embedding_query_template = transport.embedding_query_template
-            self._embedding_max_input_tokens = transport.embedding_max_input_tokens
-            self._embedding_dimensions = transport.embedding_dimensions
-            self._embedding_token_reserve = transport.embedding_token_reserve
-            self._generation_max_context_tokens = transport.generation_max_context_tokens
-        else:
-            self.vllm_url = RAGConfig.VLLM_URL
-            self.embed_url = RAGConfig.VLLM_EMBED_URL
-            self.model_name = model_name or RAGConfig.DEFAULT_MODEL
-            self.embed_model_name = RAGConfig.EMBEDDING_MODEL
-            self.api_key = os.environ.get("RAG_INFERENCE_API_KEY", "EMPTY")
-            timeout_val = RAGConfig.LLM_REQUEST_TIMEOUT
-            self._embedding_concurrency = RAGConfig.MAX_CONCURRENT_EMBEDDING_REQUESTS
-            self._embedding_batch_size = RAGConfig.EMBEDDING_BATCH_SIZE
-            self._generation_concurrency = RAGConfig.MAX_CONCURRENT_LLM_CALLS
-            self._retry_attempts = RAGConfig.LLM_MAX_RETRIES
-            self._embedding_query_instruction = RAGConfig.EMBEDDING_QUERY_INSTRUCTION
-            from core.strategy_registry import PAPER_TRANSPORT
-
-            self._embedding_query_template = PAPER_TRANSPORT.query_template
-            self._embedding_max_input_tokens = RAGConfig.MAX_EMBEDDING_LENGTH
-            self._embedding_dimensions = RAGConfig.EMBEDDING_DIMENSIONS
-            self._embedding_token_reserve = int(os.environ.get("RAG_EMBEDDING_TOKEN_RESERVE", "0"))
-            self._generation_max_context_tokens = RAGConfig.MAX_CONTEXT_LENGTH
-        if not paper_mode and os.environ.get("RAG_QUEUE_PROXY_URL"):
-            # Pilot/development calls must not silently bypass the same queue.
-            from core.inference_transport import InferenceTransport
-            transport = InferenceTransport.resolve("core")
-            self.vllm_url = transport.generation_base_url
-            self.embed_url = transport.embedding_base_url
-            self.api_key = transport.api_key
+        transport = InferenceTransport.resolve("core")
+        self.vllm_url = transport.generation_base_url
+        self.embed_url = transport.embedding_base_url
+        self.model_name = model_name or transport.generation_model
+        self.embed_model_name = transport.embedding_model
+        self.api_key = transport.api_key
+        timeout_val = transport.timeout_seconds
+        self._embedding_concurrency = transport.embedding_concurrency
+        self._embedding_batch_size = transport.embedding_batch_size
+        self._generation_concurrency = transport.generation_concurrency
+        self._retry_attempts = transport.retry_attempts
+        self._embedding_query_instruction = transport.embedding_query_instruction
+        self._embedding_query_template = transport.embedding_query_template
+        self._embedding_max_input_tokens = transport.embedding_max_input_tokens
+        self._embedding_dimensions = transport.embedding_dimensions
+        self._embedding_token_reserve = transport.embedding_token_reserve
+        self._generation_max_context_tokens = transport.generation_max_context_tokens
         # 0 = infinite timeout (None)
         self._request_timeout = None if timeout_val == 0 else timeout_val
         try:
@@ -186,7 +153,7 @@ class VLLMClient:
 
         return truncated
 
-    def _truncate_text(self, text: str, max_tokens: int = RAGConfig.MAX_EMBEDDING_LENGTH) -> str:
+    def _truncate_text(self, text: str, max_tokens: int) -> str:
         """Truncates a single string to fit within max_tokens."""
         if not text:
             return ""
@@ -244,35 +211,6 @@ class VLLMClient:
             excerpt = excerpt[:marker] + "<<<ERR>>>" + excerpt[marker] + "<<<ERR>>>" + excerpt[marker + 1 :]
         return excerpt.replace("\n", "\\n").replace("\r", "\\r")
 
-    @staticmethod
-    def _extract_json_payload(raw: str) -> dict[str, Any] | None:
-        """Recover a JSON object from noisy model output."""
-        if not isinstance(raw, str):
-            return None
-
-        text = raw.strip()
-        if not text:
-            return None
-
-        candidates: list[str] = [text]
-        fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
-        if fenced:
-            candidates.append(fenced.group(1).strip())
-
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            candidates.append(text[start : end + 1])
-
-        for candidate in candidates:
-            try:
-                parsed = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict):
-                return parsed
-        return None
-
     def _embedding_token_limit(self, aggressive: bool = False) -> int:
         """
         Return a conservative embedding token limit with safety reserve.
@@ -303,14 +241,9 @@ class VLLMClient:
             or "messagepack data is malformed" in str(exc).lower()
         )
 
-    def _validated_embedding_response(self, response: Any, expected_count: int) -> list[list[float]]:
-        data = getattr(response, "data", None)
-        [getattr(item, "index", None) for item in data]
-        list(range(expected_count))
-        ordered = sorted(data, key=lambda item: item.index)
-        vectors = [getattr(item, "embedding", None) for item in ordered]
-        getattr(self, "_embedding_dimensions", RAGConfig.EMBEDDING_DIMENSIONS)
-        return [list(vector) for vector in vectors]
+    @staticmethod
+    def _embedding_vectors(response: Any) -> list[list[float]]:
+        return [list(item.embedding) for item in sorted(response.data, key=lambda item: item.index)]
 
     async def _embed_batch_strict(
         self,
@@ -321,7 +254,7 @@ class VLLMClient:
     ) -> list[list[float]]:
         try:
             response = await self._create_embedding_request(batch)
-            return self._validated_embedding_response(response, len(batch))
+            return self._embedding_vectors(response)
         except Exception as exc:
             if not self._is_splittable_embedding_error(exc):
                 raise
@@ -348,7 +281,7 @@ class VLLMClient:
                 )
                 if shortened and shortened != batch[0]:
                     response = await self._create_embedding_request([shortened])
-                    return self._validated_embedding_response(response, 1)
+                    return self._embedding_vectors(response)
             raise
 
     @staticmethod
@@ -381,7 +314,7 @@ class VLLMClient:
     async def _create_embedding_request(self, inputs: list[str]):
         key = self.embed_url.rstrip("/")
         cls = type(self)
-        concurrency = getattr(self, "_embedding_concurrency", RAGConfig.MAX_CONCURRENT_EMBEDDING_REQUESTS)
+        concurrency = getattr(self, "_embedding_concurrency", PAPER_TRANSPORT.embedding_concurrency)
         with cls._embed_semaphores_lock:
             semaphore = cls._embed_semaphores.setdefault(
                 key,
@@ -419,18 +352,6 @@ class VLLMClient:
             semaphore.release()
 
     async def _create_generation_request(self, request_client: AsyncOpenAI, params: dict[str, Any]):
-        if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE"):
-            from core.inference_transport import InferenceTransport, _normalized_endpoint
-
-            approved = InferenceTransport.resolve("core")
-            if params.get("model") != approved.generation_model:
-                raise RuntimeError("paper generation request model is not registered in the transport policy")
-            if _normalized_endpoint(str(request_client.base_url)) != approved.generation_base_url:
-                raise RuntimeError("paper generation request endpoint differs from the approved gateway")
-            if approved.generation_seed is not None:
-                params["seed"] = approved.generation_seed
-            else:
-                params.pop("seed", None)
         endpoint = str(getattr(request_client, "base_url", self.vllm_url)).rstrip("/")
         key = (endpoint, self._running_loop_id())
         cls = type(self)
@@ -469,7 +390,7 @@ class VLLMClient:
     async def _retry_with_backoff(self, coro_func, *args, **kwargs):
         """Exponential backoff retry wrapper for handling GPU load spikes."""
         request_budget = kwargs.pop('_request_budget', None)
-        retry_attempts = getattr(self, "_retry_attempts", RAGConfig.LLM_MAX_RETRIES)
+        retry_attempts = getattr(self, "_retry_attempts", PAPER_TRANSPORT.retry_attempts)
         for attempt in range(retry_attempts):
             if request_budget is not None:
                 if request_budget['used'] >= request_budget['limit']:
@@ -570,7 +491,7 @@ class VLLMClient:
         counters['reasoning_tokens'] = token_count(getattr(details, 'reasoning_tokens', None))
         schema = (params.get('response_format') or {}).get('json_schema', {})
         known_names = {'prehop_index_legacy_v1', 'prehop_index_grounded_v1_v1', 'prehop_index_linked_v2_v1',
-                       'prehop_rewrite_legacy_v1', 'prehop_refine_legacy_v1', 'prehop_ranking_v1'}
+                       'prehop_ranking_v1'}
         schema_name = schema.get('name')
         hidden = getattr(response, '_hidden_params', None)
         cost = hidden.get('response_cost') if isinstance(hidden, dict) else getattr(response, 'response_cost', None)
@@ -610,8 +531,9 @@ class VLLMClient:
                 params["temperature"] = temperature
             elif apply_default_sampling:
                 params["temperature"] = 0.7
-            if RAGConfig.LLM_SEED is not None:
-                params["seed"] = RAGConfig.LLM_SEED
+            seed = InferenceTransport.resolve("core").generation_seed
+            if seed is not None:
+                params["seed"] = seed
             if tools:
                 params["tools"] = tools
             if tool_choice:
@@ -654,7 +576,9 @@ class VLLMClient:
             self.logger.error(f"Error calling vLLM: {e}")
             raise
 
-    async def _generate_structured_json(self, messages, contract, **kwargs):
+    async def generate_json(self, messages, *, structured_contract, **kwargs):
+        """Decode the requested schema with one shared transport/JSON retry budget."""
+        contract = structured_contract
         from core.generation_profiles import structured_retry_profile
         from core.inference_telemetry import record_structured_attempt, record_structured_contract
         from core.structured_diagnostics import caller_metadata, parse_failure_metadata, text_sha256
@@ -691,103 +615,6 @@ class VLLMClient:
             raise StructuredOutputError(f'JSON decoding failed; metadata={diagnostic}') from last_error
         raise RuntimeError('No JSON generation attempt was executed')
 
-    async def generate_json(
-        self, messages: list[dict[str, str]], max_retries: int | None = None, **kwargs
-    ) -> dict[str, Any]:
-        contract = kwargs.pop("structured_contract", None)
-        if contract is not None:
-
-            return await self._generate_structured_json(messages, contract, **kwargs)
-        last_error_hint = ""
-        last_parse_error: Exception | None = None
-        last_response_preview = ""
-        max_retries = max_retries or RAGConfig.RETRY_COUNT
-        json_debug_label = str(kwargs.pop("json_debug_label", "") or "").strip()
-
-        def _preview(text: Any, max_len: int = 500) -> str:
-            raw = str(text or "")
-            if not raw:
-                return ""
-            raw = raw.replace("\\n", "\\\\n").replace("\\r", "\\\\r")
-            return raw if len(raw) <= max_len else raw[:max_len] + "..."
-
-        for attempt in range(max_retries):
-            current_messages = copy.deepcopy(messages)
-            if last_error_hint:
-                current_messages.append({"role": "user", "content": f"SYSTEM: {last_error_hint}"})
-            response_text = ""
-            try:
-                model = kwargs.get("model")
-                if model and model == RAGConfig.EVAL_MODEL:
-                    parsed = await self.generate_eval_json(current_messages, model=model)
-                    if parsed:
-                        return parsed
-                    last_error_hint = "Output ONLY one non-empty JSON object."
-                    last_parse_error = ValueError("evaluation model returned an empty JSON object")
-                    last_response_preview = "empty-response"
-                    continue
-
-                response_text = await self.generate_response(
-                    current_messages, response_format={"type": "json_object"}, **kwargs
-                )
-                last_response_preview = _preview(response_text)
-                parsed = None
-                try:
-                    parsed = json.loads(response_text)
-                except json.JSONDecodeError:
-                    parsed = self._extract_json_payload(response_text)
-                    if parsed is None:
-                        raise
-                    self.logger.info(
-                        "generate_json fallback parse succeeded [stage=%s] (attempt %d/%d)",
-                        json_debug_label or "unknown",
-                        attempt + 1,
-                        max_retries,
-                    )
-
-                if isinstance(parsed, dict):
-                    return parsed
-
-                last_parse_error = TypeError(f"expected JSON object, got {type(parsed).__name__}")
-                last_error_hint = (
-                    f"Invalid JSON type '{type(parsed).__name__}'. "
-                    "Output ONLY one JSON object (not array/string/markdown)."
-                )
-                last_response_preview = _preview(response_text, max_len=800)
-                self.logger.warning(
-                    "generate_json type mismatch [stage=%s] (attempt %d/%d): %s | preview=%s",
-                    json_debug_label or "unknown",
-                    attempt + 1,
-                    max_retries,
-                    type(parsed).__name__,
-                    _preview(response_text, max_len=160),
-                )
-            except json.JSONDecodeError as e:
-                last_parse_error = e
-                snippet = self._json_error_context(response_text, e.pos)
-                last_response_preview = _preview(response_text, max_len=800)
-                self.logger.warning(
-                    "generate_json parse failed [stage=%s] (attempt %d/%d): %s | len=%d pos=%d line=%d col=%d | snippet=%s",
-                    json_debug_label or "unknown",
-                    attempt + 1,
-                    max_retries,
-                    e,
-                    len(response_text or ""),
-                    e.pos,
-                    e.lineno,
-                    e.colno,
-                    snippet,
-                )
-                last_error_hint = (
-                    f"Invalid JSON near line {e.lineno}, column {e.colno}. "
-                    "Output ONLY one raw JSON object with double quotes, no markdown fences, no prose."
-                )
-        stage = json_debug_label or "unknown"
-        raise ValueError(
-            f"generate_json exhausted {max_retries} parse attempts for stage={stage}: "
-            f"{last_error_hint or 'no further hint'} | last_response={last_response_preview or 'n/a'}"
-        ) from last_parse_error
-
     async def generate_eval_json(self, messages: list[dict[str, str]], **kwargs) -> dict[str, Any]:
         """Generate judge JSON synchronously when Batch mode is explicitly disabled."""
         model = kwargs.get("model", RAGConfig.EVAL_MODEL)
@@ -802,8 +629,9 @@ class VLLMClient:
                 "temperature": 0.0,
             }
             params["extra_body"] = kwargs.get("extra_body") or {"chat_template_kwargs": {"enable_thinking": False}}
-            if RAGConfig.LLM_SEED is not None:
-                params["seed"] = RAGConfig.LLM_SEED
+            seed = InferenceTransport.resolve("core").generation_seed
+            if seed is not None:
+                params["seed"] = seed
             response = await self._create_generation_request(self.judge_client, params)
             content = response.choices[0].message.content or ""
             try:

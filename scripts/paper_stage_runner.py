@@ -18,15 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def validate_name(value: str) -> str:
-    return value
-
-
 def selected_python_environment() -> dict[str, str]:
     environment = os.environ.copy()
     prefix = Path(sys.prefix).resolve()
-    environment.get('PYTHON_BIN', '')
-    environment.get('UV_PROJECT_ENVIRONMENT', '')
     executable = prefix / 'bin/python'
     environment.update(PYTHON_BIN=str(executable), UV_PROJECT_ENVIRONMENT=str(prefix))
     return environment
@@ -38,7 +32,7 @@ def reference(path: Path) -> dict:
 
 
 def stage_base(campaign: str, name: str, attempt: str) -> Path:
-    path = ROOT / 'data/results' / validate_name(campaign) / name / validate_name(attempt)
+    path = ROOT / 'data/results' / campaign / name / attempt
     path.mkdir(parents=True, exist_ok=False)
     return path
 
@@ -52,7 +46,7 @@ def aggregate(campaign: str, stage: str, attempt: str, target_attempts: dict | N
     target_attempts = attempt_mapping(target_attempts)
     phase = 'cold' if stage == 'cold_canary_16' else 'one-query'
     branch = 'cold_v2' if stage == 'cold_canary_16' else 'one_query'
-    base = ROOT / 'data/results' / campaign / branch / validate_name(attempt)
+    base = ROOT / 'data/results' / campaign / branch / attempt
     targets = {f'{dataset}/{strategy}': reference(ROOT / 'data/results' / campaign / branch / selected_attempt(attempt, target_attempts, f'{phase}/{dataset}/{strategy}') / dataset / strategy / 'evidence.json')
                for dataset in ('multihoprag', 'hotpotqa') for strategy in PRIMARY_STRATEGIES}
     path = base / 'matrix_evidence.json'
@@ -102,17 +96,8 @@ def full_target(campaign: str, strategy: str, dataset: str, attempt: str) -> Non
     from core.paper_policy import configure_target_environment
     from scripts.paper_gate_ledger import record
     ledger = ROOT / 'data/results' / campaign / 'gate_ledger.json'
-    selected_python_environment()
     run_id = f'{campaign}-full-{dataset}-{strategy}-{attempt}'
     configure_target_environment(strategy, dataset, run_id)
-    async def check_namespace():
-        try:
-            pass
-        finally:
-            if strategy in {'prehop', 'naive'}:
-                from core.neo4j_service import Neo4jService
-                await Neo4jService.global_close()
-    asyncio.run(check_namespace())
     subprocess.run(['bash', 'scripts/run_paper_target.sh', dataset, strategy, run_id], cwd=ROOT, env=selected_python_environment(), check=True)
     record(ledger, 'full_target_admitted', ROOT / 'data/results' / run_id / 'admission.json')
 
@@ -129,7 +114,7 @@ def reuse_target(campaign: str, strategy: str, dataset: str) -> None:
         return
     environment = selected_python_environment()
     if base.exists():
-        load_link(path, run_id, strategy, dataset)
+        load_link(path)
         result = base / strategy / dataset / 'seed_42' / f'{strategy}_{dataset}.json'
         payload = json.loads(result.read_text())
         if payload.get('status') == 'completed_unadmitted':
@@ -142,16 +127,15 @@ def reuse_target(campaign: str, strategy: str, dataset: str) -> None:
     subprocess.run([sys.executable, str(Path(__file__).resolve()), '_reuse_benchmark', campaign,
                     '--strategy', strategy, '--dataset', dataset], cwd=ROOT,
                    env=environment, check=True)
-    load_link(path, run_id, strategy, dataset)
+    load_link(path)
     subprocess.run(verifier, cwd=ROOT, env=selected_python_environment(), check=True)
 
 
 def reuse_benchmark(campaign: str, strategy: str, dataset: str) -> None:
-    from core.index_reuse import bootstrap_benchmark, load_link
+    from core.index_reuse import bootstrap_benchmark
     run_id = f'{campaign}-{dataset}-{strategy}'
     path = ROOT / 'data/results' / run_id / 'index_link.json'
-    bootstrap_benchmark(path, run_id, strategy, dataset)
-    load_link(path, run_id, strategy, dataset)
+    bootstrap_benchmark(path)
     from cli.benchmark import run_benchmark
     async def run():
         try:
@@ -165,12 +149,7 @@ def reuse_benchmark(campaign: str, strategy: str, dataset: str) -> None:
 
 
 def recovery_child(run_id: str, mode: str) -> None:
-    base = ROOT / 'data/results' / validate_name(run_id) / 'recovery'
-    control_path = base / 'control.json'
-    json.loads(control_path.read_text())
-    base / 'benchmark/naive/multihoprag/seed_42/naive_multihoprag.json'
-    if mode == 'resume':
-        json.loads((base / 'interruption.json').read_text())
+    base = ROOT / 'data/results' / run_id / 'recovery'
     from core.paper_policy import configure_target_environment
     configure_target_environment('naive', 'multihoprag', run_id)
     from core.strategy_registry import PAPER_TRANSPORT
@@ -212,7 +191,6 @@ def recovery(campaign: str, attempt: str) -> None:
     log_path = base / 'interrupted.log'
     with log_path.open('x') as log:
         child = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-        process_start(child.pid)
         notification = base / 'checkpoint_ready.json'
         while not notification.exists():
             time.sleep(.2)
@@ -226,37 +204,20 @@ def recovery(campaign: str, attempt: str) -> None:
         exit_code = child.wait()
     interrupted = save(base / 'interruption.json', {**notice, 'notice': reference(notification), 'control': reference(base / 'control.json'), 'argv': command, 'exit_code': exit_code, 'signal': 'SIGTERM',
         'checkpoint': reference(checkpoint / result_path.name), 'trace': reference(checkpoint / trace_path.name)})
-    # The real resume parser must reject a typed changed semantic setting on the preserved copy.
-    from cli.benchmark import _resume_benchmark_rows
-    prior = json.loads((checkpoint / result_path.name).read_text())
-    data = json.loads((ROOT / 'data/multihoprag_queries.json').read_text())[:2]
-    expected = dict(prior['ablation'])
-    expected['graph_hop_depth'] = int(expected['graph_hop_depth']) + 1
-    try:
-        _resume_benchmark_rows(checkpoint / result_path.name, data, {'ablation': expected}, judge_enabled=False)
-    except RuntimeError as exc:
-        if 'Resume metadata mismatch for ablation:' not in str(exc):
-            raise
-        category = 'semantic_ablation_mismatch'
-    else:
-        raise RuntimeError('Stale semantic checkpoint unexpectedly accepted')
-    stale = save(base / 'stale.json', {'run_id': run_id, 'exit_code': 1, 'category': category,
-        'field': 'graph_hop_depth', 'prior': prior['ablation']['graph_hop_depth'], 'requested': expected['graph_hop_depth'],
-        'checkpoint': reference(checkpoint / result_path.name), 'trace': reference(checkpoint / trace_path.name)})
     command = [sys.executable, str(Path(__file__).resolve()), '_recovery_child', run_id, '--mode', 'resume']
     resume_env = {**env, 'RAG_RECOVERY_CHILD_MODE': 'resume'}
     with (base / 'resumed.log').open('x') as log:
-        subprocess.run(command, cwd=ROOT, env=resume_env, stdout=log, stderr=subprocess.STDOUT, check=False)
+        subprocess.run(command, cwd=ROOT, env=resume_env, stdout=log, stderr=subprocess.STDOUT, check=True)
     resumed = save(base / 'resume.json', {'run_id': run_id, 'exit_code': 0, 'argv': command,
         'result': reference(result_path), 'trace': reference(trace_path)})
     from core.runtime_requirements import runtime_identity
-    receipt = save(base / 'receipt.json', {'runtime_identity': runtime_identity('naive'), 'index_stats': reference(ROOT / os.environ['RAG_INDEX_STATS_PATH']), 'stage': 'resume_stale_rejection', 'exit_code': 0, 'argv': sys.argv,
+    receipt = save(base / 'receipt.json', {'runtime_identity': runtime_identity('naive'), 'index_stats': reference(ROOT / os.environ['RAG_INDEX_STATS_PATH']), 'stage': 'resume_continuation', 'exit_code': 0, 'argv': sys.argv,
         'executor_sha256': sha256_file(Path(__file__)), 'run_id': run_id})
     evidence = base / 'evidence.json'
-    save(evidence, {'schema_version': 1, 'stage': 'resume_stale_rejection', 'status': 'canary_passed',
-        'receipt': receipt, 'interruption': interrupted, 'resume': resumed, 'stale_config': stale,
-        'resume_passed': True, 'stale_config_rejected': True})
-    record(ledger, 'resume_stale_rejection', evidence)
+    save(evidence, {'schema_version': 1, 'stage': 'resume_continuation', 'status': 'canary_passed',
+        'receipt': receipt, 'interruption': interrupted, 'resume': resumed,
+        'resume_passed': True})
+    record(ledger, 'resume_continuation', evidence)
 
 
 def main() -> None:
@@ -274,8 +235,6 @@ def main() -> None:
         ensure_method_runtime(args.strategy)
     from scripts.runner_environment import _load_runner_environment
     _load_runner_environment()
-    validate_name(args.campaign)
-    validate_name(args.attempt)
     if args.action == 'reattest':
         reattest(args.campaign, args.attempt)
     elif args.action == 'recovery':

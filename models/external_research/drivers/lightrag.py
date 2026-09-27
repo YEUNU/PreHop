@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from core.benchmark_failures import BenchmarkIntegrityError
+from core.strategy_registry import method_setting
 
-from .base import canonical_semantic_env, load_rows
+from .base import load_rows
 
 
 class LightRAGDriver:
@@ -22,11 +23,9 @@ class LightRAGDriver:
         from tenacity import stop_after_attempt
 
         from core.inference_transport import InferenceTransport
-        from core.strategy_registry import get_strategy
         from core.vllm_client import VLLMClient
 
         transport = InferenceTransport.resolve("lightrag")
-        registry_policy = dict(get_strategy("lightrag").paper_index_policy)
         embedding_dim = transport.embedding_dimensions
         embedding_model = transport.embedding_model
         embedding_base = transport.embedding_base_url
@@ -67,16 +66,16 @@ class LightRAGDriver:
             model_name=embedding_model,
             send_dimensions=False,
             embedding_dim=embedding_dim,
-            max_token_size=int(canonical_semantic_env("RAG_EMBEDDING_MAX_TOKENS", registry_policy["embedding_max_token_size"])),
+            max_token_size=int(method_setting("lightrag", "embedding_max_token_size")),
             supports_asymmetric=True,
             func=embed,
         )
         self.rows = load_rows(output_dir)
         self.by_id = {row["source_id"]: row for row in self.rows}
         self.param = QueryParam(
-            mode=str(canonical_semantic_env("RAG_LIGHTRAG_QUERY_MODE", registry_policy["query_mode"])),
-            top_k=int(canonical_semantic_env("RAG_LIGHTRAG_TOP_K", registry_policy["retrieval_top_k"])),
-            chunk_top_k=int(canonical_semantic_env("RAG_LIGHTRAG_CHUNK_TOP_K", registry_policy["chunk_top_k"])),
+            mode=str(method_setting("lightrag", "query_mode")),
+            top_k=int(method_setting("lightrag", "retrieval_top_k")),
+            chunk_top_k=int(method_setting("lightrag", "chunk_top_k")),
             stream=False,
         )
         self.engine = LightRAG(

@@ -4,6 +4,7 @@ import logging
 
 from core.config import RAGConfig
 from core.index_namespace import index_namespace
+from core.inference_transport import InferenceTransport
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient
 from models.prehop.indexing.chunking import parse_pages_offline, split_fixed_sentence_windows
@@ -41,7 +42,7 @@ class NaiveRAG:
                     `vector.similarity_function`: 'cosine'
                 }}}}
             """,
-                {"dimensions": RAGConfig.EMBEDDING_DIMENSIONS},
+                {"dimensions": InferenceTransport.resolve("core").embedding_dimensions},
             )
             # Property index for MERGE/MATCH performance
             await self.neo4j.execute_query(
@@ -114,12 +115,13 @@ class NaiveRAG:
         # Submit chunks across source files together so the configured
         # embedding batch size is not reduced to one request per file.
         embeddings = await self.vllm.get_embeddings(texts)
+        dimensions = InferenceTransport.resolve("core").embedding_dimensions
         if len(embeddings) != len(texts) or any(
-            len(embedding) != RAGConfig.EMBEDDING_DIMENSIONS for embedding in embeddings
+            len(embedding) != dimensions for embedding in embeddings
         ):
             raise ValueError(
                 "NaiveRAG batch embedding failure: "
-                f"expected {len(texts)} vectors of dimension {RAGConfig.EMBEDDING_DIMENSIONS}, "
+                f"expected {len(texts)} vectors of dimension {dimensions}, "
                 f"got {len(embeddings)}"
             )
 
@@ -216,12 +218,13 @@ class NaiveRAG:
     def _fit_ranked_context(self, nodes: list[dict], query: str) -> tuple[str, list[dict]]:
         """Pack complete fixed windows in retrieval order within the context budget."""
         accepted: list[dict] = []
+        context_limit = InferenceTransport.resolve("core").generation_max_context_tokens
         for node in nodes:
             candidate = self._build_context_from_nodes([*accepted, node])
             prompt = build_answer_prompt(candidate, query)
             messages = [{"role": "user", "content": prompt}]
             prompt_tokens = self.vllm._count_tokens(messages)
-            if prompt_tokens + RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS > RAGConfig.MAX_CONTEXT_LENGTH:
+            if prompt_tokens + RAGConfig.SYNTHESIS_MAX_OUTPUT_TOKENS > context_limit:
                 break
             accepted.append(node)
         return self._build_context_from_nodes(accepted), accepted

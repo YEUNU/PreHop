@@ -129,15 +129,16 @@ def test_removed_optional_routes_are_not_configurable():
 
 def test_index_policy_records_semantic_embedding_and_hop_identity(monkeypatch):
     from core.config import RAGConfig
+    from core.inference_transport import InferenceTransport
 
     monkeypatch.setattr(RAGConfig, "ABLATION_Q_MINUS", True)
-    monkeypatch.setattr(RAGConfig, "EMBEDDING_QUERY_INSTRUCTION", "resolved instruction")
+    monkeypatch.setenv('EMBEDDING_QUERY_INSTRUCTION', "resolved instruction")
     monkeypatch.setenv("RAG_GENERATION_REVISION", "generation-revision-1")
     monkeypatch.setenv("RAG_EMBEDDING_REVISION", "revision-1")
 
     policy = _resolved_index_policy("prehop", "default")
 
-    assert policy["indexing_model"] == RAGConfig.DEFAULT_MODEL
+    assert policy["indexing_model"] == InferenceTransport.resolve("core").generation_model
     assert policy["generation_revision"] == "generation-revision-1"
     assert policy["embedding_query_instruction"] == "resolved instruction"
     assert policy["embedding_revision"] == "revision-1"
@@ -152,9 +153,8 @@ def test_index_policy_records_semantic_embedding_and_hop_identity(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generation_budget_is_shared_across_client_instances(monkeypatch):
-    from core.config import RAGConfig
 
-    monkeypatch.setattr(RAGConfig, "MAX_CONCURRENT_LLM_CALLS", 2)
+    monkeypatch.setenv('RAG_GENERATION_CONCURRENCY', str(2))
     VLLMClient._generation_semaphores.clear()
     VLLMClient._generation_inflight.clear()
     VLLMClient._generation_peak.clear()
@@ -382,11 +382,13 @@ async def test_grounded_generation_drops_only_invalid_records(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_json_propagates_transport_error_without_parse_retry():
+    from core.structured_outputs import question_contract
+
     llm = VLLMClient()
     llm.generate_response = AsyncMock(side_effect=ConnectionError("offline"))
 
     with pytest.raises(ConnectionError, match="offline"):
-        await llm.generate_json([{"role": "user", "content": "prompt"}])
+        await llm.generate_json([{"role": "user", "content": "prompt"}], structured_contract=question_contract())
 
     llm.generate_response.assert_awaited_once()
 
@@ -493,9 +495,8 @@ def test_naive_uses_shared_page_scoped_fixed_windows(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_naive_batches_embeddings_across_source_documents(monkeypatch):
-    from core.config import RAGConfig
 
-    monkeypatch.setattr(RAGConfig, "EMBEDDING_DIMENSIONS", 2)
+    monkeypatch.setenv('NEO4J_VECTOR_DIMENSIONS', str(2))
     rag = NaiveRAG(strategy="naive", corpus_tag="batch_test")
     rag.vllm.get_embeddings = AsyncMock(return_value=[[1.0, 0.0], [0.0, 1.0]])
     rag._ensure_index_ready = AsyncMock(return_value=None)  # type: ignore[method-assign]

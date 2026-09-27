@@ -11,16 +11,6 @@ class RAGConfig:
     CONNECTION_TIMING_MODE = os.environ.get("RAG_CONNECTION_TIMING_MODE", "").strip()
     CONNECTION_TIMING_STORE = os.environ.get("RAG_CONNECTION_TIMING_STORE", "").strip()
 
-    # --- Infrastructure (Actual ports identified) ---
-    # Required external OpenAI-compatible endpoints. There is intentionally no
-    # localhost fallback: missing configuration must fail before inference.
-    VLLM_URL = os.environ.get("RAG_INFERENCE_BASE_URL", "").strip()
-    VLLM_EMBED_URL = VLLM_URL
-
-    # --- LLM Settings ---
-    DEFAULT_MODEL = os.environ.get("RAG_GENERATION_MODEL", "generation-model")
-    EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "embedding-model")
-
     # --- Evaluation (LLM-as-a-judge) ---
     EVAL_MODEL = os.environ.get("EVAL_MODEL", "").strip()
     # LLM-as-a-judge is optional, supplemental analysis.  Deterministic and
@@ -28,7 +18,7 @@ class RAGConfig:
     # Enable it explicitly for a separately labelled judge analysis.
     JUDGE_ENABLED = parse_strict_bool(os.environ.get("RAG_JUDGE_ENABLED", "false"), name="RAG_JUDGE_ENABLED")
     # Debug-only escape hatch. Paper artifacts must use an evaluator distinct
-    # from both the requested generation model and DEFAULT_MODEL.
+    # from the requested generation model.
     JUDGE_ALLOW_SELF = parse_strict_bool(
         os.environ.get("RAG_JUDGE_ALLOW_SELF", "false"), name="RAG_JUDGE_ALLOW_SELF"
     )
@@ -39,14 +29,7 @@ class RAGConfig:
     # --- Common Service Settings ---
     RETRY_COUNT = int(os.environ.get("RAG_RETRY_COUNT", "3"))
     RETRY_DELAY = float(os.environ.get("RAG_RETRY_DELAY", "2.0"))
-    LLM_REQUEST_TIMEOUT = float(os.environ.get("LLM_REQUEST_TIMEOUT", "300"))
-    LLM_MAX_RETRIES = int(os.environ.get("RAG_INFERENCE_RETRY_ATTEMPTS", "5"))
     LLM_RETRY_DELAY = float(os.environ.get("LLM_RETRY_DELAY", "2.0"))
-    # Per-call sampling seed forwarded to external chat.completions when set
-    # (multi-seed benchmarking). Empty/missing => no seed (engine default).
-    _LLM_SEED_RAW = os.environ.get("RAG_LLM_SEED", "").strip()
-    LLM_SEED = int(_LLM_SEED_RAW) if _LLM_SEED_RAW.lstrip("-").isdigit() else None
-    MAX_CONTEXT_LENGTH = int(os.environ.get("RAG_MAX_CONTEXT_LENGTH", "262144"))
     # Capped below the configured context limit so input has output headroom.
     # Indexing prompts for Q-/Q+ generation rarely exceed 1–2K output;
     # 4K is comfortable headroom.
@@ -55,17 +38,8 @@ class RAGConfig:
     SYNTHESIS_MAX_OUTPUT_TOKENS = 128
     # Prehop emits a brief evidence check before its labelled final answer.
     PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS = 256
-    MAX_EMBEDDING_LENGTH = int(os.environ.get("MAX_EMBEDDING_LENGTH", "32768"))
-    EMBEDDING_QUERY_INSTRUCTION = os.environ.get(
-        "EMBEDDING_QUERY_INSTRUCTION",
-        "Given a web search query, retrieve relevant passages that answer the query",
-    ).strip()
 
     # --- RAG & Indexing Settings ---
-    MAX_CONCURRENT_LLM_CALLS = int(os.environ.get("RAG_GENERATION_CONCURRENCY", "30"))
-    MAX_CONCURRENT_EMBEDDING_REQUESTS = int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "1"))
-    EMBEDDING_BATCH_SIZE = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "16"))
-    EMBEDDING_DIMENSIONS = int(os.environ.get("NEO4J_VECTOR_DIMENSIONS", "2560"))
     NEO4J_BATCH_SIZE = int(os.environ.get("NEO4J_BATCH_SIZE", "25"))
 
     # --- Search & Ranking ---

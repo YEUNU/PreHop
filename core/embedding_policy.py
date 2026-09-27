@@ -14,7 +14,7 @@ class EmbeddingOperationalConfig:
 
     @classmethod
     def resolve(cls, strategy: str) -> EmbeddingOperationalConfig:
-        from core.strategy_registry import EXTERNAL_STRATEGIES
+        from core.strategy_registry import EXTERNAL_STRATEGIES, PAPER_TRANSPORT
 
         # In-repo clients currently consume the canonical global controls.
         # Isolated external workers receive normalized strategy overrides in
@@ -23,19 +23,19 @@ class EmbeddingOperationalConfig:
         values = cls(
             batch_size=int(
                 os.environ.get(
-                    prefix + "BATCH_SIZE", os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "16")
+                    prefix + "BATCH_SIZE", os.environ.get("RAG_EMBEDDING_BATCH_SIZE", str(PAPER_TRANSPORT.embedding_batch_size))
                 )
             ),
             concurrency=int(
                 os.environ.get(
                     prefix + "CONCURRENCY",
                     os.environ.get(
-                        "RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "1"
+                        "RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", str(PAPER_TRANSPORT.embedding_concurrency)
                     ),
                 )
             ),
             retry_attempts=int(
-                os.environ.get(prefix + "RETRY_ATTEMPTS", os.environ.get("RAG_INFERENCE_RETRY_ATTEMPTS", "5"))
+                os.environ.get(prefix + "RETRY_ATTEMPTS", os.environ.get("RAG_INFERENCE_RETRY_ATTEMPTS", str(PAPER_TRANSPORT.retry_attempts)))
             ),
         )
         return values

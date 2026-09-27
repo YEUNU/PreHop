@@ -78,7 +78,7 @@ Model services are supplied separately; `run_servers.sh` does not start them.
 For the full comparison, prepare the additional runtimes once:
 
 ```bash
-./scripts/setup_official_baselines.sh --primary
+./scripts/setup_official_baselines.sh
 ```
 
 This installs HopRAG, LightRAG, GFM-RAG and LinearRAG from pinned sources and

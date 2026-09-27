@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.benchmark_failures import BenchmarkIntegrityError
 from core.strategy_registry import RESEARCH_EXTERNAL_STRATEGIES, get_strategy
-from models.external_research.drivers.base import ResearchDriver, document_rows, load_rows
+from models.external_research.drivers.base import ResearchDriver, document_rows
 
 RESULT_PREFIX = "__PREHOP_OFFICIAL_RESULT__="
 
@@ -51,7 +51,6 @@ def main() -> int:
     driver = None
     try:
         driver = load_driver(args.strategy, args.official_root, args.output_dir)
-        staged_ids = {row["source_id"] for row in load_rows(args.output_dir)}
         if args.mode == "index":
             request = json.loads(sys.stdin.readline())
             if request.get("operation") != "index":
@@ -73,7 +72,7 @@ def main() -> int:
                     emit(
                         {
                             "ok": True,
-                            "documents": document_rows(args.strategy, documents, staged_ids),
+                            "documents": document_rows(documents),
                             "answer": answer,
                         }
                     )
@@ -86,7 +85,7 @@ def main() -> int:
                         if isinstance(result, Exception):
                             serialized.append({"error": f"{type(result).__name__}: {result}"})
                         else:
-                            serialized.append({"documents": document_rows(args.strategy, result["documents"], staged_ids),
+                            serialized.append({"documents": document_rows(result["documents"]),
                                                "answer": result["answer"]})
                     workers = (driver.engine.config.max_workers if args.strategy == "linear_rag"
                                else getattr(driver, "native_qa_max_workers", None))

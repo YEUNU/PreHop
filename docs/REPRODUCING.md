@@ -52,7 +52,7 @@ from generation seeds; current paper-mode generation omits the LLM seed.
 For all comparison systems, first run:
 
 ```bash
-./scripts/setup_official_baselines.sh --primary
+./scripts/setup_official_baselines.sh
 ```
 
 This includes HopRAG's main/POS environments and local model downloads; MS

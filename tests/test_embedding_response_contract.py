@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.config import RAGConfig
 from core.vllm_client import VLLMClient
 
 
@@ -18,7 +17,7 @@ def _response(indices, vectors):
 def _client(monkeypatch, dimension=2):
     client = object.__new__(VLLMClient)
     client.logger = __import__("logging").getLogger("test")
-    monkeypatch.setattr(RAGConfig, "EMBEDDING_DIMENSIONS", dimension)
+    monkeypatch.setenv('NEO4J_VECTOR_DIMENSIONS', str(dimension))
     return client
 
 
@@ -69,7 +68,7 @@ def test_core_embedding_endpoint_peak_is_one_across_clients(monkeypatch):
         def embed_client(self):
             return SimpleNamespace(embeddings=Embeddings())
 
-    monkeypatch.setattr(RAGConfig, "MAX_CONCURRENT_EMBEDDING_REQUESTS", 1)
+    monkeypatch.setenv('RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS', str(1))
     Client._embed_semaphores.clear()
     clients = [object.__new__(Client), object.__new__(Client)]
     for client in clients:
@@ -89,7 +88,7 @@ def test_cancelled_embedding_waiter_returns_eventual_permit(monkeypatch):
         def embed_client(self):
             raise AssertionError("cancelled waiter must not issue a request")
 
-    monkeypatch.setattr(RAGConfig, "MAX_CONCURRENT_EMBEDDING_REQUESTS", 1)
+    monkeypatch.setenv('RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS', str(1))
     Client._embed_semaphores.clear()
     semaphore = __import__("threading").BoundedSemaphore(1)
     semaphore.acquire()

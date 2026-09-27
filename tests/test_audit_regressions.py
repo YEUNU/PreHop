@@ -129,12 +129,14 @@ async def test_paper_request_uses_transport_seed_after_late_environment_resoluti
     calls = []
     async def create(**kwargs):
         calls.append(kwargs)
-        return types.SimpleNamespace(usage=None)
+        return types.SimpleNamespace(usage=None, choices=[types.SimpleNamespace(
+            message=types.SimpleNamespace(content='answer'))])
     fake = types.SimpleNamespace(base_url='http://litellm.test/v1',
                                  chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+    monkeypatch.setattr(VLLMClient, 'client', property(lambda _: fake))
     client = VLLMClient()
-    await client._create_generation_request(fake, {'model': 'gemma-4-31b-it'})
+    await client.generate_response([{'role': 'user', 'content': 'question'}])
     assert 'seed' not in calls[0]
-    await client._create_generation_request(fake, {'model': 'gemma-4-31b-it', 'seed': 41})
+    await client.generate_response([{'role': 'user', 'content': 'question'}], seed=41)
     assert len(calls) == 2
     assert all('seed' not in call for call in calls)

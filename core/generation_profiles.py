@@ -3,9 +3,9 @@ from __future__ import annotations
 
 
 def structured_retry_profile() -> dict:
-    from core.config import RAGConfig
-    return {'profile': 'prehop-native-json-retry-v2',
-            'max_total_attempts': RAGConfig.LLM_MAX_RETRIES,
+    from core.inference_transport import InferenceTransport
+    return {'profile': 'prehop-native-json-retry-v3',
+            'max_total_attempts': InferenceTransport.resolve('core').retry_attempts,
             'budget_scope': 'transport-and-format-shared',
             'sdk_automatic_retries': 0,
             'eligible': ['json_syntax', 'invalid_raw_type'],

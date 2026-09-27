@@ -332,7 +332,6 @@ class _VLLMEmbedClient:
 
         payload = response.json()
         data = payload.get("data") if isinstance(payload, dict) else None
-        [item.get("index") if isinstance(item, dict) else None for item in data]
         ordered = sorted(data, key=lambda item: item["index"])
         vectors: list[list[float]] = []
         for item in ordered:

@@ -33,7 +33,7 @@ def method_environment_defaults(env_path: Path | None = None) -> dict[str, str]:
     allowed = set()
     for strategy in _METHOD_PREFIXES:
         spec = get_strategy(strategy)
-        for _field, name, value in spec.paper_index_environment:
+        for name, value in spec.index_environment_defaults().items():
             defaults[name] = str(value).lower() if isinstance(value, bool) else str(value)
         allowed.update({spec.output_env, f"RAG_{strategy.upper()}_ROOT", f"RAG_{strategy.upper()}_PYTHON"})
     allowed.update(defaults)

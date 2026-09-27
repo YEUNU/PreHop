@@ -209,7 +209,6 @@ def test_shell_preflight_reports_naive_controlled_protocol(tmp_path):
 def test_ms_graphrag_internal_log_is_dataset_scoped(tmp_path, monkeypatch):
     monkeypatch.setattr(official_indexer, "_OUTPUT_ROOT", tmp_path / "ms-output")
     monkeypatch.setattr(official_indexer, "_register_external_models_with_litellm", lambda: None)
-    monkeypatch.setattr(official_indexer, "_install_litellm_router_for_gen", lambda: None)
     monkeypatch.delenv("RAG_INDEX_LOG_DIR", raising=False)
     monkeypatch.setenv("VLLM_API_BASE", "http://generation/v1")
     monkeypatch.setenv("VLLM_EMBED_API_BASE", "http://embedding/v1")
@@ -221,7 +220,6 @@ def test_ms_graphrag_internal_log_is_dataset_scoped(tmp_path, monkeypatch):
     monkeypatch.setenv("RAG_GENERATION_MODEL", "generation")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding")
     monkeypatch.setattr(official_indexer, "_GEN_API_BASE", "http://generation/v1")
-    monkeypatch.setattr(official_indexer, "_GEN_API_BASES", ["http://generation/v1"])
     monkeypatch.setattr(official_indexer, "_GEN_MODEL_NAME", "generation")
     monkeypatch.setattr(official_indexer, "_EMBED_API_BASE", "http://embedding/v1")
     monkeypatch.setattr(official_indexer, "_EMBED_MODEL_NAME", "embedding")

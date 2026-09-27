@@ -18,7 +18,7 @@ def test_registered_plan_indexes_and_benchmarks_all_targets_in_order():
     assert len([row for row in steps if row['id'].startswith('cold/')]) == 14
     assert len([row for row in steps if row['id'].startswith('one-query/')]) == 14
     names = [row['id'] for row in steps]
-    assert names.index('resume_stale_rejection') < names.index('one-query/multihoprag/prehop')
+    assert names.index('resume_continuation') < names.index('one-query/multihoprag/prehop')
     assert names[-2:] == ['full_target_admitted', 'full_matrix']
     assert steps[-1]['argv'] == ['bash', 'scripts/run_paper_matrix.sh', 'fresh']
 

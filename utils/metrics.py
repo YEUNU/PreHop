@@ -213,7 +213,7 @@ async def _call_judge_llm(judge_prompt: str, vllm_client) -> tuple[str, dict | N
     judge_payload: dict | None = None
     if vllm_client:
         try:
-            judge_payload = await vllm_client.generate_json(
+            judge_payload = await vllm_client.generate_eval_json(
                 [{"role": "user", "content": judge_prompt}],
                 model=RAGConfig.EVAL_MODEL,
             )

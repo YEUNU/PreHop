@@ -118,15 +118,17 @@ consumer errors propagate. Initial question rewriting and document-conditioned
 refinement, including their schemas, prompts, length gates and configuration
 fields, have been removed.
 
-`prehop-json-schema-v3` does not emit `uniqueItems`. Materialized schemas and
-existing provenance digests retain their recorded identities; the historical
-validation-contract label in the digest is not an active local validator.
-The `prehop-native-json-retry-v2` profile retries JSON decoding failures with the
-same request under one shared maximum of five wire attempts, including transport
-retries. Decodable duplicate properties, nonfinite values and schema-mismatched
-values do not trigger local validation retries. Discarded responses and available
-usage remain recorded; retries do not select among valid outputs by quality.
-Final synthesis remains text output.
+`prehop-json-schema-v3` does not emit `uniqueItems`. Schema bundle hashes cover
+the requested schemas; existing artifacts retain their recorded identities.
+The `prehop-native-json-retry-v3` profile retries JSON decoding failures with the
+same request under one shared retry budget, including transport retries. The
+default is five wire attempts. Question generation and candidate selection call
+this client directly. Consumer errors propagate without starting another retry
+loop or rewriting the prompt. Decodable duplicate properties, nonfinite values
+and schema-mismatched values do not trigger local validation retries. Discarded
+responses and available usage remain recorded; retries do not select among valid
+outputs by quality. Final synthesis remains text output. Transport settings are
+owned by the [common inference gateway configuration](RUNTIME_REQUIREMENTS.md#common-inference-gateway).
 
 ## Prehop query path and branches
 

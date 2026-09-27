@@ -33,13 +33,12 @@ async def test_same_target_can_run_concurrently_without_queue_preflight(monkeypa
 async def test_structured_json_decodes_without_response_schema_rejection(monkeypatch):
     from core.structured_outputs import question_contract
     from core.vllm_client import VLLMClient
-    from models.prehop.llm_json import generate_json_or_raise
     client = VLLMClient.__new__(VLLMClient)
     client.logger = logging.getLogger('test_execution_without_validation')
     client._retry_attempts = 1
     response = {'q_minus': [123], 'q_plus': [], 'extra': 'native value'}
     client.generate_response = AsyncMock(return_value=json.dumps(response))
-    result = await generate_json_or_raise(client, [], 'index', structured_contract=question_contract('index'))
+    result = await client.generate_json([], structured_contract=question_contract())
     assert result == response
     client.generate_response.assert_awaited_once()
 
@@ -54,7 +53,7 @@ async def test_actual_generation_failure_is_not_reported_as_success():
     error = ConnectionError('upstream disconnected')
     client.generate_response = AsyncMock(side_effect=error)
     with pytest.raises(ConnectionError) as caught:
-        await client._generate_structured_json([], question_contract('index'))
+        await client.generate_json([], structured_contract=question_contract())
     assert caught.value is error
 
 

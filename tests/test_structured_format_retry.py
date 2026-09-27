@@ -8,6 +8,7 @@ from openai import AsyncOpenAI, InternalServerError
 
 from core.config import RAGConfig
 from core.inference_telemetry import begin, finish
+from core.inference_transport import InferenceTransport
 from core.structured_outputs import StructuredOutputError, question_contract
 from core.vllm_client import VLLMClient
 
@@ -32,10 +33,10 @@ async def test_actual_transport_format_attempts_are_identical_and_all_usage_is_c
         if exhausted:
             with pytest.raises(StructuredOutputError, match='metadata='):
                 await client.generate_json([{'role': 'user', 'content': 'unchanged'}],
-                                           structured_contract=question_contract('index'), max_tokens=4096, temperature=0)
+                                           structured_contract=question_contract(), max_tokens=4096, temperature=0)
         else:
             assert await client.generate_json([{'role': 'user', 'content': 'unchanged'}],
-                structured_contract=question_contract('index'), max_tokens=4096, temperature=0) == {'q_minus': [], 'q_plus': []}
+                structured_contract=question_contract(), max_tokens=4096, temperature=0) == {'q_minus': [], 'q_plus': []}
         totals = finish(token)
         expected = 5 if exhausted else 2
         assert len(requests) == expected and all(row == requests[0] for row in requests)
@@ -53,7 +54,7 @@ async def test_actual_transport_format_attempts_are_identical_and_all_usage_is_c
 
 def configured_client(monkeypatch, sdk):
     monkeypatch.setenv('RAG_PAPER_MODE', 'false')
-    monkeypatch.setattr(RAGConfig, 'LLM_MAX_RETRIES', 5)
+    monkeypatch.setenv('RAG_INFERENCE_RETRY_ATTEMPTS', str(5))
     monkeypatch.setattr(RAGConfig, 'LLM_RETRY_DELAY', 0)
     client = VLLMClient.__new__(VLLMClient)
     client.model_name = 'gemma-4-31b-it'
@@ -84,7 +85,7 @@ async def test_transport_and_format_share_five_wire_attempts_and_disable_sdk_ret
     try:
         with pytest.raises(InternalServerError):
             await client.generate_json([{'role': 'user', 'content': 'unchanged'}],
-                                       structured_contract=question_contract('index'), max_tokens=512)
+                                       structured_contract=question_contract(), max_tokens=512)
         totals = finish(token)
         assert len(requests) == totals['generation_calls'] == 5
         assert all(row == requests[0] for row in requests)
@@ -103,7 +104,7 @@ def test_retry_changes_only_prehop_identity_and_its_chunk_cache(monkeypatch):
     prehop = method_identity('prehop')
     cache = _generation_signature('gemma-4-31b-it')
     assert 'structured_format_retry' not in generation_profiles('naive')
-    monkeypatch.setattr(RAGConfig, 'LLM_MAX_RETRIES', RAGConfig.LLM_MAX_RETRIES + 1)
+    monkeypatch.setenv('RAG_INFERENCE_RETRY_ATTEMPTS', str(InferenceTransport.resolve("core").retry_attempts + 1))
     assert method_identity('naive') == naive
     assert method_identity('prehop') != prehop
     assert _generation_signature('gemma-4-31b-it') != cache
@@ -114,7 +115,7 @@ def test_retry_changes_only_prehop_identity_and_its_chunk_cache(monkeypatch):
 async def test_decodable_native_outputs_do_not_trigger_advertised_retries(monkeypatch, content):
     from core.generation_profiles import structured_retry_profile
     profile = structured_retry_profile()
-    assert profile['profile'] == 'prehop-native-json-retry-v2'
+    assert profile['profile'] == 'prehop-native-json-retry-v3'
     assert profile['eligible'] == ['json_syntax', 'invalid_raw_type']
     requests = []
     def respond(request):
@@ -127,8 +128,31 @@ async def test_decodable_native_outputs_do_not_trigger_advertised_retries(monkey
     client = configured_client(monkeypatch, sdk)
     try:
         value = await client.generate_json([{'role': 'user', 'content': 'unchanged'}],
-                                          structured_contract=question_contract('index'), max_tokens=4096)
+                                          structured_contract=question_contract(), max_tokens=4096)
         assert json.dumps(value) == json.dumps(json.loads(content))
+        assert len(requests) == 1
+    finally:
+        await sdk.close()
+
+
+@pytest.mark.asyncio
+async def test_question_consumer_error_does_not_start_another_generation_budget(monkeypatch):
+    from models.prehop.indexing.knowledge_mapping import KnowledgeMappingMixin
+    monkeypatch.setattr(RAGConfig, 'HOP_LINK_VARIANT', 'question')
+    monkeypatch.setattr(RAGConfig, 'QUESTION_SCHEMA', 'legacy')
+    requests = []
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'id': 'fixture', 'object': 'chat.completion', 'created': 0,
+            'model': 'gemma-4-31b-it', 'choices': [{'index': 0, 'finish_reason': 'stop',
+                'message': {'role': 'assistant', 'content': '{"q_minus":null,"q_plus":[]}'}}]})
+    sdk = AsyncOpenAI(base_url='http://retry.test/v1', api_key='synthetic',
+                     http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
+    consumer = KnowledgeMappingMixin()
+    consumer.indexing_llm = configured_client(monkeypatch, sdk)
+    try:
+        with pytest.raises(TypeError):
+            await consumer.extract_hoprag_queries('An ordinary source.', 'Source')
         assert len(requests) == 1
     finally:
         await sdk.close()

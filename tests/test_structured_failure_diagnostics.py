@@ -42,7 +42,7 @@ async def test_actual_sdk_parse_failure_has_only_safe_metadata_and_bounded_ident
     monkeypatch.setattr(client, '_create_generation_request', create)
     messages = [{'role': 'system', 'content': 'SECRET_TRUNCATED_CONTEXT'},
                 {'role': 'user', 'content': 'SECRET_NATIVE_PROMPT'}]
-    contract = question_contract('index')
+    contract = question_contract()
     try:
         with (
             indexing_failure_scope('SECRET_FILENAME', 'SECRET_DOCUMENT', 'SECRET_TITLE', 'SECRET_CHUNK', 3, 7),

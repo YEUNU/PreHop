@@ -24,7 +24,7 @@ STAGES = (
     "embedding_probe",
     "bisection_probe",
     "cold_canary_16",
-    "resume_stale_rejection",
+    "resume_continuation",
     "one_query_matrix_16",
     "full_target_admitted",
 )
@@ -84,7 +84,7 @@ def execute_stage(path: Path, campaign: str, stage: str) -> None:
                     "strategy": strategy, "dataset": dataset, "exit_code": 0, "invocation": invocation})
         evidence["targets"] = targets
     elif stage == "runtime_setup":
-        command = ["bash", "scripts/setup_official_baselines.sh", "--primary"]
+        command = ["bash", "scripts/setup_official_baselines.sh"]
         subprocess.run(command, cwd=ROOT, check=True)
         evidence["receipt"] = save("invocation", {"argv": command, "exit_code": 0, "stage": stage,
                                                    "checks": {name: "passed" for name in PRIMARY_STRATEGIES}})

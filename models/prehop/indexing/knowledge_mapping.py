@@ -6,9 +6,7 @@ Each chunk is annotated at indexing time with dual hypothetical queries:
   dependencies and later seed cross-document evidence-edge construction.
 """
 
-import asyncio
 import logging
-import random
 import re
 import unicodedata
 from typing import Any
@@ -16,7 +14,6 @@ from typing import Any
 from core.config import RAGConfig
 from core.generation_profiles import request_settings
 from core.structured_outputs import question_contract
-from models.prehop.llm_json import generate_json_or_raise
 from models.prehop.tracing import traced
 from utils.prompts import (
     GROUNDED_HOPRAG_FORMAT_INSTRUCTION,
@@ -162,15 +159,7 @@ class KnowledgeMappingMixin:
 
     @traced
     async def extract_hoprag_queries(self, chunk: str, title: str = "") -> dict[str, Any]:
-        """Generate Q-/Q+ for a chunk without rolling context.
-
-        A structurally invalid response (valid JSON, but missing/malformed
-        q_minus or q_plus) is retried the same bounded number of
-        times as other transient failures in this codebase, rather than
-        failing the whole document on one flaky response. This is retrying
-        the identical call until it validates, not a content-quality filter
-        -- it does not change what a valid response looks like.
-        """
+        """Generate questions once; the client owns transport and JSON retries."""
         if RAGConfig.HOP_LINK_VARIANT == "body":
             return {"q_minus": [], "q_plus": []}
         question_schema = RAGConfig.QUESTION_SCHEMA
@@ -189,48 +178,30 @@ class KnowledgeMappingMixin:
             {"role": "user", "content": text_prompt},
             {"role": "user", "content": format_instruction.format()},
         ]
-        last_error: Exception | None = None
-        for attempt in range(1, RAGConfig.RETRY_COUNT + 1):
-            try:
-                data = await generate_json_or_raise(
-                    self.indexing_llm,
-                    messages,
-                    "Q-/Q+ generation",
-                    f"title={title!r}",
-                    structured_contract=question_contract("index", question_schema, RAGConfig.QUESTIONS_PER_DIRECTION),
-                    **request_settings("question_index"),
+        data = await self.indexing_llm.generate_json(
+            messages,
+            json_debug_label="Q-/Q+ generation",
+            structured_contract=question_contract(question_schema, RAGConfig.QUESTIONS_PER_DIRECTION),
+            **request_settings("question_index"),
+        )
+        if grounded:
+            q_minus = self._filter_grounded_items(
+                data["q_minus"], "Q-", chunk, title, question_schema=question_schema
+            )
+            q_minus_identities = {_question_identity(item["text"]) for item in q_minus}
+            q_plus = [
+                item
+                for item in self._filter_grounded_items(
+                    data["q_plus"], "Q+", chunk, title, question_schema=question_schema
                 )
-                if grounded:
-                    q_minus = self._filter_grounded_items(
-                        data["q_minus"], "Q-", chunk, title, question_schema=question_schema
-                    )
-                    q_minus_identities = {_question_identity(item["text"]) for item in q_minus}
-                    q_plus = [
-                        item
-                        for item in self._filter_grounded_items(
-                            data["q_plus"], "Q+", chunk, title, question_schema=question_schema
-                        )
-                        if _question_identity(item["text"]) not in q_minus_identities
-                    ]
-                else:
-                    q_minus = self._question_items(data["q_minus"], "Q-", title)
-                    q_minus_identities = {_question_identity(question) for question in q_minus}
-                    q_plus = [
-                        question
-                        for question in self._question_items(data["q_plus"], "Q+", title)
-                        if _question_identity(question) not in q_minus_identities
-                    ]
-                return {"q_minus": q_minus, "q_plus": q_plus}
-            except (ValueError, TypeError) as exc:
-                last_error = exc
-                if attempt < RAGConfig.RETRY_COUNT:
-                    logger.warning(
-                        "Q-/Q+ generation validation failed (%d/%d) for title=%r: %s; retrying",
-                        attempt,
-                        RAGConfig.RETRY_COUNT,
-                        title,
-                        exc,
-                    )
-                    delay = (RAGConfig.RETRY_DELAY * (2 ** (attempt - 1))) + random.uniform(0, RAGConfig.RETRY_DELAY)
-                    await asyncio.sleep(delay)
-        raise last_error
+                if _question_identity(item["text"]) not in q_minus_identities
+            ]
+        else:
+            q_minus = self._question_items(data["q_minus"], "Q-", title)
+            q_minus_identities = {_question_identity(question) for question in q_minus}
+            q_plus = [
+                question
+                for question in self._question_items(data["q_plus"], "Q+", title)
+                if _question_identity(question) not in q_minus_identities
+            ]
+        return {"q_minus": q_minus, "q_plus": q_plus}

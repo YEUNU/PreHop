@@ -53,6 +53,14 @@ removed. Credentials must not enter commands, logs, or artifacts.
 Legacy provider variables are not an alternative public interface; compatibility
 names are injected only into isolated native children.
 
+`InferenceTransport.resolve()` supplies the effective request settings for both
+ordinary and comparison runs. `RAG_INFERENCE_TIMEOUT` controls the request
+timeout (600 seconds by default); `RAG_INFERENCE_RETRY_ATTEMPTS` controls the
+shared retry budget (five attempts by default). There is no separate
+`LLM_REQUEST_TIMEOUT` setting. The strategy registry owns method defaults and
+their active environment overrides; index metadata records those resolved values.
+Fixed local model revisions come from the runtime requirements manifest.
+
 The remote embedding contract is 2,560 dimensions, a 32,768-token input limit,
 and zero token reserve. The generation context limit is 262,144. Query
 instructions and templates are method-specific registry policy. An observed
@@ -83,7 +91,7 @@ described [below](#hoprag-runtime). Use a fresh runtime home when preparing a
 replacement; setup does not clean an existing attempt.
 
 ```bash
-./scripts/setup_official_baselines.sh --primary
+./scripts/setup_official_baselines.sh
 ```
 
 This provisions **HopRAG, LightRAG, GFM-RAG and LinearRAG** using registry
@@ -188,12 +196,14 @@ Adapters preserve native source and declare response interventions separately.
 | LightRAG | Native extraction and document status; failed insertion is not successful processing |
 | LinearRAG | Native local NER and QA text without an additional answer-quality gate |
 
-Prehop's `prehop-native-json-retry-v2` metadata describes JSON decoding failures:
+Prehop's `prehop-native-json-retry-v3` metadata describes JSON decoding failures:
 invalid JSON syntax or an invalid raw input type. Transport and decoding retries
 share the configured maximum of five wire attempts, with unchanged requests and
 SDK retries disabled. Decodable duplicate properties, nonfinite values or
 schema-mismatched values are not rejected by an additional local validator.
-This metadata correction does not change parsing behavior or relabel saved runs.
+Question generation has no outer retry loop, and optional synchronous judge
+calls use their dedicated JSON path without prompt-repair retries. The updated
+retry profile and method identity distinguish this behavior from saved runs.
 
 HopRAG retains raw wire, embedding, and recovery records. Recovery does not
 invent questions or facts. Other native observation records distinguish returned

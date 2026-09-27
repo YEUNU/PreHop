@@ -49,7 +49,7 @@ def test_judge_prompt_receives_official_aliases():
     class Judge:
         prompt = ""
 
-        async def generate_json(self, messages, model):
+        async def generate_eval_json(self, messages, model):
             self.prompt = messages[0]["content"]
             return {"score": 1, "groundedness": 1, "reason": "alias"}
 

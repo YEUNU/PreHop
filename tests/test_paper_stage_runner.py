@@ -101,7 +101,7 @@ def test_production_benchmark_checkpoint_resume_retains_rows_and_schema_metadata
     monkeypatch.setenv('RAG_BENCHMARK_CHECKPOINT_EVERY', '1')
     monkeypatch.delenv('RAG_BENCHMARK_RESUME', raising=False)
     monkeypatch.setattr(RAGConfig, 'JUDGE_ENABLED', False)
-    monkeypatch.setattr(RAGConfig, 'LLM_SEED', RAGConfig.LLM_SEED)
+    monkeypatch.setenv('RAG_LLM_SEED', '42')
     calls = []
     class NativeFixture:
         def __init__(self, **kwargs):

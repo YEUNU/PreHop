@@ -46,7 +46,7 @@ async def test_real_sdk_strict_raw_response_has_no_repair_or_downgrade(monkeypat
         return await sdk.chat.completions.create(**params)
     monkeypatch.setattr(client, '_create_generation_request', create)
     token = begin()
-    contract = question_contract('index')
+    contract = question_contract()
     try:
         try:
             expected = json.loads(content)
@@ -94,7 +94,7 @@ async def test_actual_two_paths_through_typed_transport_and_sdk(monkeypatch, ind
                        'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b',
                        'RAG_PAPER_MODE': 'true', 'RAG_SKIP_PROJECT_ENV': 'true', 'RAG_LLM_SEED': '42'}.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(RAGConfig, 'LLM_SEED', None)  # module import preceded late environment resolution
+    monkeypatch.setenv('RAG_LLM_SEED', '')  # module import preceded late environment resolution
     monkeypatch.setattr(RAGConfig, 'QUESTION_SCHEMA', index_schema)
     requests = []
     def respond(request):
@@ -144,7 +144,7 @@ def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity
     from core import structured_outputs
     from models.prehop.indexing.chunking import _generation_signature
     assert structured_outputs.PREHOP_STRUCTURED_PROFILE == 'prehop-json-schema-v3'
-    assert canonical_semantic_index_policy('prehop', 'hotpotqa')['method_contract'] == 'paper-method-v5'
+    assert canonical_semantic_index_policy('prehop', 'hotpotqa')['method_contract'] == 'paper-method-v6'
     current = structured_bundle_sha256()
     cache = _generation_signature('gemma-4-31b-it')
     monkeypatch.setattr(structured_outputs, 'PREHOP_STRUCTURED_PROFILE', 'prehop-json-schema-v1')
@@ -153,7 +153,7 @@ def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity
 
 
 def test_every_materialized_schema_uses_reviewed_wire_keywords():
-    contracts = [question_contract('index', mode) for mode in ('legacy', 'grounded_v1', 'linked_v2')]
+    contracts = [question_contract(mode) for mode in ('legacy', 'grounded_v1', 'linked_v2')]
     contracts += [ranking_contract(['A'], 1), ranking_contract(['A', 'B', 'C'], 2)]
     for contract in contracts:
         schema = contract.response_format()['json_schema']['schema']

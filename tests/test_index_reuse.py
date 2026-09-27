@@ -88,14 +88,14 @@ def linked(tmp_path, monkeypatch):
 def test_validated_clone_keeps_source_identity_and_fresh_result(linked):
     path, link, original, clone, _ = linked
     before = reuse.inventory(original)
-    reuse.load_link(path, link['target_run_id'], link['strategy'], link['dataset'])
+    reuse.load_link(path)
     assert os.environ['RAG_RUN_ID'] == 'source'
     assert os.environ['RAG_BENCHMARK_TIMESTAMP'] == link['target_run_id']
     assert os.environ['RAG_INDEX_NAMESPACE'] == 'hotpotqa_source'
     assert reuse.inventory(original) == before == reuse.inventory(clone)
     # Native query cache writes belong to the clone; original snapshots stay valid.
     (clone / 'query.cache').write_text('new query')
-    reuse.load_link(path, link['target_run_id'], link['strategy'], link['dataset'])
+    reuse.load_link(path)
 
 
 def test_index_time_is_original_and_query_latency_is_not_parallel_wall(linked):
@@ -129,7 +129,7 @@ def test_prepare_copies_native_bytes_after_full_gate_and_preserves_source(linked
     assert produced['clone']['operation'] == 'byte_identical_copy_without_metadata_rebinding'
     # Later live-ledger advancement cannot invalidate the immutable source snapshot.
     campaign_ledger.write_text(json.dumps({**ledger, 'status': 'admitted'}))
-    reuse.load_link(prepared, link['target_run_id'], 'lightrag', 'hotpotqa')
+    reuse.load_link(prepared)
 
 
 def test_fresh_interpreter_binds_cli_and_all_native_query_paths_before_import(tmp_path, monkeypatch):
@@ -150,11 +150,12 @@ path.parent.mkdir(parents=True)
 path.write_text(json.dumps({'target_run_id':target,'source_run_id':'original-index',
     'strategy':method,'dataset':'hotpotqa','clone':{'query_output_root':clone}}))
 os.environ.update(RAG_JUDGE_ENABLED='true',RAG_JUDGE_BATCH='true')
-reuse.bootstrap_benchmark(path,target,method,'hotpotqa')
+reuse.bootstrap_benchmark(path)
 assert 'core.config' not in sys.modules
 from cli.benchmark import RAGConfig
+from core.inference_transport import InferenceTransport
 assert RAGConfig.JUDGE_ENABLED is False and RAGConfig.JUDGE_BATCH is False
-assert RAGConfig.LLM_SEED == spec.paper_generation_seed
+assert InferenceTransport.resolve("core").generation_seed == spec.paper_generation_seed
 assert int(os.environ['RAG_BENCHMARK_CONCURRENCY']) == PAPER_TRANSPORT.benchmark_concurrency
 assert os.environ['RAG_RUN_ID']=='original-index'
 assert os.environ['RAG_BENCHMARK_TIMESTAMP']==target

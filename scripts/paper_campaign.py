@@ -72,7 +72,7 @@ def build_steps(campaign: str, attempt: str, python: str, target_attempts: dict 
             steps.append({'id': f'cold/{dataset}/{method}', 'argv': [python, 'scripts/paper_cold_canary.py', campaign,
                           method, dataset, '--attempt', selected_attempt(attempt, target_attempts, f'cold/{dataset}/{method}')]})
     steps.extend([{'id': 'cold_canary_16', 'argv': [*stage, 'cold-aggregate', campaign, '--attempt', attempt, *matrix_args]},
-                  {'id': 'resume_stale_rejection', 'argv': [*stage, 'recovery', campaign, '--attempt', attempt]}])
+                  {'id': 'resume_continuation', 'argv': [*stage, 'recovery', campaign, '--attempt', attempt]}])
     for method in PRIMARY_STRATEGIES:
         for dataset in ('multihoprag', 'hotpotqa'):
             steps.append({'id': f'one-query/{dataset}/{method}', 'argv': [*stage, 'one-query', campaign,
@@ -87,10 +87,8 @@ def build_steps(campaign: str, attempt: str, python: str, target_attempts: dict 
 def create_plan(campaign: str, commit: str, attempt: str) -> Path:
     from scripts.paper_cold_canary import save
     from scripts.paper_gate_ledger import _context
-    from scripts.paper_stage_runner import selected_python_environment, validate_name
+    from scripts.paper_stage_runner import selected_python_environment
     from utils.provenance import code_provenance
-    validate_name(campaign)
-    validate_name(attempt)
     selected = selected_python_environment()
     root = ROOT / 'data/results' / campaign
     plan = {'schema_version': 1, 'campaign': campaign, 'commit': commit, 'attempt': attempt,
@@ -105,9 +103,8 @@ def create_plan(campaign: str, commit: str, attempt: str) -> Path:
 def create_successor_plan(previous_path: Path, failed_step: str, attempt: str, segment: str) -> Path:
     from scripts.campaign_attempts import attempt_mapping
     from scripts.paper_cold_canary import save
-    from scripts.paper_stage_runner import reference, validate_name
+    from scripts.paper_stage_runner import reference
     from utils.provenance import code_provenance
-    validate_name(segment)
     attempt_mapping({failed_step: attempt})
     handle = lock(resource_lock_path())
     try:

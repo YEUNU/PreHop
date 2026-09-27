@@ -4,7 +4,7 @@ from collections.abc import Iterable
 import httpx
 import pytest
 
-from core.config import RAGConfig
+from core.inference_transport import InferenceTransport
 from core.neo4j_service import Neo4jService
 from core.vllm_client import VLLMClient
 from models.naive.naive_rag import NaiveRAG
@@ -12,8 +12,8 @@ from models.prehop.graphrag import GraphRAG
 
 HEALTH_CHECKS: dict[str, tuple[str, set[int]]] = {
     "neo4j_http": ("http://localhost:7474", {200, 401, 403, 405}),
-    "generation": (f"{RAGConfig.VLLM_URL.rstrip('/')}/models", {200, 401}),
-    "embedding": (f"{RAGConfig.VLLM_EMBED_URL.rstrip('/')}/models", {200, 401}),
+    "generation": (f"{InferenceTransport.resolve("core").generation_base_url.rstrip('/')}/models", {200, 401}),
+    "embedding": (f"{InferenceTransport.resolve("core").embedding_base_url.rstrip('/')}/models", {200, 401}),
 }
 
 
