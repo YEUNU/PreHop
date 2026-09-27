@@ -2,14 +2,14 @@
 
 This document describes implementation behavior. `core/config.py` owns runtime
 defaults; `core/strategy_registry.py` owns supported methods, primary order,
-upstream revisions, and paper policies. Launch procedures are defined in
-[THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md). Research-only sources are
-described in [RESEARCH_POLICY](RESEARCH_POLICY.md).
+upstream revisions, and benchmark policies. Launch procedures are defined in
+[THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md).
 
 ## Strategy dispatch and indexing branches
 
-The primary order is Prehop, Naive RAG, HopRAG, MS GraphRAG, LightRAG, GFM-RAG,
-and LinearRAG. The paper targets MultiHop-RAG and HotpotQA (HippoRAG corpus). HotpotQA uses
+The registry execution order is Prehop, Naive RAG, HopRAG, MS GraphRAG, LightRAG,
+GFM-RAG, and LinearRAG. Comparisons cover MultiHop-RAG and HotpotQA (HippoRAG
+corpus). HotpotQA uses
 the pinned HippoRAG v1 pooled retrieval corpus, with
 source and sentence identities preserved. Preparation and evaluation are defined
 in [HOTPOTQA](HOTPOTQA.md).
@@ -165,8 +165,13 @@ candidates retain their direct score when also reached by a graph path.
 `retrieval/scoring.py` uses query-to-body similarity for all candidates by default
 (`HOP_SEMANTIC_VARIANT=body_only`). The historical `body_bridge_min` option
 uses the minimum of body and best source-Q+ similarity for HOP candidates. Semantic and representation orders are fused by reciprocal rank.
-The default LLM selector receives all candidates as numbered passages, without
-gold labels, retrieval scores, or path metadata.
+The default LLM selector receives the complete candidate union as passages with
+opaque IDs, titles and available source metadata, without gold labels, retrieval
+scores or path metadata. The requested ranking length is the smaller of the
+candidate count and final top-k. Returned IDs are mapped directly to candidates;
+unknown IDs fail at lookup. A short ranking is filled from the existing candidate
+order until top-k, then the query adapter builds unique source records. There
+is no separate local uniqueness or length validation of the model's ranking.
 
 Depth zero disables graph expansion while preserving passage selection.
 Experimental channel, edge, reciprocal-filter, semantic-scoring, and
@@ -174,9 +179,10 @@ linked-continuation switches remain distinct from the primary defaults.
 
 The primary component launcher supports `--expansion next_only`, `hop_only`,
 and `none`. It retains the reference run’s activation and scoring policies;
-for historical runs these are Q+-owner activation and bridge scoring. With `none`, traversal returns no neighbors
-before opening a graph session. Every condition retains frozen initial
-candidates, primary candidate scoring, and the common LLM selector. The index
+for historical runs these can be Q+-owner activation and bridge scoring.
+With `none`, traversal returns no neighbors before opening a graph session.
+Every condition retains frozen initial candidates, reference scoring rules,
+and the common LLM selector. The index
 is unchanged; each condition has a distinct run-local component identity.
 
 ## Explicit representation ablations
@@ -287,10 +293,9 @@ throughput measurement. The representation-ablation launcher itself does not
 provide resume.
 
 `record_paper_completion.py` records finished execution without final paper-policy
-validation. It emits the legacy `admitted` receipt label with
-`verification=disabled_by_user`; it does not recalculate metrics or certify
-publication eligibility. Additional runtime and index verification gates are removed. Optional
-analysis tools are not automatic completion gates. The synchronous benchmark
+validation. Receipt fields, accepted result states and resume behavior are
+defined in [completion and continuation](THROUGHPUT_EXECUTION.md#completion-and-continuation).
+Optional analysis tools are not automatic completion gates. The synchronous benchmark
 entrypoint finishes after query evaluation and resource cleanup; it does not
 submit or reconcile an asynchronous Batch judge job.
 
@@ -399,10 +404,28 @@ production retrieval pipelines or runtime approval gates.
 
 ### Reference-specific expansion analysis
 
-The experiment planner schedules NEXT-only, HOP-only and no-expansion controls
+The experiment planner schedules Direct + NEXT, Direct + HOP and Direct-only controls
 against each recorded reference. Updated-default MultiHop-RAG controls use a
 separate task family and artifact namespace from historical controls. The
 factorial analyzer reads the four saved conditions and computes paired
 conditional effects and the additive interaction; it performs no retrieval.
 Independently launched reference processes can be adopted into the same two-job
 accounting without restarting them. Historical results keep their executed policy.
+
+## Fixed-candidate selection analysis
+
+`scripts/compare_prehop_selectors.py` reads a complete, failure-free reference,
+its query annotations and hashed scoring/selection traces. The recorded LLM
+selection is compared with the saved fused order and representation-rank order
+over the same candidate pool. An optional raw hybrid-score condition reads saved
+channel records or explicitly replays search against the original Neo4j index
+using recorded query embeddings. Replay checks owner order before propagating
+scores along the recorded graph paths; it makes no generation or embedding calls.
+
+Alternatives take the recorded top-k before source deduplication, so a returned
+list can be shorter than that budget. Outputs contain selected sources, common
+retrieval measures, HotpotQA support scores and paired original-question cluster
+intervals. They supply no generated answers or measured query latency. Input
+consistency checks belong to this optional analysis, not benchmark dispatch.
+See [selector reproduction](REPRODUCING.md#fixed-candidate-final-selection) for
+commands, supported references and output filenames.

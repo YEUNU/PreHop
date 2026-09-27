@@ -13,7 +13,8 @@ explains how to prepare and use those runtimes.
 
 Select a prepared environment explicitly. Entrypoints use it without dependency
 synchronization or automatic lockfile checks. HopRAG uses its separately prepared
-native runtime.
+native runtime. The main prepared environment uses Python 3.12 and includes
+MS GraphRAG; package requirements are in `pyproject.toml` and `uv.lock`.
 
 For a new main environment:
 
@@ -27,6 +28,12 @@ When both selectors are supplied, they must identify the same environment.
 Do not replace an environment used by an active process. Runtime entrypoints
 execute the selected interpreter directly; a missing explicit interpreter does
 not select a different one silently.
+
+Without an explicit selector, shell entrypoints prefer `.venv/bin/python`,
+then `python3` or `python` on `PATH`. This fallback selects an interpreter; it
+does not install dependencies. Shell launchers load `.env` and preserve already
+exported values. Direct Python tools may require exported settings; follow the
+environment-loading instructions for the selected command.
 
 ## Common inference gateway
 
@@ -51,6 +58,8 @@ and zero token reserve. The generation context limit is 262,144. Query
 instructions and templates are method-specific registry policy. An observed
 serving alias does not prove the exact loaded weight revision; preserve backend
 revision evidence when available and label historical observations as such.
+LightRAG's registered native embedding input budget is 8,192 tokens, below the
+shared endpoint limit. Method-specific client budgets remain part of provenance.
 
 New paper generation requests omit the LLM seed even if a stale ambient
 `RAG_LLM_SEED` is present. Dataset order, evaluation, and sampling use a separate
@@ -70,9 +79,11 @@ attempt.
 ./scripts/setup_official_baselines.sh --primary
 ```
 
-This provisions packaged external methods using registry revisions. It does not
-provision HopRAG's separate main/POS environments. Each prepared environment
-records `runtime.freeze.txt`. The freeze records installed metadata; it is not
+This provisions **LightRAG, GFM-RAG and LinearRAG** using registry revisions.
+MS GraphRAG is installed with the main environment. The script does not
+provision HopRAG's separate main/POS environments. The three external runtimes
+record `runtime.freeze.txt`. Setup checks source integrity, declared constraints
+and installed dependencies. The freeze records installed metadata; it is not
 an automatic dispatch check or a universal cross-platform lock.
 
 ## Pinned external runtimes
@@ -99,8 +110,12 @@ is a separate configuration, not the primary MPNet result mode.
 ### HopRAG runtime
 
 The native upstream revision is `a6e425b8f8a5d8131dd7805db40185ac76e09903`.
-`models/hoprag/native_runtime.py` resolves the prepared installation, including
-`main-env`, `pos-env`, and immutable `source/third_party/HopRAG`. The repository's
+`models/hoprag/native_runtime.py` currently selects the repository-relative
+`data/runtime_envs/hoprag-paper-20260908/` installation, including `main-env`,
+`pos-env`, and immutable `source/third_party/HopRAG`. This path is fixed in the
+adapter; `RAG_OFFICIAL_BASELINE_HOME` does not relocate it. The public setup
+script does not recreate these environments or download the POS model. Prepare
+this layout and its declared dependencies before choosing HopRAG. The repository's
 root `third_party/HopRAG` is reference-only. POS model hashes are bound by
 `configs/hoprag_pos_model.json`; generated POS files use run-local directories.
 
@@ -113,10 +128,11 @@ POS model, not a substitute spaCy path.
 ## Runtime selection
 
 Launchers select the configured interpreter and upstream runtime directly.
-Automatic dependency/revision checks, gateway approval, model hash comparisons,
-and semantic-setting equality checks have been removed. The selected settings
-and runtime locations remain recorded in provenance. Missing dependencies or
-files surface through the actual import or I/O operation.
+Dispatch records settings and runtime identities without dependency/revision,
+gateway-approval, model-hash or semantic-equality gates. Required transport
+inputs and explicit interpreter selection still apply; missing dependencies or
+files surface through actual imports or I/O. Setup-time source and dependency
+checks are separate from runtime dispatch.
 
 ## Native output handling and recording
 

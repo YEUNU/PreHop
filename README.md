@@ -74,6 +74,8 @@ Set the same password in `NEO4J_PASSWORD`, and configure
 `gemma-4-31b-it` and `qwen3-embedding-4b` with 2,560-dimensional embeddings.
 Model services are supplied separately; `run_servers.sh` does not start them.
 External comparison systems need their [own runtimes](docs/RUNTIME_REQUIREMENTS.md#pinned-external-runtimes).
+The external setup script prepares LightRAG, GFM-RAG and LinearRAG; MS GraphRAG
+uses the main environment and HopRAG requires a separately prepared runtime.
 
 ## Quick start
 
@@ -85,6 +87,11 @@ set. These commands construct an index and call the configured model services:
 ./run_servers.sh all
 ./run_multihoprag.sh all --model prehop --queries full
 ```
+
+Keep the prepared corpus unchanged while a run uses it. Shell launchers load
+`.env` while preserving exported overrides. The quick start uses those settings;
+the [named comparison launcher](docs/REPRODUCING.md#run-a-system-comparison)
+selects the benchmark generation and execution settings explicitly.
 
 Preparation writes `data/multihoprag_corpus/` and
 `data/multihoprag_queries.json`. The benchmark writes saved answers, retrieved

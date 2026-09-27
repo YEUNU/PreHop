@@ -284,13 +284,13 @@ run_mhr_full_benchmark.sh
 *.tmp.sh
 .DS_Store
 
-# Private submission notes, including local revision copies. See AGENTS.md.
-/SUBMISSION_TARGET*.md
-
-# Working paper draft — keep the editable manuscript local until a release
-# copy is deliberately prepared.
-/docs/prehop_paper*.md
-/prehop_paper*.md
+# Local working documents and revision copies, at any depth.
+SUBMISSION_TARGET*.md
+RESEARCH_POLICY*.md
+PAPER_CHECKLIST*.md
+PAPER_ABLATION_DESIGN*.md
+prehop_paper*
+prehop_presentation*
 
 # Local report and handoff exports. Source documents stay in Markdown; release
 # copies are added deliberately when they are ready to publish.
@@ -302,28 +302,13 @@ run_mhr_full_benchmark.sh
 # Local maintenance evidence, cleanup inventories and source snapshots.
 /data/maintenance/
 
-# Generated private manuscript source and typesetting intermediates.
-docs/acl/prehop_paper.tex
-docs/acl/*.aux
-docs/acl/*.bbl
-docs/acl/*.blg
-docs/acl/*.log
-docs/acl/*.out
-
-# Local manuscript build bundle includes private submission details.
+# Local build bundle.
 docs/acl/
 
-# Private research evidence, submission preparation, and paper-only tooling.
+# Local evidence and rendering tools.
 /docs/RESULTS*.md
-/docs/PAPER_CHECKLIST*.md
-/docs/PAPER_ABLATION_DESIGN*.md
-/scripts/render_acl_paper.py
-/scripts/render_paper_figures.py
-# Private research exports at any depth.
-**/prehop_paper*.pdf
-**/prehop_paper*.tex
-**/prehop_presentation*.pptx
-**/prehop_presentation*.pdf
+/scripts/render_acl_paper*.py
+/scripts/render_paper_figures*.py
 # Local credentials and editor/agent state.
 .codex/
 # Machine-specific MCP configuration and personal instruction overrides.

@@ -2,9 +2,9 @@
 
 Use this guide to launch targets, preserve existing evidence, and report
 comparable costs. Runtime setup belongs in
-[RUNTIME_REQUIREMENTS](RUNTIME_REQUIREMENTS.md). Completed research numbers
-are maintained in the local-only `docs/RESULTS.md`. Keep live counters, queue
-snapshots, and temporary investigations in generated campaign artifacts outside
+[RUNTIME_REQUIREMENTS](RUNTIME_REQUIREMENTS.md). Completed benchmark results
+retain their source artifacts. Keep live counters, queue snapshots and temporary
+investigations in generated campaign artifacts outside
 `docs`.
 
 HotpotQA (HippoRAG corpus) preparation and its sentence-output evaluation policy are
@@ -12,12 +12,19 @@ documented in [HOTPOTQA](HOTPOTQA.md).
 
 ## Completion and continuation
 
-A finished benchmark receives a completion receipt from
-`scripts/record_paper_completion.py`, without final paper-policy validation.
-The legacy verifier entry forwards to that recorder. Automatic runtime, index-reuse, corpus-integrity, configuration, and checkpoint
-validation gates are also removed. JSON decoding and actual execution errors
-remain observable.
-An index-only completion is not a completed query benchmark.
+`scripts/run_paper_target.sh` calls `scripts/record_paper_completion.py` after
+benchmark execution. The recorder accepts result states `completed_unadmitted`,
+`completed` and `admitted`; other states return an incomplete result. It emits
+the legacy receipt label `admitted` with `verification=disabled_by_user`, and
+preserves an existing receipt. The legacy verifier entry forwards to this recorder.
+
+This is a status-based execution receipt. It does not recount queries, rescore
+answers, validate configuration or certify publication eligibility. To report
+completed evidence, inspect the owning result's population, terminal failures,
+index source and measurement scope. Dispatch and completion have no additional
+runtime, index-reuse, corpus-integrity, configuration or checkpoint validation
+gates. JSON decoding and actual execution errors remain observable. An
+index-only completion is not a completed query benchmark.
 
 LLM judging is disabled in the paper configuration. If explicitly enabled for
 a separate run, judging is synchronous. `RAG_JUDGE_BATCH=true` is rejected when
@@ -36,6 +43,13 @@ evaluation/sampling seed 42 is separate from generation.
 to provenance. Set `RAG_EXECUTION_PROFILE` to an absolute JSON path before Python
 starts. Version 3 uses one combined generation/embedding request pool;
 legacy versions retain their historical per-kind limits.
+
+Selecting a profile configures client and producer limits; it does not start a
+cross-process queue. Use `scripts/run_with_inference_queue.py` for a foreground
+command or a supervisor that owns `OwnedQueue`. The foreground wrapper holds a
+per-user host lock; a second local wrapper fails while it is held. Queue
+instances on other hosts or under other owners still enforce separate limits,
+not one gateway-wide ceiling. Use one owning campaign for a shared target budget.
 
 `core/inference_queue.py` limits upstream requests across child processes,
 forwards request bodies and streaming responses, and does not add retries.
@@ -66,6 +80,10 @@ Native producers and local graph/model work can limit demand.
 
 Without an execution profile, registry transport defaults are generation
 concurrency 30, embedding batch/concurrency 16/1, and benchmark concurrency one.
+The checked-in `.env.example` overrides benchmark concurrency to four; the
+shared profile overrides it to eight. Exported settings normally take precedence
+over `.env`, while selected profile fields take precedence over both. Record the
+effective execution settings rather than inferring them from the example file.
 Changing the profile requires compatible new timing evidence. A small pilot
 can check integration and request throughput but does not establish full-run
 quality, batch invariance, or optimal query concurrency.
@@ -109,8 +127,9 @@ export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/index-shared-120.j
 
 The supervisor owns a detached session and writes
 `data/results/<campaign>/index-supervisor/{plan,status,queue-metrics}.json`.
-It performs smoke builds and full indexes for the registry's seven methods on
-two datasets: 14 default targets. Smoke failure isolates that target; unrelated
+It performs smoke builds and full indexes sequentially for the registry's seven
+methods on two datasets: 14 default targets. The two-slot link-experiment
+controller below is a separate workflow. Smoke failure isolates that target; unrelated
 targets continue. It reports completion only when every planned full index
 succeeds and does not itself run full query benchmarks.
 

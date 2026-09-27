@@ -26,7 +26,7 @@ seeds.
 ## Preparation
 
 ```bash
-python scripts/datasets/prepare_hotpotqa_hipporag.py --download
+.venv/bin/python scripts/datasets/prepare_hotpotqa_hipporag.py --download
 ```
 
 The script downloads the two pinned files under `data/hotpotqa_hipporag_raw/`.
@@ -63,6 +63,11 @@ gold count. Hits measures any-hit success; MRR uses the first matching rank.
 The score means weight release rows equally. Confidence intervals resample
 original-question clusters, retaining their occurrences.
 
+Saved analysis scores use unscaled numeric values. Publication tables show
+Hits and distinct-gold Recall as percentages, and MRR/MAP as unscaled scores.
+The capped MAP denominator is part of the definition: with more than ten gold
+items it can yield a value above one. Do not clip values or replace the formula.
+
 `scripts/evaluate_saved_retrieval.py` evaluates saved outputs without model
 calls. Invoke it as `python -m scripts.evaluate_saved_retrieval --help` for
 its explicit manifest, query, sentence-store and output arguments. The manifest
@@ -79,6 +84,9 @@ Use the official HotpotQA Answer, Supporting Fact and Joint EM/F1 rules through
 sentences present in returned passage text, mapped to title and sentence index.
 It never uses gold labels to select predicted support. These are official
 scoring rules on the declared reduced-corpus protocol, not a leaderboard score.
+Answer, Supporting Fact and Joint EM/F1/precision/recall, including conditional
+F1 and sentence P/R/F1 diagnostics, use the scorer's native 0–1 scale. Their
+differences use score units; document recall and response rates use percentages.
 
 ```bash
 ./run_dataset.sh hotpotqa all --model prehop --queries full
