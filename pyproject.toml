@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Test/dev tooling. Install with: VIRTUAL_ENV=.venv uv pip install -e ".[dev]"
+# Test/dev tooling: uv sync --locked --python 3.12 --extra dev
 dev = [
     "pytest",
     "pytest-asyncio",

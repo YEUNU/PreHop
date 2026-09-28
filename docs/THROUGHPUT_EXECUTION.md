@@ -66,11 +66,36 @@ hardware capacity or guarantee that an upstream service will accept every call.
 | `lightrag_document_concurrency` | 8 |
 
 Without a profile, registry defaults remain generation concurrency 30,
-embedding batch/concurrency 16/1, and benchmark concurrency one. The
-`.env.example` sets benchmark concurrency to four. An explicitly selected
-profile overrides those values at the entrypoint. Preserve the effective
+embedding batch/concurrency 16/1, and benchmark concurrency one. An explicitly
+selected profile overrides matching environment values. Preserve the effective
 settings with measurements; changing concurrency does not update prior timing
 results.
+
+### Configuration ownership and precedence
+
+`core/strategy_registry.py` declares static method and request defaults. Core
+retrieval settings and canonical index/query descriptions read those same method
+defaults. The registry never reads the selected profile during import.
+`core/execution_profile.py::resolved_execution_environment` combines operational
+defaults, caller values, and the selected profile. `core/inference_transport.py`
+then resolves one effective request contract, including embedding controls, for
+clients, native child processes, probes, and recorded provenance.
+
+All Python runners load `.env` through `scripts/runner_environment.py`; shell
+runners use `scripts/lib.sh` to load the file and select Python, then call the
+same resolver. Priority is registry defaults < `.env` < exported environment <
+the profile's matching throughput fields. `RAG_SKIP_PROJECT_ENV=true` skips only
+the file, not profile resolution. Isolated external workers can additionally
+override embedding batch/concurrency/retries with their existing
+`RAG_<STRATEGY>_EMBEDDING_*` variables; these take precedence over global controls
+and are recorded in the effective contract.
+
+`core/paper_policy.py::configure_target_environment` owns paper run identity,
+namespace, output/cache paths, generation seed omission, and method-native query
+instruction. Shell and Python target launchers call this function. It does not
+validate index compatibility. `configs/paper_runtime_requirements.json` remains
+the installation contract for separate native runtimes and local models; it is
+not a second set of request defaults.
 
 ## Foreground target
 

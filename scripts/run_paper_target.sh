@@ -38,7 +38,7 @@ PYTHON_BIN=$(resolve_method_python "$repo_root" "$strategy") || exit 1
 export PYTHON_BIN
 if [ "$strategy" = "hoprag" ]; then export UV_PROJECT_ENVIRONMENT="$(dirname "$(dirname "$PYTHON_BIN")")"; fi
 
-canonicalize_inference_transport || exit 1
+canonicalize_inference_transport "$strategy" "$dataset" "$run_id" || exit 1
 # Preserve an observed or explicitly pinned backend revision when supplied;
 # otherwise the served alias remains the only available revision identity.
 # Local method revisions come from the typed strategy registry.
@@ -48,40 +48,13 @@ export RAG_PAPER_MODE=true
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     echo "Warning: tracked worktree changes will be recorded in code provenance." >&2
 fi
-output_row=$(python3 core/strategy_registry.py --output-tsv | awk -F '\t' -v strategy="$strategy" '$1 == strategy {print $2 "\t" $3}')
-if [ -n "$output_row" ]; then
-    IFS=$'\t' read -r output_env output_default <<< "$output_row"
-    strategy_output="$output_default/runs/$run_id"
-    export "$output_env=$strategy_output"
-fi
-
-export RAG_CHUNK_CACHE_DIR="data/index_cache/runs/$run_id/$strategy/$dataset"
-export RAG_RUN_ID=$run_id
-export RAG_PAPER_MODE=true
 export RAG_BENCHMARK_TIMESTAMP=$run_id
-# Keep the public corpus tag stable for result aggregation while placing all
-# Neo4j-backed strategies in fresh, run-scoped labels/indexes. A global graph
-# clear is intentionally not used: it is not namespace-scoped and can destroy
-# a concurrently running target's index.
-export RAG_INDEX_NAMESPACE="${dataset}_${run_id}"
 export RAG_CHUNK_CACHE=off
 export RAG_EMBEDDING_CACHE=off
-generation_seed=$(python3 core/strategy_registry.py --generation-seed "$strategy")
-if [ -z "$generation_seed" ]; then
-    export RAG_LLM_SEED=""
-else
-    export RAG_LLM_SEED="${RAG_LLM_SEED:-$generation_seed}"
-fi
-# A method-native empty instruction is an explicit override of the shared
-# default. Preserve empty exports so dotenv cannot restore the shared value.
-method_instruction=$(python3 core/strategy_registry.py --query-instruction "$strategy")
-shared_instruction=$(python3 core/strategy_registry.py --query-instruction prehop)
-export EMBEDDING_QUERY_INSTRUCTION="$method_instruction"
 export RAG_JUDGE_ENABLED=false
 export RAG_JUDGE_BATCH=false
 
-index_stats="data/index_stats/${strategy}_${dataset}_${run_id}.json"
-export RAG_INDEX_STATS_PATH="$index_stats"
+index_stats="$RAG_INDEX_STATS_PATH"
 
 reuse_index=false
 if [ -f "$index_stats" ]; then

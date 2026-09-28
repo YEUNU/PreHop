@@ -45,10 +45,9 @@ async def replay(engine, activations, store, repetitions=1, warmups=0, groups=No
 
 
 async def run(args):
-    from dotenv import load_dotenv
-
     from core.prehop_ablation import COMMON, PROFILES
-    load_dotenv(ROOT / ".env")
+    from scripts.runner_environment import _load_runner_environment
+    _load_runner_environment()
     stats = json.loads(args.index_stats.read_text())
     namespace = stats.get("index_policy",{}).get("index_namespace","")
     reference=json.loads(args.reference_inputs.read_text()) if getattr(args,"reference_inputs",None) else None

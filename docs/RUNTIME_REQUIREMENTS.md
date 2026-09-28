@@ -286,6 +286,11 @@ unknown HopRAG overrides. Native upstream files remain unchanged.
 
 ### Native output aliases and timeout alignment
 
+HopRAG's synchronous embedding adapter consumes the same resolved batch size,
+concurrency, credential, dimensions, and timeout as its recorded inference
+contract. It has no separate 32-item/two-request/180-second defaults. Existing
+size-dependent request bisection and terminal error propagation are unchanged.
+
 MS GraphRAG may assign the same content-derived document ID to multiple corpus
 files. The adapter retains all source aliases when decoding citations, without
 rewriting native parquet tables, graph membership, search results or answers.

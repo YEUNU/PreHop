@@ -84,6 +84,7 @@ def apply_ranking(payload, candidates, canonical_ids, top_k):
 
 async def generate(inputs, output):
     from core import inference_telemetry
+    from core.execution_profile import resolved_execution_environment
     from core.generation_profiles import request_settings
     from core.structured_outputs import ranking_contract
     from core.vllm_client import VLLMClient
@@ -93,7 +94,7 @@ async def generate(inputs, output):
     target = output / "selections.jsonl"
     done = {}
     client = VLLMClient()
-    semaphore = asyncio.Semaphore(int(os.environ.get("RAG_BENCHMARK_CONCURRENCY", "1")))
+    semaphore = asyncio.Semaphore(int(resolved_execution_environment()["RAG_BENCHMARK_CONCURRENCY"]))
     jobs = [(r, condition) for r in inputs for condition in ("current", "graph_aware")]
     random.Random(42).shuffle(jobs)
     count = 0
@@ -200,8 +201,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", required=True, type=Path, help="Your completed Prehop result, with its recorded trace files")
     args = parser.parse_args()
-    from dotenv import load_dotenv
-    load_dotenv(ROOT / ".env")
+    from scripts.runner_environment import _load_runner_environment
+    _load_runner_environment()
     os.environ["RAG_PAPER_MODE"] = "true"
     reference = json.loads(args.reference.read_text())
     inputs = read_inputs(reference)

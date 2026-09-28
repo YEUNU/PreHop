@@ -50,6 +50,7 @@ def payload(directory, event):
 
 def environment(reference, output, inputs):
     """Copy scientific settings from the primary result, then change one edge flag."""
+    from core.execution_profile import resolved_execution_environment
     stats = json.loads(Path(reference['index_manifest_stats_path']).read_text())
     fields = ('q_minus', 'q_plus', 'sentence_channel_enabled', 'graph_hop_depth',
               'graph_path_decay', 'hop_edge_filter', 'qplus_hop_activation',
@@ -74,7 +75,7 @@ def environment(reference, output, inputs):
         'RAG_BODY_LINK_REFERENCE': '',
         'RAG_PAPER_MODE': 'false', 'RAG_JUDGE_ENABLED': 'false',
         'RAG_LLM_SEED': str(seed) if (seed := reference.get('execution_profile', {}).get('generation_seed')) is not None else '', 'RAG_BENCHMARK_SEEDS': '42',
-        'RAG_BENCHMARK_CONCURRENCY': '8',
+        'RAG_BENCHMARK_CONCURRENCY': resolved_execution_environment()['RAG_BENCHMARK_CONCURRENCY'],
         'RAG_GENERATION_MODEL': reference['models']['default'],
         'RAG_EMBEDDING_MODEL': reference['models']['embedding'],
         'RAG_INDEX_NAMESPACE': stats['index_policy']['index_namespace'],
@@ -156,10 +157,8 @@ def prepare(args):
 
 
 def configure(args):
-    from dotenv import load_dotenv
-    load_dotenv(ROOT / '.env')
-    from core.execution_profile import apply_execution_profile
-    apply_execution_profile()
+    from scripts.runner_environment import _load_runner_environment
+    _load_runner_environment()
     for key in ('RAG_INDEX_REUSE_LINK', 'RAG_BENCHMARK_RESUME'):
         os.environ.pop(key, None)
     plan = json.loads((args.output / 'plan.json').read_text())

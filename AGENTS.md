@@ -39,8 +39,14 @@ LinearRAG를 MultiHop-RAG와 HippoRAG의 HotpotQA 배포본에서 비교한다.
 
 - 주 환경은 Python 3.12와 `uv`를 사용한다. 이 저장소는 일반적인 설치형 패키지가 아닌
   flat layout이며, 명령은 저장소 루트에서 실행한다. 의존성 기준은 `pyproject.toml`과 `uv.lock`이다.
-- 검색·평가 설정은 `core/config.py`, 방법 목록·기본값·upstream revision은
+- 검색·평가 설정 해석은 `core/config.py`, 방법 목록·공통 기본값·upstream revision은
   `core/strategy_registry.py`, 유효 추론 설정은 `core/inference_transport.py`에서 관리한다.
+  registry 기본값은 import 시 프로파일에 따라 바뀌지 않는다. 운영 설정은
+  `core/execution_profile.py::resolved_execution_environment`에서 해석하고,
+  Python 실행기의 `.env` 로딩은 `scripts/runner_environment.py`를 재사용한다.
+  우선순위는 기본값 < `.env` < export < 프로파일의 해당 처리량 항목이다.
+  실험별 namespace·출력 경로·seed는 `core/paper_policy.py::configure_target_environment`를
+  통해 설정한다. shell이나 개별 실행기에 이 정책을 다시 작성하지 않는다.
   로컬 모델과 별도 Python 환경 요구사항은 `configs/paper_runtime_requirements.json`을 따른다.
 - `RAGConfig` 등은 import 시 환경변수를 읽는다. 환경과 `RAG_EXECUTION_PROFILE`은
   Python 시작 전에 설정한다. 테스트에서는 `monkeypatch`로 환경 또는 실제 소비되는 설정을 격리한다.

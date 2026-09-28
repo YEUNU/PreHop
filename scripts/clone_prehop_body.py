@@ -43,8 +43,8 @@ async def copy_body_graph(engine, source_namespace):
 
 
 async def run(source_stats, dataset):
-    from dotenv import load_dotenv
-    load_dotenv(ROOT / '.env')
+    from scripts.runner_environment import _load_runner_environment
+    _load_runner_environment()
     from cli.index import (
         _collect_index_capacity,
         _collect_prehop_integrity,

@@ -1,5 +1,4 @@
 
-from core.embedding_policy import EmbeddingOperationalConfig
 from core.inference_transport import InferenceTransport
 from core.strategy_registry import (
     ALL_STRATEGIES,
@@ -42,8 +41,8 @@ def test_strategy_embedding_override_only_applies_to_isolated_worker(monkeypatch
     monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "16")
     monkeypatch.setenv("RAG_PREHOP_EMBEDDING_BATCH_SIZE", "3")
     monkeypatch.setenv("RAG_LIGHTRAG_EMBEDDING_BATCH_SIZE", "7")
-    assert EmbeddingOperationalConfig.resolve("prehop").batch_size == 16
-    assert EmbeddingOperationalConfig.resolve("lightrag").batch_size == 7
+    assert InferenceTransport.resolve("prehop").embedding_batch_size == 16
+    assert InferenceTransport.resolve("lightrag").embedding_batch_size == 7
 
 
 def test_transport_consumes_only_canonical_single_endpoint(monkeypatch):

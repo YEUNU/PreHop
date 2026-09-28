@@ -175,8 +175,8 @@ async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=No
 
 
 def main():
-    from dotenv import load_dotenv
-    load_dotenv()
+    from scripts.runner_environment import _load_runner_environment
+    _load_runner_environment()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--inputs', type=Path, required=True, help='Recorded synthesis-context JSONL; no live retrieval fallback')
     parser.add_argument('--output-dir', type=Path, required=True)

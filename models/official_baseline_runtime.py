@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from core.benchmark_failures import BenchmarkIntegrityError
-from core.embedding_policy import EmbeddingOperationalConfig
 from core.strategy_registry import BY_NAME, EXTERNAL_STRATEGIES, get_strategy
 from utils.io import _write_json
 
@@ -159,11 +158,6 @@ def _runtime_env(strategy: str) -> dict[str, str]:
     if seed:
         env["RAG_LLM_SEED"] = seed
         env["RAG_SEED"] = seed
-    embedding = EmbeddingOperationalConfig.resolve(strategy)
-    env["RAG_EMBEDDING_BATCH_SIZE"] = str(embedding.batch_size)
-    env["RAG_EMBEDDING_CONCURRENCY"] = str(embedding.concurrency)
-    env["RAG_EMBEDDING_RETRY_ATTEMPTS"] = str(embedding.retry_attempts)
-    env["LLM_MAX_RETRIES"] = str(embedding.retry_attempts)
     from core.inference_transport import InferenceTransport
 
     transport = InferenceTransport.resolve(strategy)
@@ -178,8 +172,8 @@ def _runtime_env(strategy: str) -> dict[str, str]:
             env.pop(name, None)
     env.update(
         {
-            "RAG_INFERENCE_BASE_URL": os.environ["RAG_INFERENCE_BASE_URL"],
-            "RAG_INFERENCE_API_KEY": os.environ["RAG_INFERENCE_API_KEY"],
+            "RAG_INFERENCE_BASE_URL": transport.generation_base_url,
+            "RAG_INFERENCE_API_KEY": transport.api_key,
             "RAG_GENERATION_MODEL": transport.generation_model,
             "RAG_EMBEDDING_MODEL": transport.embedding_model,
             "OPENAI_API_KEY": transport.api_key,
@@ -187,6 +181,9 @@ def _runtime_env(strategy: str) -> dict[str, str]:
             "RAG_INFERENCE_RETRY_ATTEMPTS": str(transport.retry_attempts),
             "RAG_GENERATION_CONCURRENCY": str(transport.generation_concurrency),
             "RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS": str(transport.embedding_concurrency),
+            "RAG_EMBEDDING_BATCH_SIZE": str(transport.embedding_batch_size),
+            "RAG_EMBEDDING_CONCURRENCY": str(transport.embedding_concurrency),
+            "RAG_EMBEDDING_RETRY_ATTEMPTS": str(transport.retry_attempts),
             "RAG_LLM_SEED": "" if transport.generation_seed is None else str(transport.generation_seed),
             "EMBEDDING_QUERY_INSTRUCTION": transport.embedding_query_instruction,
             "MAX_EMBEDDING_LENGTH": str(transport.embedding_max_input_tokens),
@@ -195,24 +192,9 @@ def _runtime_env(strategy: str) -> dict[str, str]:
             "RAG_MAX_CONTEXT_LENGTH": str(transport.generation_max_context_tokens),
         }
     )
-    if get_strategy(strategy).primary:
-        # Upstream dotenv imports may repopulate absent aliases. Empty exports
-        # block that without carrying a second endpoint or credential contract.
-        from core.inference_transport import preserve_provider_environment
-        preserve_provider_environment(env)
-    else:
-        # Legacy workers still consume these private child aliases. Primary
-        # research drivers resolve the canonical contract again in the child.
-        env.update({
-            "VLLM_URL": transport.generation_base_url,
-            "VLLM_EMBED_URL": transport.embedding_base_url,
-            "VLLM_API_BASE": transport.generation_base_url,
-            "VLLM_EMBED_API_BASE": transport.embedding_base_url,
-            "VLLM_API_KEY": transport.api_key,
-            "VLLM_SERVED_MODEL_NAME": transport.generation_model,
-            "VLLM_SERVED_EMBED_MODEL_NAME": transport.embedding_model,
-            "OPENAI_BASE_URL": transport.generation_base_url,
-        })
+    # Empty aliases block upstream dotenv from restoring a second contract.
+    from core.inference_transport import preserve_provider_environment
+    preserve_provider_environment(env)
     return env
 
 

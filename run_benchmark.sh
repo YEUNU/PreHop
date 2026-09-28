@@ -15,7 +15,6 @@ load_project_env "$SCRIPT_DIR/.env"
 canonicalize_inference_transport || exit 1
 
 # Environment (.env values override defaults; exported values override .env).
-export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 export RAG_BENCHMARK_TIMESTAMP="${RAG_BENCHMARK_TIMESTAMP:-$RAG_RUN_ID}"
 
@@ -58,11 +57,12 @@ echo "========================================="
 echo "     Benchmark Pre-flight Check          "
 echo "========================================="
 echo "Python: $PYTHON_BIN"
-if [ "$MODEL" = "naive" ] || [ "$MODEL" = "prehop" ]; then
-    echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, top_k=12"
-else
-    echo "Retrieval: analyzer=${NEO4J_FULLTEXT_ANALYZER}, budget=official"
-fi
+"$PYTHON_BIN" -c '
+import sys
+from core.config import RAGConfig as config
+budget = f"top_k={config.DEFAULT_TOP_K}" if sys.argv[1] in {"prehop", "naive"} else "budget=official"
+print(f"Retrieval: analyzer={config.FULLTEXT_ANALYZER}, {budget}")
+' "$MODEL"
 
 echo "Step 0: Python/Dependency preflight..."
 IS_EXTERNAL=false

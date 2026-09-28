@@ -573,9 +573,10 @@ async def run_benchmark(
     else:
         logger.info("Supplemental judge: disabled (deterministic/official metrics only)")
 
-    from core.strategy_registry import PAPER_TRANSPORT
-    benchmark_concurrency = int(os.environ.get("RAG_BENCHMARK_CONCURRENCY", str(PAPER_TRANSPORT.benchmark_concurrency)))
-    benchmark_checkpoint_every = max(1, int(os.environ.get("RAG_BENCHMARK_CHECKPOINT_EVERY", "10")))
+    from core.execution_profile import resolved_execution_environment
+    execution_env = resolved_execution_environment()
+    benchmark_concurrency = int(execution_env["RAG_BENCHMARK_CONCURRENCY"])
+    benchmark_checkpoint_every = max(1, int(execution_env["RAG_BENCHMARK_CHECKPOINT_EVERY"]))
     query_sem = asyncio.Semaphore(benchmark_concurrency)
     query_inflight = 0
     observed_query_peak = 0

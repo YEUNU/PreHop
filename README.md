@@ -97,6 +97,12 @@ names. It can start a default local Neo4j installation if needed; remote hosts
 and custom ports must already be running. It does not start model processes.
 Shell launchers and the smoke runner load `.env`, preserving exported overrides.
 Keep the exports above in the shell used for the remaining commands.
+Settings resolve in this order: registry defaults, `.env`, exported values,
+then the selected execution profile for its throughput fields. Choose throughput
+in the profile; it overrides matching concurrency variables. Python and shell
+entrypoints use the same resolver. See the
+[configuration contract](docs/THROUGHPUT_EXECUTION.md#configuration-ownership-and-precedence)
+for ownership and method-specific overrides.
 
 ## Reviewer checks
 

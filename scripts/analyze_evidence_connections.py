@@ -211,8 +211,8 @@ async def export_graph(service,namespace):
 
 
 async def run(args):
-    from dotenv import load_dotenv
-    load_dotenv(ROOT/'.env')
+    from scripts.runner_environment import _load_runner_environment
+    _load_runner_environment()
     from core.neo4j_service import Neo4jService
     service=Neo4jService()
     try:nodes,edges=await export_graph(service,args.namespace)

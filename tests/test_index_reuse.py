@@ -139,7 +139,8 @@ def test_fresh_interpreter_binds_cli_and_all_native_query_paths_before_import(tm
 import json,os,sys
 from pathlib import Path
 from core import index_reuse as reuse
-from core.strategy_registry import PAPER_TRANSPORT, get_strategy
+from core.strategy_registry import get_strategy
+from core.execution_profile import resolved_execution_environment
 method=sys.argv[2]
 reuse.ROOT=Path(sys.argv[1])
 target='fresh-'+method
@@ -156,7 +157,7 @@ from cli.benchmark import RAGConfig
 from core.inference_transport import InferenceTransport
 assert RAGConfig.JUDGE_ENABLED is False and RAGConfig.JUDGE_BATCH is False
 assert InferenceTransport.resolve("core").generation_seed == spec.paper_generation_seed
-assert int(os.environ['RAG_BENCHMARK_CONCURRENCY']) == PAPER_TRANSPORT.benchmark_concurrency
+assert os.environ['RAG_BENCHMARK_CONCURRENCY'] == resolved_execution_environment()['RAG_BENCHMARK_CONCURRENCY']
 assert os.environ['RAG_RUN_ID']=='original-index'
 assert os.environ['RAG_BENCHMARK_TIMESTAMP']==target
 expected=(reuse.ROOT/clone/'hotpotqa').resolve()

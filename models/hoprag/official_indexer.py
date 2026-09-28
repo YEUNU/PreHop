@@ -22,25 +22,17 @@ from pathlib import Path
 import numpy as np
 
 from core.index_namespace import index_namespace
+from core.inference_transport import InferenceTransport
+from core.strategy_registry import get_strategy, method_setting
 
 logger = logging.getLogger("Prehop")
 
 
-_GEN_API_BASE = os.environ.get("RAG_INFERENCE_BASE_URL", "").strip()
-_GEN_MODEL_NAME = os.environ.get("RAG_GENERATION_MODEL", "")
-_EMBED_API_BASE = _GEN_API_BASE
-_EMBED_MODEL_NAME = os.environ.get("RAG_EMBEDDING_MODEL", "")
-_EMBED_DIM = int(os.environ.get("RAG_HOP_EMBED_DIM", os.environ.get("NEO4J_VECTOR_DIMENSIONS", "2560")))
-_EMBED_BATCH_SIZE = max(1, int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32")))
-_EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
-    max(1, int(os.environ.get("RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS", "2")))
-)
-_GEN_API_KEY = os.environ.get("RAG_INFERENCE_API_KEY", "EMPTY")
-_DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")))
+_DOC_WORKERS = max(1, method_setting("hoprag", "document_workers"))
 _NODE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_NODE_BATCH", "200")))
 _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
 
-_OUTPUT_ROOT = Path(os.environ.get("RAG_HOP_OUTPUT_ROOT", "data/hoprag_output"))
+_OUTPUT_ROOT = Path(os.environ.get("RAG_HOP_OUTPUT_ROOT", get_strategy("hoprag").output_default))
 _SNAPSHOT_LABEL = "RAGIndexSnapshot"
 _SNAPSHOT_VERSION = 2
 _CACHE_FORMAT_VERSION = 3
@@ -249,10 +241,14 @@ class _VLLMEmbedClient:
     which keeps the architectural comparison apples-to-apples).
     """
 
-    def __init__(self, base_url: str, model: str, dim: int):
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.dim = dim
+    def __init__(self, transport: InferenceTransport):
+        self.base_url = transport.embedding_base_url
+        self.model = transport.embedding_model
+        self.dim = transport.embedding_dimensions
+        self.api_key = transport.api_key
+        self.batch_size = transport.embedding_batch_size
+        self.timeout = transport.timeout_seconds
+        self._request_semaphore = threading.BoundedSemaphore(transport.embedding_concurrency)
         import requests
         from requests.adapters import HTTPAdapter
 
@@ -276,10 +272,8 @@ class _VLLMEmbedClient:
         if not documents:
             return np.zeros((0, self.dim), dtype=np.float32)
 
-        # Respect the same aggregate server-capacity budget as the in-repo
-        # clients. This synchronous official path can be called by several
-        # document threads, so the semaphore must be thread-based.
-        chunk = _EMBED_BATCH_SIZE
+        # The shared client serves concurrent native document threads.
+        chunk = self.batch_size
         out = []
         for i in range(0, len(documents), chunk):
             batch = documents[i : i + chunk]
@@ -292,12 +286,12 @@ class _VLLMEmbedClient:
         return arr[0] if single else arr
 
     def _request_batch(self, batch: list[str]) -> list[list[float]]:
-        with _EMBED_REQUEST_SEMAPHORE:
+        with self._request_semaphore:
             response = self._sess.post(
                 f"{self.base_url}/embeddings",
                 json={"model": self.model, "input": batch, "encoding_format": "float"},
-                headers={"Authorization": f"Bearer {_GEN_API_KEY}"},
-                timeout=180,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=self.timeout,
             )
         if not response.ok:
             message = response.text or ""
@@ -927,8 +921,8 @@ def _run_official_index_blocking(
         output_dir_for(corpus_tag),
         config.node_name,
         config.edge_name,
-        _GEN_API_BASE,
-        _EMBED_API_BASE,
+        config.local_base,
+        config.local_base,
     )
 
     stage_started = time.perf_counter()

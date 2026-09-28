@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 
 from core.benchmark_failures import BenchmarkIntegrityError
+from core.execution_profile import resolved_execution_environment
 
 
 class NativeQueryBatcher:
     def __init__(self, worker):
         self.worker = worker
-        self.limit = max(1, int(os.environ.get("RAG_BENCHMARK_CONCURRENCY", "8")))
+        self.limit = max(1, int(resolved_execution_environment()["RAG_BENCHMARK_CONCURRENCY"]))
         self.pending = []
         self.task = None
 

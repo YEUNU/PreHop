@@ -148,12 +148,7 @@ def setup(corpus_tag):
     from models.hoprag.response_recovery import install
     install(tool, Path(os.environ['RAG_HOP_OUTPUT_ROOT'])/'response_recovery.jsonl')
     from models.hoprag import official_indexer as indexer
-    indexer._GEN_API_BASE=transport.generation_base_url
-    indexer._EMBED_API_BASE=transport.embedding_base_url
-    indexer._GEN_MODEL_NAME=transport.generation_model
-    indexer._EMBED_MODEL_NAME=transport.embedding_model
-    indexer._GEN_API_KEY=transport.api_key
-    embed=indexer._VLLMEmbedClient(transport.embedding_base_url,transport.embedding_model,transport.embedding_dimensions)
+    embed=indexer._VLLMEmbedClient(transport)
     def observe_embedding(response, *args, **kwargs):
         try:payload=response.json()
         except ValueError:payload={}

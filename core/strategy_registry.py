@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -32,16 +32,13 @@ class PaperTransportSpec:
 
 # Also support the dependency-free `python core/strategy_registry.py` CLI.
 if __package__ in {None, ""}:
-    from execution_profile import execution_profile
     from runtime_requirements import runtime_requirement
 else:
-    from core.execution_profile import execution_profile
     from core.runtime_requirements import runtime_requirement
 
-PAPER_TRANSPORT = replace(PaperTransportSpec(), **{
-    key: value for key, value in execution_profile()['settings'].items()
-    if key in PaperTransportSpec.__dataclass_fields__
-})
+# Defaults are independent of import order. Runtime profile overrides are
+# resolved by core.execution_profile at the point of use.
+PAPER_TRANSPORT = PaperTransportSpec()
 
 
 @dataclass(frozen=True)
@@ -149,23 +146,25 @@ _CORE_QUERY_POLICY: tuple[tuple[str, str | None, Any], ...] = (
 )
 
 
+_CORE_DEFAULTS = {field: value for field, _, value in _CORE_QUERY_POLICY}
+
 STRATEGIES = (
     StrategySpec(
         "prehop",
         primary=True,
         paper_index_policy=(
             ("structured_output_profile", "prehop-json-schema-v3"),
-            ("chunk_sentences", 6),
-            ("default_top_k", 12),
-            ("questions_per_direction", 3),
-            ("question_schema", "legacy"),
-            ("q_minus_enabled", True),
-            ("q_plus_enabled", True),
-            ("sentence_channel_enabled", False),
-            ("fulltext_analyzer", "english"),
-            ("precompute_reciprocal_hops", True),
+            ("chunk_sentences", _CORE_DEFAULTS["chunk_sentences"]),
+            ("default_top_k", _CORE_DEFAULTS["default_top_k"]),
+            ("questions_per_direction", _CORE_DEFAULTS["questions_per_direction"]),
+            ("question_schema", _CORE_DEFAULTS["question_schema"]),
+            ("q_minus_enabled", _CORE_DEFAULTS["q_minus"]),
+            ("q_plus_enabled", _CORE_DEFAULTS["q_plus"]),
+            ("sentence_channel_enabled", _CORE_DEFAULTS["sentence_channel_enabled"]),
+            ("fulltext_analyzer", _CORE_DEFAULTS["fulltext_analyzer"]),
+            ("precompute_reciprocal_hops", _CORE_DEFAULTS["precompute_reciprocal_hops"]),
             ("continuation_edges_materialized", False),
-            ("continuation_anchor_policy", "named_only"),
+            ("continuation_anchor_policy", _CORE_DEFAULTS["continuation_anchor_policy"]),
             ("hop_construction", "qplus_to_qminus_owner"),
         ),
         paper_query_policy=_CORE_QUERY_POLICY + (("structured_output_profile", None, "prehop-json-schema-v3"),),
@@ -175,14 +174,14 @@ STRATEGIES = (
         primary=True,
         paper_index_policy=(
             ("structured_output_profile", "prehop-json-schema-v3"),
-            ("chunk_sentences", 6),
-            ("default_top_k", 12),
-            ("question_schema", "legacy"),
-            ("q_minus_enabled", True),
-            ("q_plus_enabled", True),
-            ("sentence_channel_enabled", False),
-            ("precompute_reciprocal_hops", True),
-            ("fulltext_analyzer", "english"),
+            ("chunk_sentences", _CORE_DEFAULTS["chunk_sentences"]),
+            ("default_top_k", _CORE_DEFAULTS["default_top_k"]),
+            ("question_schema", _CORE_DEFAULTS["question_schema"]),
+            ("q_minus_enabled", _CORE_DEFAULTS["q_minus"]),
+            ("q_plus_enabled", _CORE_DEFAULTS["q_plus"]),
+            ("sentence_channel_enabled", _CORE_DEFAULTS["sentence_channel_enabled"]),
+            ("precompute_reciprocal_hops", _CORE_DEFAULTS["precompute_reciprocal_hops"]),
+            ("fulltext_analyzer", _CORE_DEFAULTS["fulltext_analyzer"]),
         ),
         paper_query_policy=_CORE_QUERY_POLICY + (("structured_output_profile", None, "prehop-json-schema-v3"),),
     ),
@@ -361,10 +360,7 @@ def main() -> int:
     group.add_argument("--primary-lines", action="store_true")
     group.add_argument("--all-lines", action="store_true")
     group.add_argument("--external-tsv", action="store_true")
-    group.add_argument("--output-tsv", action="store_true")
     group.add_argument("--paper-defaults-tsv", action="store_true")
-    group.add_argument("--generation-seed")
-    group.add_argument("--query-instruction")
     group.add_argument("--local-model-tsv", action="store_true")
     group.add_argument("--is-primary")
     group.add_argument("--is-external")
@@ -373,14 +369,6 @@ def main() -> int:
     if args.paper_defaults_tsv:
         for name, value in paper_environment_defaults().items():
             print(f"{name}\t{value}")
-        return 0
-    if args.query_instruction is not None:
-        spec = get_strategy(args.query_instruction)
-        print(dict(spec.paper_index_policy).get("embedding_query_instruction", PAPER_TRANSPORT.query_instruction))
-        return 0
-    if args.generation_seed is not None:
-        value = get_strategy(args.generation_seed).paper_generation_seed
-        print("" if value is None else value)
         return 0
     if args.is_primary is not None:
         return 0 if args.is_primary in PRIMARY_STRATEGIES else 1
@@ -392,11 +380,6 @@ def main() -> int:
         for name in EXTERNAL_STRATEGIES:
             spec = BY_NAME[name]
             print(f"{name}\t{spec.repository}\t{spec.revision}")
-        return 0
-    if args.output_tsv:
-        for spec in STRATEGIES:
-            if spec.output_env and spec.output_default:
-                print(f"{spec.name}\t{spec.output_env}\t{spec.output_default}")
         return 0
     if args.local_model_tsv:
         for spec in STRATEGIES:

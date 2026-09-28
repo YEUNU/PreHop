@@ -25,7 +25,8 @@ def test_coalesces_duplicate_questions_and_flushes_partial_batch(monkeypatch):
 
 
 @pytest.mark.parametrize('mode', ['exception', 'cardinality'])
-def test_batch_failures_propagate_without_retry(mode):
+def test_batch_failures_propagate_without_retry(mode, monkeypatch):
+    monkeypatch.setenv('RAG_BENCHMARK_CONCURRENCY', '8')
     calls = []
     def request(payload):
         calls.append(payload)
@@ -137,7 +138,8 @@ def test_gfm_native_answer_pool_preserves_retrieval_seriality_and_order():
     assert isinstance(rows[2], RuntimeError)
 
 
-def test_batcher_keeps_successful_siblings_when_one_native_query_fails():
+def test_batcher_keeps_successful_siblings_when_one_native_query_fails(monkeypatch):
+    monkeypatch.setenv('RAG_BENCHMARK_CONCURRENCY', '8')
     async def run():
         worker = SimpleNamespace(request=lambda _: {'results': [{'answer': 'ok'}, {'error': 'native failure'}]})
         batcher = NativeQueryBatcher(worker)

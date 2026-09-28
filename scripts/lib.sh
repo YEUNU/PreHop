@@ -26,45 +26,13 @@ load_project_env() {
 }
 
 canonicalize_inference_transport() {
-    local generation_base="${RAG_INFERENCE_BASE_URL:-}"
-    local legacy_name
-    for legacy_name in VLLM_API_BASE VLLM_URL VLLM_EMBED_API_BASE VLLM_EMBED_URL VLLM_API_KEY VLLM_SERVED_MODEL_NAME VLLM_SERVED_EMBED_MODEL_NAME OPENAI_BASE_URL OPENAI_API_BASE OPENAI_PROVIDER AZURE_OPENAI_ENDPOINT AZURE_OPENAI_API_KEY; do
-        if [ -n "${!legacy_name:-}" ]; then
-            echo "ERROR: $legacy_name is not a public input; configure only the canonical RAG_* LiteLLM contract." >&2
-            return 1
-        fi
-    done
-    generation_base="${generation_base%/}"
-    if [ -z "$generation_base" ]; then
-        echo "ERROR: paper inference requires one canonical OpenAI-compatible LiteLLM base URL." >&2
-        return 1
-    fi
-    export RAG_INFERENCE_BASE_URL="$generation_base"
-    export RAG_INFERENCE_API_KEY="${RAG_INFERENCE_API_KEY:-}"
-    export RAG_GENERATION_MODEL="${RAG_GENERATION_MODEL:-}"
-    export RAG_EMBEDDING_MODEL="${RAG_EMBEDDING_MODEL:-}"
-    if [ -z "$RAG_INFERENCE_API_KEY" ] || [ -z "$RAG_GENERATION_MODEL" ] || [ -z "$RAG_EMBEDDING_MODEL" ]; then
-        echo "ERROR: canonical LiteLLM key and registered generation/embedding model names are required." >&2
-        return 1
-    fi
-    local registry defaults name value
-    registry="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/core/strategy_registry.py"
-    defaults=$(python3 "$registry" --paper-defaults-tsv) || return 1
-    while IFS=$'\t' read -r name value; do
-        if [ -n "${RAG_EXECUTION_PROFILE:-}" ] && [[ "$name" =~ ^RAG_(GENERATION_CONCURRENCY|EMBEDDING_BATCH_SIZE|MAX_CONCURRENT_EMBEDDING_REQUESTS|BENCHMARK_CONCURRENCY)$ ]]; then
-            export "$name=$value"
-        else
-            export "$name=${!name:-$value}"
-        fi
-    done <<< "$defaults"
-    local repo_root python method_defaults
-    repo_root="$(dirname "$(dirname "$registry")")"
+    local repo_root python assignments
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     python=$(resolve_python "$repo_root") || return 1
-    method_defaults=$(cd "$repo_root" && "$python" -c 'from core.paper_policy import method_environment_defaults; [print(k+"\t"+v) for k,v in method_environment_defaults().items()]') || return 1
-    while IFS=$'\t' read -r name value; do
-        if [ -z "${!name+x}" ]; then export "$name=$value"; fi
-    done <<< "$method_defaults"
-
+    assignments=$(cd "$repo_root" && "$python" -c \
+        'from scripts.runner_environment import export_runner_environment; export_runner_environment()' "$@") || return 1
+    # Python uses shlex.quote for every value, including whitespace and newlines.
+    eval "$assignments"
 }
 
 # Resolve the Python interpreter. Prefers the project-local .venv (created with

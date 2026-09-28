@@ -10,13 +10,17 @@ sys.path.insert(0,str(ROOT))
 
 
 def make_plan(campaign,mhr_stats,*,multihoprag_reference,adopt=(),updated_reference=None,updated_after=()):
+    from core.execution_profile import resolved_execution_environment
     from core.index_namespace import index_namespace
     from core.strategy_registry import PRIMARY_STRATEGIES
     base=ROOT/'data/results'/campaign;python=str(Path(sys.executable).absolute())
     jobs=[];mhr=json.loads(Path(mhr_stats).read_text())
+    execution = resolved_execution_environment()
+    job_environment = {key: execution[key] for key in
+                       ('RAG_BENCHMARK_SEEDS', 'RAG_BENCHMARK_CONCURRENCY', 'RAG_EXECUTION_PROFILE') if key in execution}
     def add(key,command,after=(),priority=5,exclusive=False,environment=None):
         item={'id':key,'command':[str(c) for c in command],'after':list(after),'priority':priority,'exclusive':exclusive,
-              'environment':{'RAG_BENCHMARK_SEEDS':'42','RAG_BENCHMARK_CONCURRENCY':'8',**(environment or {})}}
+              'environment':{**job_environment,**(environment or {})}}
         jobs.append(item);return key
     def primary(strategy,phase,after=()):
         return add(f'hp-{strategy}-{phase}',[python,'scripts/link_experiment_campaign.py','primary',campaign,phase,strategy,'hotpotqa'],after,3 if phase=='benchmark' else 8)
@@ -150,6 +154,8 @@ def make_plan(campaign,mhr_stats,*,multihoprag_reference,adopt=(),updated_refere
 
 
 def main():
+    from scripts.runner_environment import _load_runner_environment
+    _load_runner_environment()
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--campaign',required=True)
     p.add_argument('--multihoprag-index-stats',type=Path,required=True);p.add_argument('--adopt',type=Path);p.add_argument('--multihoprag-reference',type=Path,required=True)
     p.add_argument('--updated-reference',type=Path);p.add_argument('--updated-after',action='append',default=[])

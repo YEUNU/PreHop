@@ -7,10 +7,8 @@ import sys
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
 from neo4j.exceptions import TransientError
 
-load_dotenv()
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -28,9 +26,9 @@ def _ensure_run_id() -> str:
     return run_id
 
 
-from core.execution_profile import apply_execution_profile
+from scripts.runner_environment import _load_runner_environment
 
-apply_execution_profile()
+_load_runner_environment()
 
 from cli.benchmark import run_benchmark_multi_seed
 from cli.index import rebuild_hop_edges, run_indexing

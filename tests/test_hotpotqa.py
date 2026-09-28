@@ -112,7 +112,10 @@ def test_paper_shell_dispatch_preserves_selected_dataset(tmp_path, dataset):
     (tmp_path / "core/strategy_registry.py").write_text("import sys\nsys.exit(0)\n")
     (scripts / "lib.sh").write_text('''load_project_env() { :; }
 resolve_method_python() { echo "$1/fake-python"; }
-canonicalize_inference_transport() { export RAG_GENERATION_MODEL=test RAG_EMBEDDING_MODEL=test; }
+canonicalize_inference_transport() {
+    export RAG_GENERATION_MODEL=test RAG_EMBEDDING_MODEL=test
+    export RAG_INDEX_STATS_PATH="data/index_stats/${1}_${2}_${3}.json"
+}
 ''')
     fake = tmp_path / "fake-python"
     fake.write_text("#!/bin/sh\nexit 0\n")

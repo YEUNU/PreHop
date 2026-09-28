@@ -82,8 +82,8 @@ def plan(args):
 
 
 async def export_reference(namespace, output):
-    from dotenv import load_dotenv
-    load_dotenv(ROOT / ".env")
+    from scripts.runner_environment import _load_runner_environment
+    _load_runner_environment()
     from core.neo4j_service import Neo4jService
     from models.prehop.indexing.body_links import make_reference, read_body_rows
 

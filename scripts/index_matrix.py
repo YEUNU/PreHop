@@ -179,17 +179,12 @@ def main():
     if args.action == 'child':
         from core.runtime_requirements import ensure_method_runtime
         ensure_method_runtime(args.strategy)
-    from dotenv import load_dotenv
-    if os.environ.get('RAG_SKIP_PROJECT_ENV') != 'true':
-        load_dotenv(ROOT / '.env', override=False)
-    from core.execution_profile import apply_execution_profile, execution_profile
-    apply_execution_profile()
+    from scripts.runner_environment import _load_runner_environment
+    _load_runner_environment()
+    from core.execution_profile import execution_profile
     if not execution_profile()['sha256']:
         parser.error('Select a tested RAG_EXECUTION_PROFILE before starting Python')
     os.environ.update(RAG_PAPER_MODE='true', PYTHONDONTWRITEBYTECODE='1')
-    from core.strategy_registry import paper_environment_defaults
-    for name, value in paper_environment_defaults().items():
-        os.environ.setdefault(name, value)
     if args.action == 'child':
         if not args.strategy or not args.dataset or not args.phase:
             parser.error('child requires strategy, dataset, and phase')

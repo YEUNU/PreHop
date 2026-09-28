@@ -29,8 +29,10 @@ _PREHOP_HOP_ENVIRONMENT = {"RAG_HOP_GATHER_WAVE", "RAG_HOP_BUILD_CONCURRENCY",
 
 def method_environment_defaults(env_path: Path | None = None) -> dict[str, str]:
     """Freeze registry defaults and unknown dotenv method keys without reading values."""
+    from core.inference_transport import inference_environment_keys
+
     defaults = {}
-    allowed = set()
+    allowed = inference_environment_keys()
     for strategy in _METHOD_PREFIXES:
         spec = get_strategy(strategy)
         for name, value in spec.index_environment_defaults().items():
@@ -56,16 +58,13 @@ def preserve_method_environment(environment=None, env_path: Path | None = None) 
 
 
 def configure_target_environment(strategy: str, dataset: str, run_id: str) -> None:
-    """Resolve target identity before standalone admission reads live policy."""
-    from core.execution_profile import apply_execution_profile
+    """Set shared paper defaults and run-scoped storage for every target launcher."""
+    from core.execution_profile import resolved_execution_environment
     from core.inference_transport import preserve_provider_environment
-    from core.strategy_registry import paper_environment_defaults
-    apply_execution_profile()
+    os.environ.update(resolved_execution_environment())
     spec = get_strategy(strategy)
     preserve_provider_environment()
     preserve_method_environment()
-    for name, value in paper_environment_defaults().items():
-        os.environ.setdefault(name, value)
     os.environ.update({
         "RAG_PAPER_MODE": "true", "RAG_RUN_ID": run_id,
         "RAG_INDEX_NAMESPACE": f"{dataset}_{run_id}",
@@ -119,7 +118,7 @@ def canonical_semantic_index_policy(strategy: str) -> dict[str, Any]:
         "embedding_query_template": None if local_embedding else PAPER_EMBEDDING_QUERY_TEMPLATE,
         "embedding_dimensions": spec.paper_embedding_dimensions,
         "embedding_max_input_tokens": PAPER_EMBEDDING_MAX_INPUT_TOKENS,
-        "embedding_token_reserve": 0,
+        "embedding_token_reserve": PAPER_TRANSPORT.embedding_token_reserve,
         "generation_max_context_tokens": PAPER_TRANSPORT.generation_context_tokens,
         "fulltext_analyzer": "english",
     }

@@ -1,15 +1,15 @@
-"""Single fail-closed OpenAI-compatible inference transport contract."""
+"""Effective OpenAI-compatible inference settings shared by every runtime."""
 from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
-from core.embedding_policy import EmbeddingOperationalConfig
-from core.execution_profile import execution_profile
+from core.execution_profile import execution_profile, resolved_execution_environment
 from core.semantic_config import parse_strict_bool
-from core.strategy_registry import PAPER_TRANSPORT, get_strategy
+from core.strategy_registry import EXTERNAL_STRATEGIES, PAPER_TRANSPORT, get_strategy
 
 _FORBIDDEN_AMBIENT_PROVIDER_KEYS = (
     "AZURE_OPENAI_API_KEY",
@@ -26,6 +26,29 @@ _FORBIDDEN_AMBIENT_PROVIDER_KEYS = (
     "VLLM_SERVED_EMBED_MODEL_NAME",
 )
 
+PUBLIC_INFERENCE_FIELDS = (
+    'RAG_INFERENCE_BASE_URL', 'RAG_INFERENCE_API_KEY', 'RAG_GENERATION_MODEL', 'RAG_EMBEDDING_MODEL',
+)
+_EMBEDDING_CONTROLS = {
+    'BATCH_SIZE': 'RAG_EMBEDDING_BATCH_SIZE',
+    'CONCURRENCY': 'RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS',
+    'RETRY_ATTEMPTS': 'RAG_INFERENCE_RETRY_ATTEMPTS',
+}
+
+
+def inference_environment_keys() -> set[str]:
+    """Inputs that must survive filtering into an isolated paper process."""
+    from core.strategy_registry import paper_environment_defaults
+
+    return set(PUBLIC_INFERENCE_FIELDS) | set(paper_environment_defaults()) | {
+        'RAG_GENERATION_REVISION', 'RAG_EMBEDDING_REVISION', 'RAG_LLM_SEED',
+        'EMBEDDING_QUERY_INSTRUCTION', 'MAX_EMBEDDING_LENGTH', 'NEO4J_VECTOR_DIMENSIONS',
+        'RAG_EMBEDDING_TOKEN_RESERVE', 'RAG_MAX_CONTEXT_LENGTH',
+    } | {
+        f'RAG_{strategy.upper()}_EMBEDDING_{suffix}'
+        for strategy in EXTERNAL_STRATEGIES for suffix in _EMBEDDING_CONTROLS
+    }
+
 
 def preserve_provider_environment(environment=None) -> None:
     """Freeze the already-canonical paper environment before native imports."""
@@ -37,12 +60,14 @@ def preserve_provider_environment(environment=None) -> None:
     environment['LITELLM_MODE'] = 'PRODUCTION'
 
 
-def _required(*names: str) -> str:
-    for name in names:
-        value = os.environ.get(name, "").strip()
-        if value:
-            return value
-    return ""
+def validate_public_inference_environment(environment: Mapping[str, str]) -> None:
+    """Check the public inputs required by shell service/experiment launchers."""
+    for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS:
+        if environment.get(name, '').strip():
+            raise ValueError(f"{name} is not a public input; configure only the canonical RAG_* LiteLLM contract.")
+    missing = [name for name in PUBLIC_INFERENCE_FIELDS if not environment.get(name, '').strip()]
+    if missing:
+        raise ValueError(f"Canonical LiteLLM settings are required: {', '.join(missing)}")
 
 
 def _normalized_endpoint(value: str) -> str:
@@ -71,12 +96,13 @@ class InferenceTransport:
     generation_max_context_tokens: int
     embedding_query_template: str
     gateway_identity_sha256: str
+    execution_profile: dict
 
     def policy_dict(self) -> dict[str, object]:
         """Return the non-secret effective contract persisted with an index."""
         return {
             "gateway_identity_sha256": self.gateway_identity_sha256,
-            "execution_profile": execution_profile(),
+            "execution_profile": self.execution_profile,
             "generation_model": self.generation_model,
             "gateway_embedding_model": self.embedding_model,
             "timeout_seconds": self.timeout_seconds,
@@ -99,33 +125,39 @@ class InferenceTransport:
         }
 
     @classmethod
-    def resolve(cls, strategy: str) -> InferenceTransport:
-        embedding = EmbeddingOperationalConfig.resolve(strategy)
-        timeout = float(os.environ.get("RAG_INFERENCE_TIMEOUT", str(PAPER_TRANSPORT.timeout_seconds)))
+    def resolve(cls, strategy: str, environment: Mapping[str, str] | None = None) -> InferenceTransport:
+        environment = resolved_execution_environment(environment)
+        # Only isolated workers accept method-specific embedding overrides.
+        def embedding_setting(suffix: str) -> int:
+            name = f"RAG_{strategy.upper()}_EMBEDDING_{suffix}"
+            value = environment.get(name) if strategy in EXTERNAL_STRATEGIES else None
+            return int(environment[_EMBEDDING_CONTROLS[suffix]] if value is None else value)
+
+        timeout = float(environment["RAG_INFERENCE_TIMEOUT"])
         generation_concurrency = int(
-            os.environ.get("RAG_GENERATION_CONCURRENCY", str(PAPER_TRANSPORT.generation_concurrency))
+            environment["RAG_GENERATION_CONCURRENCY"]
         )
-        seed_raw = os.environ.get("RAG_LLM_SEED", "").strip()
-        paper_mode = parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
+        seed_raw = environment.get("RAG_LLM_SEED", "").strip()
+        paper_mode = parse_strict_bool(environment.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
         method_policy = {} if strategy == "core" else dict(get_strategy(strategy).paper_index_policy)
         expected_instruction = method_policy.get("embedding_query_instruction", PAPER_TRANSPORT.query_instruction)
         query_template = method_policy.get("embedding_query_template", PAPER_TRANSPORT.query_template)
-        query_instruction = os.environ.get("EMBEDDING_QUERY_INSTRUCTION", expected_instruction).strip()
+        query_instruction = environment.get("EMBEDDING_QUERY_INSTRUCTION", expected_instruction).strip()
         embedding_max_input_tokens = int(
-            os.environ.get("MAX_EMBEDDING_LENGTH", str(PAPER_TRANSPORT.embedding_max_input_tokens))
+            environment.get("MAX_EMBEDDING_LENGTH", str(PAPER_TRANSPORT.embedding_max_input_tokens))
         )
         embedding_dimensions = int(
-            os.environ.get("NEO4J_VECTOR_DIMENSIONS", str(PAPER_TRANSPORT.embedding_dimensions))
+            environment.get("NEO4J_VECTOR_DIMENSIONS", str(PAPER_TRANSPORT.embedding_dimensions))
         )
         embedding_token_reserve = int(
-            os.environ.get("RAG_EMBEDDING_TOKEN_RESERVE", str(PAPER_TRANSPORT.embedding_token_reserve))
+            environment.get("RAG_EMBEDDING_TOKEN_RESERVE", str(PAPER_TRANSPORT.embedding_token_reserve))
         )
         generation_max_context_tokens = int(
-            os.environ.get("RAG_MAX_CONTEXT_LENGTH", str(PAPER_TRANSPORT.generation_context_tokens))
+            environment.get("RAG_MAX_CONTEXT_LENGTH", str(PAPER_TRANSPORT.generation_context_tokens))
         )
-        endpoint = _normalized_endpoint(_required("RAG_INFERENCE_BASE_URL"))
-        generation_model = _required("RAG_GENERATION_MODEL")
-        embedding_model = _required("RAG_EMBEDDING_MODEL")
+        endpoint = _normalized_endpoint(environment.get("RAG_INFERENCE_BASE_URL", ""))
+        generation_model = environment.get("RAG_GENERATION_MODEL", "").strip()
+        embedding_model = environment.get("RAG_EMBEDDING_MODEL", "").strip()
         observed_seed = None if paper_mode else (int(seed_raw) if seed_raw else None)
         result = cls(
             strategy=strategy,
@@ -133,11 +165,11 @@ class InferenceTransport:
             generation_base_url=endpoint,
             embedding_model=embedding_model,
             embedding_base_url=endpoint,
-            api_key=_required("RAG_INFERENCE_API_KEY"),
+            api_key=environment.get("RAG_INFERENCE_API_KEY", "").strip(),
             timeout_seconds=timeout,
-            retry_attempts=embedding.retry_attempts,
-            embedding_batch_size=embedding.batch_size,
-            embedding_concurrency=embedding.concurrency,
+            retry_attempts=embedding_setting("RETRY_ATTEMPTS"),
+            embedding_batch_size=embedding_setting("BATCH_SIZE"),
+            embedding_concurrency=embedding_setting("CONCURRENCY"),
             generation_concurrency=generation_concurrency,
             generation_seed=observed_seed,
             embedding_query_instruction=query_instruction,
@@ -147,5 +179,6 @@ class InferenceTransport:
             generation_max_context_tokens=generation_max_context_tokens,
             embedding_query_template=query_template,
             gateway_identity_sha256=hashlib.sha256(endpoint.encode("utf-8")).hexdigest(),
+            execution_profile=execution_profile(environment),
         )
         return result

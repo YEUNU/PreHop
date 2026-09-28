@@ -51,3 +51,46 @@ def test_fixed_upstream_model_settings_have_no_inert_overrides(monkeypatch):
     monkeypatch.setenv('RAG_LINEAR_RAG_MPNET_MODEL', 'unused-override')
     assert method_setting('linear_rag', 'official_embedding_model') == get_strategy('linear_rag').paper_embedding_model
     assert 'RAG_LINEAR_RAG_MPNET_MODEL' not in get_strategy('linear_rag').index_environment_defaults()
+
+
+def test_isolated_worker_preserves_explicit_transport_overrides(monkeypatch):
+    from models.official_baseline_runtime import _runtime_env
+    from scripts.runner_environment import safe_environment
+
+    monkeypatch.setenv('RAG_LIGHTRAG_EMBEDDING_BATCH_SIZE', '7')
+    monkeypatch.setenv('RAG_LIGHTRAG_EMBEDDING_CONCURRENCY', '2')
+    monkeypatch.setenv('RAG_LIGHTRAG_EMBEDDING_RETRY_ATTEMPTS', '3')
+    monkeypatch.setenv('NEO4J_VECTOR_DIMENSIONS', '128')
+    monkeypatch.setenv('MAX_EMBEDDING_LENGTH', '512')
+    monkeypatch.setenv('RAG_UNRELATED_TEST_SETTING', 'discard')
+    expected = InferenceTransport.resolve('lightrag')
+    filtered = safe_environment()
+    assert 'RAG_UNRELATED_TEST_SETTING' not in filtered
+    # Follow the actual supervisor -> native worker boundary.
+    monkeypatch.setattr('os.environ', filtered)
+    native = _runtime_env('lightrag')
+    observed = InferenceTransport.resolve('lightrag', native)
+    for field in ('embedding_batch_size', 'embedding_concurrency', 'retry_attempts',
+                  'embedding_dimensions', 'embedding_max_input_tokens'):
+        assert getattr(observed, field) == getattr(expected, field)
+    assert native['RAG_EMBEDDING_BATCH_SIZE'] == '7'
+    assert native['RAG_EMBEDDING_CONCURRENCY'] == '2'
+
+
+def test_core_query_settings_keep_types_normalization_and_fixed_parameters(monkeypatch):
+    import runpy
+
+    monkeypatch.setenv('RAG_GRAPH_HOP_DEPTH', '0')
+    monkeypatch.setenv('RAG_GRAPH_PATH_DECAY', '0.25')
+    monkeypatch.setenv('RAG_ABLATION_Q_PLUS', 'false')
+    monkeypatch.setenv('RAG_GRAPH_EDGE_VARIANT', ' NEXT_ONLY ')
+    monkeypatch.setenv('RAG_DEFAULT_TOP_K', '99')
+    config = runpy.run_path('core/config.py')['RAGConfig']
+    assert config.GRAPH_HOP_DEPTH == 0
+    assert config.GRAPH_PATH_DECAY == 0.25
+    assert config.ABLATION_Q_PLUS is False
+    assert config.GRAPH_EDGE_VARIANT == 'next_only'
+    assert config.DEFAULT_TOP_K == 12
+    monkeypatch.setenv('RAG_ABLATION_Q_PLUS', 'not-a-bool')
+    with pytest.raises(ValueError, match='RAG_ABLATION_Q_PLUS'):
+        runpy.run_path('core/config.py')

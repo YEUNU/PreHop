@@ -15,9 +15,6 @@ load_project_env "$SCRIPT_DIR/.env"
 canonicalize_inference_transport || exit 1
 
 # Environment (.env values override defaults; exported values override .env).
-export NEO4J_VECTOR_DIMENSIONS="${NEO4J_VECTOR_DIMENSIONS:-2560}"
-export MAX_EMBEDDING_LENGTH="${MAX_EMBEDDING_LENGTH:-32768}"
-export NEO4J_FULLTEXT_ANALYZER="${NEO4J_FULLTEXT_ANALYZER:-english}"
 export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 
 SAFE_RUN_ID="${RAG_RUN_ID//[^A-Za-z0-9_.-]/_}"
@@ -60,11 +57,12 @@ export RAG_INDEX_LOG_DIR="$INDEX_LOG_DIR"
 echo "========================================="
 echo "     Indexing Pre-flight Check           "
 echo "========================================="
-if [ "$MODEL" = "naive" ] || [ "$MODEL" = "prehop" ]; then
-    echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, chunk_sentences=6"
-else
-    echo "Indexing: analyzer=${NEO4J_FULLTEXT_ANALYZER}, chunking=official"
-fi
+"$PYTHON_BIN" -c '
+import sys
+from core.config import RAGConfig as config
+unit = f"chunk_sentences={config.CHUNK_SENTENCES}" if sys.argv[1] in {"prehop", "naive"} else "chunking=official"
+print(f"Indexing: analyzer={config.FULLTEXT_ANALYZER}, {unit}")
+' "$MODEL"
 
 # Validate one strategy per invocation.
 if [ "$MODEL" = "all" ]; then

@@ -301,8 +301,6 @@ prehop_presentation*
 
 # Local maintenance evidence, cleanup inventories and source snapshots.
 /data/maintenance/
-# Host-specific serving observations are historical run artifacts, not defaults.
-/configs/serving_observation*.json
 
 # Local build bundle.
 docs/acl/

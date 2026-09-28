@@ -15,7 +15,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from core.inference_transport import InferenceTransport
-from core.strategy_registry import PAPER_TRANSPORT
 from core.vllm_client import VLLMClient
 
 
@@ -34,16 +33,16 @@ async def probe(strategy: str, kind: str) -> dict[str, object]:
         return {"status": "canary_passed", "schema_version": 1, "stage": "chat_probe", "answer": answer, "request_count": 1}
 
     if kind == "embedding":
-        values = [f"gateway embedding probe {index}" for index in range(PAPER_TRANSPORT.embedding_batch_size)]
+        values = [f"gateway embedding probe {index}" for index in range(transport.embedding_batch_size)]
     else:
         # The gateway must reject this deliberately oversized aggregate with a
         # size-dependent error so the client demonstrates selective bisection.
         unit = "oversized-gateway-probe " * 8000
-        values = [f"{index} {unit}" for index in range(PAPER_TRANSPORT.embedding_batch_size)]
+        values = [f"{index} {unit}" for index in range(transport.embedding_batch_size)]
     vectors = await client.get_embeddings(values, encoding_type="document")
     valid = (
         len(vectors) == len(values)
-        and all(len(vector) == PAPER_TRANSPORT.embedding_dimensions for vector in vectors)
+        and all(len(vector) == transport.embedding_dimensions for vector in vectors)
         and all(math.isfinite(float(value)) for vector in vectors for value in vector)
     )
     if not valid:
@@ -61,7 +60,7 @@ async def probe(strategy: str, kind: str) -> dict[str, object]:
         "oversized_rejected": bisections > 0,
         "selective_bisection_passed": bisections > 0,
         "count": len(vectors),
-        "dimension": PAPER_TRANSPORT.embedding_dimensions,
+        "dimension": transport.embedding_dimensions,
         "finite": True,
         "bisections": bisections,
     }

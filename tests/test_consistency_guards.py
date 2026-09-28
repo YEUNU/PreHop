@@ -153,7 +153,7 @@ def test_index_policy_records_semantic_embedding_and_hop_identity(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generation_budget_is_shared_across_client_instances(monkeypatch):
-
+    monkeypatch.delenv('RAG_EXECUTION_PROFILE', raising=False)
     monkeypatch.setenv('RAG_GENERATION_CONCURRENCY', str(2))
     VLLMClient._generation_semaphores.clear()
     VLLMClient._generation_inflight.clear()

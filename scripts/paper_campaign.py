@@ -326,8 +326,6 @@ def main() -> int:
         return 0
     from scripts.runner_environment import _load_runner_environment
     _load_runner_environment()
-    from core.execution_profile import apply_execution_profile
-    apply_execution_profile()
     if args.action == 'plan':
         print(create_plan(args.target, args.commit, args.attempt))
         return 0

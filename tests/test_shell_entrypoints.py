@@ -378,10 +378,31 @@ def test_dataset_wrappers_never_launch_an_implicit_second_strategy():
     assert "./run_multihoprag.sh all --model hoprag" not in dataset
 
 
-def test_paper_runner_uses_run_scoped_neo4j_namespace():
-    paper_runner = (ROOT / "scripts/run_paper_target.sh").read_text(encoding="utf-8")
+def test_shell_and_python_share_target_configuration(tmp_path, monkeypatch):
+    import json
 
-    assert 'export RAG_INDEX_NAMESPACE="${dataset}_${run_id}"' in paper_runner
+    from core.inference_transport import InferenceTransport
+    from core.paper_policy import configure_target_environment
+
+    env = _entrypoint_env(tmp_path)
+    env.update(RAG_EXECUTION_PROFILE=str(ROOT / 'configs/execution_profiles/direct-8.json'),
+               RAG_GENERATION_CONCURRENCY='123', RAG_MAX_PARALLEL_FILES='123')
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    keys = ['RAG_RUN_ID', 'RAG_INDEX_NAMESPACE', 'RAG_INDEX_STATS_PATH', 'RAG_CHUNK_CACHE_DIR',
+            'RAG_LIGHTRAG_OUTPUT_ROOT', 'RAG_LLM_SEED', 'EMBEDDING_QUERY_INSTRUCTION',
+            'RAG_BENCHMARK_CONCURRENCY', 'RAG_GENERATION_CONCURRENCY', 'RAG_MAX_PARALLEL_FILES']
+    result = subprocess.run(['bash', '-c', '''
+source scripts/lib.sh
+canonicalize_inference_transport lightrag hotpotqa fixture-run || exit 1
+"$PYTHON_BIN" -c 'import json, os, sys; print(json.dumps({k: os.environ[k] for k in sys.argv[1:]}))' "$@"
+''', 'test', *keys], cwd=ROOT, env=env, check=True, capture_output=True, text=True)
+    observed = json.loads(result.stdout)
+    configure_target_environment('lightrag', 'hotpotqa', 'fixture-run')
+    assert observed == {key: os.environ[key] for key in keys}
+    assert observed['RAG_INDEX_NAMESPACE'] == 'hotpotqa_fixture-run'
+    assert observed['RAG_MAX_PARALLEL_FILES'] == observed['RAG_BENCHMARK_CONCURRENCY'] == '8'
+    assert int(observed['RAG_GENERATION_CONCURRENCY']) == InferenceTransport.resolve('lightrag').generation_concurrency
 
 
 def test_paper_runner_uses_shared_conservative_embedding_load():

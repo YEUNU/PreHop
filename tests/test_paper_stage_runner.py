@@ -92,6 +92,7 @@ def test_shell_handoff_uses_selected_main_prefix_and_rejects_drift(monkeypatch):
 
 
 def test_production_benchmark_checkpoint_resume_retains_rows_and_schema_metadata(tmp_path, monkeypatch):
+    monkeypatch.delenv('RAG_EXECUTION_PROFILE', raising=False)
     from cli import benchmark
     from core.config import RAGConfig
     from core.paper_policy import structured_query_identity

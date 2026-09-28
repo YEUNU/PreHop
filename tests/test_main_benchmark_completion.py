@@ -7,7 +7,7 @@ import pytest
 @pytest.mark.parametrize("mode", ["benchmark", "benchmark_all"])
 @pytest.mark.parametrize("fails", [False, True])
 async def test_benchmark_completion_and_failure_cleanup(monkeypatch, tmp_path, mode, fails):
-    monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: None)
     import main as entry
 
     monkeypatch.chdir(tmp_path)

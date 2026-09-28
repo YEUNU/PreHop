@@ -1,9 +1,10 @@
 # Architecture
 
-This document describes implementation behavior. `core/config.py` owns retrieval
-and evaluation settings; `core/strategy_registry.py` owns method and transport
+This document describes implementation behavior. `core/config.py` resolves retrieval
+and evaluation settings; `core/strategy_registry.py` owns shared method and transport
 defaults, supported methods, primary order, upstream revisions, and benchmark
-policies. `core/inference_transport.py` resolves effective request settings.
+policies. `core/execution_profile.py` applies operational overrides at resolution
+time; `core/inference_transport.py` resolves effective request and embedding settings.
 Launch procedures are defined in
 [THROUGHPUT_EXECUTION](THROUGHPUT_EXECUTION.md).
 
