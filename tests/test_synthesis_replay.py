@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -101,6 +102,28 @@ async def test_resume_reuses_identical_requests_but_drops_changed_context(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_reader_wire_settings_and_resume_identity_share_generation_profile(tmp_path, monkeypatch):
+    import hashlib
+
+    from cli.synthesis import request_identity
+    from core.config import RAGConfig
+    from utils.prompts.prehop_answer import SYNTHESIS_PROMPT_VERSION
+
+    row = record('prehop', '1', 'same evidence')
+    monkeypatch.setattr(RAGConfig, 'PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS', 256)
+    previous = hashlib.sha256(json.dumps({'messages': row.messages(), 'prompt_version': SYNTHESIS_PROMPT_VERSION,
+        'temperature': 0, 'max_tokens': 256, 'enable_thinking': False}, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    assert request_identity(row) == previous
+    monkeypatch.setattr(RAGConfig, 'PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS', 37)
+    assert request_identity(row) != previous
+    inputs = tmp_path / 'inputs.jsonl'
+    write_inputs(inputs, [row])
+    client = FakeClient()
+    await run_synthesis(inputs, tmp_path / 'out', client=client, interval=0)
+    assert client.requests[0]['max_tokens'] == 37
+
+
+@pytest.mark.asyncio
 async def test_429_retries_same_request_without_changing_evidence(tmp_path):
     inputs = tmp_path/'inputs.jsonl'
     row = record('prehop', '1', 'immutable context')
@@ -160,3 +183,118 @@ async def test_main_synthesis_path_does_not_dispatch_benchmark(tmp_path, monkeyp
     monkeypatch.setattr(main, 'run_indexing', lambda *a, **kw: pytest.fail('Indexing dispatched'))
     await main.main()
     assert called == [(Path('saved.jsonl'), tmp_path, {'concurrency': 24})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('close_fails', [False, True])
+async def test_owned_reader_client_closes_on_input_error(tmp_path, monkeypatch, close_fails):
+    client = SimpleNamespace(close=AsyncMock(side_effect=RuntimeError('close failed') if close_fails else None))
+    monkeypatch.setattr('openai.AsyncOpenAI', lambda **kwargs: client)
+    with pytest.raises(FileNotFoundError):
+        await run_synthesis(tmp_path / 'missing.jsonl', tmp_path / 'out')
+    client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reader_rate_limits_use_shared_attempt_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv('RAG_INFERENCE_RETRY_ATTEMPTS', '2')
+    inputs = tmp_path / 'inputs.jsonl'
+    write_inputs(inputs, [record('prehop', '1', 'evidence')])
+    output = tmp_path / 'out'
+    output.mkdir()
+    (output / 'execution_config.json').write_text(json.dumps({'concurrency': 1,
+        'minimum_request_interval_seconds': 0, 'retry_429_initial_seconds': 0, 'retry_429_max_seconds': 0}))
+    error = RuntimeError('rate limited')
+    error.status_code = 429
+    calls = AsyncMock(side_effect=error)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=calls)))
+    with pytest.raises(RuntimeError, match='HTTP 429'):
+        await run_synthesis(inputs, output, client=client)
+    assert calls.await_count == 2
+    assert calls.await_args_list[0] == calls.await_args_list[1]
+    status = json.loads((output / 'status.json').read_text())
+    assert status['transport']['inference_retry_attempts'] == 2
+    assert status['state'] == 'stopped'
+
+
+async def replay_fixture(tmp_path, dataset='multihoprag', *, original_failure=False):
+    from scripts.datasets.prepare_hotpotqa_hipporag import prepare
+    from utils.metrics import evaluate_multihoprag_response
+
+    store = tmp_path / 'corpus/sentences.sqlite3'
+    if dataset == 'hotpotqa':
+        raw = tmp_path / 'raw'
+        raw.mkdir()
+        (raw / 'hotpotqa_corpus.json').write_text(json.dumps({'Article': ['Yes is the answer.']}))
+        (raw / 'hotpotqa.json').write_text(json.dumps([{'_id': 'q', 'question': 'Is it?', 'answer': 'Yes',
+            'type': 'bridge', 'supporting_facts': [['Article', 0]]}]))
+        prepare(raw, store.parent, tmp_path / 'queries.json')
+    sources = [{'doc': 'Article', 'text': 'Yes is the answer.'}]
+    scores = await evaluate_multihoprag_response('Is it?', 'No', 'Yes', sources,
+        evidence_facts=['Yes is the answer.'], evidence_docs=['Article'], dataset=dataset,
+        supporting_facts=[['Article', 0]], hotpot_sentence_store=str(store))
+    row = {'query_id': 'q', 'original_query_id': 'original-q', 'query': 'Is it?',
+           'ground_truth': 'Yes', 'answer': 'No', 'question_type': 'inference_query',
+           'retrieved_sources': sources, 'expected_sources': {'facts': ['Yes is the answer.'],
+               'docs': ['Article'], 'supporting_facts': [['Article', 0]]}, **scores}
+    if original_failure:
+        row.update(error='original retrieval failure', failure_scope='query')
+    source = tmp_path / 'source.json'
+    source.write_text(json.dumps({'dataset': dataset, 'strategy': 'prehop', 'status': 'completed_unadmitted',
+        'evaluation_scope': 'released_benchmark' if dataset == 'hotpotqa' else 'full_benchmark',
+        'total_queries': 1, 'avg_latency': 999, 'details': [row]}))
+    inputs = tmp_path / 'inputs.jsonl'
+    prepare_inputs([source], inputs)
+    await run_synthesis(inputs, tmp_path / 'reader', client=FakeClient(), model='fixture', interval=0)
+    return source, tmp_path / 'reader/responses.jsonl', store
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('dataset', ['multihoprag', 'hotpotqa'])
+@pytest.mark.parametrize('original_failure', [False, True])
+async def test_reader_scores_preserve_retrieval_identity_failures_and_originals(tmp_path, dataset, original_failure):
+    from scripts.export_official_results import export, export_synthesis_results
+
+    source, responses, store = await replay_fixture(tmp_path, dataset, original_failure=original_failure)
+    before = source.read_bytes()
+    paths = await export_synthesis_results([source], responses, tmp_path / 'scores', store)
+    result = json.loads(paths[0].read_text())
+    assert source.read_bytes() == before
+    original_row = json.loads(before)['details'][0]
+    row = result['details'][0]
+    assert row['retrieved_sources'] == original_row['retrieved_sources']
+    assert row['expected_sources'] == original_row['expected_sources']
+    assert row['original_query_id'] == original_row['original_query_id']
+    assert row['answer'] == 'Final Answer: Yes'
+    assert 'avg_latency' not in result and 'latency' not in row
+    official_path, _ = export(paths[0], tmp_path / 'scores')
+    report = json.loads(official_path.read_text())
+    assert report['failed_rows'] == int(original_failure)
+    quality = report['qa']['overall']['accuracy'] if dataset == 'multihoprag' else report['metrics']['joint_em']
+    assert quality == (0 if original_failure else 1)
+    if not original_failure and dataset == 'hotpotqa':
+        assert row['predicted_supporting_facts'] == original_row['predicted_supporting_facts']
+    assert report['common_reader']['source_sha256'] == result['common_reader']['source_sha256']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mismatch', ['missing', 'duplicate', 'source', 'context', 'incomplete'])
+async def test_reader_export_rejects_mismatched_or_incomplete_evidence(tmp_path, mismatch):
+    from scripts.export_official_results import export_synthesis_results
+
+    source, responses, store = await replay_fixture(tmp_path)
+    rows = [json.loads(line) for line in responses.read_text().splitlines()]
+    if mismatch == 'missing':
+        rows = []
+    elif mismatch == 'duplicate':
+        rows += rows
+    elif mismatch == 'source':
+        rows[0]['trace_provenance']['source_sha256'] = 'stale'
+    elif mismatch == 'context':
+        rows[0]['context_sha256'] = 'truncated'
+    else:
+        rows[0]['status'] = 'stopped'
+    responses.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    with pytest.raises(ValueError):
+        await export_synthesis_results([source], responses, tmp_path / 'scores', store)
+    assert not (tmp_path / 'scores').exists()

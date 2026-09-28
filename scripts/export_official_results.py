@@ -1,5 +1,6 @@
 """Save dataset-specific official metrics separately from auxiliary diagnostics."""
 import argparse
+import asyncio
 import csv
 import hashlib
 import json
@@ -103,7 +104,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("result", type=Path, nargs="+", help="Explicit final result paths; no automatic run discovery")
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--synthesis-responses", type=Path,
+                        help="Score saved common-reader responses against these original retrieval results")
+    parser.add_argument("--hotpot-sentence-store", type=Path, default=Path("data/hotpotqa_corpus/sentences.sqlite3"))
     args = parser.parse_args()
+    if args.synthesis_responses is not None:
+        if args.output_dir is None:
+            parser.error("--output-dir is required when scoring common-reader responses")
+        args.result = asyncio.run(export_synthesis_results(
+            args.result, args.synthesis_responses, args.output_dir, args.hotpot_sentence_store,
+        ))
     if len(args.result) == 1:
         paths = export(args.result[0], args.output_dir)
     else:
@@ -111,6 +121,36 @@ def main():
             parser.error("--output-dir is required when exporting a comparison")
         paths = export_comparison(args.result, args.output_dir)
     print(json.dumps({"written": [str(p) for p in paths]}))
+
+
+async def export_synthesis_results(
+    sources: list[Path], responses_path: Path, output_dir: Path, sentence_store: Path,
+) -> list[Path]:
+    from core.synthesis_replay import evaluate_responses
+    from utils.official_results import dataset_key
+
+    raw = responses_path.read_bytes()
+    responses = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    reference = {'path': str(responses_path.resolve()), 'sha256': hashlib.sha256(raw).hexdigest()}
+    results = []
+    targets = set()
+    # Evaluate before publication so missing/mismatched responses cannot yield
+    # a partial comparison silently. This is an offline export, not a run gate.
+    for source in sources:
+        result = await evaluate_responses(source, responses, reference, sentence_store=sentence_store)
+        dataset, strategy = dataset_key(result['dataset']), result['strategy']
+        if not strategy or Path(strategy).name != strategy or strategy in {'.', '..'}:
+            raise ValueError(f'Invalid strategy: {strategy}')
+        if (dataset, strategy) in targets:
+            raise ValueError(f'Select one final result for {dataset}/{strategy}')
+        targets.add((dataset, strategy))
+        target = output_dir / 'evaluated' / dataset / strategy / f'{source.stem}.common-reader.json'
+        if target.resolve() in {p.resolve() for p in [*sources, responses_path]}:
+            raise ValueError('Common-reader exports must not overwrite their inputs')
+        results.append((target, result))
+    for target, result in results:
+        _write_json(target, result)
+    return [target for target, _ in results]
 
 
 if __name__ == "__main__":

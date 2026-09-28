@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -23,15 +24,52 @@ def timestamp():
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
 
+def reader_settings():
+    from core.generation_profiles import request_settings
+    settings = request_settings('prehop_answer')
+    # Preserve the saved request identity for numerically identical defaults.
+    if float(settings['temperature']).is_integer():
+        settings['temperature'] = int(settings['temperature'])
+    return {**settings, 'extra_body': {'chat_template_kwargs': {'enable_thinking': False}}}
+
+
 def request_identity(row):
+    settings = reader_settings()
     payload = {'messages': row.messages(), 'prompt_version': SYNTHESIS_PROMPT_VERSION,
-               'temperature': 0, 'max_tokens': 256, 'enable_thinking': False}
+               'temperature': settings['temperature'], 'max_tokens': settings['max_tokens'],
+               'enable_thinking': settings['extra_body']['chat_template_kwargs']['enable_thinking']}
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=None,
                         model=None, interval=1.0):
     """Consume the trace hook; no retrieval, ranking, embedding, or truncation occurs here."""
+    from core.inference_transport import InferenceTransport
+    transport = InferenceTransport.resolve('prehop')
+    model = model or transport.generation_model
+    owned_client = client is None
+    if owned_client:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(base_url=transport.generation_base_url, api_key=transport.api_key,
+                             timeout=transport.timeout_seconds, max_retries=0)
+    failed = False
+    try:
+        return await _run_synthesis(inputs, output, concurrency=concurrency, client=client,
+                                    model=model, interval=interval, transport=transport)
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        if owned_client:
+            try:
+                await client.close()
+            except Exception:
+                if not failed:
+                    raise
+                logging.getLogger('Prehop').warning('Reader cleanup failed after replay failure', exc_info=True)
+
+
+async def _run_synthesis(inputs, output, *, concurrency, client, model, interval, transport):
     from core.vllm_client import VLLMClient
     from utils.parsers import clean_and_unwrap_json
 
@@ -40,21 +78,12 @@ async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=No
     if not config.exists():
         atomic_json(config, {'concurrency': concurrency, 'minimum_request_interval_seconds': interval,
                              'retry_429_initial_seconds': 30, 'retry_429_max_seconds': 300})
-    owned_client = client is None
-    if owned_client:
-        from openai import AsyncOpenAI
-
-        from core.inference_transport import InferenceTransport
-        transport = InferenceTransport.resolve('prehop')
-        model = model or transport.generation_model
-        client = AsyncOpenAI(base_url=transport.generation_base_url, api_key=transport.api_key,
-                             timeout=180, max_retries=0)
     groups = list(TraceContextProvider(inputs).groups())
     rows_by_key = {r.key: r for _, rows in groups for r in rows}
     responses = output / 'responses.jsonl'
     done = {}
     if responses.exists():
-        for line in responses.open():
+        for line in responses.read_text().splitlines():
             r = json.loads(line)
             key = (r['dataset'], r['method'], r['query_id'])
             source = rows_by_key.get(key)
@@ -69,13 +98,19 @@ async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=No
     status = {'state': 'running', 'pid': os.getpid(), 'started_utc': timestamp(),
               'total': len(rows_by_key), 'resumed': len(done), 'completed': len(done),
               'model': model, 'execution': 'sequential dataset/system; trace context; final synthesis only; direct gateway',
-              'concurrency': concurrency, 'rate_limit_events': 0}
+              'concurrency': concurrency, 'rate_limit_events': 0, 'transport': transport.policy_dict()}
     status_path = output / 'status.json'
     atomic_json(status_path, status)
     cooldown_until = last_start = 0.0
     lock = asyncio.Lock()
-    log = responses.open('a', buffering=1)
-    events = (output / 'events.jsonl').open('a', buffering=1)
+    from contextlib import ExitStack
+    resources = ExitStack()
+    try:
+        log = resources.enter_context(responses.open('a', buffering=1))
+        events = resources.enter_context((output / 'events.jsonl').open('a', buffering=1))
+    except BaseException:
+        resources.close()
+        raise
 
     def event(**kwargs):
         events.write(json.dumps({'utc': timestamp(), **kwargs}) + '\n')
@@ -83,7 +118,8 @@ async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=No
     async def one(row):
         nonlocal cooldown_until, last_start
         record = {k: v for k, v in row.as_record().items() if k != 'context'}
-        record.update(model=model, request_sha256=request_identity(row), attempts=[])
+        record.update(model=model, request_sha256=request_identity(row), attempts=[],
+                      reader_transport=transport.policy_dict())
         began = time.monotonic()
         rates = failures = 0
         while True:
@@ -94,8 +130,7 @@ async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=No
                 last_start = time.monotonic()
             try:
                 response = await client.chat.completions.create(
-                    model=model, messages=row.messages(), temperature=0, max_tokens=256,
-                    extra_body={'chat_template_kwargs': {'enable_thinking': False}})
+                    model=model, messages=row.messages(), **reader_settings())
                 record['attempts'].append({'response': response.model_dump(mode='json')})
                 answer = VLLMClient.think_strip(None, clean_and_unwrap_json(response.choices[0].message.content or ''))
                 record.update(status='completed', answer=str(answer or ''), empty_output=not bool(str(answer or '').strip()),
@@ -110,7 +145,8 @@ async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=No
             except Exception as exc:  # noqa: BLE001 - preserve typed transport errors; never rewrite model outputs
                 code = getattr(exc, 'status_code', None)
                 record['attempts'].append({'error_type': type(exc).__name__, 'status_code': code, 'utc': timestamp()})
-                if code == 429 or type(exc).__name__ == 'RateLimitError':
+                can_retry = len(record['attempts']) < transport.retry_attempts
+                if (code == 429 or type(exc).__name__ == 'RateLimitError') and can_retry:
                     rates += 1
                     wait = min(cfg['retry_429_initial_seconds'] * 2**min(rates-1, 5), cfg['retry_429_max_seconds'])
                     try:
@@ -120,7 +156,7 @@ async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=No
                     cooldown_until = max(cooldown_until, time.monotonic()+wait)
                     status['rate_limit_events'] += 1
                     event(type='rate_limit', dataset=row.dataset, method=row.method, query_id=row.query_id, wait_seconds=wait)
-                elif VLLMClient._is_retryable_inference_error(exc) and failures < 12:
+                elif VLLMClient._is_retryable_inference_error(exc) and can_retry:
                     failures += 1
                     cooldown_until = max(cooldown_until, time.monotonic()+min(10*2**(failures-1), 300))
                     event(type='transport_retry', error_type=type(exc).__name__, attempt=failures)
@@ -166,10 +202,7 @@ async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=No
         atomic_json(status_path, status)
         raise
     finally:
-        log.close()
-        events.close()
-        if owned_client:
-            await client.close()
+        resources.close()
 
 
 def main():

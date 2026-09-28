@@ -7,15 +7,15 @@ import json
 from pathlib import Path
 
 from core.synthesis_replay import SynthesisInput, returned_passage_context
+from utils.io import atomic_text_writer
 from utils.official_results import dataset_key
 
 
 def prepare_inputs(results: list[Path], output: Path) -> int:
     """Use every returned passage in its recorded order; do not run any model."""
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_suffix(output.suffix + '.tmp')
     count = 0
-    with temporary.open('w') as stream:
+    with atomic_text_writer(output) as stream:
         for path in results:
             raw = path.read_bytes()
             result = json.loads(raw)
@@ -34,7 +34,6 @@ def prepare_inputs(results: list[Path], output: Path) -> int:
                      'included_passages': len(sources)})
                 stream.write(json.dumps(entry.as_record(), ensure_ascii=False) + '\n')
                 count += 1
-    temporary.replace(output)
     return count
 
 

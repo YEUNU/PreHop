@@ -94,6 +94,8 @@ def build_reports(result: dict[str, Any]) -> tuple[dict, dict]:
         "scale": "Native unscaled evaluator values; no display-percent conversion or clipping.",
         "details": official_rows,
     }
+    if "common_reader" in result:
+        report["common_reader"] = result["common_reader"]
     if dataset == "multihoprag":
         def qa_group(group):
             accuracy = statistics.mean(r["metrics"]["qa_accuracy"] for r in group)

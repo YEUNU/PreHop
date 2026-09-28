@@ -9,8 +9,8 @@ At query time, it retrieves starting passages, expands their stored connections
 once, and selects evidence with an LLM before generating an answer.
 
 [Reproduce the experiments](docs/REPRODUCING.md) ·
-[Method and implementation](docs/ARCHITECTURE.md) ·
-[Runtime setup](docs/RUNTIME_REQUIREMENTS.md)
+[Method and implementation](docs/METHOD.md) ·
+[Runtime setup](docs/SETUP.md)
 
 ## How it works
 
@@ -75,9 +75,9 @@ Edit `.env` to match your infrastructure:
 | `NEO4J_DATABASE` | Optional database name; defaults to `neo4j` |
 | `RAG_INFERENCE_BASE_URL` | Gateway API base URL, including `/v1` when applicable |
 | `RAG_INFERENCE_API_KEY` | Gateway credential |
-| `RAG_GENERATION_MODEL` | Registered generation model; paper setting: `gemma-4-31b-it` |
-| `RAG_EMBEDDING_MODEL` | Registered embedding model; paper setting: `qwen3-embedding-4b` |
-| `NEO4J_VECTOR_DIMENSIONS` | Actual embedding dimensions; paper setting: `2560` |
+| `RAG_GENERATION_MODEL` | Registered generation model; paper alias is in `.env.example` |
+| `RAG_EMBEDDING_MODEL` | Registered embedding model; paper alias is in `.env.example` |
+| `NEO4J_VECTOR_DIMENSIONS` | Actual embedding dimensions; paper value is in `.env.example` |
 
 The gateway must support chat completions with JSON-schema output and embeddings.
 The embedding model must return the configured number of dimensions. Changing
@@ -101,7 +101,7 @@ Settings resolve in this order: registry defaults, `.env`, exported values,
 then the selected execution profile for its throughput fields. Choose throughput
 in the profile; it overrides matching concurrency variables. Python and shell
 entrypoints use the same resolver. See the
-[configuration contract](docs/THROUGHPUT_EXECUTION.md#configuration-ownership-and-precedence)
+[configuration contract](docs/SETUP.md#configuration-ownership-and-precedence)
 for ownership and method-specific overrides.
 
 ## Reviewer checks
@@ -141,7 +141,7 @@ A successful execution prints `cold_native_canary_passed` and the generated
 answer. The fixture's expected city is **Larkhaven**; the recorded answer lets
 you inspect generation quality. The command checks execution, not exact answer
 equality. Each invocation above creates a fresh namespace and preserves existing
-graphs. See [smoke outputs](docs/REPRODUCING.md#reviewer-smoke-test) for metadata.
+graphs. See [smoke outputs](docs/REPRODUCING.md#completion-and-continuation) for metadata.
 
 ## Run the benchmarks and inspect scores
 
@@ -187,7 +187,7 @@ For the seven-system comparison, first prepare the additional runtimes:
 This installs pinned HopRAG, LightRAG, GFM-RAG and LinearRAG environments and
 their local models. MS GraphRAG uses the main environment. The pinned native
 runtimes target Linux x86-64; check the
-[CUDA/compiler and model prerequisites](docs/RUNTIME_REQUIREMENTS.md#source-and-setup-isolation)
+[CUDA/compiler and model prerequisites](docs/SETUP.md#source-and-setup-isolation)
 before installation. Then run and export all fourteen dataset/system pairs:
 
 ```bash
@@ -208,38 +208,23 @@ fi
 
 These commands evaluate each system's native answer pipeline. The paper's
 common-reader comparison needs the separate
-[saved-evidence answer replay](docs/SYNTHESIS_REPLAY.md). The
+[saved-evidence answer replay](docs/REPRODUCING.md#compare-a-common-reader-over-saved-evidence). The
 [experiment guide](docs/REPRODUCING.md) covers that distinction, ablations and
 timing measurements. New runs produce their own results; identical settings do
 not guarantee identical generated answers or times.
 
-## Evaluation
+## Saved results and documentation
 
-Experiments compare Prehop, HopRAG, MS GraphRAG, LightRAG, GFM-RAG, LinearRAG
-and Naive RAG on MultiHop-RAG and the HippoRAG HotpotQA release. MultiHop-RAG
-uses 609 documents and 2,556 questions; retrieval scores use its 2,255 questions
-with gold evidence. HotpotQA uses a pooled corpus of 9,221 passages and 1,000
-released occurrences, representing 944 original questions. This is a reduced
-retrieval corpus, not the official HotpotQA fullwiki setting.
+This source release does not bundle the authors' generated results, indexes or
+traces. The commands above create new measurements; they do not display an
+included paper-result archive. If you already have saved benchmark results,
+pass their explicit paths to `scripts/export_official_results.py` to inspect
+scores without model calls. The exporter records source hashes and keeps the
+original results unchanged.
 
-Final comparisons use each dataset's official metrics. MultiHop-RAG reports
-Hits@4, Hits@10, MRR@10, MAP@10 and QA, including null questions in overall QA.
-HotpotQA reports Answer, Supporting Fact and Joint EM, F1, precision and recall.
-Supporting facts are projected from all returned complete corpus sentences.
-See [evaluation and outputs](docs/REPRODUCING.md#evaluate-saved-results) for
-definitions and a single-command export of dataset-specific comparisons.
-
-## Documentation
-
-- [Reproducing experiments](docs/REPRODUCING.md): settings, runs, ablations and evaluation.
-- [Architecture](docs/ARCHITECTURE.md): indexing, retrieval and code organization.
-- [HotpotQA data and metrics](docs/HOTPOTQA.md): source, preparation and sentence identities.
-- [Runtime requirements](docs/RUNTIME_REQUIREMENTS.md): models and external environments.
-- [Execution and measurement](docs/THROUGHPUT_EXECUTION.md): scheduling, recovery and timing scope.
-
-HopRAG uses the pinned installation described in the runtime guide.
-Run-generated data, indexes and traces are local outputs. They are not bundled
-with this source release.
+- [Method and implementation](docs/METHOD.md): retrieval and adapter behavior, code ownership and traces.
+- [Runtime setup](docs/SETUP.md): services, isolated native environments and configuration ownership.
+- [Reproducing and evaluation](docs/REPRODUCING.md): populations, metrics, resume, controlled experiments and measurement scope.
 
 ## License and attribution
 
@@ -247,4 +232,4 @@ Repository-owned code is released under the [MIT License](LICENSE).
 External implementations and datasets retain their respective licenses.
 Method sources and pinned revisions are listed in
 [the strategy registry](core/strategy_registry.py); HotpotQA source attribution
-is documented in [the dataset guide](docs/HOTPOTQA.md#source-and-population).
+is documented in [the dataset guide](docs/REPRODUCING.md#hotpotqa-source-and-population).
