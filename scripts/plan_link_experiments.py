@@ -142,8 +142,8 @@ def make_plan(campaign,mhr_stats,*,multihoprag_reference,adopt=(),updated_refere
         existing=next((j for j in jobs if j['id']==row['id']),None)
         if existing:existing.update(row)
         else:jobs.append(row)
-    return {'contract':'prehop-link-experiments-v5','campaign':campaign,'max_active':2,'max_hoprag_active':1,
-        'hotpotqa_protocol':'hotpotqa-hipporag-v1-1000','measurement_policy':'fixed-start timing only; no natural end-to-end reruns; separate reference-based estimates; queue quota 120',
+    return {'contract':'prehop-link-experiments-v5','campaign':campaign,'max_active':1,'max_hoprag_active':1,
+        'hotpotqa_protocol':'hotpotqa-hipporag-v1-1000','measurement_policy':'fixed-start timing only; no natural end-to-end reruns; separate reference-based estimates; direct gateway requests',
         'multihoprag_reference_result':str(multihoprag_reference),
         'primary_endpoints':{'timing':'paired connection-stage saving','multihoprag_without_hop':'official_map@10','hotpotqa_without_hop':'hotpot_sp_f1'},
         'jobs':jobs}

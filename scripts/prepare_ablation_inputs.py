@@ -15,6 +15,8 @@ sys.path.insert(0,str(ROOT))
 async def run(args):
     from dotenv import load_dotenv
     load_dotenv(ROOT/'.env')
+    from core.execution_profile import apply_execution_profile
+    apply_execution_profile()
     from core.prehop_ablation import COMMON, PROFILES
     stats=json.loads(args.index_stats.read_text())
     for k,v in {**COMMON,**PROFILES[args.profile],'ABLATION_Q_MINUS':True,'ABLATION_Q_PLUS':True}.items():

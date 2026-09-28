@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one fresh, preregistered cold integration target after prerequisite gates."""
+"""Index a small fixed corpus and run one query through the configured services."""
 from __future__ import annotations
 
 import argparse
@@ -28,7 +28,6 @@ async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, 
     branch = 'one_query' if full_corpus else 'cold_v2'
     run_id = f'{campaign}-{branch}-{dataset}-{strategy}-{attempt}'
     configure_target_environment(strategy, dataset, run_id)
-    ROOT / 'data/results' / campaign / 'gate_ledger.json'
     from core.admission import current_post_query_inventory, sha256_file
     from core.runtime_requirements import runtime_identity
     from scripts.cold_canary_fixture import fixture_identity, stage_fixture
@@ -42,10 +41,8 @@ async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, 
             row = rows[0]
         else:
             corpus, _, row = stage_fixture(base, dataset)
-        from cli.index import _load_corpus_manifest, _staged_source_ids, run_indexing
+        from cli.index import _load_corpus_manifest, run_indexing
         loaded = _load_corpus_manifest(corpus)
-        files = sorted(path.name for path in corpus.glob('*.txt'))
-        _staged_source_ids(files, loaded, corpus)
         source_ref = {'path': str((corpus / 'corpus_manifest.json').relative_to(ROOT)),
                       'sha256': sha256_file(corpus / 'corpus_manifest.json')}
         record_ref = save(base / 'query_record.json', row)
@@ -67,15 +64,11 @@ async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, 
         else:
             from models.external_research.adapter import ExternalResearchAdapter
             engine = ExternalResearchAdapter(strategy, corpus_tag=dataset)
-        from cli.benchmark import _index_snapshot_metadata
-        snapshot = await _index_snapshot_metadata()
-        index = {**raw, 'dataset': dataset, 'fresh_index': True, 'source_count': snapshot['source_count'],
+        snapshot = {'status': 'not_checked'}
+        index = {**raw, 'dataset': dataset, 'fresh_index': True, 'source_count': loaded['paragraph_count'],
                  'source_manifest': source_ref,
                  **({} if full_corpus else {'cold_fixture': fixture_identity()}),
                  'native_index_stats': {'path': str(raw_path.relative_to(ROOT)), 'sha256': sha256_file(raw_path)}}
-        # Preserve native worker observations needed by the production verifier.
-        if snapshot.get('official_stats') is not None:
-            index['official_stats'] = snapshot['official_stats']
         index_path = base / 'index_evidence.json'
         index_ref = save(index_path, index)
         answer, sources, _trace = await engine.run_workflow(row['query'])

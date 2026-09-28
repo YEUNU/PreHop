@@ -33,42 +33,6 @@ is_container_running() {
     docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "${name}"
 }
 
-kill_matching_processes() {
-    local pattern="$1"
-    local pid
-
-    while read -r pid; do
-        [ -z "${pid}" ] && continue
-        [ "${pid}" = "$$" ] && continue
-        [ "${pid}" = "${PPID}" ] && continue
-        kill_process_tree "${pid}"
-    done < <(pgrep -f -- "${pattern}" 2>/dev/null || true)
-}
-
-kill_process_tree() {
-    local parent_pid="$1"
-    local child_pid
-
-    # vLLM starts an EngineCore child. Killing only the listening API parent
-    # reparents EngineCore to PID 1 and leaves its CUDA allocation alive.
-    while read -r child_pid; do
-        [ -z "${child_pid}" ] && continue
-        kill_process_tree "${child_pid}"
-    done < <(pgrep -P "${parent_pid}" 2>/dev/null || true)
-    kill -TERM "${parent_pid}" 2>/dev/null || true
-    sleep 0.2
-    kill -KILL "${parent_pid}" 2>/dev/null || true
-}
-
-kill_port() {
-    local port="$1"
-    local pid
-    while read -r pid; do
-        [ -z "${pid}" ] && continue
-        kill_process_tree "${pid}"
-    done < <(fuser "${port}/tcp" 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+$' || true)
-}
-
 show_port_status() {
     local port
     echo ""
@@ -98,20 +62,10 @@ stop_neo4j() {
     fi
 
     sleep 1
-    kill_port 7474
-    kill_port 7687
-    kill_matching_processes "org\\.neo4j"
-    kill_matching_processes "neo4j console"
-}
-
-stop_cleanup() {
-    echo "[Cleanup] Stopping remaining indexing/uvicorn processes..."
-    kill_matching_processes "main\\.py --mode index"
-    kill_matching_processes "uvicorn third_party"
 }
 
 echo "========================================="
-echo "     Aggressive Server Shutdown          "
+echo "     Neo4j Service Shutdown              "
 echo "========================================="
 
 case "${SERVICE}" in
@@ -121,7 +75,6 @@ case "${SERVICE}" in
         ;;
     all)
         stop_neo4j
-        stop_cleanup
         show_port_status 7474 7687
         ;;
     *)

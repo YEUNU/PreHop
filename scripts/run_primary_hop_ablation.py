@@ -158,6 +158,8 @@ def prepare(args):
 def configure(args):
     from dotenv import load_dotenv
     load_dotenv(ROOT / '.env')
+    from core.execution_profile import apply_execution_profile
+    apply_execution_profile()
     for key in ('RAG_INDEX_REUSE_LINK', 'RAG_BENCHMARK_RESUME'):
         os.environ.pop(key, None)
     plan = json.loads((args.output / 'plan.json').read_text())

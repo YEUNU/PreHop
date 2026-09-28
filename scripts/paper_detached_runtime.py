@@ -16,7 +16,7 @@ def owner_directory() -> Path:
 
 
 def process_record(pid: int) -> dict:
-    from scripts.paper_campaign import identity
+    from scripts.campaign_runtime import identity
     record = identity(pid)
     fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
     return {**record, 'ppid': int(fields[1]), 'pgid': int(fields[2]), 'sid': int(fields[3]), 'state': fields[0]}
@@ -24,7 +24,7 @@ def process_record(pid: int) -> dict:
 
 def session_processes(owner: dict) -> list[dict]:
     """Only the recorded boot/session and processes no older than its leader."""
-    from scripts.paper_campaign import identity
+    from scripts.campaign_runtime import identity
     discover = True
     try:
         current = identity(owner['pid'])
@@ -63,7 +63,7 @@ def session_processes(owner: dict) -> list[dict]:
 
 
 def observe_owner(owner: dict) -> list[dict]:
-    from scripts.paper_campaign import atomic_json
+    from scripts.campaign_runtime import atomic_json
     path = owner_directory() / f'{owner["pid"]}-{owner["start"]}.json'
     record = json.loads(path.read_text())
     observed = session_processes(owner)
@@ -73,7 +73,7 @@ def observe_owner(owner: dict) -> list[dict]:
 
 
 def ensure_no_detached_owners(own_pid: int | None = None) -> None:
-    from scripts.paper_campaign import identity
+    from scripts.campaign_runtime import identity
     own_identity = identity(own_pid) if own_pid is not None else None
     for path in owner_directory().glob('*.json'):
         owner = json.loads(path.read_text())['supervisor']
@@ -82,7 +82,7 @@ def ensure_no_detached_owners(own_pid: int | None = None) -> None:
 
 
 def register_owner(plan_path: Path) -> dict:
-    from scripts.paper_campaign import atomic_json, identity
+    from scripts.campaign_runtime import atomic_json, identity
     pid = os.getpid()
     if os.getsid(0) != pid or os.getpgrp() != pid or signal.getsignal(signal.SIGHUP) != signal.SIG_IGN:
         raise RuntimeError('Detached supervisor requires actual nohup SIGHUP-ignore and its own setsid session')
@@ -100,7 +100,7 @@ def register_owner(plan_path: Path) -> dict:
 
 def terminate_owned(owner: dict, timeout: float = 30.0) -> list[dict]:
     """TERM individually verified own processes; never use KILL or a global process group."""
-    from scripts.paper_campaign import alive
+    from scripts.campaign_runtime import alive
     sent = set()
     deadline = time.monotonic() + timeout
     while True:
@@ -148,21 +148,22 @@ def spawn_nohup(argv: list[str], *, env: dict, cwd: Path, log: Path) -> subproce
 
 
 def launch(plan_path: Path, *, resume: bool = False) -> dict:
+    from scripts import campaign_runtime as runtime
     from scripts import paper_campaign as campaign
     from scripts.paper_stage_runner import reference
     plan = json.loads(plan_path.read_text())
-    campaign.check_plan(plan)
     campaign.ensure_no_other_campaigns()
     current = plan_path.parent / 'status.json'
     if current.exists():
         previous = json.loads(current.read_text())
-        if not resume or campaign.alive(previous.get('supervisor')) or campaign.alive(previous.get('child')):
+        if not resume or runtime.alive(previous.get('supervisor')) or runtime.alive(previous.get('child')):
             raise RuntimeError('Campaign already launched or has a live owned process; no duplicate launch')
     elif resume:
         raise RuntimeError('Cannot resume a campaign that has never launched')
-    handle = campaign.lock(campaign.resource_lock_path())
+    handle = runtime.lock(runtime.resource_lock_path())
     handle.close()
-    env = campaign.safe_environment()
+    from scripts.runner_environment import safe_environment
+    env = safe_environment()
     stamp = str(time.time_ns())
     private = plan_path.parent / f'environment-{stamp}.private.json'
     descriptor = os.open(private, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -172,7 +173,7 @@ def launch(plan_path: Path, *, resume: bool = False) -> dict:
     if resume:
         argv.append('--resume')
     process = spawn_nohup(argv, env=env, cwd=campaign.ROOT, log=plan_path.parent / f'nohup-{stamp}.log')
-    expected = campaign.identity(process.pid)
+    expected = runtime.identity(process.pid)
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         if current.exists():
@@ -180,7 +181,7 @@ def launch(plan_path: Path, *, resume: bool = False) -> dict:
             if status.get('supervisor') == expected:
                 if status.get('state') == 'failed':
                     raise RuntimeError('Detached supervisor failed; inspect its preserved status')
-                if campaign.alive(expected) and status.get('session_id') == process.pid:
+                if runtime.alive(expected) and status.get('session_id') == process.pid:
                     break
         if process.poll() is not None:
             raise RuntimeError('Detached supervisor exited before verified startup; inspect its preserved log')
@@ -192,14 +193,15 @@ def launch(plan_path: Path, *, resume: bool = False) -> dict:
                'logout_persistence': 'actual_nohup_ignored_hup_and_setsid', 'launched_at': time.time()}
     monitor = spawn_nohup([plan['python'], str(Path(campaign.__file__).resolve()), 'monitor', str(plan_path)],
                           env=env, cwd=campaign.ROOT, log=plan_path.parent / f'monitor-{stamp}.log')
-    receipt['monitor'] = campaign.identity(monitor.pid)
+    receipt['monitor'] = runtime.identity(monitor.pid)
     receipt['monitor_interval_seconds'] = 10800
-    campaign.atomic_json(plan_path.parent / f'launch-{stamp}.json', receipt)
+    runtime.atomic_json(plan_path.parent / f'launch-{stamp}.json', receipt)
     return receipt
 
 
 def monitor(plan_path: Path, *, interval: float = 10800, poll: float = 5) -> int:
     """Append observations only; never restart, mutate results, or send chat messages."""
+    from scripts import campaign_runtime as runtime
     from scripts import paper_campaign as campaign
     plan = json.loads(plan_path.read_text())
     status_path = plan_path.parent / 'status.json'
@@ -207,7 +209,7 @@ def monitor(plan_path: Path, *, interval: float = 10800, poll: float = 5) -> int
     last = 0.0
     while True:
         status = json.loads(status_path.read_text())
-        supervisor_alive = campaign.alive(status.get('supervisor'))
+        supervisor_alive = runtime.alive(status.get('supervisor'))
         if supervisor_alive:
             try:
                 supervisor_alive = process_record(status['supervisor']['pid'])['state'] != 'Z'
@@ -233,6 +235,6 @@ def monitor(plan_path: Path, *, interval: float = 10800, poll: float = 5) -> int
                 stream.write(json.dumps(row, sort_keys=True) + '\n')
             last = now
         if terminal or vanished:
-            campaign.atomic_json(plan_path.parent / f'monitor-{os.getpid()}-terminal.json', row)
+            runtime.atomic_json(plan_path.parent / f'monitor-{os.getpid()}-terminal.json', row)
             return 0 if status.get('state') == 'completed' else 1
         time.sleep(poll)

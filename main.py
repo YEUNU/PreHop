@@ -28,6 +28,10 @@ def _ensure_run_id() -> str:
     return run_id
 
 
+from core.execution_profile import apply_execution_profile
+
+apply_execution_profile()
+
 from cli.benchmark import run_benchmark_multi_seed
 from cli.index import rebuild_hop_edges, run_indexing
 from core.config import RAGConfig
@@ -102,7 +106,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=["index", "benchmark", "benchmark_all", "hop_rebuild", "clear_graph"],
+        choices=["index", "benchmark", "benchmark_all", "synthesize", "hop_rebuild", "clear_graph"],
         required=True,
     )
     parser.add_argument(
@@ -127,12 +131,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Save intermediates under data/debug/<run-id>/<strategy>/<corpus>/",
     )
     parser.add_argument("--limit", type=int, default=None, help="Limit number of benchmark queries to evaluate")
+    parser.add_argument("--trace-inputs", type=Path, help="Saved evidence JSONL for answer-only synthesis")
+    parser.add_argument("--output-dir", type=Path, help="Answer-only synthesis output directory")
+    parser.add_argument("--concurrency", type=int, default=24, help="Concurrent questions within one synthesis target")
     return parser
 
 
 async def main():
     parser = _build_parser()
     args = parser.parse_args()
+    if args.mode == "synthesize":
+        if args.trace_inputs is None or args.output_dir is None:
+            parser.error("synthesize requires --trace-inputs and --output-dir")
+        from cli.synthesis import run_synthesis
+        await run_synthesis(args.trace_inputs, args.output_dir, concurrency=args.concurrency)
+        return
     if RAGConfig.PREHOP_ABLATION_PROFILE:
         if os.environ.get("RAG_ABLATION_REUSE_EXISTING_INDEX") == "true" and args.mode != "benchmark":
             raise ValueError("Existing ablation indexes are benchmark-only")
@@ -186,7 +199,6 @@ async def main():
                         args.queries_file,
                         strategy,
                         args.model,
-                        is_batch=True,
                         corpus_tag=corpus_tag,
                         output_dir=results_dir,
                         limit=args.limit,

@@ -12,6 +12,10 @@ from core.structured_outputs import structured_bundle_sha256
 @pytest.fixture(autouse=True)
 def configured(monkeypatch):
     _canonical_transport(monkeypatch)
+    # Configuration tests exercise policy resolution, not installed native
+    # interpreters. In particular, HopRAG runs in a separately prepared venv.
+    monkeypatch.setattr('core.runtime_requirements.runtime_identity',
+                        lambda strategy: {'main_runtime': {'strategy': strategy, 'installed_sha256': 'test-runtime'}})
 
 
 def test_resolved_matrix_is_config_only_and_preserves_environment(monkeypatch):
@@ -35,11 +39,11 @@ def test_only_changed_method_contract_invalidates_target(monkeypatch):
 
 def test_real_prompt_contents_change_policy_but_docstrings_do_not(monkeypatch):
     from utils.prompts import indexing, shared
-    first = canonical_semantic_index_policy('prehop', 'hotpotqa')
+    first = canonical_semantic_index_policy('prehop')
     monkeypatch.setattr(shared.build_answer_prompt, '__doc__', 'Unrelated documentation')
-    assert first == canonical_semantic_index_policy('prehop', 'hotpotqa')
+    assert first == canonical_semantic_index_policy('prehop')
     monkeypatch.setattr(indexing, 'HOPRAG_PROMPT', indexing.HOPRAG_PROMPT + '\nChanged instruction.')
-    assert first != canonical_semantic_index_policy('prehop', 'hotpotqa')
+    assert first != canonical_semantic_index_policy('prehop')
 
 
 def test_materialized_schema_change_invalidates_bundle(monkeypatch):
@@ -64,13 +68,13 @@ def test_runtime_compatibility_preserves_explicit_location_and_content():
 def test_actual_consumer_cap_changes_method_policy(monkeypatch):
     from core.config import RAGConfig
     from core.generation_profiles import request_settings
-    before = canonical_semantic_index_policy('prehop', 'hotpotqa')
+    before = canonical_semantic_index_policy('prehop')
     query_before = compatibility.method_identity('prehop')
     naive_before = compatibility.method_identity('naive')
     naive_settings = request_settings('answer')
     monkeypatch.setattr(RAGConfig, 'PREHOP_SYNTHESIS_MAX_OUTPUT_TOKENS', 64)
     assert request_settings('prehop_answer')['max_tokens'] == 64
-    assert before == canonical_semantic_index_policy('prehop', 'hotpotqa')
+    assert before == canonical_semantic_index_policy('prehop')
     assert query_before != compatibility.method_identity('prehop')
     assert naive_before == compatibility.method_identity('naive')
     assert naive_settings == request_settings('answer')
@@ -79,12 +83,12 @@ def test_actual_consumer_cap_changes_method_policy(monkeypatch):
 def test_prehop_answer_change_preserves_index_and_other_readers(monkeypatch):
     from utils.prompts import prehop_answer
 
-    index_before = canonical_semantic_index_policy('prehop', 'hotpotqa')
+    index_before = canonical_semantic_index_policy('prehop')
     query_before = compatibility.method_identity('prehop')
     naive_before = compatibility.method_identity('naive')
     monkeypatch.setattr(prehop_answer, 'ANSWER_INSTRUCTIONS', prehop_answer.ANSWER_INSTRUCTIONS + '\nNew instruction.')
     assert query_before != compatibility.method_identity('prehop')
-    assert index_before == canonical_semantic_index_policy('prehop', 'hotpotqa')
+    assert index_before == canonical_semantic_index_policy('prehop')
     assert naive_before == compatibility.method_identity('naive')
 
 
@@ -99,7 +103,7 @@ def test_protocol_and_fixture_are_in_static_review_scope(monkeypatch):
 
 
 def test_failed_probe_does_not_prevent_actual_checkpoint_resume_admission(tmp_path):
-    from scripts.verify_paper_target import persist_admission
+    from scripts.record_paper_completion import persist_admission
     output = tmp_path / 'admission.json'
     persist_admission(output, {'status': 'failed', 'errors': ['partial checkpoint']})
     assert not output.exists() and len(list(tmp_path.glob('admission.failed-validation-*.json'))) == 1

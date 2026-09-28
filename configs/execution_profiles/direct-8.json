@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "name": "direct-8",
+  "settings": {
+    "generation_concurrency": 8,
+    "embedding_batch_size": 16,
+    "embedding_concurrency": 1,
+    "benchmark_concurrency": 8,
+    "index_document_concurrency": 8,
+    "index_prefetch_documents": 16,
+    "prehop_chunk_concurrency": 8,
+    "lightrag_document_concurrency": 8
+  }
+}

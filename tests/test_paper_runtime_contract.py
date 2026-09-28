@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from core.admission import verifier_sources
 from core.inference_transport import InferenceTransport
 from core.paper_policy import canonical_operational_policy, canonical_semantic_index_policy
 from core.semantic_config import semantic_index_policy
@@ -42,12 +41,12 @@ def test_every_strategy_has_one_explicit_litellm_transport_profile():
 
 
 def test_canonical_policy_records_shared_dimensions_context_and_reserve():
-    policy = canonical_semantic_index_policy("prehop", "hotpotqa")
+    policy = canonical_semantic_index_policy("prehop")
     assert policy["embedding_dimensions"] == 2560
     assert policy["embedding_max_input_tokens"] == 32768
     assert policy["embedding_token_reserve"] == 0
     assert policy["generation_max_context_tokens"] == 262144
-    naive = canonical_semantic_index_policy("naive", "hotpotqa")
+    naive = canonical_semantic_index_policy("naive")
     assert naive["question_schema"] == "legacy"
     assert naive["q_minus_enabled"] is naive["q_plus_enabled"] is True
     assert naive["precompute_reciprocal_hops"] is True
@@ -64,7 +63,7 @@ def test_paper_index_builder_emits_registry_canonical_semantics(monkeypatch, str
     _canonical_transport(monkeypatch, strategy)
     observed = semantic_index_policy(_resolved_index_policy(strategy, "default", "hotpotqa"))
     assert observed == {
-        **canonical_semantic_index_policy(strategy, "hotpotqa"),
+        **canonical_semantic_index_policy(strategy),
         "operational_config": canonical_operational_policy(strategy),
     }
 
@@ -75,15 +74,6 @@ def test_runtime_requirements_are_valid_json_and_cover_external_primary_methods(
     assert {"ms_graphrag", "lightrag", "gfm_rag", "linear_rag"} <= payload.keys()
 
 
-def test_admission_verifier_identity_covers_transitive_policy_inputs():
-    relative = {path.relative_to(Path.cwd()).as_posix() for path in verifier_sources()}
-    assert {
-        "core/paper_policy.py",
-        "core/semantic_config.py",
-        "core/runtime_requirements.py",
-        "core/inference_transport.py",
-        "configs/paper_runtime_requirements.json",
-    } <= relative
 
 
 def test_code_provenance_excludes_failed_and_generated_output_roots_without_reading_them():
@@ -91,13 +81,7 @@ def test_code_provenance_excludes_failed_and_generated_output_roots_without_read
     assert _is_generated_path(b"data/results/run/result.json")
     assert _is_generated_path(b"data/linear_rag_output/run/artifact.bin")
     assert not _is_generated_path(b"core/paper_policy.py")
-    assert {
-        "configs/runtime_constraints/lightrag.txt",
-        "configs/runtime_constraints/gfm_rag.txt",
-        "configs/runtime_constraints/linear_rag.txt",
-        "configs/runtime_constraints/hoprag_main.txt",
-        "configs/runtime_constraints/hoprag_pos.txt",
-    } <= {path.relative_to(Path.cwd()).as_posix() for path in verifier_sources()}
+
 
 
 @pytest.mark.parametrize("seed", ["41", "42", "invalid", ""])

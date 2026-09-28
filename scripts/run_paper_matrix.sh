@@ -37,11 +37,6 @@ mapfile -t strategies <<< "$strategy_lines"
 [ "${#strategies[@]}" -gt 0 ] || { echo "strategy registry returned no primary methods" >&2; exit 1; }
 failed_targets=()
 
-if [ "${#check_arg[@]}" -eq 0 ]; then
-    "$PYTHON_BIN" "$repo_root/scripts/paper_gate_ledger.py" verify \
-        --ledger "data/results/$campaign_id/gate_ledger.json" --campaign "$campaign_id"
-fi
-
 for strategy in "${strategies[@]}"; do
     for dataset in "${datasets[@]}"; do
         run_id="${campaign_id}-${dataset}-${strategy}"

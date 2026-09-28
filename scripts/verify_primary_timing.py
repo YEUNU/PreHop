@@ -42,9 +42,9 @@ def install_checks():
             row["bridge_embeddings"] = [q["embedding"] for q in row["bridge_info"]]
         return rows
 
-    async def checked_expand(engine, starts, excluded, mode, store, namespace):
+    async def checked_expand(engine, starts, excluded, mode, store):
         nonlocal count
-        rows, stats = await original_expand(engine, starts, excluded, mode, store, namespace)
+        rows, stats = await original_expand(engine, starts, excluded, mode, store)
         identities = {(r["source_id"], r["id"]): tuple(sorted(r["activated_question_ids"])) for r in rows}
         expected = {pair: ids for pair, ids in native.items() if pair[0] in starts and pair[1] not in excluded}
         stats["native_destination_and_question_identity_agreement"] = identities == expected

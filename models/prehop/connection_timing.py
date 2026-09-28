@@ -12,11 +12,6 @@ from pathlib import Path
 CONTRACT = "prehop-connection-timing-v2"
 
 
-def metadata(path, namespace=None):
-    """Read the experiment pointer; graph data lives only in Neo4j."""
-    return json.loads(Path(path).read_text())
-
-
 async def resolve_pairs(engine, starts):
     starts = sorted(set(starts))
     if not starts:
@@ -66,9 +61,9 @@ async def read_pairs(engine, starts, experiment):
     return [pair for row in rows for pair in row["pairs"] if pair]
 
 
-async def expand(engine, starts, excluded, mode, store, namespace):
+async def expand(engine, starts, excluded, mode, store):
     # Small pointer loading is setup, not destination resolution.
-    meta = metadata(store, namespace)
+    meta = json.loads(Path(store).read_text())
     begin = time.perf_counter()
     if mode == "online":
         pairs, matches = await resolve_pairs(engine, starts)

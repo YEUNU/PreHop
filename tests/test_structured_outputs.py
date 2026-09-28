@@ -70,7 +70,7 @@ def test_policy_and_cache_bind_structured_factory(monkeypatch):
     for strategy in ('prehop', 'naive'):
         assert canonical_query_policy(strategy)['structured_schema_bundle_sha256'] == digest
         from core.structured_outputs import structured_index_bundle_sha256
-        assert canonical_semantic_index_policy(strategy, 'hotpotqa')['structured_schema_bundle_sha256'] == structured_index_bundle_sha256()
+        assert canonical_semantic_index_policy(strategy)['structured_schema_bundle_sha256'] == structured_index_bundle_sha256()
     before = _generation_signature('gemma-4-31b-it')
     monkeypatch.setattr('core.structured_outputs.structured_index_bundle_sha256', lambda: 'different schema')
     assert _generation_signature('gemma-4-31b-it') != before
@@ -144,7 +144,7 @@ def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity
     from core import structured_outputs
     from models.prehop.indexing.chunking import _generation_signature
     assert structured_outputs.PREHOP_STRUCTURED_PROFILE == 'prehop-json-schema-v3'
-    assert canonical_semantic_index_policy('prehop', 'hotpotqa')['method_contract'] == 'paper-method-v6'
+    assert canonical_semantic_index_policy('prehop')['method_contract'] == 'paper-method-v6'
     current = structured_bundle_sha256()
     cache = _generation_signature('gemma-4-31b-it')
     monkeypatch.setattr(structured_outputs, 'PREHOP_STRUCTURED_PROFILE', 'prehop-json-schema-v1')

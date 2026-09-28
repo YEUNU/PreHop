@@ -9,43 +9,6 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-VERIFIER_SOURCES = (
-    ROOT / "scripts/verify_paper_target.py",
-    ROOT / "core/paper_policy.py",
-    ROOT / "core/index_reuse.py",
-    ROOT / "core/phase_timing.py",
-    ROOT / "core/paper_compatibility.py",
-    ROOT / "core/generation_profiles.py",
-    ROOT / "core/semantic_config.py",
-    ROOT / "core/strategy_registry.py",
-    ROOT / "core/runtime_requirements.py",
-    ROOT / "core/inference_transport.py",
-    ROOT / "core/embedding_policy.py",
-    ROOT / "core/structured_outputs.py",
-    ROOT / "models/external_research/extraction_contract.py",
-    ROOT / "scripts/runner_environment.py",
-    ROOT / "scripts/paper_gate_ledger.py",
-    ROOT / "scripts/paper_cold_canary.py",
-    ROOT / "scripts/paper_stage_runner.py",
-    ROOT / "scripts/paper_campaign.py",
-    ROOT / "scripts/campaign_attempts.py",
-    ROOT / "scripts/recovery_checkpoint.py",
-    ROOT / "scripts/cold_canary_fixture.py",
-    ROOT / "configs/cold_canary/museum_rich_entities_v2.json",
-    ROOT / "cli/index.py",
-    ROOT / "utils/provenance.py",
-    ROOT / "utils/metrics.py",
-    ROOT / "utils/reporting.py",
-    ROOT / "configs/serving_observation.json",
-    ROOT / "configs/paper_runtime_requirements.json",
-    ROOT / "configs/paper_gateway.json",
-    Path(__file__).resolve(),
-)
-
-
-def verifier_sources() -> tuple[Path, ...]:
-    constraints = tuple(sorted((ROOT / "configs/runtime_constraints").glob("*.txt")))
-    return (*VERIFIER_SOURCES, *constraints)
 
 
 def sha256_file(path: Path) -> str:

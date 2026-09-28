@@ -32,14 +32,14 @@ class PaperTransportSpec:
 
 # Also support the dependency-free `python core/strategy_registry.py` CLI.
 if __package__ in {None, ""}:
-    from execution_profile import execution_profile, transport_settings
+    from execution_profile import execution_profile
     from runtime_requirements import runtime_requirement
 else:
-    from core.execution_profile import execution_profile, transport_settings
+    from core.execution_profile import execution_profile
     from core.runtime_requirements import runtime_requirement
 
 PAPER_TRANSPORT = replace(PaperTransportSpec(), **{
-    key: value for key, value in transport_settings(execution_profile()).items()
+    key: value for key, value in execution_profile()['settings'].items()
     if key in PaperTransportSpec.__dataclass_fields__
 })
 

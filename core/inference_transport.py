@@ -127,16 +127,13 @@ class InferenceTransport:
         generation_model = _required("RAG_GENERATION_MODEL")
         embedding_model = _required("RAG_EMBEDDING_MODEL")
         observed_seed = None if paper_mode else (int(seed_raw) if seed_raw else None)
-        proxy = os.environ.get("RAG_QUEUE_PROXY_URL", "").strip()
-        if proxy:
-            proxy = _normalized_endpoint(proxy)
         result = cls(
             strategy=strategy,
             generation_model=generation_model,
-            generation_base_url=proxy or endpoint,
+            generation_base_url=endpoint,
             embedding_model=embedding_model,
-            embedding_base_url=proxy or endpoint,
-            api_key=os.environ["RAG_QUEUE_TOKEN"] if proxy else _required("RAG_INFERENCE_API_KEY"),
+            embedding_base_url=endpoint,
+            api_key=_required("RAG_INFERENCE_API_KEY"),
             timeout_seconds=timeout,
             retry_attempts=embedding.retry_attempts,
             embedding_batch_size=embedding.batch_size,

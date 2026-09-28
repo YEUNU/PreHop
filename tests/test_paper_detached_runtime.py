@@ -130,11 +130,11 @@ from scripts import paper_campaign as c,paper_detached_runtime as d
 c.ROOT=Path({str(base)!r})
 d.owner_directory=lambda:Path({str(owners)!r})
 c.resource_lock_path=lambda:Path({str(base/'resource.lock')!r})
-c.ensure_no_other_campaigns=lambda unit:None
-c.check_plan=lambda plan:None
+c.ensure_no_other_campaigns=lambda:None
 c.safe_environment=lambda:os.environ.copy()
 c.step_evidence=lambda plan,step:[]
-c.CHILD_LOG_DRAIN_SECONDS=.2
+from scripts import campaign_runtime
+campaign_runtime.CHILD_LOG_DRAIN_SECONDS=.2
 raise SystemExit(c.supervise(Path({str(plan)!r}),detached=True))
 '''
     process = detached.spawn_nohup([sys.executable, '-c', script], env=os.environ.copy(), cwd=base, log=base/'nohup.log')

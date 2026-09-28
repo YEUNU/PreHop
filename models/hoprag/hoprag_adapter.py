@@ -2,7 +2,7 @@
 [HopRAG] adapter wired to the official HopRetriever implementation.
 
 This keeps the benchmark interface while delegating traversal logic to
-`third_party/HopRAG/HopRetriever.py` and preserving its published top-k/order.
+the pinned runtime's `HopRetriever.py` and preserving its published top-k/order.
 """
 
 import asyncio

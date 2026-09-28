@@ -34,7 +34,7 @@ for key in _FORBIDDEN_AMBIENT_PROVIDER_KEYS: os.environ.pop(key,None)
 os.environ.pop('LITELLM_MODE',None)
 os.environ.pop('RAG_MS_CONCURRENT_REQUESTS',None)
 os.environ.pop('PREHOP_TEST_ANCESTOR',None)
-from scripts.paper_campaign import safe_environment
+from scripts.runner_environment import safe_environment
 env=safe_environment()
 os.environ.clear();os.environ.update(env)
 os.environ['LITELLM_LOCAL_MODEL_COST_MAP']='True'

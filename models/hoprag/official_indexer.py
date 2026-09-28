@@ -1,21 +1,8 @@
-"""Official HopRAG indexing wired to external OpenAI-compatible inference.
+"""Index the complete staged corpus with the pinned HopRAG runtime.
 
-`third_party/HopRAG` is the upstream package. It's not pip-installable: it
-imports `config` and `tool` as top-level modules and bakes config-time vars
-(edge_name, embed_dim, deployment_sign, cypher templates) into module
-constants. We:
-
-1. Prepend the package dir to sys.path.
-2. Import `config`, override its attributes for external inference + corpus-tagged
-   labels, and recompile the cypher templates that string-concatenated
-   `edge_name` at module load.
-3. Monkey-patch `tool.load_embed_model` / `tool.get_doc_embeds` to use the
-   configured embedding endpoint (avoids loading SentenceTransformer locally).
-4. Then `import HopBuilder`, which picks up the patched config.
-
-`HopBuilder.create_edge` does pairwise question similarity, which is O(N²) per
-group. We preserve the official per-problem context groups so each edge build
-stays tractable without a dataset-specific entity gate.
+The prepared runtime supplies the upstream modules. Adapter bindings route
+inference through the shared gateway and scope graph labels by namespace.
+Document caches and bounded exhaustive edge scoring preserve native selection.
 """
 
 from __future__ import annotations
@@ -38,10 +25,8 @@ from core.index_namespace import index_namespace
 
 logger = logging.getLogger("Prehop")
 
-_HOPRAG_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "HopRAG"
 
 _GEN_API_BASE = os.environ.get("RAG_INFERENCE_BASE_URL", "").strip()
-_GEN_API_BASES: list[str] = [_GEN_API_BASE] if _GEN_API_BASE else []
 _GEN_MODEL_NAME = os.environ.get("RAG_GENERATION_MODEL", "")
 _EMBED_API_BASE = _GEN_API_BASE
 _EMBED_MODEL_NAME = os.environ.get("RAG_EMBEDDING_MODEL", "")
@@ -52,8 +37,6 @@ _EMBED_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
 )
 _GEN_API_KEY = os.environ.get("RAG_INFERENCE_API_KEY", "EMPTY")
 _DOC_WORKERS = max(1, int(os.environ.get("RAG_HOP_DOC_WORKERS", "10")))
-_INTERNAL_RETRIES = max(1, int(os.environ.get("RAG_HOP_INTERNAL_RETRIES", "2")))
-_QUESTION_RETRIES = max(1, int(os.environ.get("RAG_HOP_QUESTION_RETRIES", "3")))
 _NODE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_NODE_BATCH", "200")))
 _EDGE_INSERT_BATCH = max(1, int(os.environ.get("RAG_HOP_EDGE_BATCH", "500")))
 
@@ -127,7 +110,7 @@ def _source_set_sha256(source_ids: list[str]) -> str:
     return hashlib.sha256("\n".join(sorted(source_ids)).encode("utf-8")).hexdigest()
 
 
-def _expected_source_ids(staged_files: list[str], corpus_manifest: dict | None) -> list[str]:
+def _expected_source_ids(staged_files: list[str]) -> list[str]:
     source_ids = sorted(Path(name).stem for name in staged_files)
     return source_ids
 
@@ -355,7 +338,7 @@ def _patch_create_nodes_offline_parallel() -> None:
     levels of parallelism stack:
         total concurrent LLM calls ≈ _DOC_WORKERS × max_thread_num
         e.g. DOC_WORKERS=10 × CHUNK_THREADS=4 → at most 40 calls on the
-        shared 120-sequence inference endpoint.
+        configured inference endpoint.
 
     Thread-safety notes:
     - Node-ID assignment uses a lock-protected counter.  IDs only need to be
@@ -547,8 +530,6 @@ def _patch_create_nodes_offline_parallel() -> None:
 
 
 _EDGE_CHUNKED_THRESHOLD = int(os.environ.get("RAG_HOP_EDGE_CHUNK_THRESHOLD", "400"))
-_EDGE_TOP_K = int(os.environ.get("RAG_HOP_EDGE_TOP_K", "30"))
-_EDGE_CHUNK_SIZE = int(os.environ.get("RAG_HOP_EDGE_CHUNK_SIZE", "1000"))
 
 
 def _patch_create_edge_batched() -> None:
@@ -606,10 +587,12 @@ def _patch_create_edge_batched() -> None:
             # Exhaustive scoring in bounded blocks: no dense-only preselection.
             from models.hoprag.exact_edges import exact_edges
             self.edges, self.abstract2chunk = exact_edges(
-                node2questiondict, docid2nodes,
-                HopBuilder.pending_dot_answerable, HopBuilder.sparse_similarity,
+                node2questiondict,
+                HopBuilder.pending_dot_answerable,
+                HopBuilder.sparse_similarity,
                 chunk_size=int(os.environ.get("RAG_HOP_EDGE_BLOCK_SIZE", "128")),
-                reuse_answer_vectors=True)
+                reuse_answer_vectors=True,
+            )
 
         else:
             self.driver = _NullDriver()
@@ -686,7 +669,7 @@ def _patch_create_edge_batched() -> None:
 # ---------------------------------------------------------------- driver
 
 
-def _build_official_edge_groups(corpus_tag: str, staged_dir: Path, staged_files: list[str]) -> dict[str, list[str]]:
+def _build_official_edge_groups(staged_files: list[str]) -> dict[str, list[str]]:
     """Pass the corpus to native create_edge without consulting query/gold files."""
     return {"whole-corpus": list(staged_files)}
 
@@ -757,11 +740,7 @@ def _run_stage2_group_streaming(
 
     # Derive the staged directory from the per-doc cache layout.
     staged_dir = per_doc_dir.parents[1] / "_input"
-    groups = _build_official_edge_groups(
-        getattr(config, "corpus_tag", "default"),
-        staged_dir,
-        staged_files,
-    )
+    groups = _build_official_edge_groups(staged_files)
     staged_titles: dict[str, str] = {}
     for doc_id in staged_files:
         with open(staged_dir / doc_id, "r", encoding="utf-8") as handle:
@@ -914,7 +893,6 @@ def _run_stage2_group_streaming(
         del group_n2q, group_docid2nodes
         gc.collect()
 
-    set(groups) - edges_done
     logger.info("HopRAG streaming Stage 2 complete: %d nodes inserted this run", total_nodes)
 
 
@@ -932,7 +910,7 @@ def _run_official_index_blocking(
     import HopBuilder
 
     staged_input, staged_files = _stage_input_files(dataset_path, corpus_tag)
-    source_ids = _expected_source_ids(staged_files, corpus_manifest)
+    source_ids = _expected_source_ids(staged_files)
     # This invalidates any prior completion marker before mutating the active
     # corpus-tagged label.  A crash/failure therefore cannot leave a stale
     # `complete` marker behind for a full benchmark to consume.

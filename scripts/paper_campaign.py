@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
-import selectors
 import subprocess
 import sys
 import time
@@ -15,45 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-
-def atomic_json(path: Path, payload: dict) -> None:
-    temporary = path.with_name(path.name + f'.{os.getpid()}.{time.time_ns()}.pending')
-    with temporary.open('x') as stream:
-        json.dump(payload, stream, sort_keys=True)
-        stream.write('\n')
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
-
-
-def identity(pid: int) -> dict:
-    from scripts.recovery_checkpoint import process_start
-    return {'pid': pid, 'start': process_start(pid), 'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
-
-
-def alive(value: dict | None) -> bool:
-    if not isinstance(value, dict) or not isinstance(value.get('pid'), int):
-        return False
-    try:
-        return identity(value['pid']) == value
-    except (OSError, ProcessLookupError):
-        return False
-
-
-def resource_lock_path() -> Path:
-    # Shared across execution worktrees for this OS user, not just one campaign.
-    return Path(f'/run/user/{os.getuid()}/prehop-paper-resource.lock')
-
-
-def lock(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open('a+')
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        handle.close()
-        raise RuntimeError('Another paper campaign or its owned child still holds the resource lock') from exc
-    return handle
+from scripts.campaign_runtime import alive, atomic_json, identity, lock, redact, resource_lock_path, run_child
+from scripts.runner_environment import safe_environment
 
 
 def build_steps(campaign: str, attempt: str, python: str, target_attempts: dict | None = None) -> list[dict]:
@@ -87,7 +48,7 @@ def build_steps(campaign: str, attempt: str, python: str, target_attempts: dict 
 def create_plan(campaign: str, commit: str, attempt: str) -> Path:
     from scripts.paper_cold_canary import save
     from scripts.paper_gate_ledger import _context
-    from scripts.paper_stage_runner import selected_python_environment
+    from scripts.runner_environment import selected_python_environment
     from utils.provenance import code_provenance
     selected = selected_python_environment()
     root = ROOT / 'data/results' / campaign
@@ -118,7 +79,6 @@ def create_successor_plan(previous_path: Path, failed_step: str, attempt: str, s
                      'retry_step': failed_step, 'inherited_completed_steps': list(status.get('completed_steps', [])),
                      'provenance': code_provenance(),
                      'steps': build_steps(previous['campaign'], previous['attempt'], previous['python'], attempts)}
-        _branch, _dataset, _method = failed_step.split('/')
         for step in successor['steps']:
             if step['id'] in successor['inherited_completed_steps']:
                 step_evidence(successor, step)
@@ -127,27 +87,6 @@ def create_successor_plan(previous_path: Path, failed_step: str, attempt: str, s
         return target
     finally:
         handle.close()
-
-
-def safe_environment() -> dict[str, str]:
-    """Only approved runtime selectors and canonical connection fields enter the unit."""
-    from core.inference_transport import _FORBIDDEN_AMBIENT_PROVIDER_KEYS, preserve_provider_environment
-    from core.paper_policy import method_environment_defaults, preserve_method_environment
-    from core.strategy_registry import paper_environment_defaults
-    from scripts.paper_stage_runner import selected_python_environment
-    current = selected_python_environment()
-    preserve_provider_environment(current)
-    preserve_method_environment(current)
-    allowed = {'RAG_MEASUREMENT_MAX_TARGETS', 'RAG_PREHOP_TRACE', 'RAG_PREHOP_TRACE_DIR', 'RAG_EXECUTION_PROFILE', 'RAG_QUEUE_PROXY_URL', 'RAG_QUEUE_TOKEN', 'PYTHON_BIN', 'UV_PROJECT_ENVIRONMENT', 'RAG_OFFICIAL_BASELINE_HOME',
-        'RAG_INFERENCE_BASE_URL', 'RAG_INFERENCE_API_KEY', 'RAG_GENERATION_MODEL', 'RAG_EMBEDDING_MODEL',
-        'RAG_GENERATION_REVISION', 'RAG_EMBEDDING_REVISION', 'NEO4J_URI', 'NEO4J_URL', 'NEO4J_USERNAME', 'NEO4J_USER',
-        'NEO4J_PASSWORD', 'NEO4J_DATABASE', 'HF_HOME', 'HF_HUB_CACHE', 'TRANSFORMERS_CACHE', 'PATH', 'HOME', 'LITELLM_MODE'}
-    allowed.update(_FORBIDDEN_AMBIENT_PROVIDER_KEYS)
-    allowed.update(method_environment_defaults())
-    allowed.update(paper_environment_defaults())
-    env = {key: current[key] for key in allowed if key in current}
-    env.update(PYTHONDONTWRITEBYTECODE='1', RAG_SKIP_PROJECT_ENV='true', RAG_PAPER_MODE='true')
-    return env
 
 
 def require_logout_persistence() -> None:
@@ -174,19 +113,9 @@ def unit_processes(unit: str) -> list[dict]:
     return list(processes.values())
 
 
-def ensure_no_other_campaigns(own_unit: str = '') -> None:
+def ensure_no_other_campaigns() -> None:
     from scripts.paper_detached_runtime import ensure_no_detached_owners
     ensure_no_detached_owners(os.getpid())
-    try:
-        output = subprocess.run(['systemctl', '--user', 'list-units', 'prehop-paper-*', '--all', '--plain', '--no-legend'],
-                                check=True, capture_output=True, text=True).stdout
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        if own_unit:
-            raise
-        return  # nohup ownership and the shared flock do not require a user manager.
-    own_unit.removesuffix('.service') + '.service' if own_unit else ''
-    for line in output.splitlines():
-        line.split()[0] if line.split() else ''
 
 
 def launch(plan_path: Path, *, resume: bool = False, backend: str = 'nohup') -> dict:
@@ -297,81 +226,6 @@ def checkpoint_progress(campaign: str) -> list[dict]:
     return rows
 
 
-def redact(text: str, environment: dict[str, str]) -> str:
-    from urllib.parse import urlsplit
-    values = set()
-    for key, value in environment.items():
-        if not value:
-            continue
-        if any(word in key for word in ('PASSWORD', 'API_KEY', 'TOKEN')):
-            values.add(value)
-        if key.endswith(('_BASE_URL', '_URI', '_URL')):
-            parsed = urlsplit(value)
-            values.update(part for part in (value, parsed.netloc, parsed.hostname,
-                          f'{parsed.scheme}://{parsed.netloc}') if part)
-    for value in sorted(values, key=len, reverse=True):
-        text = text.replace(value, '[REDACTED]')
-    return text
-
-
-# Bound only the drain after the direct child exits. Running stages retain
-# their ordinary unlimited runtime and heartbeat updates.
-CHILD_LOG_DRAIN_SECONDS = 5.0
-
-
-def run_child(argv: list[str], env: dict[str, str], log_base: Path, handle, update) -> int:
-    """Drain both owned pipes without waiting forever on inherited descendant FDs."""
-    child = subprocess.Popen(argv, cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, pass_fds=(handle.fileno(),))
-    pending = {}
-    streams = {}
-    pipes = {'stdout': child.stdout, 'stderr': child.stderr}
-    last_update = time.monotonic()
-    exited_at = None
-    with selectors.DefaultSelector() as selector:
-        try:
-            update({'child': identity(child.pid), 'child_argv': argv})
-            for name, pipe in pipes.items():
-                streams[name] = log_base.with_suffix(f'.{name}.log').open('x')
-                pending[name] = b''
-                os.set_blocking(pipe.fileno(), False)
-                selector.register(pipe, selectors.EVENT_READ, name)
-            while selector.get_map() or child.poll() is None:
-                if child.poll() is not None and exited_at is None:
-                    exited_at = time.monotonic()
-                if exited_at is not None and time.monotonic() - exited_at >= CHILD_LOG_DRAIN_SECONDS:
-                    break
-                for key, _events in selector.select(timeout=.2):
-                    name = key.data
-                    chunk = os.read(key.fileobj.fileno(), 65536)
-                    if chunk:
-                        pending[name] += chunk
-                        while b'\n' in pending[name]:
-                            line, pending[name] = pending[name].split(b'\n', 1)
-                            streams[name].write(redact((line + b'\n').decode('utf-8', errors='replace'), env))
-                        streams[name].flush()
-                    else:
-                        # Complete final lines (including no trailing newline)
-                        # are redacted as a whole, never at arbitrary read cuts.
-                        streams[name].write(redact(pending[name].decode('utf-8', errors='replace'), env))
-                        streams[name].flush()
-                        pending[name] = b''
-                        selector.unregister(key.fileobj)
-                        key.fileobj.close()
-                if time.monotonic() - last_update >= 10:
-                    update({'heartbeat_at': time.time()})
-                    last_update = time.monotonic()
-            incomplete = [key.data for key in selector.get_map().values()]
-            update({'log_drain_complete': not incomplete, 'log_drain_incomplete_streams': sorted(incomplete),
-                    'log_drain_unwritten_partial_bytes': {name: len(pending[name]) for name in incomplete}})
-        finally:
-            for pipe in pipes.values():
-                pipe.close()
-            for stream in streams.values():
-                stream.close()
-    return child.wait()
-
-
 def supervise(plan_path: Path, *, resume: bool = False, unit: str = '', detached: bool = False) -> int:
     from scripts.paper_detached_runtime import register_owner, session_processes, terminate_owned
     owner = register_owner(plan_path) if detached else None
@@ -380,7 +234,7 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '', detached
     status_path = root / 'status.json'
     handle = lock(resource_lock_path())
     try:
-        ensure_no_other_campaigns(unit)
+        ensure_no_other_campaigns()
         previous = json.loads(status_path.read_text()) if status_path.exists() else {}
     except Exception:
         handle.close()
@@ -410,10 +264,7 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '', detached
             raise RuntimeError('Owned detached supervisor received termination signal')
         signal.signal(signal.SIGTERM, interrupted)
         signal.signal(signal.SIGINT, interrupted)
-    from core.inference_queue import OwnedQueue
-    queue = OwnedQueue(root / f'inference-queue-{time.time_ns()}.json')
     try:
-        queue.start()
         update({'state': 'running'})
         env = safe_environment()
         for index, step in enumerate(plan['steps']):
@@ -426,8 +277,6 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '', detached
                     'segment_provenance': code_provenance(),
                     'stdout_log': str(log_base.with_suffix('.stdout.log')), 'stderr_log': str(log_base.with_suffix('.stderr.log'))})
             exit_code = run_child(step['argv'], env, log_base, handle, update)
-            queue.drain()
-            queue.persist()
             update({'child': None, 'exit_code': exit_code})
             remaining = [row for row in (session_processes(owner) if detached else unit_processes(unit))
                          if row['pid'] != os.getpid()]
@@ -454,7 +303,6 @@ def supervise(plan_path: Path, *, resume: bool = False, unit: str = '', detached
             remaining = terminate_owned(owner)
             update({'remaining_owned_processes': remaining, 'owned_cleanup': 'TERM_only',
                     'owned_cleanup_complete': not remaining})
-        queue.close()
         if handle is not None:
             handle.close()
 

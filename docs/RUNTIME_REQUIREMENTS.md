@@ -48,7 +48,7 @@ Configure `.env` or the exported environment with:
 Generation and embeddings share one OpenAI-compatible LiteLLM base. Shell
 launchers require the canonical base, key, and model variables and reject legacy
 provider inputs. `core/inference_transport.py` records the normalized endpoint
-identity without comparing it against `configs/paper_gateway.json`. Configure
+identity from the configured gateway. Configure
 the shared gateway; automatic gateway approval and model-equality checks are
 removed. Credentials must not enter commands, logs, or artifacts.
 Legacy provider variables are not an alternative public interface; compatibility
@@ -164,15 +164,11 @@ A failed build remains unpublished for inspection. A mismatched existing
 installation is left intact; select a fresh `RAG_OFFICIAL_BASELINE_HOME` and
 rerun setup. No existing runtime is upgraded or removed by this command.
 
-The repository's root `third_party/HopRAG` is reference-only. Generated POS
-files use run-local directories; the downloaded model and upstream checkout
-remain unchanged. Launchers automatically select the prepared main interpreter.
-
-`scripts/run_hoprag_scheduled.py` performs a 16-document source canary, full
-MultiHop-RAG indexing, query benchmarking, and completion recording. The canary
-executes a query after indexing. Native chunks remain sequential within
-a document; the adapter uses ten document workers. The runtime uses the native
-POS model, not a substitute spaCy path.
+Generated POS files use run-local directories; the downloaded model and
+upstream checkout remain unchanged. Launchers automatically select the prepared
+main interpreter. Use `scripts/run_paper_target.sh <dataset> hoprag <run-id>` for
+indexing and benchmarking. Native chunks remain sequential within a document;
+the adapter uses ten document workers and the native POS model.
 
 ## Runtime selection
 
@@ -224,8 +220,8 @@ Missing response or cost telemetry remains unavailable.
 
 GFM-RAG's adapter applies the shared 600-second QA transport timeout instead of
 the upstream 60-second call timeout. This is a transport override, not a source
-edit. Client waiting may include the queue; a timeout does not prove upstream
-inference was cancelled. Selected native parameter parity does not imply fully
+edit. Requests go directly to the configured gateway; a client timeout does
+not prove upstream inference was cancelled. Selected native parameter parity does not imply fully
 upstream-identical execution after shared model/transport adaptations.
 
 ## Completion and campaign scope
@@ -240,7 +236,7 @@ for supervisors and the legacy evidence-ledger workflow.
 Client request concurrency and embedding batch size do not specify GPU sequence
 capacity. Local checkpoints, input lengths, KV cache, and other clients affect
 realized throughput. The configured shared profile is documented in
-[shared indexing profile](THROUGHPUT_EXECUTION.md#shared-indexing-profile);
+[direct-request profile](THROUGHPUT_EXECUTION.md#direct-request-profile);
 no utilization or physical GPU count is inferred from that configuration.
 
 ## Local artifacts and trace storage
@@ -265,14 +261,11 @@ under the pinned pandas 2 runtime, including tied scores. This is validation of
 those fixtures, not a guarantee of every possible numerical boundary case.
 Cached nodes are reused; recovery costs retain prior attempt time separately.
 
-The cached recovery launcher, `scripts/resume_hoprag_cached.py`, applies the
-registered `RAG_HOP_DOC_WORKERS=10` before indexing. It removes the
-retired `RAG_HOP_MAX_THREADS`, `RAG_HOP_GATHER_WAVE`,
-`RAG_HOP_BUILD_CONCURRENCY`, `RAG_HOP_SEMANTIC_VARIANT`, and
-`RAG_HOP_EDGE_FILTER` launch overrides. The launcher records the resumed
-execution and checks its index completion status; selecting a runtime does not
-establish completed edges.
-The pinned upstream source is unchanged.
+The adapter preserves per-document caches and committed edge completion sets.
+If recovery is needed, rerun indexing against the same recorded namespace and
+output root after checking the failed attempt's state. Preserve the original
+attempt statistics and report recovery time separately from cold index cost.
+The registered HopRAG document-worker setting is `RAG_HOP_DOC_WORKERS=10`.
 
 ## Dataset compatibility
 

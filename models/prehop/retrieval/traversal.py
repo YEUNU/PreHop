@@ -384,8 +384,7 @@ class TraversalMixin:
             from models.prehop.connection_timing import expand
             hop_rows, measurement = await expand(
                 self, sorted(hop_source_question_ids), excluded_ids,
-                RAGConfig.CONNECTION_TIMING_MODE, RAGConfig.CONNECTION_TIMING_STORE,
-                os.environ["RAG_INDEX_NAMESPACE"])
+                RAGConfig.CONNECTION_TIMING_MODE, RAGConfig.CONNECTION_TIMING_STORE)
             recorder = getattr(self, "trace_recorder", None)
             if recorder is not None:
                 from models.prehop.tracing import _IDENTITY

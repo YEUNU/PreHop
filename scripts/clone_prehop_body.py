@@ -52,7 +52,7 @@ async def run(source_stats, dataset):
         _load_corpus_manifest,
         _publish_neo4j_snapshot,
         _set_neo4j_snapshot_state,
-        _staged_source_ids,
+        _source_ids_from_filenames,
     )
     from core.config import RAGConfig
     from core.neo4j_service import Neo4jService
@@ -66,7 +66,7 @@ async def run(source_stats, dataset):
     namespace = source['index_policy']['index_namespace']
     manifest = _load_corpus_manifest(dataset)
     files = sorted(p.name for p in Path(dataset).iterdir() if p.suffix in {'.txt', '.md'} and p.is_file())
-    ids = _staged_source_ids(files, manifest, Path(dataset))
+    ids = _source_ids_from_filenames(files)
     target = Path('data/index_stats') / f'prehop_{tag}_{os.environ["RAG_RUN_ID"]}.json'
     destination = os.environ['RAG_INDEX_NAMESPACE']
     try:

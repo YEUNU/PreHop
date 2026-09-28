@@ -9,6 +9,35 @@ examples reuse the `PYTHON_BIN`, `PREHOP_RESULT`, `PREHOP_QUERIES` and
 `PREHOP_INDEX` paths established below; set them to your own completed reference
 when running a section independently.
 
+## Reviewer smoke test
+
+First run the service-free tests in [Reviewer checks](../README.md#reviewer-checks).
+For a small real execution, configure Neo4j and the generation/embedding gateway
+as described in [installation](../README.md#installation). Prehop alone does not
+require installing the additional baseline runtimes or downloading the benchmark
+corpora. The checked-in fixture supplies two documents and one multi-hop query.
+
+```bash
+export PYTHON_BIN="$PWD/.venv/bin/python"
+export UV_PROJECT_ENVIRONMENT="$PWD/.venv"
+export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/direct-8.json"
+./run_servers.sh all
+REVIEW_RUN="reviewer-$(date +%Y%m%d-%H%M%S)-$$"
+"$PYTHON_BIN" scripts/paper_cold_canary.py "$REVIEW_RUN" prehop multihoprag --attempt a1
+```
+
+A successful run exits zero and prints `cold_native_canary_passed`. Inspect
+`data/results/<REVIEW_RUN>/cold_v2/a1/multihoprag/prehop/query.json` for the
+question, answer and returned passages, `index_evidence.json` for the index
+metadata, and `evidence.json` for the execution references. Each run uses a fresh
+namespace; no global graph clear is needed. This checks execution of real
+indexing and retrieval, not answer accuracy or paper-level performance. Service
+errors propagate as failures. Use a new run ID when repeating the smoke test.
+
+To reproduce the full results, prepare the datasets below, run each system with
+the named comparison launcher, and export the dataset-specific metrics. Model
+services and complete benchmark runs are required for those results.
+
 ## Data and settings
 
 Prepare both datasets once in a new checkout:
@@ -64,24 +93,21 @@ after configuring `.env`. Choose a new run ID for each dataset/system execution:
 ```bash
 export PYTHON_BIN="$PWD/.venv/bin/python"
 export UV_PROJECT_ENVIRONMENT="$PWD/.venv"
-export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/index-shared-120.json"
+export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/direct-8.json"
 
-"$PYTHON_BIN" scripts/run_with_inference_queue.py \
-  --profile "$RAG_EXECUTION_PROFILE" \
-  --metrics data/results/reproduce-mhr-prehop/queue.json \
-  -- bash scripts/run_paper_target.sh multihoprag prehop reproduce-mhr-prehop
+bash scripts/run_paper_target.sh multihoprag prehop reproduce-mhr-prehop
 ```
 
-The supplied profile uses eight concurrent benchmark queries and a shared limit
-of 120 generation/embedding requests. These are request limits, not hardware
-specifications. Use the same declared serving conditions for timing comparisons.
-The queue is owned by this wrapper, not by the profile file. Run these foreground
-examples sequentially; the wrapper holds a per-user host lock. Use an owning
-campaign when targets must share one request budget. See
+The supplied profile runs up to eight benchmark questions concurrently, with
+per-client generation concurrency eight and embedding concurrency one. Requests
+go directly to the configured gateway. Run these foreground examples one target
+at a time; independent jobs do not share a global request budget. Use the same
+declared serving conditions for timing comparisons. See
 [the execution contract](THROUGHPUT_EXECUTION.md#execution-contract).
-The wrapper performs indexing and the full benchmark. Existing index metadata
-and partial results under the same run ID trigger reuse/resume; use a fresh ID
-for an independent run. No global graph clearing is needed.
+
+The target command performs indexing and the full benchmark. Existing index
+metadata and partial results under the same run ID trigger reuse/resume; use a
+fresh ID for an independent run. No global graph clearing is needed.
 
 Change the dataset argument to `hotpotqa` and choose a new run ID for that
 benchmark. Change the strategy argument to one of the following to run a
@@ -130,12 +156,9 @@ export PREHOP_QUERIES="$PWD/data/multihoprag_queries.json"
 "$PYTHON_BIN" scripts/run_primary_hop_ablation.py prepare \
   --reference "$PREHOP_RESULT" --queries "$PREHOP_QUERIES" \
   --expansion next_only --output data/results/reproduce-mhr-next
-"$PYTHON_BIN" scripts/run_with_inference_queue.py \
-  --profile "$RAG_EXECUTION_PROFILE" \
-  --metrics data/results/reproduce-mhr-next/queue.json \
-  -- "$PYTHON_BIN" scripts/run_primary_hop_ablation.py worker \
-     --reference "$PREHOP_RESULT" --queries "$PREHOP_QUERIES" \
-     --output data/results/reproduce-mhr-next
+"$PYTHON_BIN" scripts/run_primary_hop_ablation.py worker \
+  --reference "$PREHOP_RESULT" --queries "$PREHOP_QUERIES" \
+  --output data/results/reproduce-mhr-next
 ```
 
 Repeat preparation and the worker with `none` and `hop_only`, each in a new
@@ -173,12 +196,9 @@ export REPRO_DIR="$PWD/data/results/reproduce-mhr-representations"
 mkdir -p "$REPRO_DIR"
 
 for profile in question_full question_body; do
-  "$PYTHON_BIN" scripts/run_with_inference_queue.py \
-    --profile "$RAG_EXECUTION_PROFILE" \
-    --metrics "$REPRO_DIR/$profile-inputs-queue.json" \
-    -- "$PYTHON_BIN" scripts/prepare_ablation_inputs.py \
-       --index-stats "$PREHOP_INDEX" --queries "$PREHOP_QUERIES" \
-       --profile "$profile" --output "$REPRO_DIR/$profile-inputs"
+  "$PYTHON_BIN" scripts/prepare_ablation_inputs.py \
+    --index-stats "$PREHOP_INDEX" --queries "$PREHOP_QUERIES" \
+    --profile "$profile" --output "$REPRO_DIR/$profile-inputs"
 done
 ```
 
@@ -212,15 +232,12 @@ for profile in question_full question_body body_body body_full; do
       extra_args=(--reference "$REPRO_DIR/body-reference.json")
       ;;
   esac
-  "$PYTHON_BIN" scripts/run_with_inference_queue.py \
-    --profile "$RAG_EXECUTION_PROFILE" \
-    --metrics "$REPRO_DIR/$profile-benchmark-queue.json" \
-    -- "$PYTHON_BIN" scripts/prehop_ablation.py \
-       --mode benchmark --profile "$profile" --namespace "$namespace" \
-       --run-id "reproduce-mhr-$profile" --corpus-tag multihoprag \
-       --dataset data/multihoprag_corpus --queries "$PREHOP_QUERIES" \
-       --index-stats "$source_index" --direct-inputs "$REPRO_DIR/$search_profile-inputs" \
-       "${extra_args[@]}" --execute
+  "$PYTHON_BIN" scripts/prehop_ablation.py \
+    --mode benchmark --profile "$profile" --namespace "$namespace" \
+    --run-id "reproduce-mhr-$profile" --corpus-tag multihoprag \
+    --dataset data/multihoprag_corpus --queries "$PREHOP_QUERIES" \
+    --index-stats "$source_index" --direct-inputs "$REPRO_DIR/$search_profile-inputs" \
+    "${extra_args[@]}" --execute
 done
 ```
 
@@ -264,7 +281,54 @@ online execution. Break-even query count is the ceiling of link-build time
 divided by positive mean connection savings, with shared indexing costs cancelled.
 It concerns cumulative connection processing, not parallel batch wall time.
 
+## Compare a common reader over saved evidence
+
+Use the [answer-only replay workflow](SYNTHESIS_REPLAY.md) to consume saved
+retrieval outputs and apply one final-answer prompt without rerunning retrieval.
+It retains every returned passage and does not impose a new input cutoff.
+
 ## Evaluate saved results
+
+### Dataset-specific official results
+
+Each completed benchmark writes `.official.json` and `.diagnostics.json`
+beside its result. To collect final results in one command, pass the explicit
+result paths for all methods and both datasets:
+
+```bash
+"$PYTHON_BIN" -m scripts.export_official_results \
+  path/to/prehop_multihoprag.json path/to/hoprag_multihoprag.json \
+  path/to/prehop_hotpotqa.json path/to/hoprag_hotpotqa.json \
+  --output-dir data/results/final-comparison
+```
+
+Add the remaining methods' result paths to the same command. Select one final
+source per dataset and method; the command does not discover the newest run.
+Multiple inputs must be complete full or released-population results with
+matching question IDs and annotations within each dataset. Partial runs,
+subset runs and duplicate method entries are rejected by this offline comparison.
+
+Each dataset directory contains `comparison.json`, `comparison.csv` and
+per-method official files. MultiHop-RAG includes official QA for
+all questions, each question type and the non-null population, plus the four
+official retrieval metrics. HotpotQA includes all twelve Answer, Supporting
+Fact and Joint metrics. Values retain their native unscaled units and source
+hashes; datasets are not averaged together. Auxiliary diagnostic files remain
+beside the original benchmark results and are not copied into the final
+comparison bundle. A single input retains the existing per-result export layout.
+
+This command aggregates recorded scores without modifying source results or
+calling a model. It does not recompute predictions or certify official-code
+parity. The runtime implements the pinned official scoring formulas after
+shared answer extraction and, for HotpotQA, sentence projection; these adapters
+are recorded in each official report. See the
+[evaluation architecture](ARCHITECTURE.md#evaluation-output-contract) for their
+boundaries.
+
+### Common passage-retrieval analysis
+
+This optional diagnostic analysis is separate from the official-only final
+comparison above. It does not supply official HotpotQA ranking scores.
 
 Use Hits@4, Hits@10, MRR@10 and MultiHop-RAG-defined MAP@10, plus distinct-gold
 Recall@10. MultiHop-RAG uses the official case-sensitive fact matcher after

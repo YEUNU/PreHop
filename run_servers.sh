@@ -151,23 +151,60 @@ start_neo4j_docker() {
         neo4j:5.26.21-community > /dev/null
 }
 
+check_neo4j() {
+    local service_python
+    service_python="$(resolve_python "$SCRIPT_DIR")" || return 1
+    "$service_python" - <<'PY'
+import logging
+import os
+import sys
+
+from neo4j import GraphDatabase
+
+logging.getLogger("neo4j").setLevel(logging.CRITICAL)
+try:
+    with GraphDatabase.driver(
+        os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
+        auth=(os.environ.get("NEO4J_USER", "neo4j"), os.environ["NEO4J_PASSWORD"]),
+        connection_timeout=5, connection_acquisition_timeout=5,
+    ) as driver:
+        with driver.session(database=os.environ.get("NEO4J_DATABASE", "neo4j")) as session:
+            session.run("RETURN 1 AS ready").consume()
+except Exception as exc:
+    print(f"Neo4j connection check failed ({type(exc).__name__}). Check NEO4J_URI, credentials and database.",
+          file=sys.stderr)
+    raise SystemExit(1) from None
+PY
+}
+
 start_neo4j() {
-    if ! curl -s --max-time 1 http://localhost:7474 > /dev/null 2>&1; then
-        local neo4j_cmd
-        if ! neo4j_cmd="$(resolve_neo4j_cmd)"; then
-            echo "Neo4j local binary not found. Trying Docker fallback..."
-            if start_neo4j_docker; then
-                return 0
-            fi
-            echo "❌ Neo4j not found. Set NEO4J_BIN/NEO4J_HOME, install neo4j on PATH, or install Docker."
-            return 1
-        fi
+    if check_neo4j 2>/dev/null; then
+        echo "✅ Configured Neo4j connection is ready"
+        return 0
+    fi
+    # Only manage the default local installation. A remote URI or custom port
+    # belongs to infrastructure supplied by the caller.
+    case "${NEO4J_URI:-bolt://localhost:7687}" in
+        bolt://localhost:7687|bolt://127.0.0.1:7687|neo4j://localhost:7687|neo4j://127.0.0.1:7687) ;;
+        *) check_neo4j; return $? ;;
+    esac
+    local neo4j_cmd attempt
+    if neo4j_cmd="$(resolve_neo4j_cmd)"; then
         echo "Starting Neo4j..."
         mkdir -p logs
-        nohup "${neo4j_cmd}" start > logs/neo4j.log 2>&1 &
+        "$neo4j_cmd" start > logs/neo4j.log 2>&1
     else
-        echo "✅ Neo4j is already UP"
+        echo "Neo4j local binary not found. Trying Docker fallback..."
+        start_neo4j_docker || return 1
     fi
+    for attempt in {1..30}; do
+        if check_neo4j 2>/dev/null; then
+            echo "✅ Configured Neo4j connection is ready"
+            return 0
+        fi
+        sleep 1
+    done
+    check_neo4j
 }
 
 start_gen() {

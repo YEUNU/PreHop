@@ -61,7 +61,7 @@ def test_timing_waits_without_stopping_other_ready_work():
     from scripts.link_experiment_campaign import ready_jobs
     jobs=[{'id':'timing','exclusive':True,'priority':0},{'id':'bench','priority':1}]
     states={j['id']:{'state':'pending'} for j in jobs}
-    assert ready_jobs(jobs,states,[{'id':'adopted'}])==[jobs[1]]
+    assert ready_jobs(jobs,states,[{'id':'adopted'}],max_active=2)==[jobs[1]]
     assert ready_jobs(jobs,states,[])==[jobs[0]]
     assert ready_jobs(jobs,states,[jobs[0]])==[]
 
@@ -118,9 +118,9 @@ def test_only_one_hoprag_job_can_use_the_two_campaign_slots():
     from scripts.link_experiment_campaign import ready_jobs
     jobs=[{'id':'hp-hoprag-index','priority':8},{'id':'mhr-hoprag-index','priority':8},{'id':'ordinary','priority':0}]
     states={j['id']:{'state':'pending'} for j in jobs}
-    picked=ready_jobs(jobs,states,[])
+    picked=ready_jobs(jobs,states,[],max_active=2)
     assert len(picked)==2 and sum('hoprag' in j['id'] for j in picked)==1
-    assert ready_jobs(jobs,states,[{'id':'adopted-hoprag-mhr'}])==[jobs[2]]
+    assert ready_jobs(jobs,states,[{'id':'adopted-hoprag-mhr'}],max_active=2)==[jobs[2]]
 
 
 def test_campaign_resume_does_not_repeat_completed_adopted_work(tmp_path):
@@ -148,7 +148,7 @@ def test_primary_hotpot_jobs_do_not_depend_on_supplemental_arms(tmp_path):
     source.write_text(json.dumps({'index_policy':{'index_namespace':'source'},'run_id':'source'}))
     plan=make_plan('test',source,multihoprag_reference=tmp_path/'reference.json')
     jobs={j['id']:j for j in plan['jobs']}
-    assert plan['max_active']==2 and plan['max_hoprag_active']==1
+    assert plan['max_active']==1 and plan['max_hoprag_active']==1
     assert jobs['hp-primary-hop-inputs']['after']==['hp-prehop-benchmark']
     assert jobs['hp-primary-without-hop']['after']==['hp-primary-hop-inputs']
     assert jobs['hp-timing-build']['after']==['hp-reference-starts']

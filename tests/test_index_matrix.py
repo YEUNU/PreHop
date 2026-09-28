@@ -21,8 +21,8 @@ def test_source_digest_detects_execution_edits(tmp_path, monkeypatch):
 
 
 def test_smoke_failure_blocks_only_its_target_and_never_claims_admission(tmp_path, monkeypatch):
-    from core import inference_queue, paper_compatibility
-    from scripts import paper_campaign, paper_detached_runtime
+    from core import paper_compatibility
+    from scripts import campaign_runtime, paper_detached_runtime, runner_environment
     root = tmp_path / 'index-supervisor'
     root.mkdir()
     plan_path = root / 'plan.json'
@@ -34,20 +34,13 @@ def test_smoke_failure_blocks_only_its_target_and_never_claims_admission(tmp_pat
     monkeypatch.setattr(paper_detached_runtime, 'register_owner', lambda _: {})
     monkeypatch.setattr(paper_detached_runtime, 'session_processes', lambda _: [])
     monkeypatch.setattr(paper_detached_runtime, 'terminate_owned', lambda _: [])
-    monkeypatch.setattr(paper_campaign, 'safe_environment', dict)
-    monkeypatch.setattr(paper_campaign, 'resource_lock_path', lambda: tmp_path / 'lock')
+    monkeypatch.setattr(runner_environment, 'safe_environment', dict)
+    monkeypatch.setattr(campaign_runtime, 'resource_lock_path', lambda: tmp_path / 'lock')
     calls = []
     def run(command, *args):
         calls.append(command)
         return int(command[-1] == 'smoke' and command[command.index('--dataset')+1] == 'hotpotqa')
-    monkeypatch.setattr(paper_campaign, 'run_child', run)
-    class Queue:
-        def __init__(self, _): pass
-        def start(self): pass
-        def drain(self): pass
-        def persist(self): pass
-        def close(self): pass
-    monkeypatch.setattr(inference_queue, 'OwnedQueue', Queue)
+    monkeypatch.setattr(campaign_runtime, 'run_child', run)
     assert index_matrix.supervise(plan_path) == 1
     status = json.loads((root / 'status.json').read_text())
     assert status['complete_indexes'] == 1

@@ -34,7 +34,7 @@ async def test_matched_hydration_and_alternating_replay(tmp_path,monkeypatch):
     monkeypatch.setattr(timing,"read_pairs",AsyncMock(return_value=pairs))
     hydrate = AsyncMock(side_effect=lambda _e,pairs,_excluded:pairs)
     monkeypatch.setattr(timing,"hydrate",hydrate)
-    result = await replay(SimpleNamespace(),{"query":["a","b"]},path,"test",repetitions=2,warmups=0)
+    result = await replay(SimpleNamespace(),{"query":["a","b"]},path,repetitions=2,warmups=0)
     assert result["measurement_scope"] == "fixed_start_connection_replay"
     assert not result["includes_direct_retrieval"] and not result["includes_answer_generation"]
     assert result["identical_start_fraction"] == 1.0
@@ -80,7 +80,7 @@ async def test_reference_exclusions_apply_to_both_arms_and_reported_destinations
     monkeypatch.setattr(timing,'resolve_pairs',AsyncMock(return_value=(pairs,2)))
     monkeypatch.setattr(timing,'read_pairs',AsyncMock(return_value=pairs))
     hydrate=AsyncMock(return_value=[]);monkeypatch.setattr(timing,'hydrate',hydrate)
-    report=await replay(SimpleNamespace(),{'q':['a']},path,'test',exclusions={'q':['excluded']})
+    report=await replay(SimpleNamespace(),{'q':['a']},path,exclusions={'q':['excluded']})
     for arm in report['details'][0]['arms'].values():
         assert arm['destinations']=={'a':['kept']}
     assert all(call.args[2]=={'excluded'} for call in hydrate.await_args_list)

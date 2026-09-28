@@ -17,13 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-
-def selected_python_environment() -> dict[str, str]:
-    environment = os.environ.copy()
-    prefix = Path(sys.prefix).resolve()
-    executable = prefix / 'bin/python'
-    environment.update(PYTHON_BIN=str(executable), UV_PROJECT_ENVIRONMENT=str(prefix))
-    return environment
+from scripts.runner_environment import selected_python_environment
 
 
 def reference(path: Path) -> dict:
@@ -82,7 +76,6 @@ def reattest(campaign: str, attempt: str) -> None:
 async def fresh_index(strategy: str, dataset: str) -> None:
     from cli.index import run_indexing
     from core.admission import current_corpus_identity
-    ROOT / os.environ['RAG_INDEX_STATS_PATH']
     current_corpus_identity(dataset)
     try:
         await run_indexing(str(ROOT / 'data' / f'{dataset}_corpus'), strategy, 'default', dataset)
@@ -173,9 +166,9 @@ def recovery_child(run_id: str, mode: str) -> None:
 def recovery(campaign: str, attempt: str) -> None:
     from core.admission import sha256_file
     from core.paper_policy import configure_target_environment
+    from scripts.campaign_runtime import process_start
     from scripts.paper_cold_canary import save
     from scripts.paper_gate_ledger import record
-    from scripts.recovery_checkpoint import process_start
     ledger = ROOT / 'data/results' / campaign / 'gate_ledger.json'
     run_id = f'{campaign}-recovery-multihoprag-naive-{attempt}'
     configure_target_environment('naive', 'multihoprag', run_id)

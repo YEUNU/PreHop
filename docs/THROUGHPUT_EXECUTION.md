@@ -3,7 +3,7 @@
 Use this guide to launch targets, preserve existing evidence, and report
 comparable costs. Runtime setup belongs in
 [RUNTIME_REQUIREMENTS](RUNTIME_REQUIREMENTS.md). Completed benchmark results
-retain their source artifacts. Keep live counters, queue snapshots and temporary
+retain their source artifacts. Keep live counters and temporary
 investigations in generated campaign artifacts outside
 `docs`.
 
@@ -16,8 +16,7 @@ documented in [HOTPOTQA](HOTPOTQA.md).
 benchmark execution. The recorder accepts result states `completed_unadmitted`,
 `completed` and `admitted`; other states return an incomplete result. It emits
 the legacy receipt label `admitted` with `verification=disabled_by_user`, and
-preserves an existing receipt. The legacy verifier entry forwards to this recorder.
-
+preserves an existing receipt.
 This is a status-based execution receipt. It does not recount queries, rescore
 answers, validate configuration or certify publication eligibility. To report
 completed evidence, inspect the owning result's population, terminal failures,
@@ -39,81 +38,62 @@ evaluation/sampling seed 42 is separate from generation.
 
 ## Execution contract
 
-`core/execution_profile.py` binds the selected transport and producer settings
-to provenance. Set `RAG_EXECUTION_PROFILE` to an absolute JSON path before Python
-starts. Version 3 uses one combined generation/embedding request pool;
-legacy versions retain their historical per-kind limits.
+Clients send generation and embedding requests directly to the configured
+LiteLLM gateway. `core/execution_profile.py` records the selected operational
+settings and their content hash. Set `RAG_EXECUTION_PROFILE` to an absolute JSON
+path before starting Python. The profile sets client and producer limits;
+there is no local HTTP proxy or cross-process request semaphore.
 
-Selecting a profile configures client and producer limits; it does not start a
-cross-process queue. Use `scripts/run_with_inference_queue.py` for a foreground
-command or a supervisor that owns `OwnedQueue`. The foreground wrapper holds a
-per-user host lock; a second local wrapper fails while it is held. Queue
-instances on other hosts or under other owners still enforce separate limits,
-not one gateway-wide ceiling. Use one owning campaign for a shared target budget.
+Run dataset/system targets sequentially. Within each target, benchmark workers
+may process up to eight questions concurrently. A client generation limit is
+per client, not a gateway-wide ceiling; starting independent jobs or nested
+native workers can increase aggregate requests. Request limits do not describe
+hardware capacity or guarantee that an upstream service will accept every call.
 
-`core/inference_queue.py` limits upstream requests across child processes,
-forwards request bodies and streaming responses, and does not add retries.
-The dispatcher controls the number of active targets. The current rolling
-configuration runs two targets; per-target measurement and index locks no longer
-reject overlapping launches. The shared queue still enforces its configured
-request limit.
+### Direct-request profile
 
-### Shared indexing profile
-
-`configs/execution_profiles/index-shared-120.json` contains:
+`configs/execution_profiles/direct-8.json` contains:
 
 | Field | Value |
 |---|---:|
-| `inference_concurrency` | 120 |
+| `generation_concurrency` | 8 |
 | `embedding_batch_size` | 16 |
+| `embedding_concurrency` | 1 |
 | `benchmark_concurrency` | 8 |
-| `index_document_concurrency` | 60 |
-| `index_prefetch_documents` | 120 |
+| `index_document_concurrency` | 8 |
+| `index_prefetch_documents` | 16 |
 | `prehop_chunk_concurrency` | 8 |
-| `lightrag_document_concurrency` | 32 |
+| `lightrag_document_concurrency` | 8 |
 
-Generation and embedding compete for the same 120 slots, with no per-kind
-reservation. Queue snapshots expose the measured aggregate peak plus per-kind
-observations; do not add peaks measured at different times. These settings
-specify request bounds, not GPU capacity, sustained utilization, or an optimum.
-Native producers and local graph/model work can limit demand.
-
-Without an execution profile, registry transport defaults are generation
-concurrency 30, embedding batch/concurrency 16/1, and benchmark concurrency one.
-The checked-in `.env.example` overrides benchmark concurrency to four; the
-shared profile overrides it to eight. Exported settings normally take precedence
-over `.env`, while selected profile fields take precedence over both. Record the
-effective execution settings rather than inferring them from the example file.
-Changing the profile requires compatible new timing evidence. A small pilot
-can check integration and request throughput but does not establish full-run
-quality, batch invariance, or optimal query concurrency.
+Without a profile, registry defaults remain generation concurrency 30,
+embedding batch/concurrency 16/1, and benchmark concurrency one. The
+`.env.example` sets benchmark concurrency to four. An explicitly selected
+profile overrides those values at the entrypoint. Preserve the effective
+settings with measurements; changing concurrency does not update prior timing
+results.
 
 ## Foreground target
 
-Prepare `.env`, full corpus/query manifests, and the required runtimes first.
-Use a fresh target ID and the selected main interpreter:
+Prepare `.env`, corpus/query manifests, and the required runtimes first. Use a
+fresh target ID and the selected main interpreter:
 
 ```bash
 export PYTHON_BIN=/absolute/path/to/prepared/main-venv/bin/python
 export UV_PROJECT_ENVIRONMENT=/absolute/path/to/prepared/main-venv
-
-"$PYTHON_BIN" scripts/run_with_inference_queue.py \
-  --profile "$PWD/configs/execution_profiles/index-shared-120.json" \
-  --metrics /absolute/path/fresh-queue-metrics.json \
-  -- bash scripts/run_paper_target.sh multihoprag prehop fresh-target-id
+export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/direct-8.json"
+bash scripts/run_paper_target.sh multihoprag prehop fresh-target-id
 ```
 
-The wrapper owns the queue until its foreground child exits. Do not put a
-background launcher inside it. `run_paper_target.sh ... --check` resolves
-launch settings without running the target; it does not verify runtime readiness.
-The real target uses run-scoped storage and disables in-repository
-generation/embedding caches.
-It never invokes the global graph clear operation.
+The command indexes and benchmarks one target in the foreground.
+`run_paper_target.sh ... --check` resolves launch settings without running the
+target; it does not verify runtime readiness. The target uses run-scoped storage
+and disables in-repository generation/embedding caches. It never invokes the
+global graph clear operation.
 
 The launcher skips indexing when the run's index-statistics file exists and
 resumes missing query IDs when its partial result exists. These file-presence
-checks do not establish semantic compatibility. Use fresh run IDs for changed
-inputs or settings and retain the provenance of reused artifacts. See
+checks do not establish semantic compatibility. Use fresh IDs for changed
+inputs or settings and retain provenance. See
 [checkpoint behavior](ARCHITECTURE.md#evaluation-output-contract).
 
 ## Index-only batch
@@ -121,21 +101,21 @@ inputs or settings and retain the provenance of reused artifacts. See
 With a prepared environment and a selected profile:
 
 ```bash
-export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/index-shared-120.json"
+export RAG_EXECUTION_PROFILE="$PWD/configs/execution_profiles/direct-8.json"
 "$PYTHON_BIN" scripts/index_matrix.py launch indexing-01
 ```
 
 The supervisor owns a detached session and writes
-`data/results/<campaign>/index-supervisor/{plan,status,queue-metrics}.json`.
+`data/results/<campaign>/index-supervisor/{plan,status}.json`.
 It performs smoke builds and full indexes sequentially for the registry's seven
-methods on two datasets: 14 default targets. The two-slot link-experiment
-controller below is a separate workflow. Smoke failure isolates that target; unrelated
-targets continue. It reports completion only when every planned full index
+methods on two datasets: 14 default targets. The link-experiment controller below
+is a separate workflow. Smoke failure isolates that target; unrelated targets
+continue. It reports completion only when every planned full index
 succeeds and does not itself run full query benchmarks.
 
 Full index IDs use `<campaign>-index-<dataset>-<strategy>`. Failed attempts and
 original phase costs remain recorded. The index-only runner does not implicitly
-retry failed attempts; a rolling controller may enqueue explicit retries with
+retry failed attempts; a controller may schedule explicit retries with
 fresh IDs. A later benchmark can use a version-2 index-reuse link to a complete
 index-supervisor receipt without repeating index construction.
 
@@ -143,7 +123,7 @@ index-supervisor receipt without repeating index construction.
 
 Read generated status and the named stage logs to identify the owning process
 and actual target outcome. A supervisor heartbeat proves liveness, not source
-completion. Stage-boundary queue snapshots are not live utilization readings.
+completion.
 Low inference activity can reflect parsing, local models, graph writes, or
 other dependent stages; it does not by itself justify increasing concurrency.
 
@@ -158,15 +138,6 @@ prerequisite approval checks. The `resume_continuation` stage exercises interrup
 and continuation of a saved checkpoint; it does not test configuration rejection.
 Legacy stage names in historical receipts do not change the registry's target
 count. This workflow is not an automatic final validation step.
-
-### Cancelling queued work
-
-Supported clients attach `X-Prehop-Run-ID`. An authenticated
-`POST /v1/queue-cancel` for that ID removes waiting requests and rejects later
-requests for it. Forwarded requests keep their slot until the upstream response
-or timeout; cancellation does not prove the upstream model stopped inference.
-Use a new run ID when restarting. If queues are layered, their counters overlap
-and must not be summed as independent work.
 
 ## Final tables and measurement definitions
 
@@ -222,16 +193,17 @@ describe their controls and unequal initial search budgets.
 ## Controlled link experiments
 
 `scripts/link_experiment_campaign.py` executes the explicit dependency graph
-from `scripts/plan_link_experiments.py`. Ordinary tasks use at most two slots,
-with at most one HopRAG task across datasets. A ready HopRAG phase takes
-priority when its slot is free; the other slot remains available to other models.
+from `scripts/plan_link_experiments.py`. New plans run one task at a time. A ready
+HopRAG phase takes priority when the slot is free. Plans can explicitly set a
+larger `max_active`, in which case
+at most one HopRAG task runs across datasets.
 A plan with `max_active: 1` and `execution_filter: "hoprag"` runs only
 one HopRAG task at a time and leaves other models pending.
 `--resume` preserves recorded completed/failed tasks and adopts running tasks
 from the saved state instead of restarting the task graph.
 Exclusive timing tasks wait for an idle campaign, while ready non-timing work
-can continue. Primary benchmark tasks follow their completed index. Shared
-inference capacity remains 120; connection replays process one query at a time.
+can continue. Primary benchmark tasks follow their completed index. Requests go
+directly to the configured gateway; connection replays process one query at a time.
 The connection estimator does not dispatch online end-to-end benchmarks. Reference
 traces supply matched starting passages for connection-only measurements;
 offline analysis adds their per-query deltas to existing measured full-query
@@ -241,7 +213,6 @@ See [connection timing](REPRODUCING.md#measure-stored-versus-online-connection-p
 for commands and measurement scope, and
 [HOTPOTQA](HOTPOTQA.md) for the active corpus. The JSON timing-store file points
 to Neo4j HOP_TIMING relationships and contains no destination table.
-
 
 The controller starts only tasks whose dependencies have completed. Ready
 ablation benchmarks have dispatch priority over preparation and indexing;
@@ -258,7 +229,6 @@ not include later persistence or query benchmarking. Keep ETA and partial
 scores outside this document and the final result tables. A pending task has
 no measured duration yet, so a campaign-wide completion time may be unavailable.
 
-
 Post-hoc analysis reads completed artifacts without restarting benchmarks.
 The artifact formats and analysis modules are documented in
 [Architecture](ARCHITECTURE.md#post-hoc-connection-analysis).
@@ -271,7 +241,7 @@ against the pinned native dense function using existing per-document caches.
 It records dtype, exact score equality, throughput and process peak RSS; these
 are implementation measurements, not completed corpus indexing costs.
 
-`scripts/resume_hoprag_cached.py` preserves per-document node/question/embedding
-caches and stage completion sets. An interrupted, uncommitted edge group is
-scored again; completed groups remain recorded. Previous index statistics and
-interrupted edge-attempt costs remain separate from the new recovery duration.
+The HopRAG indexer preserves per-document node/question/embedding caches and
+stage completion sets. An interrupted, uncommitted edge group is scored again;
+completed groups remain recorded. Preserve previous index statistics before
+recovery and report interrupted edge-attempt costs separately from its duration.

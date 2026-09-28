@@ -127,9 +127,6 @@ def _query_records_sha256(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(records).encode("utf-8")).hexdigest()
 
 
-async def _index_snapshot_metadata():
-    """Record that execution does not perform an active-index verification."""
-    return {"status": "not_checked"}
 
 
 def _judge_independence(eval_model: str, model_id: str, default_model: str, allow_self: bool) -> tuple[bool, bool]:
@@ -431,7 +428,6 @@ async def run_benchmark(
     queries_file: str,
     strategy: str,
     model_id: str,
-    is_batch: bool = False,
     corpus_tag: str = "default",
     output_dir: Path | None = None,
     limit: int | None = None,
@@ -538,7 +534,7 @@ async def run_benchmark(
     except Exception as exc:
         raise RuntimeError(f"Failed to initialize engine for {strategy}: {exc}") from exc
     # Active-index verification is disabled; retain its explicit report status.
-    active_index_snapshot = await _index_snapshot_metadata()
+    active_index_snapshot = {"status": "not_checked"}
     results: list[dict[str, Any]] = []
     category_results: dict[str, list[dict[str, Any]]] = {}
 
@@ -1064,7 +1060,6 @@ async def run_benchmark_multi_seed(
     strategy: str,
     model_id: str,
     seeds: list[int] | None = None,
-    is_batch: bool = False,
     corpus_tag: str = "default",
     output_dir: Path | None = None,
     limit: int | None = None,
@@ -1081,7 +1076,6 @@ async def run_benchmark_multi_seed(
             queries_file=queries_file,
             strategy=strategy,
             model_id=model_id,
-            is_batch=is_batch,
             corpus_tag=corpus_tag,
             output_dir=output_dir,
             limit=limit,
@@ -1098,7 +1092,6 @@ async def run_benchmark_multi_seed(
             queries_file=queries_file,
             strategy=strategy,
             model_id=model_id,
-            is_batch=is_batch,
             corpus_tag=corpus_tag,
             output_dir=output_dir,
             limit=limit,

@@ -101,7 +101,7 @@ def canonical_query_policy(strategy: str) -> dict[str, Any]:
     return policy
 
 
-def canonical_semantic_index_policy(strategy: str, dataset: str) -> dict[str, Any]:
+def canonical_semantic_index_policy(strategy: str) -> dict[str, Any]:
     spec = get_strategy(strategy)
     local_embedding = spec.local_embedding_revision is not None or strategy == "gfm_rag"
     policy: dict[str, Any] = {

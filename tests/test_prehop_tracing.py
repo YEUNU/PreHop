@@ -24,7 +24,6 @@ def payloads(trace):
 
 def client(monkeypatch, trace, handler, sdk_retries=0):
     monkeypatch.setenv('RAG_PAPER_MODE', 'false')
-    monkeypatch.delenv('RAG_QUEUE_PROXY_URL', raising=False)
     monkeypatch.setenv('RAG_INFERENCE_BASE_URL', 'http://test/v1')
     monkeypatch.setenv('RAG_INFERENCE_BASE_URL', 'http://test/v1')
     monkeypatch.setenv('RAG_INFERENCE_RETRY_ATTEMPTS', str(2))

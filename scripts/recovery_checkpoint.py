@@ -6,12 +6,9 @@ import json
 import os
 from pathlib import Path
 
+from scripts.campaign_runtime import process_start
+
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def process_start(pid: int) -> str:
-    # Field22 follows the final ')' delimiting the possibly spaced process name.
-    return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
 
 
 async def checkpoint_barrier(result_path: Path, summary: dict) -> None:

@@ -185,7 +185,8 @@ def test_ms_config_registers_typed_default_caps_when_optional_env_is_absent(tmp_
     monkeypatch.setenv("RAG_GENERATION_MODEL", "generation")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding")
     config = ms_official_indexer.build_config("hotpotqa", tmp_path / "input")
-    assert config.concurrent_requests == 30
+    from core.strategy_registry import PAPER_TRANSPORT
+    assert config.concurrent_requests == PAPER_TRANSPORT.generation_concurrency
     assert config.embed_text.batch_size == 16
     assert all(schema.vector_size == 2560 for schema in config.vector_store.index_schema.values())
     assert ms_official_indexer._EMBED_CONCURRENCY == 1

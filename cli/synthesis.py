@@ -1,0 +1,189 @@
+"""Sequential dataset/system replay with concurrent final-answer requests only."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import os
+import time
+from pathlib import Path
+
+from core.synthesis_replay import TraceContextProvider
+from utils.prompts.prehop_answer import SYNTHESIS_PROMPT_VERSION
+
+
+def atomic_json(path, value):
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+    tmp.replace(path)
+
+
+def timestamp():
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+def request_identity(row):
+    payload = {'messages': row.messages(), 'prompt_version': SYNTHESIS_PROMPT_VERSION,
+               'temperature': 0, 'max_tokens': 256, 'enable_thinking': False}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=None,
+                        model=None, interval=1.0):
+    """Consume the trace hook; no retrieval, ranking, embedding, or truncation occurs here."""
+    from core.vllm_client import VLLMClient
+    from utils.parsers import clean_and_unwrap_json
+
+    output.mkdir(parents=True, exist_ok=True)
+    config = output / 'execution_config.json'
+    if not config.exists():
+        atomic_json(config, {'concurrency': concurrency, 'minimum_request_interval_seconds': interval,
+                             'retry_429_initial_seconds': 30, 'retry_429_max_seconds': 300})
+    owned_client = client is None
+    if owned_client:
+        from openai import AsyncOpenAI
+
+        from core.inference_transport import InferenceTransport
+        transport = InferenceTransport.resolve('prehop')
+        model = model or transport.generation_model
+        client = AsyncOpenAI(base_url=transport.generation_base_url, api_key=transport.api_key,
+                             timeout=180, max_retries=0)
+    groups = list(TraceContextProvider(inputs).groups())
+    rows_by_key = {r.key: r for _, rows in groups for r in rows}
+    responses = output / 'responses.jsonl'
+    done = {}
+    if responses.exists():
+        for line in responses.open():
+            r = json.loads(line)
+            key = (r['dataset'], r['method'], r['query_id'])
+            source = rows_by_key.get(key)
+            if (source is not None and r.get('status') == 'completed'
+                    and r.get('request_sha256') == request_identity(source) and r.get('model') == model):
+                done[key] = r
+    # Superseded inputs/answers never remain alongside current responses.
+    tmp = responses.with_suffix('.jsonl.tmp')
+    with tmp.open('w') as stream:
+        for r in done.values():
+            stream.write(json.dumps(r, ensure_ascii=False) + '\n')
+    tmp.replace(responses)
+    started = time.monotonic()
+    status = {'state': 'running', 'pid': os.getpid(), 'started_utc': timestamp(),
+              'total': len(rows_by_key), 'resumed': len(done), 'completed': len(done),
+              'model': model, 'execution': 'sequential dataset/system; trace context; final synthesis only; direct gateway',
+              'concurrency': concurrency, 'rate_limit_events': 0}
+    status_path = output / 'status.json'
+    atomic_json(status_path, status)
+    cooldown_until = last_start = 0.0
+    lock = asyncio.Lock()
+    log = responses.open('a', buffering=1)
+    events = (output / 'events.jsonl').open('a', buffering=1)
+
+    def event(**kwargs):
+        events.write(json.dumps({'utc': timestamp(), **kwargs}) + '\n')
+
+    async def one(row):
+        nonlocal cooldown_until, last_start
+        record = {k: v for k, v in row.as_record().items() if k != 'context'}
+        record.update(model=model, request_sha256=request_identity(row), attempts=[])
+        began = time.monotonic()
+        rates = failures = 0
+        while True:
+            cfg = json.loads(config.read_text())
+            async with lock:
+                while (delay := max(cooldown_until, last_start + cfg['minimum_request_interval_seconds']) - time.monotonic()) > 0:
+                    await asyncio.sleep(min(delay, 30))
+                last_start = time.monotonic()
+            try:
+                response = await client.chat.completions.create(
+                    model=model, messages=row.messages(), temperature=0, max_tokens=256,
+                    extra_body={'chat_template_kwargs': {'enable_thinking': False}})
+                record['attempts'].append({'response': response.model_dump(mode='json')})
+                answer = VLLMClient.think_strip(None, clean_and_unwrap_json(response.choices[0].message.content or ''))
+                record.update(status='completed', answer=str(answer or ''), empty_output=not bool(str(answer or '').strip()),
+                              reader_seconds=time.monotonic()-began, completed_utc=timestamp())
+                log.write(json.dumps(record, ensure_ascii=False)+'\n')
+                log.flush()
+                os.fsync(log.fileno())
+                done[row.key] = record
+                status.update(completed=len(done), updated_utc=timestamp(), elapsed_seconds=round(time.monotonic()-started, 1))
+                atomic_json(status_path, status)
+                return
+            except Exception as exc:  # noqa: BLE001 - preserve typed transport errors; never rewrite model outputs
+                code = getattr(exc, 'status_code', None)
+                record['attempts'].append({'error_type': type(exc).__name__, 'status_code': code, 'utc': timestamp()})
+                if code == 429 or type(exc).__name__ == 'RateLimitError':
+                    rates += 1
+                    wait = min(cfg['retry_429_initial_seconds'] * 2**min(rates-1, 5), cfg['retry_429_max_seconds'])
+                    try:
+                        wait = max(wait, float(exc.response.headers.get('retry-after', 0)))
+                    except (AttributeError, TypeError, ValueError):
+                        pass
+                    cooldown_until = max(cooldown_until, time.monotonic()+wait)
+                    status['rate_limit_events'] += 1
+                    event(type='rate_limit', dataset=row.dataset, method=row.method, query_id=row.query_id, wait_seconds=wait)
+                elif VLLMClient._is_retryable_inference_error(exc) and failures < 12:
+                    failures += 1
+                    cooldown_until = max(cooldown_until, time.monotonic()+min(10*2**(failures-1), 300))
+                    event(type='transport_retry', error_type=type(exc).__name__, attempt=failures)
+                else:
+                    event(type='request_failed', dataset=row.dataset, method=row.method,
+                          query_id=row.query_id, attempts=record['attempts'])
+                    raise RuntimeError(f'{row.dataset}/{row.method}/{row.query_id}: {type(exc).__name__}, HTTP {code}') from None
+
+    try:
+        for (dataset, method), rows in groups:
+            status.update(current_group=dataset+'/'+method, group_total=len(rows),
+                          group_completed=sum(r.key in done for r in rows))
+            atomic_json(status_path, status)
+            event(type='group_start', group=status['current_group'])
+            pending = [r for r in rows if r.key not in done]
+            while pending:
+                cfg = json.loads(config.read_text())
+                if cfg.get('pause'):
+                    status.update(state='paused', updated_utc=timestamp())
+                    atomic_json(status_path, status)
+                    return
+                n = int(cfg['concurrency'])
+                if n < 1:
+                    raise ValueError('Concurrency must be positive')
+                status['concurrency'] = n
+                batch, pending = pending[:n], pending[n:]
+                tasks = [asyncio.create_task(one(r)) for r in batch]
+                try:
+                    await asyncio.gather(*tasks)
+                except BaseException:
+                    # Finish cancellation before closing the response log or client.
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
+                status['group_completed'] = sum(r.key in done for r in rows)
+                atomic_json(status_path, status)
+            event(type='group_complete', group=status['current_group'], rows=len(rows))
+        status.update(state='generation_complete', completed=len(done), finished_utc=timestamp())
+        atomic_json(status_path, status)
+    except BaseException as exc:
+        status.update(state='stopped', error_type=type(exc).__name__, error=str(exc)[:300], updated_utc=timestamp())
+        atomic_json(status_path, status)
+        raise
+    finally:
+        log.close()
+        events.close()
+        if owned_client:
+            await client.close()
+
+
+def main():
+    from dotenv import load_dotenv
+    load_dotenv()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--inputs', type=Path, required=True, help='Recorded synthesis-context JSONL; no live retrieval fallback')
+    parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--concurrency', type=int, default=24)
+    args = parser.parse_args()
+    asyncio.run(run_synthesis(args.inputs, args.output_dir, concurrency=args.concurrency))
+
+
+if __name__ == '__main__':
+    main()

@@ -198,7 +198,7 @@ def test_hoprag_edge_groups_use_whole_corpus_independent_of_gold_queries(tmp_pat
     (data_dir / "hotpotqa_ans_v1.0_dev.jsonl").write_text(json.dumps(raw_row) + "\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    groups = _build_official_edge_groups("hotpotqa", staged_dir, [first_file, second_file])
+    groups = _build_official_edge_groups([first_file, second_file])
 
     assert groups == {"whole-corpus": [first_file, second_file]}
 

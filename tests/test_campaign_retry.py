@@ -8,6 +8,7 @@ from scripts import paper_campaign as c
 from scripts import paper_cold_canary as cold
 from scripts import paper_gate_ledger as gate
 from scripts import paper_stage_runner as stage
+from scripts import runner_environment
 
 
 @pytest.fixture
@@ -15,7 +16,7 @@ def previous(tmp_path, monkeypatch):
     for module in (c, gate, stage, cold):
         monkeypatch.setattr(module, 'ROOT', tmp_path)
     monkeypatch.setattr(gate, '_context', lambda: {'configuration': 'unchanged'})
-    monkeypatch.setattr(stage, 'selected_python_environment', lambda: {'PYTHON_BIN': sys.executable, 'UV_PROJECT_ENVIRONMENT': sys.prefix})
+    monkeypatch.setattr(runner_environment, 'selected_python_environment', lambda: {'PYTHON_BIN': sys.executable, 'UV_PROJECT_ENVIRONMENT': sys.prefix})
     monkeypatch.setattr(c, 'resource_lock_path', lambda: tmp_path / 'resource.lock')
     monkeypatch.setattr(c, 'ensure_no_other_campaigns', lambda *a: None)
     plan = {'schema_version': 1, 'campaign': 'fixture', 'attempt': 'a1', 'commit': 'historical',

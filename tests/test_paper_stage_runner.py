@@ -148,10 +148,8 @@ def test_production_benchmark_checkpoint_resume_retains_rows_and_schema_metadata
     assert all(final['ablation'][key] == value for key, value in structured_query_identity('naive').items())
 
 
-def test_all_gate_verifier_sources_are_existing_path_objects():
-    from core.admission import verifier_sources
+def test_stage_provenance_records_current_source_tree():
     from scripts.paper_gate_ledger import _provenance
 
-    assert all(isinstance(path, Path) and path.is_file() for path in verifier_sources())
     context = _provenance()
-    assert context['verifier_sha256'] and context['code']['source_tree_sha256']
+    assert context['code']['source_tree_sha256']

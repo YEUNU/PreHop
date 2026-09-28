@@ -174,7 +174,9 @@ print('query_path_and_static_config_passed')
     monkeypatch.setenv('RAG_BENCHMARK_CONCURRENCY', '4')
     # Native-import tests elsewhere can intentionally populate private aliases.
     # This independent import test starts with an explicit canonical environment.
-    environment = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'LD_LIBRARY_PATH') if key in os.environ}
+    environment = {key: os.environ[key] for key in (
+        'PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'LD_LIBRARY_PATH', 'RAG_EXECUTION_PROFILE',
+    ) if key in os.environ}
     environment.update(paper_environment_defaults())
     for method in ('ms_graphrag', 'lightrag', 'gfm_rag', 'linear_rag'):
         result = subprocess.run([sys.executable, '-c', script, str(tmp_path), method],

@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from models.ms_graphrag import official_indexer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +29,9 @@ def _fake_python(tmp_path: Path) -> Path:
 
 def _entrypoint_env(tmp_path: Path) -> dict[str, str]:
     env = os.environ.copy()
+    # This test deliberately supplies a fake interpreter, independent of the
+    # reviewer's selected project environment.
+    env.pop("UV_PROJECT_ENVIRONMENT", None)
     for name in tuple(env):
         if name.startswith(("VLLM_", "AZURE_OPENAI")) or name in {
             "OPENAI_API_BASE",
@@ -47,6 +52,110 @@ def _entrypoint_env(tmp_path: Path) -> dict[str, str]:
         }
     )
     return env
+
+
+@pytest.mark.parametrize("arguments", [["--model", "lightrag"], ["--all"]])
+def test_benchmark_preflight_reaches_dispatch_for_current_methods(tmp_path, arguments):
+    env = _entrypoint_env(tmp_path)
+    python = Path(env["PYTHON_BIN"])
+    python.write_text(
+        '#!/bin/sh\n'
+        f'if [ "$1" = - ] || [ "$1" = -c ]; then exec "{sys.executable}" "$@"; fi\n'
+        'printf "dispatch:<%s>\\n" "$@"\n'
+    )
+    result = subprocess.run(
+        ["bash", str(ROOT / "run_benchmark.sh"), "--skip-server", *arguments],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=60, check=True,
+    )
+    assert "Dependency preflight: OK" in result.stdout
+    assert "dispatch:<main.py>" in result.stdout
+
+
+def _remote_service_env(tmp_path):
+    env = _entrypoint_env(tmp_path)
+    python = Path(env["PYTHON_BIN"])
+    python.write_text(
+        '#!/bin/sh\n'
+        f'if [ "$1" = - ] || [ "$1" = -c ]; then exec "{sys.executable}" "$@"; fi\n'
+        'printf "dispatch:<%s>\\n" "$@"\n'
+    )
+    # This module checks the actual arguments at the database service boundary.
+    (tmp_path / "neo4j.py").write_text('''
+import os
+class GraphDatabase:
+    @staticmethod
+    def driver(uri, *, auth, **kwargs):
+        assert uri == "neo4j+s://remote.example:17687"
+        assert auth == ("reviewer", "secret-test-password")
+        if os.environ.get("TEST_NEO4J_FAIL"):
+            raise RuntimeError("secret-test-password")
+        return Connection()
+class Connection:
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def session(self, *, database):
+        assert database == "review"
+        return self
+    def run(self, query):
+        assert query == "RETURN 1 AS ready"
+        return self
+    def consume(self): pass
+''')
+    curl = tmp_path / "curl"
+    curl.write_text(
+        '#!/bin/sh\n'
+        'for arg; do case "$arg" in http*) [ "$arg" = "http://litellm.test/v1/models" ] || exit 2;; esac; done\n'
+        'echo \'{"data":[{"id":"gemma-4-31b-it"},{"id":"qwen3-embedding-4b"}]}\'\n'
+    )
+    curl.chmod(0o755)
+    for executable in ("docker", "neo4j"):
+        path = tmp_path / executable
+        path.write_text('#!/bin/sh\ntouch "$TEST_START_ATTEMPT"\nexit 1\n')
+        path.chmod(0o755)
+    env.update(
+        PATH=f"{tmp_path}:{env['PATH']}", PYTHONPATH=str(tmp_path),
+        NEO4J_URI="neo4j+s://remote.example:17687", NEO4J_USER="reviewer",
+        NEO4J_PASSWORD="secret-test-password", NEO4J_DATABASE="review",
+        TEST_START_ATTEMPT=str(tmp_path / "start-attempt"),
+    )
+    return env
+
+
+@pytest.mark.parametrize("script", ["run_index.sh", "run_benchmark.sh"])
+def test_launchers_check_configured_database_without_local_http_port(tmp_path, script):
+    env = _remote_service_env(tmp_path)
+    result = subprocess.run(
+        ["bash", str(ROOT / script), "--model", "prehop"],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=30, check=True,
+    )
+    assert "Configured Neo4j connection is ready" in result.stdout
+    assert "dispatch:<main.py>" in result.stdout
+    assert not Path(env["TEST_START_ATTEMPT"]).exists()
+
+
+def test_failed_remote_database_never_starts_local_services_or_leaks_credentials(tmp_path):
+    env = _remote_service_env(tmp_path)
+    env["TEST_NEO4J_FAIL"] = "1"
+    result = subprocess.run(
+        ["bash", str(ROOT / "run_servers.sh"), "neo4j"],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode != 0
+    assert "Neo4j connection check failed" in result.stderr
+    assert "secret-test-password" not in result.stdout + result.stderr
+    assert not Path(env["TEST_START_ATTEMPT"]).exists()
+
+
+def test_paper_matrix_dispatches_all_registered_targets_without_gate_verification(tmp_path):
+    env = _entrypoint_env(tmp_path)
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/run_paper_matrix.sh"), "reviewer-fixture"],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=30, check=True,
+    )
+    from core.strategy_registry import PRIMARY_STRATEGIES
+
+    assert result.stdout.count("<reuse-target>") == 2 * len(PRIMARY_STRATEGIES)
+    assert "<verify>" not in result.stdout
 
 
 def test_index_logs_are_separated_by_dataset_and_strategy(tmp_path):

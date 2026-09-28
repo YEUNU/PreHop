@@ -28,7 +28,7 @@ def test_actual_clean_worktree_native_outputs_preserve_provenance_and_plan(tmp_p
     before = code_provenance(checkout)
     assert before['dirty'] is False
     selected = {'PYTHON_BIN': sys.executable, 'UV_PROJECT_ENVIRONMENT': sys.prefix}
-    monkeypatch.setattr('scripts.paper_stage_runner.selected_python_environment', lambda: selected)
+    monkeypatch.setattr('scripts.runner_environment.selected_python_environment', lambda: selected)
     monkeypatch.setattr('scripts.paper_gate_ledger._context', lambda: {'version': 'fixture', 'targets': {'model': {'temperature': 0}}})
     plan = {'campaign': 'fixture', 'attempt': 'a1', 'python': sys.executable, 'python_prefix': sys.prefix,
             'commit': before['revision'], 'context': {'version': 'fixture', 'targets': {'model': {'temperature': 0}}},

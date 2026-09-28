@@ -12,20 +12,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-
-async def replay(engine, activations, store, namespace, repetitions=1, warmups=0, groups=None, exclusions=None):
+async def replay(engine, activations, store, repetitions=1, warmups=0, groups=None, exclusions=None):
     from models.prehop.connection_timing import expand
     from scripts.ablation_statistics import cluster_interval
     details = []
     for query_index, (qid, starts) in enumerate(activations.items()):
         for _ in range(warmups):
             for arm in ("precomputed","online"):
-                await expand(engine, starts, set((exclusions or {}).get(qid,[])), arm, store, namespace)
+                await expand(engine, starts, set((exclusions or {}).get(qid,[])), arm, store)
         for repetition in range(repetitions):
             pair = {}
             order = ("precomputed","online") if (query_index + repetition) % 2 == 0 else ("online","precomputed")
             for arm in order:
-                _, pair[arm] = await expand(engine, starts, set((exclusions or {}).get(qid,[])), arm, store, namespace)
+                _, pair[arm] = await expand(engine, starts, set((exclusions or {}).get(qid,[])), arm, store)
             identical = sum(pair["precomputed"]["destinations"][s] == pair["online"]["destinations"][s] for s in sorted(set(starts)))
             jaccard = [len(set(pair["precomputed"]["destinations"][s]) & set(pair["online"]["destinations"][s])) / len(u) if (u := set(pair["precomputed"]["destinations"][s]) | set(pair["online"]["destinations"][s])) else 1.0 for s in sorted(set(starts))]
             details.append({"destination_jaccard":statistics.mean(jaccard) if jaccard else None,"query_id":qid,"repetition":repetition,"order":order,"arms":pair,
@@ -59,7 +58,6 @@ async def run(args):
     os.environ.update(RAG_PREHOP_ABLATION_PROFILE="question_full",RAG_PAPER_MODE="false",
                       RAG_ABLATION_REUSE_EXISTING_INDEX="true",RAG_INDEX_NAMESPACE=namespace,
                       RAG_CONNECTION_TIMING_MODE="",RAG_CONNECTION_TIMING_STORE="",RAG_LLM_SEED="")
-    reference=json.loads(args.reference_inputs.read_text()) if getattr(args,'reference_inputs',None) else None
     if reference:
         ablation=reference['reference_settings'].get('ablation') or {}
         for key in (*COMMON,'HYPO_CHANNEL_VARIANT','HOP_LINK_VARIANT','QPLUS_HOP_ACTIVATION'):
@@ -79,7 +77,7 @@ async def run(args):
             activations = reference["activations"] if reference else json.loads(args.activations.read_text())
             queries=json.loads(args.queries.read_text()) if args.queries else []
             groups={q['_id']:q.get('original_query_id',q['_id']) for q in queries}
-            result = await replay(engine,activations,args.store,namespace,args.repetitions,args.warmups,groups,
+            result = await replay(engine,activations,args.store,args.repetitions,args.warmups,groups,
                                   reference.get('excluded') if reference else None)
             result['namespace']=namespace
             if reference:

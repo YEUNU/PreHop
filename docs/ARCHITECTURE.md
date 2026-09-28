@@ -239,23 +239,16 @@ The launcher prints a plan unless `--execute` is supplied. Its metadata uses
 [experiment reproduction](REPRODUCING.md#compare-link-and-search-representations)
 for commands, controls and comparison scope.
 
-<a id="legacy-external-modules"></a>
+## HopRAG indexing
 
-## HopRAG indexing and reference checkout
-
-HopRAG is part of the current primary comparison set. The root reference
-checkout's README describes an older integration, including retired adapter
-paths and datasets; it does not define current strategy membership or launch
-procedures. Use [the runtime guide](RUNTIME_REQUIREMENTS.md#hoprag-runtime).
-
-`models/hoprag/native_runtime.py` loads the pinned prepared HopRAG installation.
+HopRAG is part of the current primary comparison set. See
+[the runtime guide](RUNTIME_REQUIREMENTS.md#hoprag-runtime) for setup.
+`models/hoprag/native_runtime.py` loads the pinned prepared installation.
 `models/hoprag/runtime_paths.py` shares its location across the coordinator, POS
-worker and provenance collection, using the existing baseline-home setting.
-The root `third_party/HopRAG` is reference-only and does not define the active
-runtime. The adapter stages the complete corpus as one edge-construction group;
-queries and gold evidence do not determine edge groups. Native generation may
-omit a document when either question list is empty; represented and omitted
-source IDs remain separately recorded.
+worker and provenance collection. The adapter stages the complete corpus as one
+edge-construction group; queries and gold evidence do not determine edge groups.
+Native generation may omit a document when either question list is empty;
+represented and omitted source IDs remain separately recorded.
 
 The native constructor scores question pairs with vector dot products and
 keyword Jaccard, then applies native destination selection and trimming.
@@ -344,7 +337,11 @@ python -m scripts.export_official_results path/to/result.json --output-dir path/
 
 Offline exports bind the original result with its SHA256. Historical main
 artifacts retain their existing fields; official and auxiliary sidecars provide
-separate reporting contracts.
+separate reporting contracts. The same command accepts multiple explicit final
+result paths and writes separate dataset comparison tables with only official
+metrics and per-method official files; auxiliary sidecars remain with their
+original results. See
+[saved-result evaluation](REPRODUCING.md#dataset-specific-official-results).
 
 The default checkpoint interval is ten completed queries. Resume restores saved
 rows and their traces in the current input order without configuration or
@@ -374,10 +371,11 @@ benchmark score.
 ## Amortized throughput cost (evidence v3)
 
 `core/execution_profile.py` binds transport and producer settings to provenance.
-Version 3 uses one shared generation/embedding request semaphore in
-`core/inference_queue.py`. Legacy versions remain readable for historical runs.
-Profile limits are request bounds, not evidence of GPU saturation or exclusive
-remote resources.
+Clients call the configured gateway directly. Profiles set per-client
+generation and embedding limits and per-target benchmark concurrency. Campaigns
+run targets sequentially by default; separate processes do not share a request
+semaphore. These limits do not establish GPU saturation or exclusive remote
+resources.
 
 Cost definitions and storage measurement boundaries belong in
 [the measurement protocol](THROUGHPUT_EXECUTION.md#final-tables-and-measurement-definitions).
@@ -399,6 +397,12 @@ propagate. Trace I/O during a measured phase contributes to its wall time;
 trace storage is excluded from retrieval-index size.
 
 ## Campaign process ownership
+
+`scripts/campaign_runtime.py` owns shared process identities, resource locks,
+atomic status writes and redacted child-log draining. The index matrix, link
+experiments and full campaign use these helpers. `scripts/runner_environment.py`
+owns environment loading, interpreter selection and child-environment filtering.
+
 
 Persistent supervisors record PID/start/boot identities and own their process
 sessions. Cleanup targets verified descendants, sends TERM with a bounded wait,
@@ -490,3 +494,12 @@ intervals. They supply no generated answers or measured query latency. Input
 consistency checks belong to this optional analysis, not benchmark dispatch.
 See [selector reproduction](REPRODUCING.md#fixed-candidate-final-selection) for
 commands, supported references and output filenames.
+
+## Answer-only replay
+
+`core/synthesis_replay.py` supplies saved evidence through `TraceContextProvider`.
+`cli/synthesis.py` consumes that hook to regenerate only final answers, with
+sequential dataset/system groups and concurrent questions within a group.
+The `synthesize` mode returns before any benchmark or indexing dispatch.
+The [replay workflow](SYNTHESIS_REPLAY.md) owns input preparation, resume identity
+and request handling.

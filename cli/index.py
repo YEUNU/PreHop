@@ -94,7 +94,7 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: st
 
     spec = get_strategy(strategy)
     transport = InferenceTransport.resolve(strategy)
-    policy = canonical_semantic_index_policy(strategy, corpus_tag or "")
+    policy = canonical_semantic_index_policy(strategy)
     local_embedding = spec.local_embedding_revision is not None or strategy == "gfm_rag"
     model = transport.generation_model
     if strategy == "prehop" and indexing_model_id not in {None, "", "default"}:
@@ -183,10 +183,6 @@ def _load_source_metadata(dataset_path: str | Path) -> tuple[dict[str, dict[str,
 
 def _source_ids_from_filenames(filenames: list[str]) -> list[str]:
     return sorted(Path(filename).stem for filename in filenames)
-
-
-def _staged_source_ids(files: list[str], corpus_manifest=None, dataset_path=None) -> list[str]:
-    return _source_ids_from_filenames(files)
 
 
 async def _set_neo4j_snapshot_state(
@@ -666,7 +662,7 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
 
     Queries the graph directly (not counters threaded through indexing)
     so this is always consistent with what actually landed in Neo4j, the
-    same way CLAUDE.md's "Neo4j data layout" integrity probes work. Only
+    same way the index integrity queries inspect each namespaced graph. Only
     meaningful for `prehop` (Q-/Q+/HOP structure); other strategies don't
     have this graph shape.
     """
@@ -843,7 +839,7 @@ async def _run_indexing_unlocked(
     source_metadata, source_metadata_sha256 = _load_source_metadata(dataset_path)
 
     files = sorted(file for file in os.listdir(dataset_path) if file.endswith((".txt", ".md")))
-    source_ids = _staged_source_ids(files, corpus_manifest, dataset_path)
+    source_ids = _source_ids_from_filenames(files)
 
     if strategy == "ms_graphrag":
         # Official MS GraphRAG pipeline (extract_graph + Leiden + community

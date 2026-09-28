@@ -64,7 +64,7 @@ def target_configuration(strategy: str, dataset: str) -> dict[str, Any]:
         operational = canonical_operational_policy(strategy)
         return {'version': COMPATIBILITY_VERSION, 'evidence_version': EVIDENCE_VERSION,
                 'method_contract': METHOD_CONTRACT_VERSIONS[strategy], 'strategy': strategy, 'dataset': dataset,
-                'index': canonical_semantic_index_policy(strategy, dataset),
+                'index': canonical_semantic_index_policy(strategy),
                 'query': canonical_query_policy(strategy), 'prompts': prompt_configuration(strategy),
                 'generation_profiles': generation_profiles(strategy),
                 'operational': runtime_compatibility(operational)}

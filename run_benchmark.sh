@@ -82,14 +82,6 @@ if model == "hoprag" or run_all:
     from models.hoprag.hoprag_adapter import HopRAGAdapter  # noqa: F401
 if model == "ms_graphrag" or run_all:
     from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter  # noqa: F401
-from core.strategy_registry import EXTERNAL_STRATEGIES
-if model in EXTERNAL_STRATEGIES:
-    from models.official_baseline_runtime import validate_runtime
-    validate_runtime(model)
-if run_all:
-    from models.official_baseline_runtime import validate_runtime
-    validate_runtime("browsenet")
-    validate_runtime("proprag")
 print("Dependency preflight: OK")
 PY
     then
@@ -105,16 +97,13 @@ if [ "$SKIP_SERVER" != true ]; then
     # other strategies query Neo4j, as does benchmark_all.
     if { [ "$MODEL" != "ms_graphrag" ] && [ "$IS_EXTERNAL" != true ]; } || [ "$RUN_ALL" = true ]; then
         ./run_servers.sh neo4j
-        if ! wait_for_server "http://localhost:7474" "Neo4j"; then exit 1; fi
     fi
 
-    # Start Generation Server
+    # Validate the externally supplied models.
     ./run_servers.sh gen
-    if ! wait_for_server "${RAG_INFERENCE_BASE_URL%/}/models" "Generation Model" "200"; then exit 1; fi
 
     # Every strategy uses the configured embedding endpoint.
     ./run_servers.sh embed
-    if ! wait_for_server "${RAG_INFERENCE_BASE_URL%/}/models" "Embedding Model" "200"; then exit 1; fi
 
 else
     echo "Step 1: Skipping server startup (requested by caller)"

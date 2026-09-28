@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import campaign_runtime
 from scripts import paper_campaign as campaign
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,9 +86,8 @@ import utils.provenance
 utils.provenance.code_provenance=lambda:{{}}
 c.ROOT=Path({str(root)!r})
 c.resource_lock_path=lambda:Path({str(root/'data/results/.paper_resource.lock')!r})
-c.ensure_no_other_campaigns=lambda unit:None
+c.ensure_no_other_campaigns=lambda:None
 c.unit_processes=lambda unit:[c.identity(os.getpid())]
-c.check_plan=lambda plan:None
 c.step_evidence=lambda plan,step:[]
 c.safe_environment=lambda:{{**os.environ,'RAG_INFERENCE_API_KEY':{secret!r}}}
 raise SystemExit(c.supervise(Path({str(plan_path)!r}),unit='fixture'))
@@ -123,7 +123,7 @@ subprocess.Popen([sys.executable,'-c',{child_code!r}],stdin=subprocess.DEVNULL,s
 
 def test_duplicate_supervisor_preserves_live_status(tmp_path, monkeypatch):
     monkeypatch.setattr(campaign, 'resource_lock_path', lambda: tmp_path/'resource.lock')
-    monkeypatch.setattr(campaign, 'ensure_no_other_campaigns', lambda unit: None)
+    monkeypatch.setattr(campaign, 'ensure_no_other_campaigns', lambda: None)
     plan_path = tmp_path/'plan.json'
     plan_path.write_text(json.dumps({'campaign': 'test', 'commit': 'fixture'}))
     status = {'state': 'running', 'supervisor': campaign.identity(os.getpid())}
@@ -137,7 +137,7 @@ def test_duplicate_supervisor_preserves_live_status(tmp_path, monkeypatch):
 
 def test_lock_loser_does_not_overwrite_running_owner_status(tmp_path, monkeypatch):
     monkeypatch.setattr(campaign, 'resource_lock_path', lambda: tmp_path/'resource.lock')
-    monkeypatch.setattr(campaign, 'ensure_no_other_campaigns', lambda unit: None)
+    monkeypatch.setattr(campaign, 'ensure_no_other_campaigns', lambda: None)
     plan = tmp_path/'plan.json'
     plan.write_text(json.dumps({'campaign': 'test', 'commit': 'fixture'}))
     status = tmp_path/'status.json'
@@ -150,16 +150,6 @@ def test_lock_loser_does_not_overwrite_running_owner_status(tmp_path, monkeypatc
         assert status.read_bytes() == before and not (tmp_path/'events.jsonl').exists()
     finally:
         handle.close()
-
-
-def test_other_failed_unit_native_descendant_blocks_new_campaign(tmp_path, monkeypatch):
-    from scripts import paper_detached_runtime
-
-    # Exercise systemd ownership independently of real detached campaigns.
-    monkeypatch.setattr(paper_detached_runtime, 'owner_directory', lambda: tmp_path)
-    monkeypatch.setattr(campaign.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a[0], 0,
-        'prehop-paper-old.service loaded failed failed preserved old unit\n', ''))
-    monkeypatch.setattr(campaign, 'unit_processes', lambda unit: [{'pid': 123, 'start': 'preserved', 'boot_id': 'same'}])
 
 
 def test_logs_redact_url_components_and_credentials():
@@ -176,9 +166,9 @@ def test_child_inherited_pipes_fail_with_owned_descendant_receipt(tmp_path, monk
     monkeypatch.setattr('utils.provenance.code_provenance', dict)
     monkeypatch.setattr(campaign, 'atomic_json', lambda path, payload: path.write_text(json.dumps(payload)))
     monkeypatch.setattr(campaign, 'ROOT', tmp_path)
-    monkeypatch.setattr(campaign, 'CHILD_LOG_DRAIN_SECONDS', .15)
+    monkeypatch.setattr(campaign_runtime, 'CHILD_LOG_DRAIN_SECONDS', .15)
     monkeypatch.setattr(campaign, 'resource_lock_path', lambda: tmp_path/'resource.lock')
-    monkeypatch.setattr(campaign, 'ensure_no_other_campaigns', lambda unit: None)
+    monkeypatch.setattr(campaign, 'ensure_no_other_campaigns', lambda: None)
     monkeypatch.setattr(campaign, 'step_evidence', lambda plan, step: [])
     secret = 'fixture-secret-split-across-writes'
     monkeypatch.setattr(campaign, 'safe_environment', lambda: {**os.environ, 'RAG_INFERENCE_API_KEY': secret})

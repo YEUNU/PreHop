@@ -6,7 +6,7 @@ from core.vllm_client import VLLMClient
 
 
 @pytest.mark.parametrize('paper_mode', ['true', 'false'])
-def test_client_uses_same_transport_and_queue_in_both_modes(monkeypatch, paper_mode):
+def test_client_uses_direct_gateway_despite_stale_proxy_environment(monkeypatch, paper_mode):
     for name, value in {
         'RAG_PAPER_MODE': paper_mode,
         'RAG_INFERENCE_BASE_URL': 'http://gateway.test/v1/',
@@ -23,8 +23,8 @@ def test_client_uses_same_transport_and_queue_in_both_modes(monkeypatch, paper_m
         monkeypatch.setenv(name, value)
     transport = InferenceTransport.resolve('core')
     client = VLLMClient()
-    assert client.vllm_url == client.embed_url == transport.generation_base_url == 'http://queue.test/v1'
-    assert client.api_key == transport.api_key == 'fixture-queue-token'
+    assert client.vllm_url == client.embed_url == transport.generation_base_url == 'http://gateway.test/v1'
+    assert client.api_key == transport.api_key == 'fixture-key'
     assert client._request_timeout == transport.timeout_seconds == 19
     assert client._retry_attempts == transport.retry_attempts == 4
     assert transport.generation_seed == (None if paper_mode == 'true' else 42)

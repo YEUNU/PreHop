@@ -11,7 +11,7 @@ def profile():
         'generation_concurrency': 60, 'embedding_batch_size': 16,
         'embedding_concurrency': 2, 'benchmark_concurrency': 8,
         'index_document_concurrency': 60, 'index_prefetch_documents': 120,
-        'lightrag_document_concurrency': 32, 'youtu_document_concurrency': 32}}
+        'lightrag_document_concurrency': 32}}
 
 
 def test_lightrag_adapter_joins_native_background_workers():

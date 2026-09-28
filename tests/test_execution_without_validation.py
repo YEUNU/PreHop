@@ -8,7 +8,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_same_target_can_run_concurrently_without_queue_preflight(monkeypatch):
+async def test_same_target_can_run_concurrently(monkeypatch):
     from cli import index
     reached = 0
     both_running = asyncio.Event()
@@ -21,7 +21,6 @@ async def test_same_target_can_run_concurrently_without_queue_preflight(monkeypa
         await asyncio.wait_for(both_running.wait(), timeout=2)
         return 'complete'
 
-    monkeypatch.delenv('RAG_QUEUE_PROXY_URL', raising=False)
     monkeypatch.setattr(index, '_run_indexing_unlocked', execute)
     assert await asyncio.gather(
         index.run_indexing('same-corpus', 'naive', 'default', 'hotpotqa'),

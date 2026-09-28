@@ -38,7 +38,7 @@ def test_matches_native_exhaustive_selection(seed,ties,chunk_size,dtype):
         doc=f'doc{i//3}';docs.setdefault(doc,[]).append(i)
         data[i,doc]={label:[(f'{label}{i if seed%2 else i%4}_{j}',{str(i%3),'common'},(np.ones(5) if ties else rng.normal(size=5)).astype(dtype)) for j in range(2)] for label in ['pending','answerable']}
     obj=SimpleNamespace(driver=SimpleNamespace(session=Session));native()(obj,data,docs)
-    actual,abstract=exact_edges(data,docs,dense,sparse,chunk_size=chunk_size,reuse_answer_vectors=True)
+    actual,abstract=exact_edges(data, dense, sparse, chunk_size=chunk_size, reuse_answer_vectors=True)
     cols=['node_id_x','node_id_y','question_y','keywords_both']
     assert actual[cols].to_dict('records')==obj.edges[cols].to_dict('records')
     np.testing.assert_array_equal(actual.similarity,obj.edges.similarity)
@@ -46,6 +46,7 @@ def test_matches_native_exhaustive_selection(seed,ties,chunk_size,dtype):
 
 
 def test_answer_array_reused_without_dtype_conversion():
+    pytest.importorskip("torch", reason="HopRAG tensor checks require its separately installed native runtime")
     from models.hoprag.exact_edges import PreparedDense
     frame=pd.DataFrame({'embedding':[np.array([1,2],dtype=np.float32),np.array([3,4],dtype=np.float32)]})
     cached=PreparedDense(frame);identity=id(cached.answerable)

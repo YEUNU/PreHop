@@ -38,11 +38,6 @@ PYTHON_BIN=$(resolve_method_python "$repo_root" "$strategy") || exit 1
 export PYTHON_BIN
 if [ "$strategy" = "hoprag" ]; then export UV_PROJECT_ENVIRONMENT="$(dirname "$(dirname "$PYTHON_BIN")")"; fi
 
-if [ ! -f .env ]; then
-    echo "Missing .env; copy .env.example and configure the required endpoints first." >&2
-    exit 1
-fi
-load_project_env "$repo_root/.env"
 canonicalize_inference_transport || exit 1
 # Preserve an observed or explicitly pinned backend revision when supplied;
 # otherwise the served alias remains the only available revision identity.
@@ -51,7 +46,7 @@ export RAG_GENERATION_REVISION="${RAG_GENERATION_REVISION:-$RAG_GENERATION_MODEL
 export RAG_EMBEDDING_REVISION="${RAG_EMBEDDING_REVISION:-$RAG_EMBEDDING_MODEL}"
 export RAG_PAPER_MODE=true
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-    echo "Warning: tracked worktree changes will be recorded in code provenance; semantic compatibility is checked from model config." >&2
+    echo "Warning: tracked worktree changes will be recorded in code provenance." >&2
 fi
 output_row=$(python3 core/strategy_registry.py --output-tsv | awk -F '\t' -v strategy="$strategy" '$1 == strategy {print $2 "\t" $3}')
 if [ -n "$output_row" ]; then

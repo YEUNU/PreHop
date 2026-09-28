@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create, advance, and verify a content-bound paper live-gate ledger."""
+"""Record execution stages and their source provenance for a paper campaign."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from core.admission import identity_sha256, sha256_file, verifier_sources
+from core.admission import sha256_file
 from core.strategy_registry import PRIMARY_STRATEGIES
 from utils.provenance import code_provenance
 
@@ -37,8 +37,7 @@ def _context() -> dict[str, object]:
 
 
 def _provenance() -> dict:
-    return {"code": code_provenance(), "verifier_sha256": identity_sha256(
-        {str(path): sha256_file(path) for path in verifier_sources()})}
+    return {"code": code_provenance()}
 
 
 def _read(path: Path) -> dict:

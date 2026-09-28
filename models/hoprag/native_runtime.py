@@ -142,7 +142,6 @@ def setup(corpus_tag):
     from openai import OpenAI
     class ObservedOpenAI(OpenAI):
         def __init__(self,*args,**kwargs):
-            kwargs['default_headers']={**kwargs.get('default_headers', {}), 'X-Prehop-Run-ID': os.environ.get('RAG_BENCHMARK_TIMESTAMP', '')}
             kwargs['http_client']=httpx.Client(timeout=transport.timeout_seconds,trust_env=False,event_hooks={'response':[_observe]})
             super().__init__(*args,**kwargs)
     tool.OpenAI=ObservedOpenAI
@@ -155,7 +154,6 @@ def setup(corpus_tag):
     indexer._EMBED_MODEL_NAME=transport.embedding_model
     indexer._GEN_API_KEY=transport.api_key
     embed=indexer._VLLMEmbedClient(transport.embedding_base_url,transport.embedding_model,transport.embedding_dimensions)
-    embed._sess.headers['X-Prehop-Run-ID']=os.environ.get('RAG_BENCHMARK_TIMESTAMP', '')
     def observe_embedding(response, *args, **kwargs):
         try:payload=response.json()
         except ValueError:payload={}

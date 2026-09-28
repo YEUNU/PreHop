@@ -45,9 +45,13 @@ in the original evaluation denominator. The protocol identity is
 
 ## Evaluation
 
+Final quality comparisons use the twelve official Answer, Supporting Fact and
+Joint scores described below. The common passage-ranking analysis is an
+optional diagnostic and is excluded from the official final comparison bundle.
+
 ### Common passage-retrieval metrics
 
-Research comparisons use Hits@4, Hits@10, MRR@10 and the MultiHop-RAG
+The diagnostic analysis uses Hits@4, Hits@10, MRR@10 and the MultiHop-RAG
 MAP@10 formula, plus distinct-gold Recall@10. A gold item is a supporting
 sentence identified by its original article title and sentence index. A
 returned passage matches that item only when the shared projection recovers
@@ -63,8 +67,8 @@ gold count. Hits measures any-hit success; MRR uses the first matching rank.
 The score means weight release rows equally. Confidence intervals resample
 original-question clusters, retaining their occurrences.
 
-Saved analysis scores use unscaled numeric values. Publication tables show
-Hits and distinct-gold Recall as percentages, and MRR/MAP as unscaled scores.
+Saved analysis scores use unscaled numeric values. Diagnostic displays may show
+Hits and distinct-gold Recall as percentages, with MRR/MAP unscaled.
 The capped MAP denominator is part of the definition: with more than ten gold
 items it can yield a value above one. Do not clip values or replace the formula.
 
@@ -79,14 +83,16 @@ are used only for scoring.
 
 ### Official support and answer scoring
 
-Use the official HotpotQA Answer, Supporting Fact and Joint EM/F1 rules through
+Use the official HotpotQA Answer, Supporting Fact and Joint EM/F1/precision/recall rules through
 `utils/hotpotqa.py`. The common adapter predicts all complete original corpus
 sentences present in returned passage text, mapped to title and sentence index.
 It never uses gold labels to select predicted support. These are official
 scoring rules on the declared reduced-corpus protocol, not a leaderboard score.
-Answer, Supporting Fact and Joint EM/F1/precision/recall, including conditional
-F1 and sentence P/R/F1 diagnostics, use the scorer's native 0–1 scale. Their
-differences use score units; document recall and response rates use percentages.
+All twelve official scores and their differences use the scorer's native 0–1
+scale. Official comparisons retain every released occurrence, rather than
+conditioning on each system's answered subset. Auxiliary conditional F1 and
+sentence P/R/F1 also remain unscaled; document recall and response rates use
+percentages in diagnostic displays.
 
 ```bash
 ./run_dataset.sh hotpotqa all --model prehop --queries full

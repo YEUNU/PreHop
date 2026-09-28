@@ -39,10 +39,3 @@ class EmbeddingOperationalConfig:
             ),
         )
         return values
-
-    def as_dict(self) -> dict[str, int]:
-        return {
-            "embedding_batch_size": self.batch_size,
-            "embedding_concurrency": self.concurrency,
-            "embedding_retry_attempts": self.retry_attempts,
-        }

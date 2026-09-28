@@ -16,22 +16,6 @@ def execution_profile() -> dict:
     return {**value, 'sha256': digest}
 
 
-def transport_settings(profile):
-    """Resolve client ceilings; v3 admission is owned by one shared queue."""
-    settings = dict(profile['settings'])
-    if profile['version'] == 3:
-        settings['generation_concurrency'] = settings['inference_concurrency']
-        settings['embedding_concurrency'] = settings['inference_concurrency']
-    return settings
-
-
-def queue_limits(profile):
-    settings = profile['settings']
-    if profile['version'] == 3:
-        return {'shared': settings['inference_concurrency']}
-    return {'generation': settings['generation_concurrency'], 'embedding': settings['embedding_concurrency']}
-
-
 def apply_execution_profile(environment=None):
     """An explicitly selected file takes precedence over ambient throughput defaults."""
     environment = os.environ if environment is None else environment
@@ -41,6 +25,6 @@ def apply_execution_profile(environment=None):
                'benchmark_concurrency': 'RAG_BENCHMARK_CONCURRENCY',
                'index_document_concurrency': 'RAG_MAX_PARALLEL_FILES',
                'index_prefetch_documents': 'RAG_FILE_SCHEDULE_BATCH'}
-    for key, value in transport_settings(execution_profile()).items():
+    for key, value in execution_profile()['settings'].items():
         if key in mapping:
             environment[mapping[key]] = str(value)

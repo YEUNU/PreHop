@@ -72,14 +72,13 @@ def child(campaign, strategy, dataset, phase):
 
 
 def supervise(plan_path):
-    from core.inference_queue import OwnedQueue
-    from scripts.paper_campaign import atomic_json, identity, lock, resource_lock_path, run_child, safe_environment
+    from scripts.campaign_runtime import atomic_json, identity, lock, resource_lock_path, run_child
     from scripts.paper_detached_runtime import register_owner, terminate_owned
+    from scripts.runner_environment import safe_environment
     plan = json.loads(plan_path.read_text())
     base = plan_path.parent
     owner = register_owner(plan_path)
     handle = lock(resource_lock_path())
-    queue = OwnedQueue(base / 'queue-metrics.json')
     status = {'kind': 'index_only', 'state': 'starting', 'supervisor': identity(os.getpid()),
               'targets': {f'{row["dataset"]}/{row["strategy"]}': {'state': 'planned', 'run_id': row['run_id']}
                           for row in plan['targets']}, 'benchmark_admitted': False}
@@ -98,7 +97,6 @@ def supervise(plan_path):
     signal.signal(signal.SIGINT, stopped)
     try:
         logging.getLogger(__name__).info('Execution source: %s', source_digest())
-        queue.start()
         env = safe_environment()
         update({'state': 'running'})
         # Finish bounded smoke builds before committing any full-corpus work.
@@ -118,8 +116,6 @@ def supervise(plan_path):
                 command = [sys.executable, str(Path(__file__).resolve()), 'child', plan['campaign'],
                            '--strategy', row['strategy'], '--dataset', row['dataset'], '--phase', phase]
                 code = run_child(command, env, log, handle, update)
-                queue.drain()
-                queue.persist()
                 current_target.update({f'{phase}_exit_code': code, 'state': f'{phase}_complete' if code == 0 else f'{phase}_failed',
                                        'finished_at': time.time()})
                 update({'child': None})
@@ -136,14 +132,14 @@ def supervise(plan_path):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         remaining = terminate_owned(owner)
-        queue.close()
         update({'remaining_owned_processes': remaining, 'owned_cleanup_complete': not remaining})
         handle.close()
 
 
 def launch(campaign):
     from core.paper_compatibility import context_configuration
-    from scripts.paper_campaign import alive, atomic_json, lock, resource_lock_path, safe_environment
+    from scripts.campaign_runtime import alive, atomic_json, lock, resource_lock_path
+    from scripts.runner_environment import safe_environment
     base = ROOT / 'data/results' / campaign / 'index-supervisor'
     base.mkdir(parents=True, exist_ok=False)
     plan = {'version': 1, 'kind': 'index_only', 'campaign': campaign, 'targets': targets(campaign),
@@ -164,7 +160,7 @@ def launch(campaign):
             status = json.loads(path.read_text())
             if status['state'] == 'running' and alive(status.get('supervisor')):
                 receipt = {'pid': process.pid, 'plan': str(plan_path), 'status': str(path),
-                           'scope': '16 primary indexes; no full benchmark admission'}
+                           'scope': f'{len(plan["targets"])} primary indexes; no full benchmark admission'}
                 atomic_json(base / 'launch.json', receipt)
                 print(json.dumps(receipt))
                 return

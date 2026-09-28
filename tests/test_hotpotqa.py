@@ -135,14 +135,11 @@ canonicalize_inference_transport() { export RAG_GENERATION_MODEL=test RAG_EMBEDD
 
 
 def test_staged_snapshot_does_not_read_corpus_or_sentence_store(tmp_path, monkeypatch):
-    from cli.index import _staged_source_ids
+    from cli.index import _source_ids_from_filenames
 
     def forbidden_read(*args, **kwargs):
         raise AssertionError("Runtime validation must not reread corpus contents")
 
     monkeypatch.setattr(Path, "read_bytes", forbidden_read)
-    manifest = {"paragraph_count": 1, "sentence_store_sha256": "unused",
-                "source_ids_sha256": "unused", "corpus_files_sha256": "unused",
-                "corpus_records_sha256": "unused"}
-    assert _staged_source_ids(["a.txt"], manifest, tmp_path) == ["a"]
-    assert _staged_source_ids([], manifest, tmp_path) == []
+    assert _source_ids_from_filenames(["a.txt"]) == ["a"]
+    assert _source_ids_from_filenames([]) == []

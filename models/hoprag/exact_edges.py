@@ -27,7 +27,7 @@ class PreparedDense:
         return pending_array.dot(self.answerable.T)
 
 
-def exact_edges(node2questiondict, docid2nodes, dense, sparse, chunk_size=8, *, reuse_answer_vectors=False):
+def exact_edges(node2questiondict, dense, sparse, chunk_size=8, *, reuse_answer_vectors=False):
     rows=[]
     for (nid,did),groups in node2questiondict.items():
         for label,questions in groups.items():

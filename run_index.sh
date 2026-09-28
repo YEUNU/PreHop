@@ -83,24 +83,11 @@ if [ "$SKIP_SERVER" != true ]; then
 
     if [ "$MODEL" != "ms_graphrag" ] && [ "$IS_EXTERNAL" != true ]; then
         ./run_servers.sh neo4j
-        if ! wait_for_server "http://localhost:7474" "Neo4j"; then
-            echo "Fatal: Neo4j failed." >&2
-            exit 1
-        fi
     fi
 
-    # Start Generation Server
+    # Validate the externally supplied models.
     ./run_servers.sh gen
-    if ! wait_for_server "${RAG_INFERENCE_BASE_URL%/}/models" "Generation Model" "200"; then
-        echo "Fatal: Generation model failed." >&2
-        exit 1
-    fi
-
     ./run_servers.sh embed
-    if ! wait_for_server "${RAG_INFERENCE_BASE_URL%/}/models" "Embedding Model" "200"; then
-        echo "Fatal: Embedding service failed." >&2
-        exit 1
-    fi
 
     # HOP-edge pre-scoring uses the Neo4j ANN vector-index score directly.
 else

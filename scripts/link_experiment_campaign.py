@@ -1,4 +1,4 @@
-"""Execute an explicit experiment DAG with two slots and isolated timing jobs."""
+"""Execute an experiment DAG with bounded concurrency and isolated timing jobs."""
 import argparse
 import json
 import os
@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
 
-def ready_jobs(jobs,states,active,*,max_active=2,strategy_filter=None):
+def ready_jobs(jobs,states,active,*,max_active=1,strategy_filter=None):
     ready=[j for j in jobs if states[j['id']]['state']=='pending' and
            all(states[d]['state']=='completed' for d in j.get('after',[]))]
     if strategy_filter:
@@ -52,7 +52,7 @@ def primary(campaign,phase,strategy,dataset):
 
 
 def run(plan_path, *, resume=False):
-    from scripts.paper_campaign import alive, atomic_json, identity
+    from scripts.campaign_runtime import alive, atomic_json, identity
     plan=json.loads(plan_path.read_text());base=plan_path.parent
     jobs=plan['jobs'];states={j['id']:{'state':'pending'} for j in jobs};children={};active=[]
     if resume:
@@ -80,7 +80,7 @@ def run(plan_path, *, resume=False):
         for job in jobs:
             if states[job['id']]['state']=='pending' and any(states[d]['state'] in {'failed','dependency_failed'} for d in job.get('after',[])):
                 states[job['id']]={'state':'dependency_failed'}
-        for job in ready_jobs(jobs,states,active,max_active=plan.get('max_active',2),strategy_filter=plan.get('execution_filter')):
+        for job in ready_jobs(jobs,states,active,max_active=plan.get('max_active',1),strategy_filter=plan.get('execution_filter')):
             env=os.environ.copy()
             for k in ('RAG_INDEX_REUSE_LINK','RAG_INDEX_STATS_PATH','RAG_BENCHMARK_RESUME','RAG_ABLATION_DIRECT_INPUTS','RAG_CONNECTION_TIMING_MODE','RAG_CONNECTION_TIMING_STORE','RAG_PREHOP_ABLATION_PROFILE'):
                 env.pop(k,None)
@@ -93,7 +93,7 @@ def run(plan_path, *, resume=False):
             states[job['id']]={'state':'running','identity':identity(proc.pid),'started_at':time.time()}
         unfinished=any(s['state'] in {'pending','running'} for s in states.values())
         atomic_json(base/'status.json',{'state':'running' if unfinished else ('completed_with_failures' if any(s['state']!='completed' for s in states.values()) else 'completed'),
-            'controller':identity(os.getpid()),'max_active':plan.get('max_active',2),'execution_filter':plan.get('execution_filter'),'max_hoprag_active':1,'active':[j['id'] for j in active],
+            'controller':identity(os.getpid()),'max_active':plan.get('max_active',1),'execution_filter':plan.get('execution_filter'),'max_hoprag_active':1,'active':[j['id'] for j in active],
             'tasks':states,'updated_at':time.time()})
         if not unfinished:return
         time.sleep(5)
