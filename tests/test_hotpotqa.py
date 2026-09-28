@@ -62,7 +62,7 @@ async def test_benchmark_hotpot_metrics_and_failure_denominators(tmp_path):
     assert all(compact["hotpot_" + key] == result["hotpot_" + key] for key in METRICS)
     assert compact["predicted_supporting_facts"] == [["Article A", 0]]
     assert compact["support_prediction_policy"] == result["support_prediction_policy"]
-    from cli.benchmark import _recompute_aggregates
+    from core.benchmark_evaluation import _recompute_aggregates
     summary = {"details": [result, {"error": "timeout", "hotpot_joint_em": 1.0}]}
     _recompute_aggregates(summary)
     assert summary["avg_hotpot_joint_em"] == 0.5

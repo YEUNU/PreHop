@@ -49,6 +49,7 @@ def aggregate(campaign: str, stage: str, attempt: str, target_attempts: dict | N
 
 
 def reattest(campaign: str, attempt: str) -> None:
+    from core.paper_policy import resolved_target_environment
     from core.runtime_requirements import runtime_identity
     from core.strategy_registry import PRIMARY_STRATEGIES
     from scripts.paper_cold_canary import save
@@ -56,18 +57,14 @@ def reattest(campaign: str, attempt: str) -> None:
     ledger = ROOT / 'data/results' / campaign / 'gate_ledger.json'
     base = stage_base(campaign, 'reattest', attempt)
     checks = {}
-    original = os.environ.copy()
-    try:
-        from core.paper_policy import configure_target_environment
-        for strategy in PRIMARY_STRATEGIES:
-            configure_target_environment(strategy, 'multihoprag', f'{campaign}-reattest-{strategy}')
-            checks[strategy] = 'passed'
-    finally:
-        os.environ.clear()
-        os.environ.update(original)
+    identities = {}
+    for strategy in PRIMARY_STRATEGIES:
+        environment = resolved_target_environment(strategy, 'multihoprag', f'{campaign}-reattest-{strategy}')
+        identities[strategy] = runtime_identity(strategy, environment)
+        checks[strategy] = 'passed'
     receipt = save(base / 'receipt.json', {'stage': 'runtime_setup', 'exit_code': 0, 'argv': sys.argv,
         'mode': 'read_only_reattest', 'checks': checks,
-        'runtime_identities': {strategy: runtime_identity(strategy) for strategy in PRIMARY_STRATEGIES}})
+        'runtime_identities': identities})
     path = base / 'evidence.json'
     save(path, {'schema_version': 1, 'stage': 'runtime_setup', 'status': 'canary_passed', 'receipt': receipt})
     record(ledger, 'runtime_setup', path)

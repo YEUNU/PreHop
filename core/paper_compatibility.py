@@ -5,7 +5,7 @@ Git/source hashes describe execution provenance; they are not compatibility keys
 """
 from __future__ import annotations
 
-import os
+from collections.abc import Mapping
 from typing import Any
 
 COMPATIBILITY_VERSION = 'paper-config-v1'
@@ -38,39 +38,36 @@ def prompt_configuration(strategy: str) -> dict[str, Any]:
     return result
 
 
-def index_method_identity(strategy):
+def index_method_identity(strategy, environment: Mapping[str, str] | None = None):
     """Query-only changes do not change the construction identity."""
-    identity = method_identity(strategy)
+    identity = method_identity(strategy, environment)
     if strategy in {"prehop", "naive"}:
         from core.admission import identity_sha256
         from core.generation_profiles import generation_profiles
         identity["prompt_configuration_sha256"] = identity_sha256({"index":prompt_configuration(strategy)["index"]})
-        identity["generation_profiles_sha256"] = identity_sha256({"question_index":generation_profiles(strategy)["question_index"]})
+        identity["generation_profiles_sha256"] = identity_sha256({"question_index":generation_profiles(strategy, environment)["question_index"]})
     return identity
 
 
-def target_configuration(strategy: str, dataset: str) -> dict[str, Any]:
-    """Resolve the same canonical policies checked against actual produced stats."""
+def target_configuration(
+    strategy: str, dataset: str, environment: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Describe a target without temporarily configuring the running process."""
     from core.generation_profiles import generation_profiles
     from core.paper_policy import (
         canonical_operational_policy,
         canonical_query_policy,
         canonical_semantic_index_policy,
-        configure_target_environment,
+        resolved_target_environment,
     )
-    prior = os.environ.copy()
-    try:
-        configure_target_environment(strategy, dataset, 'compatibility-resolution')
-        operational = canonical_operational_policy(strategy)
-        return {'version': COMPATIBILITY_VERSION, 'evidence_version': EVIDENCE_VERSION,
-                'method_contract': METHOD_CONTRACT_VERSIONS[strategy], 'strategy': strategy, 'dataset': dataset,
-                'index': canonical_semantic_index_policy(strategy),
-                'query': canonical_query_policy(strategy), 'prompts': prompt_configuration(strategy),
-                'generation_profiles': generation_profiles(strategy),
-                'operational': runtime_compatibility(operational)}
-    finally:
-        os.environ.clear()
-        os.environ.update(prior)
+    resolved = resolved_target_environment(strategy, dataset, 'compatibility-resolution', environment)
+    operational = canonical_operational_policy(strategy, resolved)
+    return {'version': COMPATIBILITY_VERSION, 'evidence_version': EVIDENCE_VERSION,
+            'method_contract': METHOD_CONTRACT_VERSIONS[strategy], 'strategy': strategy, 'dataset': dataset,
+            'index': canonical_semantic_index_policy(strategy, resolved),
+            'query': canonical_query_policy(strategy, resolved), 'prompts': prompt_configuration(strategy),
+            'generation_profiles': generation_profiles(strategy, resolved),
+            'operational': runtime_compatibility(operational)}
 
 
 def context_configuration() -> dict:
@@ -82,7 +79,7 @@ def context_configuration() -> dict:
                         for strategy in PRIMARY_STRATEGIES for dataset in ('multihoprag', 'hotpotqa')}}
 
 
-def method_identity(strategy: str) -> dict[str, str]:
+def method_identity(strategy: str, environment: Mapping[str, str] | None = None) -> dict[str, str]:
     if strategy not in METHOD_CONTRACT_VERSIONS:
         return {}  # Reserve/development methods do not acquire a primary paper contract.
     from core.admission import identity_sha256
@@ -90,5 +87,5 @@ def method_identity(strategy: str) -> dict[str, str]:
     from core.runtime_requirements import load_runtime_requirements
     return {'method_contract': METHOD_CONTRACT_VERSIONS[strategy],
             'prompt_configuration_sha256': identity_sha256(prompt_configuration(strategy)),
-            'generation_profiles_sha256': identity_sha256(generation_profiles(strategy)),
+            'generation_profiles_sha256': identity_sha256(generation_profiles(strategy, environment)),
             'runtime_requirement_sha256': identity_sha256(load_runtime_requirements().get(strategy, {}))}

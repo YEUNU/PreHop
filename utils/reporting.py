@@ -4,6 +4,15 @@ from typing import Any
 from utils.io import _safe_float, _write_json, _write_jsonl
 
 
+def trace_detail_row(item: dict[str, Any], idx: int) -> dict[str, Any]:
+    return {
+        "idx": item.get("idx", idx),
+        "query_id": item.get("query_id", ""),
+        "query": item.get("query", ""),
+        "interaction_trace": item.get("interaction_trace", []),
+    }
+
+
 def compact_detail_row(item: dict[str, Any], idx: int) -> dict[str, Any]:
     """Canonical JSONL projection; complete evidence remains in the main artifact."""
     trace = item.get("interaction_trace", [])
@@ -266,16 +275,8 @@ def _write_model_report_artifacts(
     detail_rows: list[dict[str, Any]] = []
     trace_rows: list[dict[str, Any]] = []
     for idx, item in enumerate(details, start=1):
-        trace = item.get("interaction_trace", [])
         detail_rows.append(compact_detail_row(item, idx))
-        trace_rows.append(
-            {
-                "idx": item.get("idx", idx),
-                "query_id": item.get("query_id", ""),
-                "query": item.get("query", ""),
-                "interaction_trace": trace,
-            }
-        )
+        trace_rows.append(trace_detail_row(item, idx))
     _write_jsonl(details_jsonl_file, detail_rows)
     if not preserve_trace_artifacts:
         _write_jsonl(traces_jsonl_file, trace_rows)

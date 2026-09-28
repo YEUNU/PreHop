@@ -15,7 +15,8 @@ LinearRAG를 MultiHop-RAG와 HippoRAG의 HotpotQA 배포본에서 비교한다.
 | 위치 | 역할 |
 | --- | --- |
 | `main.py` | CLI, 환경 초기화, index/benchmark/synthesize 등의 실행 분기, 서비스 종료 |
-| `cli/index.py`, `cli/benchmark.py` | 인덱싱 조정, 벤치마크 실행·체크포인트·결과 저장 |
+| `cli/index.py`, `cli/benchmark.py` | 인덱싱 조정, 벤치마크 질의 실행·어댑터 수명 관리 |
+| `core/benchmark_evaluation.py`, `core/benchmark_checkpoint.py` | 평가 집계·상태, 체크포인트 저장·재개 |
 | `cli/synthesis.py`, `core/synthesis_replay.py` | 저장된 검색 결과를 이용한 답변 생성 |
 | `models/prehop/graphrag.py` | 인덱싱·검색 mixin 조합과 `GraphRAG.run_workflow()` |
 | `models/prehop/indexing/` | 문서 분할, Q−/Q+ 생성, 임베딩, Neo4j 쓰기, 오프라인 연결 생성 |
@@ -47,6 +48,8 @@ LinearRAG를 MultiHop-RAG와 HippoRAG의 HotpotQA 배포본에서 비교한다.
   우선순위는 기본값 < `.env` < export < 프로파일의 해당 처리량 항목이다.
   실험별 namespace·출력 경로·seed는 `core/paper_policy.py::configure_target_environment`를
   통해 설정한다. shell이나 개별 실행기에 이 정책을 다시 작성하지 않는다.
+  설정 조회는 `resolved_target_environment`의 복사본을 사용하고, 조회 중 `os.environ`을
+  임시로 덮어쓰거나 복구하지 않는다.
   로컬 모델과 별도 Python 환경 요구사항은 `configs/paper_runtime_requirements.json`을 따른다.
 - `RAGConfig` 등은 import 시 환경변수를 읽는다. 환경과 `RAG_EXECUTION_PROFILE`은
   Python 시작 전에 설정한다. 테스트에서는 `monkeypatch`로 환경 또는 실제 소비되는 설정을 격리한다.
@@ -85,6 +88,9 @@ cp .env.example .env
   클라이언트별 제한은 gateway 전체 제한이 아니다. 현재 요청 경로에는 로컬 HTTP queue server가 없다.
 - 테스트는 변경된 동작과 실패 경계를 검증한다. Neo4j와 추론 API는 단위 테스트에서 mock하고
   파일은 `tmp_path`를 사용한다. 문서만 바꾸면 참조 경로·명령·diff 검토로 충분하다.
+- 원자적 텍스트 저장은 `utils/io.py::atomic_text_writer`를 재사용한다. 벤치마크는 trace를
+  먼저 저장하고 main JSON을 확정하며, 재개 시 query ID로 연결한다. 필수 체크포인트 저장
+  오류는 실행 오류로 전파하고, 중단·예외에도 소유한 어댑터와 작업자를 정리한다.
 - 현재 dispatch에는 별도의 corpus/config/index-reuse 검증 gate가 없다.
   리팩터링 중 이를 몰래 복원하지 않는다. 실행 오류의 전파와 연구 결과 검토는 별도로 다룬다.
 

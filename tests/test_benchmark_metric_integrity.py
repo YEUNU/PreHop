@@ -6,18 +6,16 @@ import os
 import pandas as pd
 import pytest
 
-from cli.benchmark import (
+from cli.benchmark import _latest_index_manifest_metadata
+from cli.index import _load_source_metadata
+from core.benchmark_checkpoint import _benchmark_checkpoint_due, _order_benchmark_rows, _resume_benchmark_rows
+from core.benchmark_evaluation import (
     _aggregate_seed_summaries,
     _apply_judge_label,
-    _benchmark_checkpoint_due,
     _evaluation_scope,
-    _latest_index_manifest_metadata,
-    _order_benchmark_rows,
     _recompute_aggregates,
-    _resume_benchmark_rows,
     _update_summary_status,
 )
-from cli.index import _load_source_metadata
 from models.hoprag import official_indexer as hop_official_indexer
 from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
@@ -203,9 +201,14 @@ def test_evaluation_scope_uses_actual_evaluated_count_before_filename():
         "multihoprag", 2556, "custom_sample_name.json") == ("full_benchmark", 2556)
     assert _evaluation_scope("hotpotqa", 200, "hotpotqa_sample200_queries.json") == (
         "sample_exploratory",
-        7405,
+        1000,
     )
-    assert _evaluation_scope("hotpotqa", 200, "hotpotqa_queries.json") == ("subset_exploratory", 7405)
+    assert _evaluation_scope("hotpotqa", 200, "hotpotqa_queries.json") == ("subset_exploratory", 1000)
+    assert _evaluation_scope("hotpotqa", 1000, "released.json") == ("released_benchmark", 1000)
+    assert _evaluation_scope("hotpotqa", 7405, "older_fullwiki.json") == ("subset_exploratory", 1000)
+    assert _evaluation_scope("hotpotqa", 200, "released.json", manifest={
+        'protocol': 'hotpotqa-hipporag-v1-1000', 'query_count': 1000,
+    }) == ('subset_exploratory', 1000)
 
 
 def test_index_artifact_selection_honors_explicit_path_and_run_identity(tmp_path, monkeypatch):

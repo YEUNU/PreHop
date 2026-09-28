@@ -63,7 +63,7 @@ def is_abstain(text) -> bool:
     an extracted-final-answer slice. CoT responses that include an abstain
     token mid-reasoning but conclude with a substantive answer should be
     checked against the extracted final answer (see
-    `cli/benchmark.py::_extract_final_answer`), not the full text.
+    `utils/metrics.py::extract_final_answer`), not the full text.
     """
     return any(p in str(text or "").lower() for p in ABSTAIN_PHRASES)
 

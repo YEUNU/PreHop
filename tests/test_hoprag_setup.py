@@ -24,6 +24,23 @@ def test_shared_home_honors_existing_override_without_resolving_symlinks(tmp_pat
     assert method_main_python('hoprag') == str(home / 'hoprag/main-env/bin/python')
 
 
+def test_explicit_runtime_environment_takes_precedence(tmp_path, monkeypatch):
+    from core.runtime_requirements import method_main_python, runtime_identity
+    from models.official_baseline_runtime import official_root
+
+    monkeypatch.setenv('RAG_OFFICIAL_BASELINE_HOME', str(tmp_path / 'ambient'))
+    selected = tmp_path / 'selected'
+    environment = {'RAG_OFFICIAL_BASELINE_HOME': str(selected)}
+    assert method_main_python('hoprag', environment=environment) == str(selected / 'hoprag/main-env/bin/python')
+    assert official_root('lightrag', environment) == selected / 'lightrag/source'
+    freeze = selected / 'lightrag/runtime.freeze.txt'
+    freeze.parent.mkdir(parents=True)
+    freeze.write_text('selected-package==1.0\n')
+    identity = runtime_identity('lightrag', environment)
+    assert identity['runtime_freeze']['path'] == str(freeze)
+    assert identity['runtime_freeze']['sha256'] == hashlib.sha256(freeze.read_bytes()).hexdigest()
+
+
 def test_setup_publishes_verified_build_without_moving_venv(tmp_path, monkeypatch):
     home = tmp_path / 'hoprag'
     built = []

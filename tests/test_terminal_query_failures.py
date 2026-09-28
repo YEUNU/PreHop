@@ -1,8 +1,8 @@
 
 import pytest
 
-from cli.benchmark import _apply_judge_label, _recompute_aggregates, _update_summary_status
 from core.amortized_cost import query_cost
+from core.benchmark_evaluation import _apply_judge_label, _recompute_aggregates, _update_summary_status
 from core.benchmark_failures import POLICY, QUALITY_METRICS
 from core.campaign_outcomes import index_outcomes
 
@@ -57,8 +57,7 @@ async def test_live_query_loop_isolates_failure_without_zeroing_success(monkeypa
     monkeypatch.setattr(bench,'_latest_index_manifest_metadata',lambda *a:{})
     monkeypatch.setattr(bench,'evaluate_multihoprag_response',evaluate)
     monkeypatch.setattr(bench,'current_post_query_inventory',lambda *a:{})
-    monkeypatch.setattr(bench,'_write_model_report_artifacts',lambda *a:None)
-    monkeypatch.setattr(bench,'_write_slim_main',lambda *a:None)
+    monkeypatch.setattr('core.benchmark_checkpoint._write_model_report_artifacts', lambda *a, **k: None)
     monkeypatch.setattr(recovery_checkpoint,'checkpoint_barrier',barrier)
     path=tmp_path/'queries.json'
     path.write_text(json.dumps([{'_id':str(i),'query':q,'dataset':'multihoprag'} for i,q in enumerate(['good','bad','after'])]))

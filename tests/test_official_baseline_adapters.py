@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
+import threading
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
+from core.benchmark_failures import BenchmarkIntegrityError
 from models.official_baseline_runtime import OfficialQueryWorker, run_index_worker, stage_corpus
 
 
@@ -137,3 +142,69 @@ print(prefix + json.dumps({'ok': request['operation'] == 'index', 'stats': {'doc
 
     assert result["stats"] == {"documents": 2}
     assert "official index progress" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('mode', ['index', 'ready'])
+def test_worker_initialization_and_protocol_failure_release_resources(tmp_path, monkeypatch, mode):
+    import models.official_baseline_runtime as runtime
+
+    script = tmp_path / 'failing_worker.py'
+    script.write_text("import sys, time\nsys.stdin.readline()\n" + (
+        "print('__PREHOP_OFFICIAL_RESULT__=invalid-json', flush=True)\ntime.sleep(60)\n"
+        if mode == 'index' else 'sys.exit(3)\n'))
+    lock = io.StringIO()
+    processes = []
+    popen = runtime.subprocess.Popen
+
+    def start(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(runtime, '_acquire_runtime_lock', lambda strategy: lock)
+    monkeypatch.setattr(runtime, '_runtime_env', lambda strategy: {})
+    monkeypatch.setattr(runtime, '_command', lambda *args: [sys.executable, str(script)])
+    monkeypatch.setattr(runtime.subprocess, 'Popen', start)
+    if mode == 'index':
+        with pytest.raises(json.JSONDecodeError):
+            run_index_worker('lightrag', 'test', {'operation': 'index'})
+    else:
+        with pytest.raises(BenchmarkIntegrityError, match='closed stdout'):
+            OfficialQueryWorker('lightrag', 'test')
+    assert lock.closed
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
+    assert processes[0].stdin.closed and processes[0].stdout.closed
+
+
+@pytest.mark.parametrize('failure', ['pipe', 'eof', 'logs'])
+def test_query_worker_transport_failure_is_target_fatal(monkeypatch, failure):
+    import models.official_baseline_runtime as runtime
+
+    # Model only the transport boundary; no native retrieval is involved.
+    worker = OfficialQueryWorker.__new__(OfficialQueryWorker)
+    worker.strategy = 'lightrag'
+    worker._lock = threading.Lock()
+    worker._runtime_lock = None
+    stdin = Mock()
+    process = SimpleNamespace(stdin=stdin, terminate=Mock(), poll=lambda: 3)
+    worker._process = process
+    worker._stdout_queue = Mock()
+    if failure == 'pipe':
+        stdin.write.side_effect = BrokenPipeError('closed')
+    elif failure == 'eof':
+        worker._stdout_queue.get.return_value = None
+    else:
+        worker._stdout_queue.get.return_value = 'upstream progress noise'
+        monkeypatch.setenv('RAG_OFFICIAL_QUERY_TIMEOUT', '1')
+        # The queue stays nonempty across the absolute deadline.
+        times = iter([0., .5, 2.])
+        monkeypatch.setattr(runtime.time, 'monotonic', lambda: next(times))
+    try:
+        with pytest.raises(BenchmarkIntegrityError):
+            worker.request({'operation': 'query', 'query': 'test'})
+        if failure == 'logs':
+            process.terminate.assert_called_once()
+            worker._stdout_queue.get.assert_called_once()
+    finally:
+        worker._process = None

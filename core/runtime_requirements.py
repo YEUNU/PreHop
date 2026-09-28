@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -13,11 +14,13 @@ from typing import Any
 PATH = Path(__file__).resolve().parents[1] / "configs/paper_runtime_requirements.json"
 
 
-def method_main_python(strategy: str, default: str | None = None) -> str:
+def method_main_python(
+    strategy: str, default: str | None = None, environment: Mapping[str, str] | None = None,
+) -> str:
     """Select the prepared coordinator runtime without resolving venv symlinks."""
     if strategy == "hoprag":
         from models.hoprag.runtime_paths import runtime_home
-        executable = runtime_home() / "main-env/bin/python"
+        executable = runtime_home(environment) / "main-env/bin/python"
         return str(executable.absolute())
     return os.path.abspath(default or sys.executable)
 
@@ -45,14 +48,14 @@ def runtime_requirement(strategy: str) -> dict[str, Any]:
     return requirement
 
 
-def runtime_identity(strategy: str) -> dict[str, Any]:
+def runtime_identity(strategy: str, environment: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Return current non-secret lock/constraint byte identities."""
     root = PATH.parents[1]
+    environment = dict(os.environ if environment is None else environment)
     if strategy == "hoprag":
-        executable = method_main_python(strategy)
+        executable = method_main_python(strategy, environment=environment)
         prefix = Path(executable).parent.parent
         if Path(sys.prefix).resolve() != prefix.resolve():
-            environment = os.environ.copy()
             environment.update(PYTHON_BIN=executable, UV_PROJECT_ENVIRONMENT=str(prefix))
             raw = subprocess.check_output([executable, "-c",
                 "import json; from core.runtime_requirements import runtime_identity; print(json.dumps(runtime_identity('hoprag')))"],
@@ -66,7 +69,7 @@ def runtime_identity(strategy: str) -> dict[str, Any]:
     if get_strategy(strategy).external:
         from models.official_baseline_runtime import official_root
 
-        freeze_path = official_root(strategy).parent / "runtime.freeze.txt"
+        freeze_path = official_root(strategy, environment).parent / "runtime.freeze.txt"
     else:
         freeze_path = root / "uv.lock"
 
@@ -90,8 +93,8 @@ def runtime_identity(strategy: str) -> dict[str, Any]:
     }
     if strategy == 'hoprag':
         from models.hoprag.runtime_paths import runtime_home
-        main_runtime['pos_runtime_freeze'] = identity(runtime_home() / 'pos-env.freeze.txt')
-        main_runtime['main_runtime_freeze'] = identity(runtime_home() / 'main-env.freeze.txt')
+        main_runtime['pos_runtime_freeze'] = identity(runtime_home(environment) / 'pos-env.freeze.txt')
+        main_runtime['main_runtime_freeze'] = identity(runtime_home(environment) / 'main-env.freeze.txt')
         main_runtime['upstream_revision'] = get_strategy(strategy).revision
     return {
         "main_runtime": main_runtime,

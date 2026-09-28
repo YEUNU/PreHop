@@ -13,6 +13,8 @@ from pathlib import Path
 
 METRICS = tuple(prefix + name for prefix in ("", "sp_", "joint_") for name in ("em", "f1", "prec", "recall"))
 PROJECTION = "retrieved-complete-sentences-v1"
+HIPPORAG_PROTOCOL = "hotpotqa-hipporag-v1-1000"
+HIPPORAG_QUERY_COUNT = 1000
 
 
 def normalize(text):

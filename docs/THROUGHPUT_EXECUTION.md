@@ -93,7 +93,10 @@ and are recorded in the effective contract.
 `core/paper_policy.py::configure_target_environment` owns paper run identity,
 namespace, output/cache paths, generation seed omission, and method-native query
 instruction. Shell and Python target launchers call this function. It does not
-validate index compatibility. `configs/paper_runtime_requirements.json` remains
+validate index compatibility. Read-only configuration inspection uses
+`resolved_target_environment` and passes the copied settings through policy and
+runtime resolution without temporarily modifying `os.environ`.
+`configs/paper_runtime_requirements.json` remains
 the installation contract for separate native runtimes and local models; it is
 not a second set of request defaults.
 

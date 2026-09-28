@@ -9,18 +9,16 @@ import subprocess
 import time
 from pathlib import Path
 
+from utils.io import atomic_text_writer
+
 ROOT = Path(__file__).resolve().parents[1]
 CHILD_LOG_DRAIN_SECONDS = 5.0
 
 
 def atomic_json(path: Path, payload: dict) -> None:
-    temporary = path.with_name(path.name + f'.{os.getpid()}.{time.time_ns()}.pending')
-    with temporary.open('x') as stream:
+    with atomic_text_writer(path) as stream:
         json.dump(payload, stream, sort_keys=True)
         stream.write('\n')
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
 
 
 def process_start(pid: int) -> str:

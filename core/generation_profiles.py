@@ -1,11 +1,13 @@
 """Applied generation settings shared by adapter requests and paper identity."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 
-def structured_retry_profile() -> dict:
+
+def structured_retry_profile(environment: Mapping[str, str] | None = None) -> dict:
     from core.inference_transport import InferenceTransport
     return {'profile': 'prehop-native-json-retry-v3',
-            'max_total_attempts': InferenceTransport.resolve('core').retry_attempts,
+            'max_total_attempts': InferenceTransport.resolve('core', environment).retry_attempts,
             'budget_scope': 'transport-and-format-shared',
             'sdk_automatic_retries': 0,
             'eligible': ['json_syntax', 'invalid_raw_type'],
@@ -33,7 +35,7 @@ def request_settings(consumer: str) -> dict:
     return dict(settings[consumer])
 
 
-def generation_profiles(strategy: str) -> dict:
+def generation_profiles(strategy: str, environment: Mapping[str, str] | None = None) -> dict:
     from core.strategy_registry import get_strategy
     spec = get_strategy(strategy)
     profiles = {}
@@ -41,7 +43,7 @@ def generation_profiles(strategy: str) -> dict:
         profiles = {key: request_settings(key) for key in ('question_index', 'ranking', 'answer')}
         if strategy == 'prehop':
             profiles['answer'] = request_settings('prehop_answer')
-            profiles['structured_format_retry'] = structured_retry_profile()
+            profiles['structured_format_retry'] = structured_retry_profile(environment)
     elif strategy == 'hoprag':
         profiles = {'native_defaults': {'owner': 'pinned_upstream', 'revision': spec.revision, 'temperature': 0.1, 'max_tokens': 4096, 'frequency_penalty': 0.0, 'presence_penalty': 0.0, 'seed': None, 'response_parser': 'adapter-json-recovery-v2'}}
     elif strategy == 'ms_graphrag':

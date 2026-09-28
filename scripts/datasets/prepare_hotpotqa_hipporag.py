@@ -10,10 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from scripts.datasets.hotpotqa_common import annotation_coverage, canonical
+from utils.hotpotqa import HIPPORAG_PROTOCOL
 
 REVISION = 'b144c46df14cabe5f5822d8caded4bec5f709461'
 BASE = f'https://raw.githubusercontent.com/OSU-NLP-Group/HippoRAG/{REVISION}/data'
-PROTOCOL = 'hotpotqa-hipporag-v1-1000'
+PROTOCOL = HIPPORAG_PROTOCOL
 
 
 def prepare(raw, output, queries_output):

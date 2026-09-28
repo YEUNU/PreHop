@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -59,10 +60,11 @@ def configured_embedding_revision() -> str | None:
     return os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or None
 
 
-def official_root(strategy: str) -> Path:
+def official_root(strategy: str, environment: Mapping[str, str] | None = None) -> Path:
+    environment = os.environ if environment is None else environment
     key = f"RAG_{strategy.upper()}_ROOT"
-    home = Path(os.environ.get("RAG_OFFICIAL_BASELINE_HOME", "data/official_baselines")).expanduser()
-    return Path(os.environ.get(key, str(home / strategy / "source"))).expanduser().resolve()
+    home = Path(environment.get("RAG_OFFICIAL_BASELINE_HOME", "data/official_baselines")).expanduser()
+    return Path(environment.get(key, str(home / strategy / "source"))).expanduser().resolve()
 
 
 def official_python(strategy: str) -> Path:
@@ -198,8 +200,20 @@ def _runtime_env(strategy: str) -> dict[str, str]:
     return env
 
 
+def _terminate_owned_process(process: subprocess.Popen) -> None:
+    """Reap a worker created here, escalating only if graceful termination stalls."""
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
 def run_index_worker(strategy: str, corpus_tag: str, request: dict[str, Any]) -> dict[str, Any]:
     runtime_lock = _acquire_runtime_lock(strategy)
+    process = None
     try:
         process = subprocess.Popen(
             _command(strategy, corpus_tag, "index"),
@@ -211,31 +225,35 @@ def run_index_worker(strategy: str, corpus_tag: str, request: dict[str, Any]) ->
             cwd=_ROOT,
             env=_runtime_env(strategy),
         )
-    except Exception:
-        runtime_lock.close()
-        raise
-    if process.stdin is None or process.stdout is None:
-        process.terminate()
-        runtime_lock.close()
-        raise RuntimeError(f"{strategy} official index worker pipes were not created")
-    process.stdin.write(json.dumps(request) + "\n")
-    process.stdin.close()
+        if process.stdin is None or process.stdout is None:
+            raise RuntimeError(f"{strategy} official index worker pipes were not created")
+        process.stdin.write(json.dumps(request) + "\n")
+        process.stdin.close()
 
-    payload = None
-    output_tail: deque[str] = deque(maxlen=200)
-    for line in process.stdout:
-        if line.startswith(_RESULT_PREFIX):
-            payload = json.loads(line[len(_RESULT_PREFIX) :])
-        else:
-            output_tail.append(line)
-            print(line, end="", file=sys.stderr, flush=True)
-    returncode = process.wait()
-    if returncode or not isinstance(payload, dict) or not payload.get("ok"):
-        detail = (payload or {}).get("error") or "".join(output_tail)[-4000:] or f"exit status {returncode}"
-        runtime_lock.close()
-        raise RuntimeError(f"{strategy} official index worker failed: {detail}")
-    runtime_lock.close()
-    return payload
+        payload = None
+        output_tail: deque[str] = deque(maxlen=200)
+        for line in process.stdout:
+            if line.startswith(_RESULT_PREFIX):
+                payload = json.loads(line[len(_RESULT_PREFIX) :])
+            else:
+                output_tail.append(line)
+                print(line, end="", file=sys.stderr, flush=True)
+        returncode = process.wait()
+        if returncode or not isinstance(payload, dict) or not payload.get("ok"):
+            detail = payload.get("error") if isinstance(payload, dict) else None
+            detail = detail or "".join(output_tail)[-4000:] or f"exit status {returncode}"
+            raise RuntimeError(f"{strategy} official index worker failed: {detail}")
+        return payload
+    finally:
+        try:
+            if process is not None:
+                _terminate_owned_process(process)
+                for stream in (process.stdin, process.stdout):
+                    if stream is not None:
+                        with suppress(OSError):
+                            stream.close()
+        finally:
+            runtime_lock.close()
 
 
 class OfficialQueryWorker:
@@ -264,28 +282,49 @@ class OfficialQueryWorker:
 
         def _read_stdout() -> None:
             assert self._process.stdout is not None
-            for line in self._process.stdout:
-                self._stdout_queue.put(line)
-            self._stdout_queue.put(None)
+            try:
+                for line in self._process.stdout:
+                    self._stdout_queue.put(line)
+            finally:
+                # The reader owns stdout; closing it from another thread can
+                # block while a read is in progress.
+                with suppress(OSError):
+                    self._process.stdout.close()
+                self._stdout_queue.put(None)
 
         self._reader = threading.Thread(target=_read_stdout, daemon=True)
         self._reader.start()
-        self.request({"operation": "ready"})
+        try:
+            self.request({"operation": "ready"})
+        except BaseException:
+            with suppress(Exception):
+                self.close()
+            raise
 
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
         queued_at = time.perf_counter()
         with self._lock:
             worker_queue_seconds = time.perf_counter() - queued_at
-            self._process.stdin.write(json.dumps(payload) + "\n")
-            self._process.stdin.flush()
+            try:
+                self._process.stdin.write(json.dumps(payload) + "\n")
+                self._process.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                raise BenchmarkIntegrityError(f"{self.strategy} official query worker input is closed") from exc
             timeout = float(os.environ.get("RAG_OFFICIAL_QUERY_TIMEOUT", "1800"))
             deadline = time.monotonic() + timeout
             while True:
                 try:
-                    line = self._stdout_queue.get(timeout=max(0.01, deadline - time.monotonic()))
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise queue.Empty
+                    line = self._stdout_queue.get(timeout=remaining)
                 except queue.Empty as exc:
                     self._process.terminate()
                     raise BenchmarkIntegrityError(f"{self.strategy} official query exceeded {timeout:g} seconds and its worker was terminated") from exc
+                if line is None:
+                    raise BenchmarkIntegrityError(
+                        f"{self.strategy} official query worker closed stdout (exit status {self._process.poll()})"
+                    )
                 if not line.startswith(_RESULT_PREFIX):
                     continue
                 response = json.loads(line[len(_RESULT_PREFIX) :])
@@ -295,16 +334,28 @@ class OfficialQueryWorker:
                 return response
 
     def close(self) -> None:
-        if self._process.poll() is None and self._process.stdin is not None:
-            try:
-                self._process.stdin.write(json.dumps({"operation": "shutdown"}) + "\n")
-                self._process.stdin.flush()
-                self._process.wait(timeout=10)
-            except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
-                self._process.terminate()
-        if getattr(self, "_runtime_lock", None) is not None:
-            self._runtime_lock.close()
-            self._runtime_lock = None
+        process = getattr(self, '_process', None)
+        try:
+            if process is not None:
+                if process.poll() is None:
+                    try:
+                        process.stdin.write(json.dumps({"operation": "shutdown"}) + "\n")
+                        process.stdin.flush()
+                        process.wait(timeout=10)
+                    except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+                        _terminate_owned_process(process)
+                if process.stdin is not None:
+                    with suppress(OSError):
+                        process.stdin.close()
+                reader = getattr(self, '_reader', None)
+                if reader is not None:
+                    reader.join(timeout=5)
+                elif process.stdout is not None:
+                    process.stdout.close()
+        finally:
+            if getattr(self, "_runtime_lock", None) is not None:
+                self._runtime_lock.close()
+                self._runtime_lock = None
 
     def __del__(self):  # pragma: no cover - best-effort interpreter cleanup
         with suppress(Exception):

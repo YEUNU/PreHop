@@ -10,13 +10,13 @@ import time
 from pathlib import Path
 
 from core.synthesis_replay import TraceContextProvider
+from utils.io import atomic_text_writer
 from utils.prompts.prehop_answer import SYNTHESIS_PROMPT_VERSION
 
 
 def atomic_json(path, value):
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
-    tmp.replace(path)
+    with atomic_text_writer(path) as stream:
+        stream.write(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
 
 
 def timestamp():
@@ -62,11 +62,9 @@ async def run_synthesis(inputs: Path, output: Path, *, concurrency=24, client=No
                     and r.get('request_sha256') == request_identity(source) and r.get('model') == model):
                 done[key] = r
     # Superseded inputs/answers never remain alongside current responses.
-    tmp = responses.with_suffix('.jsonl.tmp')
-    with tmp.open('w') as stream:
+    with atomic_text_writer(responses) as stream:
         for r in done.values():
             stream.write(json.dumps(r, ensure_ascii=False) + '\n')
-    tmp.replace(responses)
     started = time.monotonic()
     status = {'state': 'running', 'pid': os.getpid(), 'started_utc': timestamp(),
               'total': len(rows_by_key), 'resumed': len(done), 'completed': len(done),

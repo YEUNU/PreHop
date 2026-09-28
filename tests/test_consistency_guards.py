@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cli.benchmark import _recompute_aggregates
 from cli.index import _collect_prehop_integrity, _resolved_index_policy, run_indexing
+from core.benchmark_evaluation import _recompute_aggregates
 from core.vllm_client import VLLMClient
 from models.hoprag.hoprag_adapter import HopRAGAdapter
 from models.naive.naive_rag import NaiveRAG

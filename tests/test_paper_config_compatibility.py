@@ -1,5 +1,7 @@
 """Actual effective settings, rather than incidental Git state, govern reuse."""
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from types import MappingProxyType
 
 import pytest
 from test_paper_runtime_contract import _canonical_transport
@@ -15,7 +17,7 @@ def configured(monkeypatch):
     # Configuration tests exercise policy resolution, not installed native
     # interpreters. In particular, HopRAG runs in a separately prepared venv.
     monkeypatch.setattr('core.runtime_requirements.runtime_identity',
-                        lambda strategy: {'main_runtime': {'strategy': strategy, 'installed_sha256': 'test-runtime'}})
+                        lambda strategy, environment=None: {'main_runtime': {'strategy': strategy, 'installed_sha256': 'test-runtime'}})
 
 
 def test_resolved_matrix_is_config_only_and_preserves_environment(monkeypatch):
@@ -27,6 +29,34 @@ def test_resolved_matrix_is_config_only_and_preserves_environment(monkeypatch):
     monkeypatch.setattr('utils.provenance.code_provenance', lambda: {'revision': 'new', 'dirty': True})
     assert context == compatibility.context_configuration()
     assert 'code' not in context and 'verifier_sha256' not in context
+
+
+def test_target_resolution_never_writes_process_environment(monkeypatch):
+    import os
+    # A read-only mapping catches even temporary writes that a final snapshot
+    # comparison cannot detect.
+    with monkeypatch.context() as readonly:
+        readonly.setattr(os, 'environ', MappingProxyType(dict(os.environ)))
+        assert compatibility.target_configuration('prehop', 'hotpotqa')['dataset'] == 'hotpotqa'
+
+
+def test_parallel_resolution_keeps_explicit_environments_isolated():
+    import os
+    before = dict(os.environ)
+    environments = []
+    for attempts in (2, 7):
+        environment = {**before, 'RAG_INFERENCE_RETRY_ATTEMPTS': str(attempts)}
+        environment.pop('RAG_EXECUTION_PROFILE', None)
+        environments.append(environment)
+    snapshots = deepcopy(environments)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        targets = list(executor.map(lambda env: compatibility.target_configuration('prehop', 'hotpotqa', env),
+                                    environments))
+    for target, attempts in zip(targets, (2, 7), strict=True):
+        assert target['operational']['inference_retry_attempts'] == attempts
+        assert target['generation_profiles']['structured_format_retry']['max_total_attempts'] == attempts
+    assert environments == snapshots
+    assert dict(os.environ) == before
 
 
 def test_only_changed_method_contract_invalidates_target(monkeypatch):

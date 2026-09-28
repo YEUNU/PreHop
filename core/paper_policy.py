@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -57,27 +58,35 @@ def preserve_method_environment(environment=None, env_path: Path | None = None) 
         environment.setdefault(name, value)
 
 
-def configure_target_environment(strategy: str, dataset: str, run_id: str) -> None:
-    """Set shared paper defaults and run-scoped storage for every target launcher."""
+def resolved_target_environment(
+    strategy: str, dataset: str, run_id: str, environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return target settings without changing the caller's process environment."""
     from core.execution_profile import resolved_execution_environment
     from core.inference_transport import preserve_provider_environment
-    os.environ.update(resolved_execution_environment())
+    environment = resolved_execution_environment(environment)
     spec = get_strategy(strategy)
-    preserve_provider_environment()
-    preserve_method_environment()
-    os.environ.update({
+    preserve_provider_environment(environment)
+    preserve_method_environment(environment)
+    environment.update({
         "RAG_PAPER_MODE": "true", "RAG_RUN_ID": run_id,
         "RAG_INDEX_NAMESPACE": f"{dataset}_{run_id}",
         "RAG_INDEX_STATS_PATH": f"data/index_stats/{strategy}_{dataset}_{run_id}.json",
         "RAG_CHUNK_CACHE_DIR": f"data/index_cache/runs/{run_id}/{strategy}/{dataset}",
     })
     if spec.paper_generation_seed is None:
-        os.environ["RAG_LLM_SEED"] = ""
+        environment["RAG_LLM_SEED"] = ""
     else:
-        os.environ["RAG_LLM_SEED"] = str(spec.paper_generation_seed)
-    os.environ["EMBEDDING_QUERY_INSTRUCTION"] = str(dict(spec.paper_index_policy).get("embedding_query_instruction", PAPER_TRANSPORT.query_instruction))
+        environment["RAG_LLM_SEED"] = str(spec.paper_generation_seed)
+    environment["EMBEDDING_QUERY_INSTRUCTION"] = str(dict(spec.paper_index_policy).get("embedding_query_instruction", PAPER_TRANSPORT.query_instruction))
     if spec.output_env and spec.output_default:
-        os.environ[spec.output_env] = f"{spec.output_default}/runs/{run_id}"
+        environment[spec.output_env] = f"{spec.output_default}/runs/{run_id}"
+    return environment
+
+
+def configure_target_environment(strategy: str, dataset: str, run_id: str) -> None:
+    """Apply the resolved settings only when launching a target."""
+    os.environ.update(resolved_target_environment(strategy, dataset, run_id))
 
 
 def structured_query_identity(strategy: str) -> dict[str, str]:
@@ -89,18 +98,18 @@ def structured_query_identity(strategy: str) -> dict[str, str]:
             "structured_schema_bundle_sha256": structured_bundle_sha256()}
 
 
-def canonical_query_policy(strategy: str) -> dict[str, Any]:
+def canonical_query_policy(strategy: str, environment: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Return the sole checked-in benchmark policy for a core strategy."""
     policy = {field: value for field, _environment, value in get_strategy(strategy).paper_query_policy}
     if strategy == "prehop":
         policy["query_execution"] = "original-question-single-retrieval-v1"
     policy.update(structured_query_identity(strategy))
     from core.paper_compatibility import method_identity
-    policy.update(method_identity(strategy))
+    policy.update(method_identity(strategy, environment))
     return policy
 
 
-def canonical_semantic_index_policy(strategy: str) -> dict[str, Any]:
+def canonical_semantic_index_policy(strategy: str, environment: Mapping[str, str] | None = None) -> dict[str, Any]:
     spec = get_strategy(strategy)
     local_embedding = spec.local_embedding_revision is not None or strategy == "gfm_rag"
     policy: dict[str, Any] = {
@@ -125,7 +134,7 @@ def canonical_semantic_index_policy(strategy: str) -> dict[str, Any]:
     if spec.revision is not None:
         policy["official_revision"] = spec.revision
     from core.paper_compatibility import index_method_identity
-    policy.update(index_method_identity(strategy))
+    policy.update(index_method_identity(strategy, environment))
     policy.update(dict(spec.paper_index_policy))
     if strategy in {"prehop", "naive"}:
         from core.structured_outputs import PREHOP_STRUCTURED_PROFILE, structured_index_bundle_sha256
@@ -144,9 +153,9 @@ def canonical_semantic_index_policy(strategy: str) -> dict[str, Any]:
     return policy
 
 
-def canonical_operational_policy(strategy: str) -> dict[str, Any]:
+def canonical_operational_policy(strategy: str, environment: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Resolve the one non-secret effective transport contract."""
     from core.inference_transport import InferenceTransport
     from core.runtime_requirements import runtime_identity
 
-    return {**InferenceTransport.resolve(strategy).policy_dict(), **runtime_identity(strategy)}
+    return {**InferenceTransport.resolve(strategy, environment).policy_dict(), **runtime_identity(strategy, environment)}

@@ -107,9 +107,8 @@ async def _with_ms_embedding_slot_async(call: Callable[[], Awaitable[object]]) -
 
 
 def _ms_concurrent_requests() -> int:
-    """Resolve GraphRAG concurrency from the repository-wide endpoint cap."""
-    server_limit = int(os.environ.get("VLLM_MAX_NUM_SEQS", str(_GEN_CONCURRENCY)))
-    return min(_GEN_CONCURRENCY, server_limit)
+    """Use the effective shared client limit, independent of retired server settings."""
+    return _GEN_CONCURRENCY
 
 
 def _ms_query_embedding_text(text: str) -> str:

@@ -5,7 +5,7 @@ import pytest
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["benchmark", "benchmark_all"])
-@pytest.mark.parametrize("fails", [False, True])
+@pytest.mark.parametrize("fails", [False, True, "saved_failure"])
 async def test_benchmark_completion_and_failure_cleanup(monkeypatch, tmp_path, mode, fails):
     monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: None)
     import main as entry
@@ -17,14 +17,17 @@ async def test_benchmark_completion_and_failure_cleanup(monkeypatch, tmp_path, m
     monkeypatch.setenv("RAG_BENCHMARK_TIMESTAMP", "test-run")
     monkeypatch.setattr(entry, "PRIMARY_STRATEGIES", ["naive", "prehop"])
     benchmark = AsyncMock(side_effect=[ValueError("query failed"), None] if fails else None)
+    if fails == "saved_failure":
+        benchmark = AsyncMock(return_value={"status": "failed"})
     monkeypatch.setattr(entry, "run_benchmark_multi_seed", benchmark)
     neo_close, llm_close = AsyncMock(), AsyncMock()
     monkeypatch.setattr(entry.Neo4jService, "global_close", neo_close)
     monkeypatch.setattr(entry.VLLMClient, "global_close", llm_close)
 
     if fails:
-        expected = RuntimeError if mode == "benchmark_all" else ValueError
-        with pytest.raises(expected, match="query failed"):
+        expected = RuntimeError if mode == "benchmark_all" or fails == "saved_failure" else ValueError
+        message = "Benchmark execution failed" if fails == "saved_failure" else "query failed"
+        with pytest.raises(expected, match=message):
             await entry.main()
     else:
         await entry.main()

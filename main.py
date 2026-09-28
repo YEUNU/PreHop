@@ -135,6 +135,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+async def _run_cli_benchmark(*args, **kwargs):
+    result = await run_benchmark_multi_seed(*args, **kwargs)
+    if isinstance(result, dict) and result.get("status") == "failed":
+        raise RuntimeError("Benchmark execution failed; see the saved result for failure details")
+    return result
+
+
 async def main():
     parser = _build_parser()
     args = parser.parse_args()
@@ -179,7 +186,7 @@ async def main():
             env_ts = os.environ.get("RAG_BENCHMARK_TIMESTAMP")
             timestamp = env_ts if env_ts else run_id
             os.environ["RAG_BENCHMARK_TIMESTAMP"] = timestamp
-            await run_benchmark_multi_seed(
+            await _run_cli_benchmark(
                 args.queries_file, args.strategy, args.model, corpus_tag=corpus_tag, limit=args.limit
             )
         elif args.mode == "benchmark_all":
@@ -193,7 +200,7 @@ async def main():
             for strategy in PRIMARY_STRATEGIES:
                 print(f"\n>>> Running Benchmark for: {strategy.upper()}")
                 try:
-                    await run_benchmark_multi_seed(
+                    await _run_cli_benchmark(
                         args.queries_file,
                         strategy,
                         args.model,

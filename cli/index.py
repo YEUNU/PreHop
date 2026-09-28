@@ -817,6 +817,36 @@ async def run_indexing(
             finish(token)
 
 
+async def _run_native_index(run_native, strategy, dataset_path, corpus_tag, corpus_manifest, model_id, started_at):
+    """Measure and persist native execution without changing its indexing calls."""
+    official_started = time.perf_counter()
+    timing = {}
+    status = "complete"
+    capacity = None
+    try:
+        adapter_timing = await run_native(
+            dataset_path=dataset_path, corpus_tag=corpus_tag, corpus_manifest=corpus_manifest,
+        )
+        timing.update(adapter_timing or {})
+        timing["official_pipeline_seconds"] = time.perf_counter() - official_started
+        timing["total_elapsed_seconds"] = time.perf_counter() - started_at
+        capacity = await _collect_index_capacity(strategy, corpus_tag)
+    except BaseException:
+        status = "failed"
+        raise
+    finally:
+        timing.setdefault("official_pipeline_seconds", time.perf_counter() - official_started)
+        timing.setdefault("total_elapsed_seconds", time.perf_counter() - started_at)
+        try:
+            _write_runtime_stage_stats(
+                strategy, corpus_tag, dataset_path, timing, status, corpus_manifest, model_id, capacity,
+            )
+        except Exception:
+            if status != "failed":
+                raise
+            logger.warning("Failed to record native index failure for %s", strategy, exc_info=True)
+
+
 async def _run_indexing_unlocked(
     dataset_path: str,
     strategy: str,
@@ -841,126 +871,24 @@ async def _run_indexing_unlocked(
     files = sorted(file for file in os.listdir(dataset_path) if file.endswith((".txt", ".md")))
     source_ids = _source_ids_from_filenames(files)
 
+    native_index = None
     if strategy == "ms_graphrag":
-        # Official MS GraphRAG pipeline (extract_graph + Leiden + community
-        # reports), routed through the configured external endpoint. Outputs parquet
-        # under data/ms_graphrag_output/<corpus_tag>/. Skips our chunking/
-        # HOP/summary stages — MS does its own.
-        from models.ms_graphrag.official_indexer import run_official_index as run_ms_index
+        from models.ms_graphrag.official_indexer import run_official_index as native_index
+    elif strategy == "hoprag":
+        from models.hoprag.official_indexer import run_official_index as native_index
+    elif strategy in EXTERNAL_STRATEGIES:
+        from models.external_research.official_indexer import run_official_index as external_index
 
-        official_started = time.perf_counter()
-        timing = {}
-        official_status = "complete"
-        index_capacity = None
-        try:
-            adapter_timing = await run_ms_index(
-                dataset_path=dataset_path,
-                corpus_tag=corpus_tag or "default",
-                corpus_manifest=corpus_manifest,
+        async def native_index(dataset_path, corpus_tag, corpus_manifest):
+            return await external_index(
+                strategy, dataset_path, corpus_tag, corpus_manifest,
+                index_policy=_resolved_index_policy(strategy, model_id, corpus_tag),
             )
-            timing.update(adapter_timing or {})
-            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
-            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
-            index_capacity = await _collect_index_capacity(strategy, corpus_tag or "default")
-        except BaseException:
-            official_status = "failed"
-            raise
-        finally:
-            timing.setdefault("official_pipeline_seconds", time.perf_counter() - official_started)
-            timing.setdefault("total_elapsed_seconds", time.perf_counter() - started_at)
-            _write_runtime_stage_stats(
-                strategy,
-                corpus_tag or "default",
-                dataset_path,
-                timing,
-                official_status,
-                corpus_manifest,
-                model_id,
-                index_capacity,
-            )
-        return
-
-    if strategy in EXTERNAL_STRATEGIES:
-        from models.external_research.official_indexer import run_official_index as _run_external_index
-
-        async def run_official_index(dataset_path, corpus_tag, corpus_manifest):
-            return await _run_external_index(
-                strategy,
-                dataset_path,
-                corpus_tag,
-                corpus_manifest,
-                index_policy=_resolved_index_policy(strategy, model_id, corpus_tag or "default"),
-            )
-
-        official_started = time.perf_counter()
-        timing = {}
-        official_status = "complete"
-        index_capacity = None
-        try:
-            adapter_timing = await run_official_index(
-                dataset_path=dataset_path,
-                corpus_tag=corpus_tag or "default",
-                corpus_manifest=corpus_manifest,
-            )
-            timing.update(adapter_timing or {})
-            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
-            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
-            index_capacity = await _collect_index_capacity(strategy, corpus_tag or "default")
-        except BaseException:
-            official_status = "failed"
-            raise
-        finally:
-            timing.setdefault("official_pipeline_seconds", time.perf_counter() - official_started)
-            timing.setdefault("total_elapsed_seconds", time.perf_counter() - started_at)
-            _write_runtime_stage_stats(
-                strategy,
-                corpus_tag or "default",
-                dataset_path,
-                timing,
-                official_status,
-                corpus_manifest,
-                model_id,
-                index_capacity,
-            )
-        return
-
-    if strategy == "hoprag":
-        # Official HopRAG indexing (QABuilder.create_nodes + grouped
-        # create_edge + create_index). Generation and embeddings use the
-        # configured external OpenAI-compatible endpoints. Writes directly to
-        # Neo4j under HO_<corpus_tag>_* labels.
-        from models.hoprag.official_indexer import run_official_index as run_hop_index
-
-        official_started = time.perf_counter()
-        timing = {}
-        official_status = "complete"
-        index_capacity = None
-        try:
-            adapter_timing = await run_hop_index(
-                dataset_path=dataset_path,
-                corpus_tag=corpus_tag or "default",
-                corpus_manifest=corpus_manifest,
-            )
-            timing.update(adapter_timing or {})
-            timing["official_pipeline_seconds"] = time.perf_counter() - official_started
-            timing["total_elapsed_seconds"] = time.perf_counter() - started_at
-            index_capacity = await _collect_index_capacity(strategy, corpus_tag or "default")
-        except BaseException:
-            official_status = "failed"
-            raise
-        finally:
-            timing.setdefault("official_pipeline_seconds", time.perf_counter() - official_started)
-            timing.setdefault("total_elapsed_seconds", time.perf_counter() - started_at)
-            _write_runtime_stage_stats(
-                strategy,
-                corpus_tag or "default",
-                dataset_path,
-                timing,
-                official_status,
-                corpus_manifest,
-                model_id,
-                index_capacity,
-            )
+    if native_index is not None:
+        await _run_native_index(
+            native_index, strategy, dataset_path, corpus_tag or "default",
+            corpus_manifest, model_id, started_at,
+        )
         return
 
     if strategy == "prehop":
@@ -982,8 +910,7 @@ async def _run_indexing_unlocked(
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
-    # Keep the benchmark gate closed until the rebuilt graph passes its direct
-    # source-set check.
+    # Record construction progress for later result interpretation.
     await _set_neo4j_snapshot_state(
         engine,
         strategy,

@@ -114,11 +114,11 @@ def test_ms_concurrency_defaults_to_shared_endpoint_cap(monkeypatch):
     assert _ms_concurrent_requests() == 4
 
 
-def test_ms_concurrency_never_exceeds_server_capacity(monkeypatch):
+def test_ms_concurrency_ignores_retired_server_capacity(monkeypatch):
     monkeypatch.setattr("models.ms_graphrag.official_indexer._GEN_CONCURRENCY", 30)
     monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "16")
 
-    assert _ms_concurrent_requests() == 16
+    assert _ms_concurrent_requests() == 30
 
 
 def test_ms_query_embedding_uses_recorded_asymmetric_instruction(monkeypatch):

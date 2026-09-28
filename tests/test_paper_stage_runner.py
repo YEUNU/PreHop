@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -26,6 +27,35 @@ def test_stage_runner_guarded_help_has_no_native_imports():
     completed = subprocess.run([sys.executable, 'scripts/paper_stage_runner.py', '--help'], capture_output=True, text=True, check=False)
     assert completed.returncode == 0
     assert 'one-query' in completed.stdout and 'full-target' in completed.stdout and 'reattest' in completed.stdout
+
+
+def test_readonly_reattest_resolves_each_target_without_environment_mutation(monkeypatch, tmp_path):
+    recorded = {}
+    environments = {}
+    before = dict(os.environ)
+
+    def identity(strategy, environment):
+        environments[strategy] = environment
+        return {'strategy': strategy}
+
+    def save(path, payload):
+        recorded[path.name] = payload
+        return {'path': str(path)}
+
+    monkeypatch.setattr('core.strategy_registry.PRIMARY_STRATEGIES', ['prehop', 'hoprag'])
+    monkeypatch.setattr('core.runtime_requirements.runtime_identity', identity)
+    monkeypatch.setattr(runner, 'stage_base', lambda *args: tmp_path)
+    monkeypatch.setattr('scripts.paper_cold_canary.save', save)
+    monkeypatch.setattr('scripts.paper_gate_ledger.record', lambda *args: None)
+    with monkeypatch.context() as readonly:
+        readonly.setattr(os, 'environ', MappingProxyType(before))
+        runner.reattest('review', 'a1')
+    assert recorded['receipt.json']['runtime_identities'] == {
+        'prehop': {'strategy': 'prehop'}, 'hoprag': {'strategy': 'hoprag'},
+    }
+    assert environments['prehop']['RAG_RUN_ID'] == 'review-reattest-prehop'
+    assert environments['hoprag']['RAG_RUN_ID'] == 'review-reattest-hoprag'
+    assert dict(os.environ) == before
 
 
 def test_recovery_hook_default_is_inert(monkeypatch):

@@ -20,6 +20,9 @@ Removed methods do not supply primary comparison cells.
 
 `cli/index.py::run_indexing` calls `_run_indexing_unlocked` without a preflight
 or run lock. Run-scoped namespaces provide artifact isolation.
+Native indexing branches share `_run_native_index` for elapsed time, capacity
+and completion/failure artifacts; native calls and their parameters remain in
+the method adapters.
 
 | Method | Index construction | Query path |
 |---|---|---|
@@ -299,6 +302,13 @@ propagate. External compatibility aliases are configured in native child process
 
 ## Evaluation output contract
 
+`cli/benchmark.py` owns query dispatch and adapter lifetime.
+`core/benchmark_evaluation.py` owns scope, aggregation and completion labels;
+`core/benchmark_checkpoint.py` owns persistence and resume. Cancellation or
+checkpoint failure cancels and drains query tasks before closing the adapter.
+External worker EOF, broken pipes and request timeouts fail the target. CLI
+commands propagate a recorded failed execution as a nonzero exit status.
+
 `cli/benchmark.py` records official MultiHop-RAG retrieval and QA measures,
 with legacy dataset metrics retained in code. The HotpotQA adapter projects complete returned corpus sentences to title/index pairs via
 `utils/hotpotqa.py`, then applies Answer, Supporting Fact, and Joint scoring
@@ -350,6 +360,13 @@ identity validation. It runs missing IDs only, preserving both successful and
 terminal-error rows, prior provenance and accumulated segment timing. A resumed
 batch is not an uninterrupted throughput measurement. The representation-ablation
 launcher itself does not provide resume.
+
+Each checkpoint atomically writes the trace JSONL first and then the main
+result JSON as its commit point. Resume joins traces by query ID, so interruption
+between those writes can leave extra uncommitted traces without misassigning
+them to completed queries. Missing committed traces or mandatory write failures
+are errors. Derived report I/O failures are logged after saving resume evidence.
+Shared JSON and text writers use `utils/io.py::atomic_text_writer`.
 
 `record_paper_completion.py` records finished execution without final paper-policy
 validation. Receipt fields, accepted result states and resume behavior are
