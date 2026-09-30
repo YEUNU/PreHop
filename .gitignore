@@ -1,3 +1,6 @@
+# Public source includes code, tests, docs, configs, .env.example and uv.lock.
+# Keep credentials, local papers, downloaded data and generated runs local.
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -140,6 +143,7 @@ celerybeat.pid
 !.env.example
 .envrc
 .venv
+.venv*/
 env/
 venv/
 ENV/
@@ -170,25 +174,15 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+# Local IDE settings
+.idea/
+.vscode/
 
 # Abstra
 # Abstra is an AI-powered process automation framework.
 # Ignore directories containing user credentials, local state, and settings.
 # Learn more at https://abstra.io/docs
 .abstra/
-
-# Visual Studio Code
-#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#  and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
 
 # Ruff stuff:
 .ruff_cache/
@@ -220,41 +214,15 @@ exception_log.txt
 artifacts/
 fig/
 neo4j_data/
-data/enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2
 
 .claude/
-# Regenerable corpora, caches, intermediate records, and index statistics.
-data/multihoprag_corpus/
-data/hotpotqa_corpus/
-data/hotpotqa_raw/
-data/hotpotqa_fullwiki_corpus/
-data/hotpotqa_fullwiki_queries.json
-data/hotpotqa_hipporag_raw/
-data/hotpotqa_hipporag_prepared/
-data/debug/
-# Full request/response and graph payloads may contain private source text.
-data/traces/
-data/results/
-data/tmp/
+# Data is local by default, including new experiment directories, corpora,
+# checkpoints, traces, indexes, caches, native runtimes and maintenance records.
+# Full request/response and graph payloads may contain credentials or source text.
+# Publish only the existing curated query subset needed for reproduction.
+/data/*
+!/data/multihoprag_sample200_queries.json
 tmp/
-data/embedding_cache/
-data/index_cache/
-data/index_locks/
-data/index_stats/
-data/index_failures/
-data/failed_runs/
-data/ms_graphrag_output/
-data/lightrag_output/
-data/hipporag2_output/
-data/gfm_rag_output/
-data/linear_rag_output/
-data/youtu_graphrag_output/
-data/hoprag_output/
-data/browsenet_output/
-data/proprag_output/
-data/official_baselines/
-# Prepared interpreter environments, including files outside their own ignores.
-data/runtime_envs/
 
 # graphrag library writes its default file_storage here when reporting_config
 # isn't overridden (separate from our explicit output_storage).
@@ -266,14 +234,6 @@ scripts/*_tmp.py
 _workspace/
 ppt/
 presentation/
-
-# Downloadable dataset files; recreate them with scripts/datasets/prepare_*.py.
-# Small curated query subsets remain tracked.
-data/multihoprag_corpus.json
-data/MultiHopRAG.json
-data/multihoprag_queries.json
-data/hotpotqa_distractor_validation.parquet
-data/hotpotqa_queries.json
 
 # Session-scratch orchestration scripts (hardcoded PIDs; not part of the repo).
 run_mhr_finish.sh
@@ -299,9 +259,6 @@ prehop_presentation*
 /*.zip
 /*.csv
 
-# Local maintenance evidence, cleanup inventories and source snapshots.
-/data/maintenance/
-
 # Local build bundle.
 docs/acl/
 
@@ -319,7 +276,10 @@ docs/acl/
 # Locally installed agent skills; not part of the experiment implementation.
 /.agents/skills/
 *.pem
+*.key
 *.p12
 *.pfx
+id_rsa
+id_ed25519
 credentials.json
 secrets.json
