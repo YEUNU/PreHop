@@ -7,7 +7,6 @@ import pytest
 from core.config import RAGConfig
 from core.prehop_ablation import COMMON, PROFILES, ablation_identity
 from models.prehop.graphrag import GraphRAG
-from models.prehop.indexing.body_links import build_body_links, make_reference
 from scripts.prehop_ablation import plan
 
 
@@ -16,36 +15,15 @@ def configure(monkeypatch, profile, reference=""):
         **COMMON,
         **PROFILES[profile],
         "PREHOP_ABLATION_PROFILE": profile,
-        "ABLATION_Q_MINUS": profile != "body_body",
-        "ABLATION_Q_PLUS": profile != "body_body",
-        "BODY_LINK_REFERENCE": str(reference),
+        "ABLATION_Q_MINUS": True,
+        "ABLATION_Q_PLUS": True,
     }.items():
         monkeypatch.setattr(RAGConfig, key, value)
     monkeypatch.setenv("RAG_PAPER_MODE", "false")
     monkeypatch.setenv("RAG_INDEX_NAMESPACE", "ablation_body")
 
 
-def node(node_id, source, degree):
-    return {
-        "id": node_id,
-        "source": source,
-        "title": source,
-        "text": node_id,
-        "sent_id": 0,
-        "embedding": [1.0, 0.0],
-        "degree": degree,
-    }
-
-
-@pytest.fixture
-def reference(tmp_path):
-    rows = [node("a", "doc1", 1), node("b", "doc2", 0)]
-    path = tmp_path / "reference.json"
-    path.write_text(json.dumps(make_reference("ablation_question", rows)))
-    return path, rows
-
-
-@pytest.mark.parametrize("policy,expected", [("all", {"body": set()}), ("qplus", {})])
+@pytest.mark.parametrize("policy,expected", [("all", {"body": set()})])
 @pytest.mark.asyncio
 async def test_body_seed_traversal_and_inherited_score(monkeypatch, policy, expected):
     monkeypatch.setattr(RAGConfig, "HOP_SEED_POLICY", policy)
@@ -71,47 +49,6 @@ async def test_body_seed_traversal_and_inherited_score(monkeypatch, policy, expe
         assert next(x for x in candidates if x["id"] == "target")["representation_score"] == 0.4
     else:
         assert [x["id"] for x in candidates] == ["body"]
-
-
-@pytest.mark.asyncio
-async def test_body_builder_matches_degree_without_questions(monkeypatch, reference):
-    path, rows = reference
-    configure(monkeypatch, "body_body", path)
-    writes = []
-
-    async def query(cypher, params=None):
-        if cypher.startswith("MATCH (c:"):
-            return rows if params["after"] == "" else []
-        if cypher.startswith("CALL db.index.vector"):
-            assert params["embedding"] == rows[0]["embedding"]
-            assert params["degree"] == 1
-            assert "node.source <> $source" in cypher
-            return [{"id": "b", "score": 1.0}]
-        if cypher.startswith("UNWIND"):
-            assert "HAS_Q" not in cypher
-            assert "body_to_body" in cypher
-            writes.append(params)
-        return []
-
-    engine = SimpleNamespace(
-        _safe_corpus="ablation_body",
-        chunk_label="PR_ablation_body_Chunk",
-        body_vector_index="body_index",
-        retry_query=AsyncMock(side_effect=query),
-    )
-    await build_body_links(engine)
-    assert writes == [{"id": "a", "edges": [{"id": "b", "score": 1.0}]}]
-
-
-
-
-@pytest.mark.asyncio
-async def test_body_only_index_never_calls_question_generator(monkeypatch, reference):
-    path, _ = reference
-    configure(monkeypatch, "body_body", path)
-    rag = GraphRAG(strategy="prehop")
-    rag.llm = SimpleNamespace()
-    assert await rag.extract_hoprag_queries("passage", "title") == {"q_minus": [], "q_plus": []}
 
 
 def test_ablation_metadata_does_not_relabel_primary(monkeypatch):
@@ -142,31 +79,6 @@ def test_launcher_plans_distinct_outputs_without_execution(tmp_path):
     assert task["output"].endswith("ablations/query_a/question_full")
     args.mode = "index"
     args.profile = "question_body"
-
-
-def test_body_full_keeps_full_search_inputs_on_body_graph(tmp_path):
-    args = SimpleNamespace(
-        namespace="ablation_body", run_id="body_full_query", profile="body_full",
-        mode="benchmark", reference=tmp_path / "reference.json", index_stats=None,
-        dataset=tmp_path / "corpus", queries=tmp_path / "queries.json",
-        corpus_tag="multihoprag", direct_inputs=tmp_path / "full_search",
-    )
-    task = plan(args)
-    env = task["environment"]
-    assert env["RAG_HOP_LINK_VARIANT"] == "body"
-    assert env["RAG_HYPO_CHANNEL_VARIANT"] == "full"
-    assert env["RAG_ABLATION_DIRECT_INPUTS"] == str(args.direct_inputs.resolve())
-    assert env["RAG_HOP_SEED_POLICY"] == "all"
-    assert env["RAG_HOP_SEMANTIC_VARIANT"] == "body_only"
-    args.direct_inputs = None
-    with pytest.raises(ValueError, match="frozen multi-channel"):
-        plan(args)
-    args.direct_inputs = tmp_path / "full_search"
-    args.mode = "index"
-    with pytest.raises(ValueError, match="benchmark"):
-        plan(args)
-
-
 
 
 @pytest.mark.asyncio
@@ -203,12 +115,11 @@ def test_existing_index_plan_preserves_source_run_and_separate_output(tmp_path):
     args.namespace = 'wrong_namespace'
 
 
-def test_body_clone_plan_uses_no_indexing_pipeline(tmp_path):
-    args = SimpleNamespace(namespace='ablation_cloned_body', run_id='body_clone',
-        profile='body_body', mode='index', reference=tmp_path/'new_reference.json',
-        index_stats=None, dataset=tmp_path, queries=tmp_path/'queries.json',
-        corpus_tag='multihoprag', clone_body_from=tmp_path/'source_stats.json')
+def test_channel_replay_can_preserve_historical_scoring(tmp_path):
+    args = SimpleNamespace(namespace='original', run_id='channel-replay',
+        profile='question_body', mode='benchmark', index_stats=None,
+        dataset=tmp_path, queries=tmp_path/'queries.json', corpus_tag='multihoprag',
+        hop_semantic_variant='body_bridge_min')
     task = plan(args)
-    assert task['command'][1].endswith('scripts/clone_prehop_body.py')
-    assert not any(part.endswith('main.py') for part in task['command'])
-    args.profile='question_full'
+    assert task['environment']['RAG_HOP_SEMANTIC_VARIANT'] == 'body_bridge_min'
+    assert task['environment']['RAG_HYPO_CHANNEL_VARIANT'] == 'body_only'

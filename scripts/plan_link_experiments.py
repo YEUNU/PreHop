@@ -1,4 +1,4 @@
-"""Write primary component, matched timing, and supplemental experiment tasks."""
+"""Write primary component and search-channel experiment tasks."""
 import argparse
 import json
 import os
@@ -27,10 +27,7 @@ def make_plan(campaign,mhr_stats,*,multihoprag_reference,adopt=(),updated_refere
     hp_index=primary('prehop','index')
     hp_benchmark=primary('prehop','benchmark',[hp_index])
     hp_run=f'{campaign}-index-hotpotqa-prehop'
-    old=os.environ.get('RAG_INDEX_NAMESPACE');os.environ['RAG_INDEX_NAMESPACE']='hotpotqa_'+hp_run
-    hp_ns=index_namespace('hotpotqa')
-    if old is None:os.environ.pop('RAG_INDEX_NAMESPACE')
-    else:os.environ['RAG_INDEX_NAMESPACE']=old
+    hp_ns=index_namespace('hotpotqa', env={**os.environ, 'RAG_INDEX_NAMESPACE': 'hotpotqa_'+hp_run})
     hp_stats=ROOT/f'data/index_stats/prehop_hotpotqa_{hp_run}.json'
     for tag,short,stats,namespace,dependencies in [
         ('multihoprag','mhr',Path(mhr_stats),mhr['index_policy']['index_namespace'],[]),
@@ -41,44 +38,24 @@ def make_plan(campaign,mhr_stats,*,multihoprag_reference,adopt=(),updated_refere
             directory=base/f'{short}-direct-{suffix}';key=f'{short}-direct-{suffix}'
             add(key,[python,'scripts/prepare_ablation_inputs.py','--index-stats',stats,'--queries',queries,'--profile',profile,'--output',directory],dependencies,1)
             inputs[suffix]=(key,directory)
-        c_namespace=f'ablation_{campaign.replace("-","_")}_{short}_body'
-        reference=base/f'{short}-body-reference.json';c_run=f'{campaign}-{short}-body-index'
-        c_stats=ROOT/f'data/index_stats/prehop_{tag}_{c_run}.json'
-        clone=add(f'{short}-body-clone',[python,'scripts/prehop_ablation.py','--mode','index','--profile','body_body',
-            '--clone-body-from',stats,'--namespace',c_namespace,'--run-id',c_run,'--corpus-tag',tag,'--dataset',corpus,
-            '--queries',queries,'--reference',reference,'--execute'],dependencies,2)
-        def bench(arm,profile,ns,source,after,*,direct=None,short=short,tag=tag,corpus=corpus,queries=queries,reference=reference):
+        def bench(arm,profile,ns,source,after,*,direct=None,short=short,tag=tag,corpus=corpus,queries=queries):
             run=f'{campaign}-{short}-{arm}'
             cmd=[python,'scripts/prehop_ablation.py','--mode','benchmark','--profile',profile,'--namespace',ns,
                 '--run-id',run,'--corpus-tag',tag,'--dataset',corpus,'--queries',queries,'--index-stats',source,'--execute']
-            if profile!='body_body':cmd+=['--reuse-existing-index']
-            else:cmd+=['--reference',reference]
+            cmd+=['--reuse-existing-index']
             if direct:cmd+=['--direct-inputs',direct]
             key=add(f'{short}-{arm}',cmd,after,0)
             result=ROOT/f'data/results/ablations/{run}/{profile}/prehop/{tag}/seed_42/prehop_{tag}.json'
             return key,result
         for arm,profile,suffix,ns,source,extra in [('A','question_full','full',namespace,stats,[]),
-            ('B','question_body','body',namespace,stats,[]),('C','body_body','body',c_namespace,c_stats,[clone])]:
+            ('B','question_body','body',namespace,stats,[])]:
             arms[arm],arm_results[arm]=bench(arm,profile,ns,source,[inputs[suffix][0],*extra],direct=inputs[suffix][1])
             add(f'{short}-{arm}-utility',[python,'scripts/analyze_ablation_links.py','--result',arm_results[arm],
                 '--output',base/f'{short}-{arm}-utility.json'],[arms[arm]],2)
         metrics=['official_map@10','all_facts@10','official_qa_accuracy'] if tag=='multihoprag' else ['hotpot_sp_f1','hotpot_joint_f1','hotpot_f1','hotpot_em','hotpot_sp_em','hotpot_joint_em']
-        for left,right in [('B','C'),('A','B'),('A','C')]:
+        for left,right in [('A','B')]:
             add(f'{short}-{left}-{right}-comparison',[python,'scripts/ablation_statistics.py','--left',arm_results[left],
                 '--right',arm_results[right],'--queries',queries,'--metrics',*metrics,'--output',base/f'{short}-{left}-{right}-comparison.json'],[arms[left],arms[right]],2)
-        for arm,ns,after in [('B',namespace,dependencies),('C',c_namespace,[clone])]:
-            add(f'{short}-{arm}-connectivity',[python,'scripts/analyze_evidence_connections.py','--namespace',ns,
-                '--dataset',tag,'--queries',queries,'--output',base/f'{short}-{arm}-connectivity.json'],after,4)
-        add(f'{short}-connectivity-comparison',[python,'scripts/ablation_statistics.py','--left',base/f'{short}-B-connectivity.json',
-            '--right',base/f'{short}-C-connectivity.json','--queries',queries,'--metrics','any_inter_evidence_hop',
-            'directed_group_pair_coverage','oracle_start_one_hop_group_coverage','oracle_start_all_groups_rate',
-            '--output',base/f'{short}-connectivity-comparison.json'],[f'{short}-B-connectivity',f'{short}-C-connectivity'],4)
-        store=base/f'{short}-timing-store.json'
-        build=add(f'{short}-timing-build',[python,'scripts/prehop_connection_timing.py','--mode','build','--index-stats',stats,
-            '--store',store,'--output',base/f'{short}-timing-build.json','--execute'],dependencies,1)
-        add(f'{short}-timing-replay',[python,'scripts/prehop_connection_timing.py','--mode','replay','--index-stats',stats,
-            '--store',store,'--activations',inputs['full'][1]/'activations.json','--queries',queries,'--repetitions','1','--warmups','0',
-            '--output',base/f'{short}-timing-replay.json','--execute'],[build,inputs['full'][0]],0,True)
         reference_result=(Path(multihoprag_reference) if short=='mhr' else
             ROOT/f'data/results/{campaign}-hotpotqa-prehop/prehop/hotpotqa/seed_42/prehop_hotpotqa.json')
         component_output=base/f'{short}-primary-without-hop'
@@ -104,34 +81,21 @@ def make_plan(campaign,mhr_stats,*,multihoprag_reference,adopt=(),updated_refere
         add(f'{short}-primary-factorial',[*factorial,'--queries',queries,'--metrics',*comparison_metrics(tag),
             '--output',base/f'{short}-primary-factorial.json'],
             [f'{short}-primary-{label}' for label in ('without-hop','hop-only','direct-only')],1)
-        reference_inputs=base/f'{short}-reference-starts.json'
-        reference_job=add(f'{short}-reference-starts',[python,'scripts/prepare_reference_timing.py',
-            '--reference-result',reference_result,'--output',reference_inputs],
-            [] if short=='mhr' else [hp_benchmark],4)
-        build_job=next(j for j in jobs if j['id']==build)
-        build_job['command'] += ['--reference-inputs', str(reference_inputs)]
-        build_job['after'] = [reference_job]
-        reference_replay=add(f'{short}-reference-timing',[python,'scripts/verify_primary_timing.py','--index-stats',stats,'--store',store,'--reference-inputs',reference_inputs,
-            '--queries',queries,'--output',base/f'{short}-reference-timing.json'],[build,reference_job],0,True)
-        add(f'{short}-estimated-total',[python,'scripts/estimate_connection_total.py',
-            '--reference-result',reference_result,'--timing',base/f'{short}-reference-timing.json',
-            '--queries',queries,'--output',base/f'{short}-estimated-total.json'],[reference_replay],2)
     for strategy in PRIMARY_STRATEGIES:
         if strategy=='prehop':continue
         index=primary(strategy,'index');primary(strategy,'benchmark',[index])
     for job in jobs:
         suffix=job['id'].split('-',1)[-1]
-        if suffix in {'A','B','C'} or suffix.startswith(('A-','B-','C-','direct-','body-clone','connectivity-','timing-replay')):
+        if suffix in {'A','B'} or suffix.startswith(('A-','B-','direct-')):
             job['experiment_role']='supplemental_representation_comparison'
             job['priority']=12
-        elif 'primary-' in suffix or suffix in {'reference-starts','reference-timing','estimated-total','timing-build'}:
+        elif 'primary-' in suffix:
             job['experiment_role']='primary_anchored_ablation'
         if job['id']=='hp-prehop-index':job['priority']=1
     if updated_reference:
         from copy import deepcopy
-        suffixes={'reference-starts','reference-timing','estimated-total','timing-build'}
         originals=[j for j in jobs if j['id'].startswith('mhr-') and
-                   (j['id'][4:].startswith('primary-') or j['id'][4:] in suffixes)]
+                   j['id'][4:].startswith('primary-')]
         mapping={j['id']:j['id'].replace('mhr-', 'mhr-updated-', 1) for j in originals}
         for original in originals:
             job=deepcopy(original)
@@ -146,10 +110,10 @@ def make_plan(campaign,mhr_stats,*,multihoprag_reference,adopt=(),updated_refere
         existing=next((j for j in jobs if j['id']==row['id']),None)
         if existing:existing.update(row)
         else:jobs.append(row)
-    return {'contract':'prehop-link-experiments-v5','campaign':campaign,'max_active':1,'max_hoprag_active':1,
-        'hotpotqa_protocol':'hotpotqa-hipporag-v1-1000','measurement_policy':'fixed-start timing only; no natural end-to-end reruns; separate reference-based estimates; direct gateway requests',
+    return {'contract':'prehop-paper-experiments-v6','campaign':campaign,'max_active':1,'max_hoprag_active':1,
+        'hotpotqa_protocol':'hotpotqa-hipporag-v1-1000','measurement_policy':'fixed-start expansion and search-channel comparisons; native baseline runs',
         'multihoprag_reference_result':str(multihoprag_reference),
-        'primary_endpoints':{'timing':'paired connection-stage saving','multihoprag_without_hop':'official_map@10','hotpotqa_without_hop':'hotpot_sp_f1'},
+        'primary_endpoints':{'multihoprag_without_hop':'official_map@10','hotpotqa_without_hop':'hotpot_sp_f1'},
         'jobs':jobs}
 
 

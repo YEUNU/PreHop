@@ -1,12 +1,6 @@
-"""Level-batched traversal over pre-built NEXT/HOP_ANSWER edges.
+"""One-step expansion of every direct start over stored HOP and NEXT edges.
 
-The complete representation-union seed pool is expanded in one Neo4j request.
-By default, every retrieved seed exposes HOP at level zero. The historical
-qplus policy restricts this to query-matched Q+ owners. The default path
-activates all stored provenance on that owner; reciprocal filtering and exact
-matched-ID activation remain selectable ablations. Later levels expose NEXT
-only. All structurally bounded results are retained until final
-indexed-embedding selection, so traversal has no reservoir multiplier.
+All structurally bounded candidates reach the shared scoring and selection path.
 """
 
 import os
@@ -96,50 +90,19 @@ class TraversalMixin:
             if self._node_identity(node) and self._node_identity(node) not in excluded_ids
         }
         base_candidate_ids = set(collected)
-        traversal_seeds = [node for node in base_candidates if not bool(node.get("role_body_owner_only"))]
-        frontier_ids = [self._node_identity(node) for node in traversal_seeds]
-        hop_source_question_ids = {
-            self._node_identity(node): {
-                str(question_id).strip()
-                for question_id in (node.get("matched_qplus_ids") or [])
-                if str(question_id).strip()
-            }
-            for node in traversal_seeds
-            if RAGConfig.HOP_SEED_POLICY == "all" or bool(node.get("dependency_seed"))
-        }
-        hop_source_question_ids = {
-            source_id: question_ids
-            for source_id, question_ids in hop_source_question_ids.items()
-            if source_id and (question_ids or RAGConfig.HOP_SEED_POLICY == "all")
-        }
-        continuation_source_question_ids = {
-            self._node_identity(node): {
-                str(question_id).strip()
-                for question_id in (node.get("matched_qminus_ids") or [])
-                if str(question_id).strip()
-            }
-            for node in traversal_seeds
-            if bool(node.get("continuation_seed"))
-        }
-        continuation_source_question_ids = {
-            source_id: question_ids
-            for source_id, question_ids in continuation_source_question_ids.items()
-            if source_id and question_ids
-        }
+        frontier_ids = [self._node_identity(node) for node in base_candidates]
+        hop_source_question_ids = {node_id: set() for node_id in frontier_ids if node_id}
         graph_expand_started = time.perf_counter()
         rows = await self._expand_frontier(
             frontier_ids,
             excluded_ids,
             hop_source_question_ids,
-            continuation_source_question_ids,
-            query_embedding,
-            top_k,
         )
         graph_expand_ms = (time.perf_counter() - graph_expand_started) * 1000
         for row, edge_rank in self._rank_frontier_rows(rows):
             target_id = str(row.get("id") or "").strip()
             path_type = str(row.get("path_type") or "").strip().lower()
-            if not target_id or target_id in excluded_ids or path_type not in {"next", "hop", "continuation"}:
+            if not target_id or target_id in excluded_ids or path_type not in {"next", "hop"}:
                 continue
             already_direct = target_id in base_candidate_ids
             candidate = collected.setdefault(
@@ -163,14 +126,8 @@ class TraversalMixin:
                 },
             )
             source_candidate = collected.get(str(row.get("source_id") or ""), {})
-            source_channel_scores = source_candidate.get("representation_scores") or {}
             if not already_direct:
-                if path_type == "hop" and RAGConfig.HOP_SEED_POLICY != "all":
-                    inherited_score = float(source_channel_scores.get("q_plus", 0.0))
-                elif path_type == "continuation":
-                    inherited_score = float(source_channel_scores.get("q_minus", 0.0))
-                else:
-                    inherited_score = float(source_candidate.get("representation_score", 0.0))
+                inherited_score = float(source_candidate.get("representation_score", 0.0))
                 # A graph-only target is supported indirectly through one
                 # edge. Its inherited rank evidence therefore receives the
                 # default reciprocal one-edge factor 1 / (depth + 1) = 0.5,
@@ -182,7 +139,7 @@ class TraversalMixin:
                 if inherited_score > float(candidate.get("representation_score", 0.0)):
                     candidate["representation_score"] = inherited_score
             bridge_embeddings = [embedding for embedding in (row.get("bridge_embeddings") or []) if embedding]
-            if not already_direct and path_type in {"hop", "continuation"} and bridge_embeddings:
+            if not already_direct and path_type == "hop" and bridge_embeddings:
                 existing = candidate.setdefault("bridge_embeddings", [])
                 for embedding in bridge_embeddings:
                     if embedding not in existing:
@@ -220,15 +177,9 @@ class TraversalMixin:
         frontier_ids: list[str],
         excluded_ids: set[str],
         hop_source_question_ids: dict[str, set[str]],
-        continuation_source_question_ids: dict[str, set[str]] | None = None,
-        query_embedding: list[float] | None = None,
-        top_k: int | None = None,
     ) -> list[dict[str, Any]]:
         if RAGConfig.GRAPH_EDGE_VARIANT == "none":
             return []
-        continuation_source_question_ids = continuation_source_question_ids or {}
-        query_embedding = query_embedding or []
-        top_k = RAGConfig.DEFAULT_TOP_K if top_k is None else max(1, int(top_k))
         branches: list[str] = []
         if RAGConfig.GRAPH_EDGE_VARIANT in {"full", "next_only"}:
             branches.append(
@@ -239,100 +190,18 @@ class TraversalMixin:
                            null AS activated_question_ids
                 """
             )
-        if RAGConfig.GRAPH_EDGE_VARIANT in {"full", "hop_only"} and not RAGConfig.CONNECTION_TIMING_MODE:
-            if RAGConfig.QUESTION_SCHEMA == "linked_v2" and RAGConfig.CONTINUATION_EDGES_ENABLED:
-                continuation_branch = f"""
-                    MATCH (src)-[:HAS_Q_MINUS]->(matched_q:{self.q_minus_label})
-                          -[:ANSWER_ANCHOR]->(:{self.answer_anchor_label})
-                          -[:MENTIONED_IN]->(related:{self.chunk_label})
-                    WHERE src.id IN $continuation_source_ids
-                      AND matched_q.id IN coalesce($continuation_source_question_ids[src.id], [])
-                      AND related.source <> src.source
-                    WITH src, related,
-                         collect(DISTINCT matched_q.id) AS activated_question_ids,
-                         collect(DISTINCT matched_q.embedding) AS bridge_embeddings,
-                         vector.similarity.cosine(related.embedding, $query_embedding)
-                         AS expansion_score
-                    ORDER BY expansion_score DESC, related.id
-                    LIMIT $top_k
-                    RETURN related, 'continuation' AS path_type,
-                           bridge_embeddings,
-                           activated_question_ids
+        if RAGConfig.GRAPH_EDGE_VARIANT in {"full", "hop_only"}:
+            branches.append(
+                f"""
+                    MATCH (src)-[hop:HOP_ANSWER]->(related:{self.chunk_label})
+                    WHERE src.id IN $hop_source_ids
+                    RETURN related, 'hop' AS path_type,
+                           [(src)-[:HAS_Q_PLUS]->(q:{self.q_plus_label})
+                            WHERE q.id IN coalesce(hop.source_question_ids, []) | q.embedding]
+                           AS bridge_embeddings,
+                           coalesce(hop.source_question_ids, []) AS activated_question_ids
                 """
-                branches.append(continuation_branch)
-            if RAGConfig.HOP_EDGE_FILTER == "none":
-                branches.append(
-                    f"""
-                        MATCH (src)-[hop:HOP_ANSWER]->(related:{self.chunk_label})
-                        WHERE src.id IN $hop_source_ids
-                              AND ($qplus_hop_activation = 'owner'
-                                   OR any(question_id IN coalesce(hop.source_question_ids, [])
-                                          WHERE question_id IN coalesce($hop_source_question_ids[src.id], [])))
-                        RETURN related, 'hop' AS path_type,
-                               [(src)-[:HAS_Q_PLUS]->(q:{self.q_plus_label})
-                                WHERE q.id IN coalesce(hop.source_question_ids, [])
-                                  AND ($qplus_hop_activation = 'owner'
-                                       OR q.id IN coalesce($hop_source_question_ids[src.id], [])) | q.embedding]
-                               AS bridge_embeddings,
-                               [question_id IN coalesce(hop.source_question_ids, [])
-                                WHERE $qplus_hop_activation = 'owner'
-                                   OR question_id IN coalesce($hop_source_question_ids[src.id], [])]
-                               AS activated_question_ids
-                    """
-                )
-            elif RAGConfig.HOP_EDGE_FILTER == "reciprocal":
-                branches.append(
-                    f"""
-                        MATCH (src)-[hop:HOP_ANSWER]->(related:{self.chunk_label})
-                        WHERE src.id IN $hop_source_ids
-                        MATCH (src)-[:HAS_Q_PLUS]->(edge_qplus:{self.q_plus_label})
-                              -[:ANSWERED_BY]->(edge_qminus:{self.q_minus_label})
-                        WHERE edge_qplus.id IN coalesce(hop.source_question_ids, [])
-                              AND ($qplus_hop_activation = 'owner'
-                                   OR edge_qplus.id IN coalesce($hop_source_question_ids[src.id], []))
-                              AND (related)-[:HAS_Q_MINUS]->(edge_qminus)
-                        CALL (related, edge_qplus, edge_qminus) {{
-                            OPTIONAL MATCH (same_source_owner:{self.chunk_label})
-                                           -[:HAS_Q_PLUS]->(same_source_qplus:{self.q_plus_label})
-                            WHERE same_source_owner.source = related.source
-                            WITH related, edge_qplus, edge_qminus,
-                                 count(same_source_qplus) + 1 AS reverse_pool
-                            CALL db.index.vector.queryNodes(
-                                $qplus_vector_index, reverse_pool, edge_qminus.embedding
-                            ) YIELD node, score
-                            MATCH (reverse_owner:{self.chunk_label})-[:HAS_Q_PLUS]->(node)
-                            WHERE reverse_owner.source <> related.source
-                            WITH edge_qplus, node, score
-                            ORDER BY score DESC, node.id
-                            WITH edge_qplus, collect(node)[0] AS reverse_best
-                            WHERE reverse_best.id = edge_qplus.id
-                            RETURN edge_qplus.id AS reciprocal_question_id,
-                                   edge_qplus.embedding AS reciprocal_embedding
-                        }}
-                        WITH related,
-                             collect(DISTINCT reciprocal_embedding) AS bridge_embeddings,
-                             collect(DISTINCT reciprocal_question_id) AS activated_question_ids
-                        RETURN related, 'hop' AS path_type,
-                               bridge_embeddings, activated_question_ids
-                    """
-                )
-            else:
-                branches.append(
-                    f"""
-                        MATCH (src)-[hop:HOP_ANSWER]->(related:{self.chunk_label})
-                        WHERE src.id IN $hop_source_ids
-                        WITH src, related, hop,
-                             [question_id IN coalesce(hop.reciprocal_source_question_ids, [])
-                              WHERE $qplus_hop_activation = 'owner'
-                                 OR question_id IN coalesce($hop_source_question_ids[src.id], [])]
-                             AS activated_question_ids
-                        WHERE size(activated_question_ids) > 0
-                        RETURN related, 'hop' AS path_type,
-                               [(src)-[:HAS_Q_PLUS]->(q:{self.q_plus_label})
-                                WHERE q.id IN activated_question_ids | q.embedding] AS bridge_embeddings,
-                               activated_question_ids
-                    """
-                )
+            )
         expansion_query = "\nUNION ALL\n".join(branches)
         async with self.neo4j.driver.session() as session:
             query = f"""
@@ -360,18 +229,6 @@ class TraversalMixin:
                     "frontier_ids": frontier_ids,
                     "excluded_ids": list(excluded_ids),
                     "hop_source_ids": sorted(hop_source_question_ids),
-                    "hop_source_question_ids": {
-                        source_id: sorted(question_ids) for source_id, question_ids in hop_source_question_ids.items()
-                    },
-                    "continuation_source_ids": sorted(continuation_source_question_ids),
-                    "continuation_source_question_ids": {
-                        source_id: sorted(question_ids)
-                        for source_id, question_ids in continuation_source_question_ids.items()
-                    },
-                    "query_embedding": query_embedding,
-                    "top_k": top_k,
-                    "qplus_hop_activation": RAGConfig.QPLUS_HOP_ACTIVATION,
-                    "qplus_vector_index": self.q_plus_vector_index,
                     "author_property": "author",
                     "publisher_property": "publisher",
                     "published_at_property": "published_at",
@@ -380,16 +237,6 @@ class TraversalMixin:
                 },
             )
             rows = [dict(record) async for record in result]
-        if RAGConfig.CONNECTION_TIMING_MODE:
-            from models.prehop.connection_timing import expand
-            hop_rows, measurement = await expand(
-                self, sorted(hop_source_question_ids), excluded_ids,
-                RAGConfig.CONNECTION_TIMING_MODE, RAGConfig.CONNECTION_TIMING_STORE)
-            recorder = getattr(self, "trace_recorder", None)
-            if recorder is not None:
-                from models.prehop.tracing import _IDENTITY
-                recorder.emit("connection_timing", measurement, identity=dict(_IDENTITY.get() or {}))
-            rows.extend(hop_rows)
         return sorted(rows, key=lambda r: (str(r.get("source_id")), str(r.get("path_type")), str(r.get("id"))))
 
     @staticmethod

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.io import _write_json, _write_jsonl
-from utils.reporting import _compute_stage_diagnostics, _write_model_report_artifacts, trace_detail_row
+from utils.reporting import _write_model_report_artifacts, trace_detail_row
 
 logger = logging.getLogger("Prehop")
 
@@ -99,6 +99,5 @@ def write_checkpoint(summary: dict[str, Any], result_file: Path) -> None:
     _write_slim_main(summary, result_file)
     try:
         _write_model_report_artifacts(summary, result_file, preserve_trace_artifacts=True)
-        _write_json(result_file.with_name(f"{result_file.stem}.stage_diagnostics.json"), _compute_stage_diagnostics(rows))
     except (OSError, TypeError, ValueError) as exc:
         logger.warning("Checkpoint saved; failed to write derived reports for %s: %s", result_file, exc)

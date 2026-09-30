@@ -77,7 +77,7 @@ def test_policy_and_cache_bind_structured_factory(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('index_schema', ['legacy', 'grounded_v1', 'linked_v2'])
+@pytest.mark.parametrize('index_schema', ['legacy'])
 async def test_actual_two_paths_through_typed_transport_and_sdk(monkeypatch, index_schema):
     import os
 
@@ -153,7 +153,7 @@ def test_portable_nonblank_profile_changes_schema_index_query_and_cache_identity
 
 
 def test_every_materialized_schema_uses_reviewed_wire_keywords():
-    contracts = [question_contract(mode) for mode in ('legacy', 'grounded_v1', 'linked_v2')]
+    contracts = [question_contract(mode) for mode in ('legacy',)]
     contracts += [ranking_contract(['A'], 1), ranking_contract(['A', 'B', 'C'], 2)]
     for contract in contracts:
         schema = contract.response_format()['json_schema']['schema']
@@ -162,3 +162,29 @@ def test_every_materialized_schema_uses_reviewed_wire_keywords():
     assert contracts[-1].schema()['properties']['ranking']['minItems'] == 2
     assert contracts[-1].schema()['properties']['ranking']['maxItems'] == 2
     assert contracts[-2].schema()['properties']['ranking']['items']['const'] == 'A'
+
+
+def test_retained_wire_contract_preserves_published_identity_and_rejects_removed_schemas():
+    from core.structured_outputs import structured_index_bundle_sha256
+
+    assert question_contract().provenance()['schema_sha256'] == (
+        'b843f1e13593419a16535c19964b8bafd1592d212647f5e95393fa19240c9258')
+    assert structured_bundle_sha256() == '766611f7c1524bebe36ca767a567ff5179eea6cd4d39952c539faa5d87d80218'
+    assert structured_index_bundle_sha256() == '00a2a48f12d74f5c8b2136ccecc8f26befdf7e34233582bcfd0a816cf0ba5010'
+    with pytest.raises(ValueError, match='Unsupported question schema'):
+        question_contract('removed-experiment')
+
+
+def test_active_prompt_edits_invalidate_historical_identity(monkeypatch):
+    from core.paper_compatibility import index_method_identity, method_identity
+    from models.prehop.indexing.chunking import _generation_signature
+    from utils.prompts import indexing
+
+    expected = '58adc4825e977e8eb1d2bf78e8b9e609c465ab3548582a15503eafff9e5b46ac'
+    assert index_method_identity('prehop')['prompt_configuration_sha256'] == expected
+    before = _generation_signature('gemma-4-31b-it')
+    query_identity = method_identity('prehop')
+    monkeypatch.setattr(indexing, 'HOPRAG_PROMPT', indexing.HOPRAG_PROMPT + 'changed request')
+    assert index_method_identity('prehop')['prompt_configuration_sha256'] != expected
+    assert method_identity('prehop') != query_identity
+    assert _generation_signature('gemma-4-31b-it') != before

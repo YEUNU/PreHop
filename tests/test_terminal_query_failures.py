@@ -2,7 +2,7 @@
 import pytest
 
 from core.amortized_cost import query_cost
-from core.benchmark_evaluation import _apply_judge_label, _recompute_aggregates, _update_summary_status
+from core.benchmark_evaluation import _apply_answer_label, _recompute_aggregates, _update_summary_status
 from core.benchmark_failures import POLICY, QUALITY_METRICS
 from core.campaign_outcomes import index_outcomes
 
@@ -10,9 +10,9 @@ from core.campaign_outcomes import index_outcomes
 def test_terminal_failure_keeps_denominator_latency_and_completion():
     good = {'answer':'A','answer_em':1.,'primary_answer_score':1., 'latency':2.,'category':'hop'}
     bad = {'answer':'ERROR','error':'timeout', 'failure_scope':'query','latency':8.,'category':'hop',
-           **{key:0. for key in QUALITY_METRICS},'llm_judge_score':-1.,'hallucination':-1.}
-    for row in [good,bad]:_apply_judge_label(row)
-    s={'details':[good,bad],'total_queries':2,'judge_enabled':False}
+           **{key:0. for key in QUALITY_METRICS}}
+    for row in [good,bad]:_apply_answer_label(row)
+    s={'details':[good,bad],'total_queries':2}
     _recompute_aggregates(s);_update_summary_status(s)
     assert s['avg_answer_em']==.5 and s['eligible_answer_em_count']==2
     assert s['avg_latency']==5. and s['query_failure_rate']==.5
@@ -45,13 +45,12 @@ async def test_live_query_loop_isolates_failure_without_zeroing_success(monkeypa
             return 'correct', [], []
         def close(self):pass
     async def verify(*a, **k):return {'status':'matched'}
-    async def evaluate(**k):return {'answer_em':1.,'primary_answer_score':1.,'doc_match':1.,'llm_judge_score':-1.}
+    async def evaluate(**k):return {'answer_em':1.,'primary_answer_score':1.,'doc_match':1.}
     async def barrier(*a,**k):pass
     monkeypatch.setenv('RAG_PAPER_MODE','false')
     monkeypatch.setenv('RAG_BENCHMARK_CONCURRENCY','1')
     monkeypatch.delenv('RAG_INDEX_REUSE_LINK',raising=False)
     monkeypatch.delenv('RAG_BENCHMARK_RESUME',raising=False)
-    monkeypatch.setattr(bench.RAGConfig,'JUDGE_ENABLED',False)
     monkeypatch.setattr(bench,'NaiveRAG',lambda **k:Engine())
     monkeypatch.setattr(bench,'_load_benchmark_corpus_manifest',lambda *a:{})
     monkeypatch.setattr(bench,'_latest_index_manifest_metadata',lambda *a:{})

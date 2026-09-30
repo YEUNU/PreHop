@@ -98,7 +98,7 @@ class HopEdgeMixin:
         wave: list[dict[str, Any]],
     ) -> list[list[dict[str, Any]]]:
         """Resolve each Q+ through one answer-bearing representation."""
-        channel = "q_minus" if RAGConfig.ABLATION_Q_MINUS else "body"
+        channel = "q_minus"
         candidates = await self._find_hop_candidates_batch(wave, channel)
         source_states: dict[str, dict[str, dict[str, dict[str, Any]]]] = {item["id"]: {} for item in wave}
         source_questions = {question["id"]: question for item in wave for question in item["questions"]}
@@ -211,9 +211,7 @@ class HopEdgeMixin:
                         if str(match.get("source_question_text") or "").strip()
                     )
                 )
-                edge["construction_mode"] = (
-                    "qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation"
-                )
+                edge["construction_mode"] = "qplus_to_qminus_owner"
                 selected_edges.append(edge)
 
         return selected_edges
@@ -410,32 +408,15 @@ class HopEdgeMixin:
     @traced
     async def build_all_hop_edges(self) -> None:
         """Build Q+-to-answer-owner HOP edges after the complete corpus is visible."""
-        if RAGConfig.HOP_LINK_VARIANT == "body":
-            from models.prehop.indexing.body_links import build_body_links
-            await build_body_links(self)
-            return
-        if not RAGConfig.ABLATION_Q_PLUS:
-            logger.info("Skipping HOP edge construction because Q+ is disabled.")
-            return
-
         await self.retry_query("CALL db.awaitIndexes($timeout_seconds)", {"timeout_seconds": 300})
 
-        if RAGConfig.ABLATION_Q_MINUS:
-            pool_rows = await self.retry_query(
-                f"""
-                MATCH (c:{self.chunk_label})-[:HAS_Q_MINUS]->(q:{self.q_minus_label})
-                RETURN c.source AS source, count(q) AS count_per_source
-                """
-            )
-            pool_channel = "q_minus"
-        else:
-            pool_rows = await self.retry_query(
-                f"""
-                MATCH (c:{self.chunk_label})
-                RETURN c.source AS source, count(c) AS count_per_source
-                """
-            )
-            pool_channel = "body"
+        pool_rows = await self.retry_query(
+            f"""
+            MATCH (c:{self.chunk_label})-[:HAS_Q_MINUS]->(q:{self.q_minus_label})
+            RETURN c.source AS source, count(q) AS count_per_source
+            """
+        )
+        pool_channel = "q_minus"
 
         def cross_document_pools(rows: list[dict[str, Any]]) -> dict[str, int]:
             # Neo4j filters documents after ANN, so each source pool includes
@@ -527,7 +508,4 @@ class HopEdgeMixin:
             total_edges,
             total_sources,
         )
-        if RAGConfig.QUESTION_SCHEMA == "linked_v2":
-            await self.build_answer_links()
-        if RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS and RAGConfig.ABLATION_Q_MINUS:
-            await self._precompute_reciprocal_hop_provenance()
+        await self._precompute_reciprocal_hop_provenance()

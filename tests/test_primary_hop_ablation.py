@@ -31,7 +31,7 @@ def test_environment_preserves_primary_and_removes_only_hop(tmp_path):
     env = environment(reference, ROOT / 'data/results/test-primary-removal', tmp_path / 'inputs')
     assert env['RAG_GRAPH_EDGE_VARIANT'] == 'next_only'
     assert env['RAG_GRAPH_HOP_DEPTH'] == '1'
-    assert env['RAG_HOP_SEED_POLICY'] == 'qplus'
+    assert env['RAG_HOP_SEED_POLICY'] == 'all'
     assert env['RAG_HOP_SEMANTIC_VARIANT'] == 'body_bridge_min'
     assert env['RAG_HYPO_CHANNEL_VARIANT'] == 'full'
     assert env['RAG_QPLUS_HOP_ACTIVATION'] == 'owner'
@@ -62,7 +62,6 @@ async def test_next_only_reads_bidirectional_next_and_no_hop(monkeypatch):
             yield row
 
     monkeypatch.setattr(RAGConfig, 'GRAPH_EDGE_VARIANT', 'next_only')
-    monkeypatch.setattr(RAGConfig, 'CONNECTION_TIMING_MODE', '')
     session = AsyncMock()
     session.run.return_value = empty_records()
     context = AsyncMock()
@@ -71,7 +70,7 @@ async def test_next_only_reads_bidirectional_next_and_no_hop(monkeypatch):
     reader.chunk_label = 'OriginalChunk'
     reader.q_plus_vector_index = 'original_qplus'
     reader.neo4j = SimpleNamespace(driver=SimpleNamespace(session=MagicMock(return_value=context)))
-    assert await reader._expand_frontier(['seed'], set(), {'seed': {'q1'}}) == []
+    assert await reader._expand_frontier(['seed'], set(), {'seed': set(), 'body': set()}) == []
     query, parameters = session.run.await_args.args
     assert 'MATCH (src)-[:NEXT]-(related:OriginalChunk)' in query
     assert 'HOP_ANSWER' not in query
@@ -135,7 +134,7 @@ async def test_direct_only_skips_all_graph_reads(monkeypatch):
     monkeypatch.setattr(RAGConfig, 'GRAPH_EDGE_VARIANT', 'none')
     reader = TraversalMixin()
     # No database is provided: disabling expansion must return before any read.
-    assert await reader._expand_frontier(['seed'], set(), {'seed': {'q1'}}) == []
+    assert await reader._expand_frontier(['seed'], set(), {'seed': set(), 'body': set()}) == []
 
 
 @pytest.mark.asyncio
@@ -176,7 +175,7 @@ async def test_hop_only_preserves_owner_activation_without_next(monkeypatch):
         for row in []:
             yield row
 
-    for key, value in {'GRAPH_EDGE_VARIANT': 'hop_only', 'CONNECTION_TIMING_MODE': '',
+    for key, value in {'GRAPH_EDGE_VARIANT': 'hop_only',
                        'QUESTION_SCHEMA': 'legacy', 'HOP_EDGE_FILTER': 'none',
                        'QPLUS_HOP_ACTIVATION': 'owner'}.items():
         monkeypatch.setattr(RAGConfig, key, value)
@@ -189,11 +188,10 @@ async def test_hop_only_preserves_owner_activation_without_next(monkeypatch):
     reader.q_plus_label = 'OriginalQPlus'
     reader.q_plus_vector_index = 'original_qplus'
     reader.neo4j = SimpleNamespace(driver=SimpleNamespace(session=MagicMock(return_value=context)))
-    assert await reader._expand_frontier(['seed', 'body'], set(), {'seed': {'q1'}}) == []
+    assert await reader._expand_frontier(['seed', 'body'], set(), {'seed': set(), 'body': set()}) == []
     query, parameters = session.run.await_args.args
     assert ':NEXT' not in query
     assert '[hop:HOP_ANSWER]' in query
     assert parameters['frontier_ids'] == ['seed', 'body']
-    assert parameters['hop_source_ids'] == ['seed']
-    assert parameters['hop_source_question_ids'] == {'seed': ['q1']}
-    assert parameters['qplus_hop_activation'] == 'owner'
+    assert parameters['hop_source_ids'] == ['body', 'seed']
+    assert '$qplus_hop_activation' not in query

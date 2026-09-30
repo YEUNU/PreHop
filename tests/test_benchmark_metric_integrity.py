@@ -11,7 +11,7 @@ from cli.index import _load_source_metadata
 from core.benchmark_checkpoint import _benchmark_checkpoint_due, _order_benchmark_rows, _resume_benchmark_rows
 from core.benchmark_evaluation import (
     _aggregate_seed_summaries,
-    _apply_judge_label,
+    _apply_answer_label,
     _evaluation_scope,
     _recompute_aggregates,
     _update_summary_status,
@@ -360,23 +360,19 @@ def test_paragraph_identity_header_is_not_indexed_as_evidence_text():
     assert parsed["pages"] == [{"num": 1, "content": "Actual evidence."}]
 
 
-def test_judge_disabled_does_not_block_deterministic_completion(tmp_path):
+def test_deterministic_answer_score_controls_completion():
     summary = {
         "dataset": "HotpotQA",
-        "judge_enabled": False,
         "total_queries": 1,
         "details": [
             {
                 "answer": "Final Answer: alias",
                 "question_type": "2hop",
                 "answer_em": 1.0,
-                "llm_judge_score": -1.0,
-                "groundedness": -1.0,
-                "hallucination": -1.0,
             }
         ],
     }
-    _apply_judge_label(summary["details"][0])
+    _apply_answer_label(summary["details"][0])
     _recompute_aggregates(summary)
     _update_summary_status(summary)
 
@@ -389,28 +385,28 @@ def test_multi_seed_aggregate_excludes_ineligible_seeds_and_all_ineligible_metri
         {
             "avg_answer_em": 1.0,
             "eligible_answer_em_count": 2,
-            "avg_llm_judge_score": 0.0,
-            "eligible_llm_judge_score_count": 0,
+            "avg_official_answer_f1": 0.0,
+            "eligible_official_answer_f1_count": 0,
             "category_summaries": {
                 "2hop": {
                     "avg_answer_em": 1.0,
                     "eligible_answer_em_count": 2,
-                    "avg_groundedness": 0.0,
-                    "eligible_groundedness_count": 0,
+                    "avg_evidence_doc_f1": 0.0,
+                    "eligible_evidence_doc_f1_count": 0,
                 }
             },
         },
         {
             "avg_answer_em": 0.0,
             "eligible_answer_em_count": 0,
-            "avg_llm_judge_score": 0.0,
-            "eligible_llm_judge_score_count": 0,
+            "avg_official_answer_f1": 0.0,
+            "eligible_official_answer_f1_count": 0,
             "category_summaries": {
                 "2hop": {
                     "avg_answer_em": 0.0,
                     "eligible_answer_em_count": 0,
-                    "avg_groundedness": 0.0,
-                    "eligible_groundedness_count": 0,
+                    "avg_evidence_doc_f1": 0.0,
+                    "eligible_evidence_doc_f1_count": 0,
                 }
             },
         },
@@ -425,9 +421,9 @@ def test_multi_seed_aggregate_excludes_ineligible_seeds_and_all_ineligible_metri
         "ci95_high": 1.0,
         "n": 1,
     }
-    assert "avg_llm_judge_score" not in aggregate["overall"]
+    assert "avg_official_answer_f1" not in aggregate["overall"]
     assert aggregate["categories"]["2hop"]["avg_answer_em"]["n"] == 1
-    assert "avg_groundedness" not in aggregate["categories"]["2hop"]
+    assert "avg_evidence_doc_f1" not in aggregate["categories"]["2hop"]
 
 
 def _artifact(strategy: str, *, query_id: str = "q-1") -> dict:

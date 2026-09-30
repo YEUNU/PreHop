@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils.io import _write_json
-from utils.official_results import build_reports
+from utils.official_results import build_reports, dataset_key
 
 
 def export(result_path: Path, output_dir: Path | None = None) -> tuple[Path, Path]:
@@ -38,8 +38,9 @@ def export_comparison(result_paths: list[Path], output_dir: Path) -> list[Path]:
         raw = path.read_bytes()
         result = json.loads(raw)
         rows = result.get("details", [])
+        scopes = {"full_benchmark", "released_benchmark"}
         if (result.get("status") not in {"completed", "completed_unadmitted"}
-                or result.get("evaluation_scope") not in {"full_benchmark", "released_benchmark"}
+                or result.get("evaluation_scope") not in scopes
                 or len(rows) != result.get("total_queries", result.get("queries_count"))):
             raise ValueError(f"Comparison requires a complete result: {path}")
         official, _ = build_reports(result)
@@ -53,8 +54,8 @@ def export_comparison(result_paths: list[Path], output_dir: Path) -> list[Path]:
             result.get("dataset_protocol"), result.get("evaluation_scope"),
             {r["query_id"]: (
                 r.get("original_query_id") or r["query_id"], r.get("question_type"), r.get("ground_truth"),
-                (r.get("expected_sources") or {}).get(
-                    "facts" if dataset == "multihoprag" else "supporting_facts", []),
+                ((r.get("expected_sources") or {}).get(
+                    "facts" if dataset == "multihoprag" else "supporting_facts", [])),
             ) for r in rows},
         )
         if dataset in populations and populations[dataset] != population:
@@ -127,7 +128,6 @@ async def export_synthesis_results(
     sources: list[Path], responses_path: Path, output_dir: Path, sentence_store: Path,
 ) -> list[Path]:
     from core.synthesis_replay import evaluate_responses
-    from utils.official_results import dataset_key
 
     raw = responses_path.read_bytes()
     responses = [json.loads(line) for line in raw.splitlines() if line.strip()]

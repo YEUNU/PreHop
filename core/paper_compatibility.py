@@ -38,13 +38,31 @@ def prompt_configuration(strategy: str) -> dict[str, Any]:
     return result
 
 
+# Historical method bundles included unused indexing prompts. Alias only the
+# exact retained prompt bundles; editing any active prompt still changes identity.
+_HISTORICAL_PROMPT_IDENTITIES = {
+    'fd4aa40f6915a5f5a99b999f78b5f2b4e2dbb60b5d5ebcd4bf952cd730caabda':
+        'b9c0f31b92e0a71f18d8516a79a9f3493fe8feba2879a5dd7e02a288a0ebe5c5',
+    'a1ced7308751cb25fd6a03ae5a5847de65abbea98a0d9907d332453714f705e2':
+        'f5e094c8fe4a80cb11bde84a63feb0d972410113d422c6a503cc93d32ee4f0fa',
+    '2ea79c00a5e70a70b5db8811aa607ec4f76252443d491b653f2a8210a603ea03':
+        '58adc4825e977e8eb1d2bf78e8b9e609c465ab3548582a15503eafff9e5b46ac',
+}
+
+
+def _prompt_identity(configuration):
+    from core.admission import identity_sha256
+    digest = identity_sha256(configuration)
+    return _HISTORICAL_PROMPT_IDENTITIES.get(digest, digest)
+
+
 def index_method_identity(strategy, environment: Mapping[str, str] | None = None):
     """Query-only changes do not change the construction identity."""
     identity = method_identity(strategy, environment)
     if strategy in {"prehop", "naive"}:
         from core.admission import identity_sha256
         from core.generation_profiles import generation_profiles
-        identity["prompt_configuration_sha256"] = identity_sha256({"index":prompt_configuration(strategy)["index"]})
+        identity["prompt_configuration_sha256"] = _prompt_identity({"index":prompt_configuration(strategy)["index"]})
         identity["generation_profiles_sha256"] = identity_sha256({"question_index":generation_profiles(strategy, environment)["question_index"]})
     return identity
 
@@ -86,6 +104,6 @@ def method_identity(strategy: str, environment: Mapping[str, str] | None = None)
     from core.generation_profiles import generation_profiles
     from core.runtime_requirements import load_runtime_requirements
     return {'method_contract': METHOD_CONTRACT_VERSIONS[strategy],
-            'prompt_configuration_sha256': identity_sha256(prompt_configuration(strategy)),
+            'prompt_configuration_sha256': _prompt_identity(prompt_configuration(strategy)),
             'generation_profiles_sha256': identity_sha256(generation_profiles(strategy, environment)),
             'runtime_requirement_sha256': identity_sha256(load_runtime_requirements().get(strategy, {}))}

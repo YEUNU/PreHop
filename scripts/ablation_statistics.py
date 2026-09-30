@@ -36,28 +36,17 @@ def compare(left,right,metrics,queries):
     a={r['query_id']:r for r in left['details']};b={r['query_id']:r for r in right['details']}
     groups={q['_id']:q.get('original_query_id',q['_id']) for q in queries}
     shared=sorted(a.keys() & b.keys());output={}
-    connectivity = all(r.get('analysis_contract') == 'co-evidence-connectivity-v3' for r in (left,right))
-    if connectivity:
-        # Pending commands from older plans acquire the full post-hoc metric set.
-        metrics=list(dict.fromkeys([*metrics,*left['comparison_metrics'],*right['comparison_metrics']]))
-    def value(row,key):
-        if not connectivity:return metric_value(row,key)
-        current=row
-        for part in key.split('.'):
-            if not isinstance(current,dict):return None
-            current=current.get(part)
-        return float(current) if isinstance(current,(int,float)) and np.isfinite(current) else None
     for metric in metrics:
         values=[];units=[]
         for qid in shared:
-            x,y=value(a[qid],metric),value(b[qid],metric)
+            x,y=metric_value(a[qid],metric),metric_value(b[qid],metric)
             if x is not None and y is not None:
                 values.append(x-y);units.append(groups.get(qid,qid))
         output[metric]=cluster_interval(values,units)
     return {'difference':'left minus right','left_rows':len(a),'right_rows':len(b),'paired_rows':len(shared),
         'unpaired_left':sorted(a.keys()-b.keys()),'unpaired_right':sorted(b.keys()-a.keys()),
         'left_failures':sum(bool(r.get('error')) for r in a.values()),'right_failures':sum(bool(r.get('error')) for r in b.values()),
-        'analysis_contract':'paired-connectivity-v3' if connectivity else 'paired-quality-v2',
+        'analysis_contract':'paired-quality-v2',
         'pairing':'occurrence differences first; resample the same original-question clusters for both conditions',
         'interval_scope':'question-cluster uncertainty conditional on saved graphs; random-graph variation is separate; pointwise descriptive',
         'metrics':output}

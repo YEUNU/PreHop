@@ -424,8 +424,7 @@ class VLLMClient:
     def _get_cached_client(self, url: str) -> AsyncOpenAI:
         # Key the cache by the *running event loop* as well as the url. httpx's
         # connection pool binds to the loop that first used it, so a client
-        # cached on one loop and reused on another (hoprag runs each judge call
-        # in a ThreadPoolExecutor worker that spins up a fresh asyncio.run loop)
+        # cached on one loop and reused by a native worker's fresh asyncio.run loop
         # deadlocks forever in select() — the loop-bound read timeout never
         # fires either. Per-loop clients keep prehop/naive (single main loop)
         # unchanged while isolating hoprag's multi-loop path.
@@ -450,9 +449,6 @@ class VLLMClient:
     def embed_client(self):
         return self._get_cached_client(self.embed_url)
 
-    @property
-    def judge_client(self):
-        return self.client
 
     def think_strip(self, message: str | None) -> str:
         if not message:
@@ -490,7 +486,7 @@ class VLLMClient:
         details = getattr(usage, 'completion_tokens_details', None)
         counters['reasoning_tokens'] = token_count(getattr(details, 'reasoning_tokens', None))
         schema = (params.get('response_format') or {}).get('json_schema', {})
-        known_names = {'prehop_index_legacy_v1', 'prehop_index_grounded_v1_v1', 'prehop_index_linked_v2_v1',
+        known_names = {'prehop_index_legacy_v1',
                        'prehop_ranking_v1'}
         schema_name = schema.get('name')
         hidden = getattr(response, '_hidden_params', None)
@@ -615,43 +611,6 @@ class VLLMClient:
             raise StructuredOutputError(f'JSON decoding failed; metadata={diagnostic}') from last_error
         raise RuntimeError('No JSON generation attempt was executed')
 
-    async def generate_eval_json(self, messages: list[dict[str, str]], **kwargs) -> dict[str, Any]:
-        """Generate judge JSON synchronously when Batch mode is explicitly disabled."""
-        model = kwargs.get("model", RAGConfig.EVAL_MODEL)
-        try:
-            truncated_messages = self._truncate_messages(messages)
-            requested_max_tokens = kwargs.get("max_tokens", kwargs.get("max_completion_tokens"))
-            params: dict[str, Any] = {
-                "model": model,
-                "messages": truncated_messages,
-                "response_format": {"type": "json_object"},
-                "max_tokens": self._resolve_output_token_limit(requested_max_tokens),
-                "temperature": 0.0,
-            }
-            params["extra_body"] = kwargs.get("extra_body") or {"chat_template_kwargs": {"enable_thinking": False}}
-            seed = InferenceTransport.resolve("core").generation_seed
-            if seed is not None:
-                params["seed"] = seed
-            response = await self._create_generation_request(self.judge_client, params)
-            content = response.choices[0].message.content or ""
-            try:
-                parsed = json.loads(content)
-            except json.JSONDecodeError as e:
-                snippet = self._json_error_context(content, e.pos)
-                self.logger.warning(
-                    "generate_eval_json parse failed: %s | len=%d pos=%d line=%d col=%d | snippet=%s",
-                    e,
-                    len(content),
-                    e.pos,
-                    e.lineno,
-                    e.colno,
-                    snippet,
-                )
-                raise
-            return parsed
-        except Exception as e:
-            self.logger.error(f"Error calling evaluation LLM ({model}): {e}")
-            raise
 
     async def get_embeddings(
         self,

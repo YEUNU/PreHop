@@ -1,6 +1,7 @@
 """Shared process ownership, locking and redacted child logs for experiment runners."""
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import json
 import os
@@ -123,3 +124,25 @@ def run_child(argv: list[str], env: dict[str, str], log_base: Path, handle, upda
             for stream in streams.values():
                 stream.close()
     return child.wait()
+
+
+async def drain(tasks):
+    """Cancel owned siblings on failure or cancellation, preserving the original error."""
+    try:
+        return await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def close_owned(*callbacks, primary_error=None):
+    """Attempt every cleanup; a cleanup failure must not replace the work failure."""
+    results = await asyncio.gather(*(callback() for callback in callbacks), return_exceptions=True)
+    errors = [result for result in results if isinstance(result, BaseException)]
+    if errors and primary_error is None:
+        raise errors[0]
+    if errors:
+        import logging
+        logging.getLogger(__name__).error('Cleanup also failed: %s', [type(error).__name__ for error in errors])

@@ -82,15 +82,19 @@ def test_core_query_settings_keep_types_normalization_and_fixed_parameters(monke
 
     monkeypatch.setenv('RAG_GRAPH_HOP_DEPTH', '0')
     monkeypatch.setenv('RAG_GRAPH_PATH_DECAY', '0.25')
+    monkeypatch.setenv('RAG_ABLATION_Q_MINUS', 'false')
     monkeypatch.setenv('RAG_ABLATION_Q_PLUS', 'false')
+    monkeypatch.setenv('RAG_PRECOMPUTE_RECIPROCAL_HOPS', 'false')
     monkeypatch.setenv('RAG_GRAPH_EDGE_VARIANT', ' NEXT_ONLY ')
     monkeypatch.setenv('RAG_DEFAULT_TOP_K', '99')
     config = runpy.run_path('core/config.py')['RAGConfig']
-    assert config.GRAPH_HOP_DEPTH == 0
-    assert config.GRAPH_PATH_DECAY == 0.25
-    assert config.ABLATION_Q_PLUS is False
+    assert config.GRAPH_HOP_DEPTH == 1
+    assert config.GRAPH_PATH_DECAY == 0.5
+    assert config.ABLATION_Q_MINUS is True
+    assert config.ABLATION_Q_PLUS is True
+    assert config.PRECOMPUTE_RECIPROCAL_HOPS is True
     assert config.GRAPH_EDGE_VARIANT == 'next_only'
     assert config.DEFAULT_TOP_K == 12
-    monkeypatch.setenv('RAG_ABLATION_Q_PLUS', 'not-a-bool')
-    with pytest.raises(ValueError, match='RAG_ABLATION_Q_PLUS'):
+    monkeypatch.setenv('RAG_GRAPH_EDGE_VARIANT', 'unsupported')
+    with pytest.raises(ValueError, match='RAG_GRAPH_EDGE_VARIANT'):
         runpy.run_path('core/config.py')

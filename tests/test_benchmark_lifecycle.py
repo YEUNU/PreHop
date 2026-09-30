@@ -36,7 +36,7 @@ async def test_failed_benchmark_drains_queries_before_closing(monkeypatch, tmp_p
                 raise RuntimeError('cleanup failed')
 
     async def evaluate(**kwargs):
-        return {'answer_em': 1., 'llm_judge_score': -1., 'doc_match': 0.}
+        return {'answer_em': 1., 'doc_match': 0.}
 
     def fail_write(*args):
         raise OSError('checkpoint disk failure')
@@ -46,7 +46,6 @@ async def test_failed_benchmark_drains_queries_before_closing(monkeypatch, tmp_p
     monkeypatch.delenv('RAG_INDEX_REUSE_LINK', raising=False)
     monkeypatch.setenv('RAG_BENCHMARK_CONCURRENCY', '2')
     monkeypatch.setenv('RAG_BENCHMARK_CHECKPOINT_EVERY', '1')
-    monkeypatch.setattr(benchmark.RAGConfig, 'JUDGE_ENABLED', False)
     monkeypatch.setattr(benchmark, 'NaiveRAG', lambda **kwargs: Engine())
     monkeypatch.setattr(benchmark, '_latest_index_manifest_metadata', lambda *args: None)
     monkeypatch.setattr(benchmark, 'evaluate_multihoprag_response', evaluate)
@@ -74,12 +73,8 @@ async def test_adapter_closes_when_later_initialization_fails(monkeypatch):
         def close(self):
             closed.append(True)
 
-    def fail_client(*args):
-        raise ValueError('invalid judge client')
-
     monkeypatch.setattr(benchmark, 'NaiveRAG', lambda **kwargs: Engine())
-    monkeypatch.setattr(benchmark, 'get_llm_client', fail_client)
-    with pytest.raises(RuntimeError, match='invalid judge client'):
-        async with benchmark._benchmark_engine('naive', 'default', 'test', True):
-            pytest.fail('Initialization should not complete')
+    with pytest.raises(ValueError, match='later initialization'):
+        async with benchmark._benchmark_engine('naive', 'default', 'test'):
+            raise ValueError('later initialization')
     assert closed == [True]

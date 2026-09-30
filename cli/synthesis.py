@@ -99,6 +99,7 @@ async def _run_synthesis(inputs, output, *, concurrency, client, model, interval
               'total': len(rows_by_key), 'resumed': len(done), 'completed': len(done),
               'model': model, 'execution': 'sequential dataset/system; trace context; final synthesis only; direct gateway',
               'concurrency': concurrency, 'rate_limit_events': 0, 'transport': transport.policy_dict()}
+    status.update(reader_prompt='prehop', prompt_version=SYNTHESIS_PROMPT_VERSION)
     status_path = output / 'status.json'
     atomic_json(status_path, status)
     cooldown_until = last_start = 0.0
@@ -119,6 +120,7 @@ async def _run_synthesis(inputs, output, *, concurrency, client, model, interval
         nonlocal cooldown_until, last_start
         record = {k: v for k, v in row.as_record().items() if k != 'context'}
         record.update(model=model, request_sha256=request_identity(row), attempts=[],
+                      reader_prompt='prehop', prompt_version=SYNTHESIS_PROMPT_VERSION,
                       reader_transport=transport.policy_dict())
         began = time.monotonic()
         rates = failures = 0

@@ -43,13 +43,7 @@ def question_contract(question_schema: str = 'legacy', limit: int = 3) -> Struct
     minus: Any = Nonempty
     plus: Any = Nonempty
     if question_schema != 'legacy':
-        anchors = Annotated[list[Nonempty], Field(min_length=0 if question_schema == 'linked_v2' else 1)]
-        fields = {'question': (Nonempty, ...), 'grounding_quote': (Nonempty, ...), 'anchor_entities': (anchors, ...)}
-        minus_fields = {**fields, 'answer': (Nonempty, ...)}
-        if question_schema == 'linked_v2':
-            minus_fields['continuation_anchor'] = (StrictStr, ...)
-        minus = create_model(name + '_incoming', __config__=_CONFIG, **minus_fields)
-        plus = create_model(name + '_outgoing', __config__=_CONFIG, **fields, missing_information=(Nonempty, ...))
+        raise ValueError(f'Unsupported question schema: {question_schema}')
     model = create_model(name, __config__=_CONFIG,
                          q_minus=(list[minus], Field(..., max_length=limit)),
                          q_plus=(list[plus], Field(..., max_length=limit)))
@@ -66,13 +60,24 @@ def ranking_contract(candidate_ids: list[str], top_k: int) -> StructuredContract
 
 def structured_bundle_sha256() -> str:
     """Bind the materialized request schemas."""
-    schemas = [question_contract(mode).schema() for mode in ('legacy', 'grounded_v1', 'linked_v2')]
+    schemas = [question_contract(mode).schema() for mode in ('legacy',)]
     schemas.append(ranking_contract(['C000', 'C001'], 1).schema())
     bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas}
-    return hashlib.sha256(json.dumps(bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    digest = hashlib.sha256(json.dumps(bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return _HISTORICAL_BUNDLE_IDENTITIES.get(digest, digest)
 
 
 def structured_index_bundle_sha256() -> str:
-    schemas = [question_contract(mode).schema() for mode in ('legacy', 'grounded_v1', 'linked_v2')]
+    schemas = [question_contract(mode).schema() for mode in ('legacy',)]
     bundle = {'profile': PREHOP_STRUCTURED_PROFILE, 'schemas': schemas}
-    return hashlib.sha256(json.dumps(bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    digest = hashlib.sha256(json.dumps(bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return _HISTORICAL_BUNDLE_IDENTITIES.get(digest, digest)
+
+
+# The published v3 bundle also hashed two unused experimental schemas. The
+# remaining requests are byte-identical, so preserve their index/cache identity.
+# A change to the profile or any retained schema produces a new digest instead.
+_HISTORICAL_BUNDLE_IDENTITIES = {
+    '01e0468f3ace65579d34dee4b9cecbfdaddccc5ca5d6c4b2471605468171ff51': '766611f7c1524bebe36ca767a567ff5179eea6cd4d39952c539faa5d87d80218',
+    '470781fcf1eafaa71bb724e1ce4f6e54e14d73e24e16a24bc9db0f0d97cf8d38': '00a2a48f12d74f5c8b2136ccecc8f26befdf7e34233582bcfd0a816cf0ba5010',
+}

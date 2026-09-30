@@ -150,12 +150,10 @@ path=reuse.ROOT/'data/results'/target/'index_link.json'
 path.parent.mkdir(parents=True)
 path.write_text(json.dumps({'target_run_id':target,'source_run_id':'original-index',
     'strategy':method,'dataset':'hotpotqa','clone':{'query_output_root':clone}}))
-os.environ.update(RAG_JUDGE_ENABLED='true',RAG_JUDGE_BATCH='true')
 reuse.bootstrap_benchmark(path)
 assert 'core.config' not in sys.modules
 from cli.benchmark import RAGConfig
 from core.inference_transport import InferenceTransport
-assert RAGConfig.JUDGE_ENABLED is False and RAGConfig.JUDGE_BATCH is False
 assert InferenceTransport.resolve("core").generation_seed == spec.paper_generation_seed
 assert os.environ['RAG_BENCHMARK_CONCURRENCY'] == resolved_execution_environment()['RAG_BENCHMARK_CONCURRENCY']
 assert os.environ['RAG_RUN_ID']=='original-index'

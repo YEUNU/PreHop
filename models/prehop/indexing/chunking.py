@@ -18,12 +18,8 @@ from typing import Any
 from core.config import RAGConfig
 from models.prehop.tracing import traced
 from utils.prompts import (
-    GROUNDED_HOPRAG_FORMAT_INSTRUCTION,
-    GROUNDED_HOPRAG_PROMPT,
     HOPRAG_FORMAT_INSTRUCTION,
     HOPRAG_PROMPT,
-    LINKED_HOPRAG_FORMAT_INSTRUCTION,
-    LINKED_HOPRAG_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,12 +56,7 @@ def _prompt_sig() -> str:
     entries are never reused under a changed prompt — they just sit
     untouched on disk under their old key (nothing is deleted) while a fresh
     run writes new entries under the new key."""
-    if RAGConfig.QUESTION_SCHEMA == "linked_v2":
-        combined = LINKED_HOPRAG_PROMPT + LINKED_HOPRAG_FORMAT_INSTRUCTION.format()
-    elif RAGConfig.QUESTION_SCHEMA == "grounded_v1":
-        combined = GROUNDED_HOPRAG_PROMPT + GROUNDED_HOPRAG_FORMAT_INSTRUCTION.format()
-    else:
-        combined = HOPRAG_PROMPT + HOPRAG_FORMAT_INSTRUCTION.format()
+    combined = HOPRAG_PROMPT + HOPRAG_FORMAT_INSTRUCTION.format()
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:8]
 
 
@@ -97,7 +88,7 @@ def _ablation_signature(generation_model_id: str = "") -> str:
         f"-schema={RAGConfig.QUESTION_SCHEMA}"
         f"-prompt={_prompt_sig()}"
         f"-generation={_generation_signature(generation_model_id)}"
-        + ("-links=body" if RAGConfig.HOP_LINK_VARIANT == "body" else "")
+        + ("")
     )
 
 

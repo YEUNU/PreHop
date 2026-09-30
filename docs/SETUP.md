@@ -61,6 +61,13 @@ Python starts; `RAGConfig` retains import-time values. Read-only configuration
 inspection passes copied settings through `resolved_target_environment` instead
 of temporarily changing `os.environ`.
 
+The final paper's selectable Prehop controls are search channels, HOP/NEXT
+expansion, scoring and selection. Question-role indexing, expansion depth,
+path decay and reciprocal metadata materialization are fixed in the registry;
+their former environment overrides are inactive. Use the
+[experiment inventory](REPRODUCING.md#paper-experiment-inventory) to select a
+reported comparison. Baseline retrieval parameters retain their native scope.
+
 The README selects [direct-8.json](../configs/execution_profiles/direct-8.json).
 Use that file to inspect/change producer and request limits; the registry owns
 unprofiled defaults. External workers' existing `RAG_<STRATEGY>_EMBEDDING_*`

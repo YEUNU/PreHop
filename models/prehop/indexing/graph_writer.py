@@ -21,7 +21,7 @@ from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
 from core.config import RAGConfig
 from models.prehop.tracing import traced
 
-from .chunking import _make_semantic_chunk_id, split_fixed_sentence_windows
+from .chunking import _make_semantic_chunk_id
 
 logger = logging.getLogger(__name__)
 
@@ -119,8 +119,6 @@ class GraphWriterMixin:
             (self.q_minus_vector_index, self.q_minus_label, "embedding"),
             (self.q_plus_vector_index, self.q_plus_label, "embedding"),
         ]
-        if RAGConfig.SENTENCE_CHANNEL_ENABLED:
-            vector_specs.append((self.sentence_vector_index, self.sentence_label, "embedding"))
         for index_name, label, property_name in vector_specs:
             await self.neo4j.execute_query(
                 f"""
@@ -142,11 +140,6 @@ class GraphWriterMixin:
             CREATE FULLTEXT INDEX {self.q_plus_text_index} IF NOT EXISTS
             FOR (n:{self.q_plus_label}) ON EACH [n.title, n.text]
             OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
-        if RAGConfig.SENTENCE_CHANNEL_ENABLED:
-            await self.neo4j.execute_query(f"""
-                CREATE FULLTEXT INDEX {self.sentence_text_index} IF NOT EXISTS
-                FOR (n:{self.sentence_label}) ON EACH [n.title, n.text]
-                OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}} """)
 
         await self.neo4j.execute_query(
             f"CREATE INDEX {self.chunk_label}_id_idx IF NOT EXISTS FOR (n:{self.chunk_label}) ON (n.id)"
@@ -160,15 +153,6 @@ class GraphWriterMixin:
         await self.neo4j.execute_query(
             f"CREATE INDEX {self.q_plus_label}_id_idx IF NOT EXISTS FOR (n:{self.q_plus_label}) ON (n.id)"
         )
-        if RAGConfig.QUESTION_SCHEMA == "linked_v2":
-            await self.neo4j.execute_query(
-                f"CREATE INDEX {self.answer_anchor_label}_id_idx IF NOT EXISTS "
-                f"FOR (n:{self.answer_anchor_label}) ON (n.id)"
-            )
-        if RAGConfig.SENTENCE_CHANNEL_ENABLED:
-            await self.neo4j.execute_query(
-                f"CREATE INDEX {self.sentence_label}_id_idx IF NOT EXISTS FOR (n:{self.sentence_label}) ON (n.id)"
-            )
 
     async def _ensure_index_ready(self):
         if self._index_ready:
@@ -256,7 +240,6 @@ class GraphWriterMixin:
         ]
         q_minus_items: list[tuple[int, int, dict[str, Any]]] = []
         q_plus_items: list[tuple[int, int, dict[str, Any]]] = []
-        sentence_items: list[tuple[int, int, str]] = []
         for chunk_index, chunk in enumerate(chunks):
             for channel in ("q_minus", "q_plus"):
                 values = chunk.get(channel, [])
@@ -268,17 +251,8 @@ class GraphWriterMixin:
             sent_id = int(chunk.get("sent_id", -1))
             q_minus = _dedupe_question_records(chunk.get("q_minus", []), "q_minus", source, sent_id)
             q_plus = _dedupe_question_records(chunk.get("q_plus", []), "q_plus", source, sent_id)
-            if RAGConfig.ABLATION_Q_MINUS:
-                q_minus_items.extend((chunk_index, ordinal, record) for ordinal, record in enumerate(q_minus))
-            if RAGConfig.ABLATION_Q_PLUS:
-                q_plus_items.extend((chunk_index, ordinal, record) for ordinal, record in enumerate(q_plus))
-            if RAGConfig.SENTENCE_CHANNEL_ENABLED:
-                sentence_items.extend(
-                    (chunk_index, ordinal, sentence)
-                    for ordinal, sentence in enumerate(
-                        split_fixed_sentence_windows(str(chunk.get("text", "") or ""), chunk_sentences=1)
-                    )
-                )
+            q_minus_items.extend((chunk_index, ordinal, record) for ordinal, record in enumerate(q_minus))
+            q_plus_items.extend((chunk_index, ordinal, record) for ordinal, record in enumerate(q_plus))
 
         q_minus_document_texts = [
             _scoped_document_text(str(chunks[chunk_index].get("title", "") or ""), record["text"])
@@ -289,17 +263,11 @@ class GraphWriterMixin:
             for chunk_index, _ordinal, record in q_plus_items
         ]
         q_plus_query_texts = [record["text"] for _chunk_index, _ordinal, record in q_plus_items]
-        sentence_document_texts = [
-            _scoped_document_text(str(chunks[chunk_index].get("title", "") or ""), sentence)
-            for chunk_index, _ordinal, sentence in sentence_items
-        ]
-
-        body_embeds, q_minus_embeds, q_plus_embeds, q_plus_query_embeds, sentence_embeds = await asyncio.gather(
+        body_embeds, q_minus_embeds, q_plus_embeds, q_plus_query_embeds = await asyncio.gather(
             self._embed_sparse_texts(body_texts),
             self._embed_sparse_texts(q_minus_document_texts),
             self._embed_sparse_texts(q_plus_document_texts),
             self._embed_sparse_texts(q_plus_query_texts, encoding_type="query"),
-            self._embed_sparse_texts(sentence_document_texts),
         )
 
         for stage, embeddings, expected in (
@@ -307,7 +275,6 @@ class GraphWriterMixin:
             ("Q-", q_minus_embeds, len(q_minus_items)),
             ("Q+ document", q_plus_embeds, len(q_plus_items)),
             ("Q+ query", q_plus_query_embeds, len(q_plus_items)),
-            ("sentence", sentence_embeds, len(sentence_items)),
         ):
             if len(embeddings) != expected or any(len(embedding) != self.vector_dimensions for embedding in embeddings):
                 raise ValueError(
@@ -361,21 +328,6 @@ class GraphWriterMixin:
                 }
             )
 
-        sentences_by_chunk: dict[int, list[dict[str, Any]]] = {index: [] for index in range(len(chunks))}
-        for flat_index, (chunk_index, ordinal, sentence) in enumerate(sentence_items):
-            chunk = chunks[chunk_index]
-            chunk_id = _make_semantic_chunk_id(source, chunk["title"], chunk["sent_id"])
-            sentences_by_chunk[chunk_index].append(
-                {
-                    "id": _make_question_id(chunk_id, "sentence", ordinal, sentence),
-                    "text": sentence,
-                    "ordinal": ordinal,
-                    "source": source,
-                    "title": chunk["title"],
-                    "embedding": sentence_embeds[flat_index],
-                }
-            )
-
         batch_data = []
         for index, chunk in enumerate(chunks):
             body_embedding = body_embeds[index] if index < len(body_embeds) else []
@@ -401,7 +353,6 @@ class GraphWriterMixin:
                     "embedding": body_embedding,
                     "q_minus": q_minus_by_chunk[index],
                     "q_plus": q_plus_by_chunk[index],
-                    "sentences": sentences_by_chunk[index],
                 }
             )
 
@@ -506,13 +457,6 @@ class GraphWriterMixin:
                         q.anchor_entities = question.anchor_entities,
                         q.missing_information = question.missing_information
                     MERGE (c)-[:HAS_Q_PLUS]->(q)
-                )
-                FOREACH (sentence IN item.sentences |
-                    MERGE (s:{self.sentence_label} {{id: sentence.id}})
-                    SET s.text = sentence.text, s.ordinal = sentence.ordinal,
-                        s.source = sentence.source, s.title = sentence.title,
-                        s.embedding = sentence.embedding
-                    MERGE (c)-[:HAS_SENTENCE]->(s)
                 )
                 RETURN count(c) AS chunks_written
             }}

@@ -110,7 +110,7 @@ git diff --check
 - 기존 evaluator·answer extraction을 재사용한다. 실패 질문을 조용히 제외하지 않는다.
   terminal failure 품질은 0이며 null 실패가 retrieval 분모에 주는 영향을 명시한다.
   관측되지 않은 usage·비용·judge 값은 0점·성공으로 바꾸지 않는다.
-- LLM judge는 기본적으로 꺼진 별도 보조 분석이며 공식 지표를 대체하지 않는다.
+- 최종 논문 평가는 결정적 데이터셋 지표를 사용하며 LLM judge 실행·보고 경로는 지원하지 않는다.
   최종 표는 명시적인 결과 경로를 `scripts/export_official_results.py`에 전달한다.
   최신 파일을 임의 선택하지 않고 집계를 모델 재실행·공식 코드 동등성 인증이라 하지 않는다.
 - 실제 revision·dirty 상태, 데이터·query·원본 index 식별자, 방법·모델·알려진 revision,

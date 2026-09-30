@@ -5,9 +5,7 @@ This script pairs per-query scores by stable query ID, computes the paired
 difference (prehop - baseline) per query, and bootstraps the mean diff to a
 95% CI. A diff whose CI excludes 0 is a statistically separated win/loss.
 
-- Judge / hallucination are excluded from the primary bootstrap by default.
-  Pass ``--include-judge`` to emit a clearly labelled supplemental analysis;
-  judged rows only (sentinel -1 dropped), and hallucination is lower-is-better.
+
 - Dataset-specific metrics are selected from the result artifact: official
   MultiHop-RAG ranking/custom fact recall or HotpotQA answer/support metrics.
   A query with no gold evidence (e.g. MultiHop-RAG's null_query category) is
@@ -15,7 +13,7 @@ difference (prehop - baseline) per query, and bootstraps the mean diff to a
   `expected_sources` (docs/facts) rather than a dataset-specific category
   name, so this works for the active datasets (every HotpotQA query carries gold
   evidence, so the exclusion never fires there). Terminal query failures count
-  as zero for primary quality metrics. Unjudged supplemental metrics remain excluded.
+  as zero for primary quality metrics. Unavailable metrics remain excluded.
 
 The dataset name/tag is read from each result file's own `dataset`/
 `corpus_tag` fields — nothing dataset-specific needs to be passed in.
@@ -43,7 +41,6 @@ from pathlib import Path
 
 import numpy as np
 
-SUPPLEMENTAL_JUDGE_METRICS = ["llm_judge_score", "groundedness", "hallucination"]
 MULTIHOPRAG_METRICS = [
     "answer_em",
     "answer_f1",
@@ -61,7 +58,7 @@ MULTIHOPRAG_METRICS = [
     "evidence_doc_f1",
 ]
 RETRIEVAL_METRICS = set(MULTIHOPRAG_METRICS[3:])
-LOWER_IS_BETTER = {"hallucination", "latency"}
+LOWER_IS_BETTER = {"latency"}
 N_BOOT = 10000
 SEED = 42
 
@@ -138,7 +135,6 @@ def _validate_artifact_pair(
             "query_provenance",
             "evaluation_provenance",
             "benchmark_concurrency",
-            "judge_enabled",
         )
         changed_metadata = [key for key in controlled_metadata if treatment.get(key) != baseline.get(key)]
         if changed_metadata:
@@ -260,7 +256,6 @@ def main() -> None:
     ap.add_argument("--baselines", nargs="+", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--fig", default=None, help="default: fig/<corpus_tag>_bootstrap_forest.png")
-    ap.add_argument("--include-judge", action="store_true", help="also run supplemental LLM-judge bootstrap metrics")
     ap.add_argument(
         "--allow-exploratory", action="store_true", help="allow non-full but otherwise compatible artifacts"
     )
@@ -328,8 +323,7 @@ def main() -> None:
         # Unknown artifacts are still safely processed, but no dataset-only
         # metric is silently claimed to be applicable.
         metrics = []
-    judge_metrics = SUPPLEMENTAL_JUDGE_METRICS if args.include_judge else []
-    all_metrics = metrics + judge_metrics
+    all_metrics = metrics
     results: dict[str, dict[str, dict]] = {m: {} for m in all_metrics}
     for m in all_metrics:
         for strat, base in baselines.items():
@@ -358,7 +352,6 @@ def main() -> None:
                 "index_variant_override": bool(args.allow_index_variant),
                 "expected_ablation_differences": sorted(set(args.expected_ablation_difference)),
                 "primary_metrics": metrics,
-                "supplemental_judge_metrics": judge_metrics,
                 "results": results,
             },
             indent=2,

@@ -18,7 +18,7 @@ from core.benchmark_checkpoint import (
 )
 from core.benchmark_evaluation import (
     _aggregate_seed_summaries,
-    _apply_judge_label,
+    _apply_answer_label,
     _evaluation_scope,
     _extract_stage_timing,
     _recompute_aggregates,
@@ -33,7 +33,6 @@ from core.paper_policy import canonical_query_policy, structured_query_identity
 from core.prehop_ablation import ablation_identity
 from core.semantic_config import parse_strict_bool
 from core.strategy_registry import RESEARCH_EXTERNAL_STRATEGIES
-from core.vllm_client import get_llm_client
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from utils.io import _write_json
@@ -137,22 +136,13 @@ def _query_records_sha256(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(records).encode("utf-8")).hexdigest()
 
 
-def _judge_independence(eval_model: str, model_id: str, default_model: str, allow_self: bool) -> tuple[bool, bool]:
-    """Validate that a supplemental judge is independent of generation."""
-    evaluator = str(eval_model or "").strip().casefold()
-    generation_models = {str(model_id or "").strip().casefold(), str(default_model or "").strip().casefold()}
-    is_independent = bool(evaluator) and evaluator not in generation_models
-    override_used = not is_independent and bool(allow_self)
-    return is_independent, override_used
-
-
 def _build_benchmark_query(query: str, item: dict[str, Any]) -> str:
     """Return the user-facing query as-is.
 
     The previous implementation appended `[Benchmark Output Format]` blocks
     that forced verbose CoT inside `\\boxed{}`. That suffix leaked into
     retrieval embeddings as noise and collided with the citation-first
-    answer format. The judge prompt extracts `\\boxed{}` / `Final Answer:`
+    answer format. The deterministic evaluator extracts `\\boxed{}` / `Final Answer:`
     internally, so the scaffolding adds no signal upstream.
     """
     _ = item  # kept for signature stability; type detection no longer alters the query.
@@ -160,7 +150,7 @@ def _build_benchmark_query(query: str, item: dict[str, Any]) -> str:
 
 
 @asynccontextmanager
-async def _benchmark_engine(strategy: str, model_id: str, corpus_tag: str, judge_enabled: bool):
+async def _benchmark_engine(strategy: str, model_id: str, corpus_tag: str):
     """Close owned adapters on success, initialization failure, cancellation, and I/O errors."""
     engine = None
     failed = False
@@ -168,9 +158,6 @@ async def _benchmark_engine(strategy: str, model_id: str, corpus_tag: str, judge
         try:
             if strategy == "prehop":
                 engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
-                if RAGConfig.CONNECTION_TIMING_MODE:
-                    from models.prehop.connection_timing import metadata
-                    metadata(RAGConfig.CONNECTION_TIMING_STORE, os.environ["RAG_INDEX_NAMESPACE"])
             elif strategy == "naive":
                 engine = NaiveRAG(strategy=strategy, corpus_tag=corpus_tag)
             elif strategy == "hoprag":
@@ -188,10 +175,9 @@ async def _benchmark_engine(strategy: str, model_id: str, corpus_tag: str, judge
             else:
                 raise ValueError(f"Unknown strategy: {strategy}")
 
-            vllm = get_llm_client(model_id) if judge_enabled else None
         except Exception as exc:
             raise RuntimeError(f"Failed to initialize engine for {strategy}: {exc}") from exc
-        yield engine, vllm
+        yield engine
     except BaseException:
         failed = True
         raise
@@ -234,16 +220,6 @@ async def run_benchmark(
         link_path = Path(os.environ["RAG_INDEX_REUSE_LINK"])
         reuse_link = load_link(link_path)
         reuse_reference = ref(link_path)
-    judge_enabled = bool(RAGConfig.JUDGE_ENABLED)
-    judge_independent: bool | None = None
-    judge_self_override = False
-    if judge_enabled:
-        judge_independent, judge_self_override = _judge_independence(
-            RAGConfig.EVAL_MODEL,
-            model_id,
-            InferenceTransport.resolve("core").generation_model,
-            RAGConfig.JUDGE_ALLOW_SELF,
-        )
 
     if seed is not None:
         from core.strategy_registry import get_strategy
@@ -286,7 +262,7 @@ async def run_benchmark(
     index_manifest = _latest_index_manifest_metadata(strategy, corpus_tag)
     benchmark_code = code_provenance()
     corpus_index_fingerprint_status = "not_checked"
-    async with _benchmark_engine(strategy, model_id, corpus_tag, judge_enabled) as (engine, vllm):
+    async with _benchmark_engine(strategy, model_id, corpus_tag) as engine:
         # Active-index verification is disabled; retain its explicit report status.
         active_index_snapshot = {"status": "not_checked"}
         results: list[dict[str, Any]] = []
@@ -318,13 +294,6 @@ async def run_benchmark(
 
         result_file = output_results_dir / f"{strategy}_{corpus_tag}.json"
         summary: dict[str, Any] = {}
-
-        if judge_enabled and RAGConfig.JUDGE_BATCH:
-            raise RuntimeError("RAG_JUDGE_BATCH is disabled; supplemental judging must use the LiteLLM gateway")
-        elif judge_enabled:
-            logger.info("Supplemental judge: synchronous mode")
-        else:
-            logger.info("Supplemental judge: disabled (deterministic/official metrics only)")
 
         from core.execution_profile import resolved_execution_environment
         execution_env = resolved_execution_environment()
@@ -391,10 +360,6 @@ async def run_benchmark(
                     "Official-compatible fields require the complete official split and a corpus/index rebuilt from this manifest; "
                     "any sample or subset artifact is exploratory only."
                 ),
-                "judge_enabled": judge_enabled,
-                "judge_policy": "supplemental_optional",
-                "judge_independent": judge_independent,
-                "judge_self_override": judge_self_override,
                 "benchmark_concurrency": benchmark_concurrency,
                 "observed_query_peak_concurrency": observed_query_peak,
                 "benchmark_checkpoint_every": benchmark_checkpoint_every,
@@ -410,7 +375,7 @@ async def run_benchmark(
                     .get("index_policy", {})
                     .get("embedding_model", transport.embedding_model),
                     "embedding_revision": (index_manifest or {}).get("index_policy", {}).get("embedding_revision"),
-                    "eval": RAGConfig.EVAL_MODEL,
+                    "eval": "",
                 },
                 "ablation": {
                     "q_minus": RAGConfig.ABLATION_Q_MINUS,
@@ -538,8 +503,6 @@ async def run_benchmark(
                         question_type=item.get("question_type", ""),
                         dataset=dataset_marker,
                         answer_aliases=item.get("answer_aliases", []),
-                        vllm_client=vllm,
-                        judge_enabled=judge_enabled,
                         supporting_facts=item.get("supporting_facts"),
                         hotpot_sentence_store=str(sentence_store) if dataset_marker == "hotpotqa" else None,
                     )
@@ -575,14 +538,6 @@ async def run_benchmark(
                     target_failure = target_failure or isinstance(exc, BenchmarkIntegrityError)
 
                     metrics = {
-                        "llm_judge_score": -1.0,
-                        "llm_judge_reason": "runtime_error",
-                        "groundedness": -1.0,
-                        "groundedness_source": "runtime_error",
-                        "hallucination": -1.0,
-                        "hallucination_reason": "runtime_error",
-                        "hallucination_source": "runtime_error",
-                        "hallucination_model": str(RAGConfig.EVAL_MODEL or ""),
                         "answer_em": -1.0,
                         "answer_f1": -1.0,
                         "answer_precision": -1.0,
@@ -654,9 +609,7 @@ async def run_benchmark(
                     recorder.emit("benchmark.query", {"input": item, "result": result_item},
                                   identity={"query_id": str(item["_id"]), "query_index": idx})
 
-                # Primary labels/rates are deterministic; judge labels remain
-                # separately named supplemental analysis.
-                _apply_judge_label(result_item)
+                _apply_answer_label(result_item)
 
                 async with write_lock:
                     results.append(result_item)
@@ -665,8 +618,7 @@ async def run_benchmark(
                     error_suffix = " [ERROR]" if result_item.get("error") else ""
                     print(
                         f"[{strategy}] ({len(results)}/{total_queries}) [{category}]{error_suffix} "
-                        f"Primary: {result_item.get('primary_answer_score', -1.0):.1f} | "
-                        f"Judge: {metrics['llm_judge_score']:.1f} | Hallu: {result_item.get('hallucination', -1.0):.1f} "
+                        f"Primary: {result_item.get('primary_answer_score', -1.0):.1f} "
                         f"| DocMatch: {metrics['doc_match']:.0f} | Latency: {latency:.1f}s"
                     )
 

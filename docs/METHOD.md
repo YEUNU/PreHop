@@ -56,10 +56,10 @@ file identity defines source exclusion; distinct files can share a title.
 
 Questions selecting the same source/destination chunks merge into one
 `HOP_ANSWER` edge with question provenance. `ANSWERED_BY` and `SUPPORTED_BY`
-retain question-to-evidence paths. Disabling Q+ skips default HOP construction.
-Reciprocal links can be precomputed, but the primary query does not require
-reciprocity. Optional `grounded`/`linked_v2` experiments add answer anchors and
-cross-source mention relations; they are separate method conditions.
+retain question-to-evidence paths. Both question roles are indexed in every
+retained condition; body-only search changes query-time channels, not the index.
+Reciprocal-link metadata remains materialized to preserve the published index
+construction and timing conditions; query expansion does not filter by reciprocity.
 
 ## Prehop query path
 
@@ -89,10 +89,12 @@ filled from the existing order. The adapter then creates unique source records.
 No additional local uniqueness or ranking-length validator retries the model.
 The runtime and fixed-candidate comparisons share ordering/completion code.
 
-Historical Q+-restricted activation and bridge-semantic scoring remain explicit
-options. Depth zero disables expansion while retaining selection. Channel,
-edge, reciprocity and continuation experiments must retain their recorded
-conditions; past results are not relabelled with current defaults.
+The paper compares this expansion with deeper original-query retrieval in the
+same index under matched selector input token budgets. Further controls vary
+body-only versus full-channel search, HOP/NEXT expansion, link construction,
+and LLM versus deterministic selection. Historical `body_bridge_min`
+scoring remains available for the reported search-channel comparison. Saved
+results retain their recorded policy and are not relabelled with current defaults.
 
 ## Generation and reader boundaries
 
@@ -193,20 +195,20 @@ from retrieval-index capacity.
 
 ## Controlled analysis modules
 
-`ablation_inputs.py` freezes direct candidates for explicit experiments only.
-`connection_timing.py` stores experiment-scoped HOP_TIMING relations through the
-same matching wave, hydrating identical destination fields in both timing arms.
-Its pointer JSON records identity/preparation costs, not a destination table.
-
-`prepare_reference_timing.py` recovers actual starts, exclusions, settings and
-historical destinations from traces. The estimator adds paired connection-time
-deltas to original full-query latency and reports unavailable cases separately;
-this is estimated end-to-end time, not a new live query measurement.
-
-Gold is read only after construction for co-evidence connectivity and its
-degree-matched random null. Per-query random realizations, signed differences,
-released-row and original-question macro summaries remain distinct.
+`ablation_inputs.py` freezes direct candidates for the HOP/NEXT controls.
 `ablation_statistics.py` pairs occurrence IDs before resampling original-question
-clusters. Link usefulness retains its successful-query denominator. These
-analysis checks do not become dispatch gates. Commands and interpretation are
-owned by [Reproducing](REPRODUCING.md).
+clusters. Link usefulness retains its successful-query denominator, while the
+shuffled-link comparison reads frozen candidates and sampling realizations.
+`compare_link_representations.py` retains the five-condition appendix pilot;
+its Q+ to passage search uses the shared ANN helper without replacing the main
+question-link index. `analyze_evidence_accessibility.py` evaluates frozen graph
+and deeper-direct pools, selection retention and reader-development exclusions.
+Commands and the full experiment inventory are owned by [Reproducing](REPRODUCING.md).
+
+Registry fields for retired experimental controls are fixed historical identity
+values, not selectable methods. Question-role indexing, one-step depth, path
+decay and reciprocal metadata materialization are fixed to the reported index
+and method settings. Prompt and structured-schema identities retain historical bundle aliases
+while the active templates and schemas are unchanged; editing a retained
+prompt or schema produces a new identity. This preserves
+existing index and cache identities without retaining experimental generators.

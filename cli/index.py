@@ -125,19 +125,10 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: st
             "q_plus_enabled": RAGConfig.ABLATION_Q_PLUS,
             "sentence_channel_enabled": RAGConfig.SENTENCE_CHANNEL_ENABLED,
             "precompute_reciprocal_hops": RAGConfig.PRECOMPUTE_RECIPROCAL_HOPS,
-            "continuation_edges_materialized": RAGConfig.QUESTION_SCHEMA == "linked_v2",
+            "continuation_edges_materialized": False,
             "continuation_anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY,
-            "hop_construction": (
-                "qplus_to_qminus_owner+shared_grounded_answer_mentions"
-                if RAGConfig.QUESTION_SCHEMA == "linked_v2" and RAGConfig.ABLATION_Q_MINUS
-                else ("qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation")
-            ),
+            "hop_construction": "qplus_to_qminus_owner",
         })
-        if RAGConfig.HOP_LINK_VARIANT == "body":
-            from core.prehop_ablation import ablation_identity
-            policy.update(hop_construction="body_to_body",
-                          body_link_reference_sha256=ablation_identity()["body_link_reference_sha256"],
-                          body_link_degree_policy="reference_per_node")
     if strategy == "gfm_rag":
         from models.official_baseline_runtime import official_root
         runtime_spec = runtime_requirement(strategy)
@@ -385,17 +376,8 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
     doc = engine.doc_label
     q_minus = engine.q_minus_label
     q_plus = engine.q_plus_label
-    sentence = engine.sentence_label
-    answer_anchor = engine.answer_anchor_label
 
     sentence_representation_union = ""
-    if RAGConfig.SENTENCE_CHANNEL_ENABLED:
-        sentence_representation_union = f"""
-            UNION ALL
-            MATCH (s:{sentence})
-            RETURN count(CASE WHEN s.embedding IS NULL THEN 1 END) AS missing_embeddings,
-                   count(CASE WHEN NOT (:{chunk})-[:HAS_SENTENCE]->(s) THEN 1 END) AS orphan_nodes
-        """
 
     representation_rows = await engine.neo4j.execute_query(f"""
         CALL () {{
@@ -418,18 +400,6 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
     representation = representation_rows[0] if representation_rows else {}
 
     sentence_structure: dict[str, object] = {}
-    if RAGConfig.SENTENCE_CHANNEL_ENABLED:
-        sentence_rows = await engine.neo4j.execute_query(f"""
-            MATCH (c:{chunk})
-            OPTIONAL MATCH (c)-[:HAS_SENTENCE]->(s:{sentence})
-            WITH c, count(s) AS sentence_count,
-                 count(CASE WHEN s IS NOT NULL AND trim(coalesce(s.text, '')) = '' THEN 1 END) AS empty_sentences
-            RETURN count(CASE WHEN sentence_count < 1 OR
-                                   sentence_count > {RAGConfig.CHUNK_SENTENCES}
-                              THEN 1 END) AS invalid_chunks,
-                   sum(empty_sentences) AS empty_sentences
-        """)
-        sentence_structure = sentence_rows[0] if sentence_rows else {}
 
     question_rows = await engine.neo4j.execute_query(f"""
         CALL () {{
@@ -458,34 +428,6 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
     """)
     cross_channel = cross_channel_rows[0] if cross_channel_rows else {}
     grounding: dict[str, object] = {}
-    if RAGConfig.QUESTION_SCHEMA in {"grounded_v1", "linked_v2"}:
-        expected_schema = RAGConfig.QUESTION_SCHEMA
-        grounding_rows = await engine.neo4j.execute_query(
-            f"""
-            CALL () {{
-                MATCH (q:{q_minus})
-                RETURN count(CASE WHEN q.question_schema <> $expected_schema
-                                       OR trim(coalesce(q.grounding_quote, '')) = ''
-                                       OR ($expected_schema = 'grounded_v1'
-                                           AND size(coalesce(q.anchor_entities, [])) = 0)
-                                       OR trim(coalesce(q.answer, '')) = ''
-                                       OR ($expected_schema = 'linked_v2'
-                                           AND q.continuation_anchor IS NULL)
-                                  THEN 1 END) AS invalid_grounding
-                UNION ALL
-                MATCH (q:{q_plus})
-                RETURN count(CASE WHEN q.question_schema <> $expected_schema
-                                       OR trim(coalesce(q.grounding_quote, '')) = ''
-                                       OR ($expected_schema = 'grounded_v1'
-                                           AND size(coalesce(q.anchor_entities, [])) = 0)
-                                       OR trim(coalesce(q.missing_information, '')) = ''
-                                  THEN 1 END) AS invalid_grounding
-            }}
-            RETURN sum(invalid_grounding) AS invalid_grounding
-        """,
-            {"expected_schema": expected_schema},
-        )
-        grounding = grounding_rows[0] if grounding_rows else {}
     q_plus_count_rows = await engine.neo4j.execute_query(f"MATCH (q:{q_plus}) RETURN count(q) AS count")
     q_plus_count = int((q_plus_count_rows[0] if q_plus_count_rows else {}).get("count", 0) or 0)
 
@@ -521,18 +463,15 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
                h.source_question_texts AS source_question_texts,
                h.type AS edge_type
     """)
-    expected_channels = {"q_minus"} if RAGConfig.ABLATION_Q_MINUS else {"body"}
-    expected_edge_type = "qplus_to_qminus_owner" if RAGConfig.ABLATION_Q_MINUS else "qplus_to_body_ablation"
-    body_links = RAGConfig.HOP_LINK_VARIANT == "body"
-    if body_links:
-        expected_edge_type = "body_to_body"
+    expected_channels = {"q_minus"}
+    expected_edge_type = "qplus_to_qminus_owner"
     invalid_hop_edges = 0
     for row in hop_rows:
         invalid_hop_edges += int(
             row.get("source_document") == row.get("target_document")
             or set(row.get("direct_channels") or []) != expected_channels
-            or (not body_links and not row.get("source_question_ids"))
-            or (not body_links and not row.get("source_question_texts"))
+            or not row.get("source_question_ids")
+            or not row.get("source_question_texts")
             or row.get("edge_type") != expected_edge_type
         )
 
@@ -549,50 +488,8 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
                }} THEN 1 END) AS missing_supported_by
     """)
     provenance = provenance_rows[0] if provenance_rows else {}
-    provenance_mismatches = (
-        int(provenance.get("missing_answered_by", 0) or 0)
-        if RAGConfig.ABLATION_Q_MINUS
-        else int(provenance.get("missing_supported_by", 0) or 0)
-    )
+    provenance_mismatches = int(provenance.get("missing_answered_by", 0) or 0)
     continuation: dict[str, object] = {}
-    if RAGConfig.CONTINUATION_EDGES_ENABLED:
-        continuation_rows = await engine.neo4j.execute_query(
-            f"""
-        CALL () {{
-            MATCH (anchor:{answer_anchor})
-            RETURN count(anchor) AS anchors,
-                   count(CASE WHEN trim(coalesce(anchor.text, '')) = ''
-                                   OR trim(coalesce(anchor.normalized_text, '')) = ''
-                                   OR NOT EXISTS {{
-                                       MATCH (:{q_minus})-[:ANSWER_ANCHOR]->(anchor)
-                                   }}
-                                   OR NOT EXISTS {{
-                                       MATCH (anchor)-[:MENTIONED_IN]->(:{chunk})
-                                   }}
-                              THEN 1 END) AS invalid_records
-        }}
-        CALL () {{
-            MATCH (q:{q_minus})-[link:ANSWER_ANCHOR]->(anchor:{answer_anchor})
-            RETURN count(link) AS question_links,
-                   count(CASE WHEN
-                                   ($anchor_policy = 'named_only' AND
-                                    trim(coalesce(q.continuation_anchor, '')) = '')
-                                   OR
-                                   ($anchor_policy = 'all_grounded' AND
-                                    trim(coalesce(q.answer, '')) = '')
-                              THEN 1 END) AS invalid_question_links
-        }}
-        CALL () {{
-            MATCH (anchor:{answer_anchor})-[link:MENTIONED_IN]->(target:{chunk})
-            RETURN count(link) AS mention_links
-        }}
-        RETURN anchors, question_links, mention_links,
-               invalid_records + invalid_question_links AS invalid_edges,
-               0 AS missing_source_questions
-        """,
-            {"anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY},
-        )
-        continuation = continuation_rows[0] if continuation_rows else {}
     degree_rows = await engine.neo4j.execute_query(f"""
         MATCH (source:{chunk})-[h:HOP_ANSWER]->()
         WITH source, count(h) AS degree
@@ -620,7 +517,7 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         and int(next_topology.get("invalid", 0) or 0) == 0
         and int(next_topology.get("missing", 0) or 0) == 0,
         "valid_hop_edges": invalid_hop_edges == 0,
-        "hop_graph_available": not RAGConfig.ABLATION_Q_PLUS or q_plus_count == 0 or bool(hop_rows),
+        "hop_graph_available": q_plus_count == 0 or bool(hop_rows),
         "consistent_hop_provenance": int(provenance.get("missing_source_questions", 0) or 0) == 0
         and provenance_mismatches == 0,
         "valid_continuation_edges": int(continuation.get("invalid_edges", 0) or 0) == 0
@@ -628,16 +525,6 @@ async def _collect_prehop_integrity(engine) -> dict[str, object]:
         "bounded_hop_out_degree": int(degree.get("max_out_degree", 0) or 0) <= RAGConfig.QUESTIONS_PER_DIRECTION,
         "search_indexes_online": bool(index_rows) and all(row.get("state") == "ONLINE" for row in index_rows),
     }
-    if body_links:
-        from collections import Counter
-
-        from models.prehop.indexing.body_links import load_reference
-        reference = load_reference(RAGConfig.BODY_LINK_REFERENCE)
-        actual_degrees = Counter(row["source_id"] for row in hop_rows)
-        checks["matched_reference_degree"] = (
-            set(actual_degrees) <= set(reference["nodes"])
-            and all(actual_degrees[node_id] == item["degree"] for node_id, item in reference["nodes"].items())
-        )
     return {
         "pass": all(checks.values()),
         "checks": checks,
@@ -672,8 +559,6 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     doc_label = engine.doc_label
     q_minus_label = engine.q_minus_label
     q_plus_label = engine.q_plus_label
-    sentence_label = engine.sentence_label
-    answer_anchor_label = engine.answer_anchor_label
 
     chunk_rows = await engine.neo4j.execute_query(f"""
         MATCH (c:{chunk_label})
@@ -699,14 +584,6 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     question_stats = question_rows[0] if question_rows else {}
 
     sentence_stats: dict[str, object] = {}
-    if RAGConfig.SENTENCE_CHANNEL_ENABLED:
-        sentence_rows = await engine.neo4j.execute_query(f"""
-            MATCH (c:{chunk_label})
-            OPTIONAL MATCH (c)-[:HAS_SENTENCE]->(s:{sentence_label})
-            RETURN count(DISTINCT s) AS sentences,
-                   count(DISTINCT CASE WHEN s IS NOT NULL THEN c END) AS sentence_chunks
-        """)
-        sentence_stats = sentence_rows[0] if sentence_rows else {}
 
     edge_rows = await engine.neo4j.execute_query(f"""
         OPTIONAL MATCH (:{chunk_label})-[hop:HOP_ANSWER]->(:{chunk_label})
@@ -718,19 +595,6 @@ async def _collect_graph_stats(engine, strategy: str) -> dict | None:
     """)
     edge_stats = edge_rows[0] if edge_rows else {}
     continuation_stats: dict[str, object] = {}
-    if RAGConfig.CONTINUATION_EDGES_ENABLED:
-        continuation_rows = await engine.neo4j.execute_query(f"""
-            OPTIONAL MATCH (anchor:{answer_anchor_label})
-            WITH count(anchor) AS answer_anchors
-            OPTIONAL MATCH (:{q_minus_label})-[question_link:ANSWER_ANCHOR]
-                           ->(:{answer_anchor_label})
-            WITH answer_anchors, count(question_link) AS continuation_question_links
-            OPTIONAL MATCH (:{answer_anchor_label})-[mention_link:MENTIONED_IN]
-                           ->(:{chunk_label})
-            RETURN answer_anchors, continuation_question_links,
-                   count(mention_link) AS continuation_mention_links
-        """)
-        continuation_stats = continuation_rows[0] if continuation_rows else {}
     direction_rows = await engine.neo4j.execute_query(f"""
         MATCH (q:{q_plus_label})
         RETURN count(q) AS total_q_plus,

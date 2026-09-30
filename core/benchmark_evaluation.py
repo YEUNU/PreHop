@@ -48,9 +48,9 @@ def _extract_stage_timing(trace: Any) -> dict[str, float]:
             timing["worker_queue_seconds"] = float(step["worker_queue_seconds"])
     return timing
 
-def _apply_judge_label(result_item: dict[str, Any]) -> None:
-    """Attach deterministic primary labels and separate supplemental labels."""
-    from utils.abstain import answer_label, is_abstain
+def _apply_answer_label(result_item: dict[str, Any]) -> None:
+    """Attach deterministic labels from answer EM or the null-refusal metric."""
+    from utils.abstain import is_abstain
 
     answer_text = str(result_item.get("answer", "") or "")
     has_error = bool(result_item.get("error"))
@@ -58,7 +58,6 @@ def _apply_judge_label(result_item: dict[str, Any]) -> None:
     # not the full CoT body which often uses 'insufficient evidence' mid-reason.
     final_answer = extract_final_answer(answer_text).lower()
     abstained = is_abstain(final_answer)
-    judge_score = _safe_float(result_item.get("llm_judge_score", -1.0), -1.0)
     result_item["final_answer_extracted"] = final_answer[:300]
 
     # The headline correctness/label is deterministic.  A null query uses its
@@ -79,8 +78,6 @@ def _apply_judge_label(result_item: dict[str, Any]) -> None:
         primary_label = "Correct Answer" if primary_score >= 0.5 else ("Refusal" if abstained else "Incorrect Answer")
     result_item["answer_attempted"] = answer_attempted
     result_item["answer_label"] = primary_label
-    # Kept only for optional judge analysis; never drives correct_rate.
-    result_item["judge_answer_label"] = answer_label(judge_score, final_answer) if judge_score >= 0 else "Unjudged"
 
 def _recompute_aggregates(s: dict[str, Any]) -> None:
     """Recompute avg_<metric>, category_summaries and the 3-way label counts
@@ -136,42 +133,12 @@ def _recompute_aggregates(s: dict[str, Any]) -> None:
     s["incorrect_rate"] = label_counts["Incorrect Answer"] / total
     s["refusal_rate"] = label_counts["Refusal"] / total
 
-def _unjudged_count(rows: list[dict[str, Any]], key: str = "llm_judge_score") -> int:
-    return sum(
-        1
-        for row in rows
-        if not row.get("error") and (not isinstance(row.get(key), (int, float)) or isinstance(row.get(key), bool) or float(row[key]) < 0)
-    )
-
-def _unjudged_groundedness_count(rows: list[dict[str, Any]]) -> int:
-    """Count substantive rows without a context-groundedness judgement."""
-    from utils.abstain import is_abstain
-
-    count = 0
-    for row in rows:
-        if row.get("error"):
-            continue
-        final_answer = extract_final_answer(str(row.get("answer", "") or ""))
-        if is_abstain(final_answer):
-            continue
-        value = row.get("groundedness")
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or float(value) < 0:
-            count += 1
-    return count
-
 def _update_summary_status(summary: dict[str, Any]) -> None:
     rows = summary.get("details") or []
     if any(row.get("failure_scope") == "target" for row in rows):
         summary["status"] = "failed"
     elif len(rows) < int(summary.get("total_queries", len(rows)) or 0):
         summary["status"] = "in_progress"
-    elif any(
-        (row.get("_deferred_judge") or row.get("judge_custom_id")) and _safe_float(row.get("llm_judge_score"), -1.0) < 0
-        for row in rows
-    ) or any(row.get("failure_scope") == "target" for row in rows) or summary.get("judge_enabled") and (
-        _unjudged_count(rows) or _unjudged_count(rows, "hallucination") or _unjudged_groundedness_count(rows)
-    ):
-        summary["status"] = "failed"
     else:
         summary["status"] = "completed_unadmitted"
 

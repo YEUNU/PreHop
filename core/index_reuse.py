@@ -45,8 +45,8 @@ def configure(link: dict) -> None:
     from core.paper_policy import configure_target_environment
     from core.strategy_registry import get_strategy
     configure_target_environment(link['strategy'], link['dataset'], link['source_run_id'])
-    os.environ.update(RAG_BENCHMARK_TIMESTAMP=link['target_run_id'], RAG_JUDGE_ENABLED='false',
-                      RAG_JUDGE_BATCH='false', RAG_CHUNK_CACHE='off', RAG_EMBEDDING_CACHE='off')
+    os.environ.update(RAG_BENCHMARK_TIMESTAMP=link['target_run_id'],
+                      RAG_CHUNK_CACHE='off', RAG_EMBEDDING_CACHE='off')
     spec = get_strategy(link['strategy'])
     if spec.output_env:
         os.environ[spec.output_env] = str(local_path(link['clone']['query_output_root']))

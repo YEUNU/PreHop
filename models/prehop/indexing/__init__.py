@@ -8,7 +8,6 @@ Layer order:
 - Neo4j storage (chunks + NEXT edges + index lifecycle) — graph_writer.py
 """
 
-from .answer_links import AnswerLinkMixin
 from .chunking import ChunkingMixin
 from .embedding import SparseEmbeddingMixin
 from .graph_writer import GraphWriterMixin
@@ -20,7 +19,6 @@ class IndexingPipeline(
     ChunkingMixin,
     KnowledgeMappingMixin,
     SparseEmbeddingMixin,
-    AnswerLinkMixin,
     HopEdgeMixin,
     GraphWriterMixin,
 ):
@@ -28,7 +26,6 @@ class IndexingPipeline(
 
 
 __all__ = [
-    "AnswerLinkMixin",
     "ChunkingMixin",
     "GraphWriterMixin",
     "HopEdgeMixin",

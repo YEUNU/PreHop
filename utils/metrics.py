@@ -1,13 +1,8 @@
-import json
 import logging
 import re
 import string
 from collections import Counter
 from typing import Any
-
-from core.config import RAGConfig
-from utils.formatters import format_context_from_nodes
-from utils.prompts import MULTIHOPRAG_JUDGE_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -161,157 +156,14 @@ def _official_multihoprag_qa_accuracy(prediction: str, reference: str) -> float:
     return 1.0 if pred_tokens & gold_tokens else 0.0
 
 
-def _parse_unit_score(raw: Any) -> float | None:
-    try:
-        if raw is None:
-            return None
-        value = float(raw)
-        return max(0.0, min(1.0, value))
-    except (TypeError, ValueError, OverflowError):
-        return None
-
-
 def _is_insufficient_text(text: Any) -> bool:
-    # Matches the 3-way taxonomy: any recognized abstain phrase (Hypo's
-    # "insufficient evidence", HopRAG's "I do not know", or natural-language
-    # refusals) → not a hallucination.
     from utils.abstain import is_abstain
 
     return is_abstain(text)
 
 
-# Sentinel for a row the LLM judge never scored (judge failed, or — in batch
-# mode — not yet resolved). Kept out of [0,1] so aggregation can exclude it
-# instead of treating an unjudged row as a wrong (0.0) answer.
+# Historical sentinel for an unavailable metric; aggregation excludes it.
 UNJUDGED_SCORE = -1.0
-
-
-async def _run_combined_judge(
-    judge_prompt: str,
-    response: str,
-    vllm_client,
-) -> dict:
-    """Run the single-call supplemental judge with answer/context axes.
-
-    The judge returns answer correctness (`score`) and context support
-    (`groundedness`). Hallucination is derived from groundedness in the local
-    resolver, preventing two redundant LLM labels from disagreeing.
-    """
-    judge_model, judge_payload = await _call_judge_llm(judge_prompt, vllm_client)
-    return _resolve_judge_fields(judge_payload, response, judge_model)
-
-
-async def _call_judge_llm(judge_prompt: str, vllm_client) -> tuple[str, dict | None]:
-    """The synchronous LLM judge call using the configured evaluation model.
-
-    Returns (judge_model, judge_payload). Factored out so the batch path can
-    reuse `_resolve_judge_fields` on payloads it fetched elsewhere. A failed or
-    malformed judge stays unjudged; it is never silently scored by a different
-    model, which would mix evaluator policies within one benchmark run.
-    """
-    judge_model = RAGConfig.EVAL_MODEL
-    judge_payload: dict | None = None
-    if vllm_client:
-        try:
-            judge_payload = await vllm_client.generate_eval_json(
-                [{"role": "user", "content": judge_prompt}],
-                model=RAGConfig.EVAL_MODEL,
-            )
-        except Exception as e:  # noqa: BLE001 - evaluator providers use heterogeneous exceptions
-            logger.error(f"LLM Judge failed: {e}")
-            judge_payload = None
-    return judge_model, judge_payload
-
-
-def _resolve_judge_fields(
-    judge_payload: dict | None,
-    response: str,
-    judge_model: str,
-) -> dict:
-    """Resolve answer correctness, groundedness, and hallucination fields.
-
-    Pure / no I/O so judge responses are resolved deterministically.
-    When the payload carries no usable score (judge failed, or batch not yet
-    resolved) the row is marked UNJUDGED_SCORE (-1) — never silently 0 — so
-    aggregation excludes it rather than counting it as a wrong answer.
-    """
-    parsed_score = _parse_unit_score((judge_payload or {}).get("score"))
-    parsed_groundedness = _parse_unit_score((judge_payload or {}).get("groundedness"))
-
-    if parsed_score is not None:
-        judge_score = parsed_score
-        judge_reason = str((judge_payload or {}).get("reason", "")) or "combined_judge"
-    else:
-        judge_score = UNJUDGED_SCORE
-        judge_reason = "unjudged_no_score"
-
-    # Abstentions have no substantive claim to ground, so groundedness is not
-    # applicable. Inspect only the extracted final answer: rationale may
-    # mention an abstention phrase before concluding with a real answer.
-    final_answer = extract_final_answer(response)
-    is_non_answer = _is_insufficient_text(final_answer) or not final_answer.strip()
-    if is_non_answer:
-        groundedness = UNJUDGED_SCORE
-        groundedness_source = "rule_non_answer"
-    elif parsed_groundedness is not None:
-        groundedness = 1.0 if parsed_groundedness >= 0.5 else 0.0
-        groundedness_source = "combined_judge"
-    else:
-        groundedness = UNJUDGED_SCORE
-        groundedness_source = "unjudged"
-
-    # Honest abstention is not a substantive hallucination claim.  For a
-    # substantive answer, hallucination is exactly the complement of the
-    # independently judged context-groundedness field. The artifact field name
-    # is stable, and its value is always derived locally.
-    if _is_insufficient_text(final_answer):
-        hallucination = 0.0
-        hallucination_reason = "non_answer_insufficient"
-        hallucination_source = "rule_non_answer"
-    elif not final_answer.strip():
-        hallucination = 0.0
-        hallucination_reason = "non_answer_empty"
-        hallucination_source = "rule_non_answer"
-    elif groundedness >= 0:
-        hallucination = 1.0 - groundedness
-        hallucination_reason = "derived_from_groundedness"
-        hallucination_source = "derived_from_groundedness"
-    else:
-        hallucination = UNJUDGED_SCORE
-        hallucination_reason = "unjudged_no_groundedness_field"
-        hallucination_source = "unjudged"
-
-    return {
-        "llm_judge_score": judge_score,
-        "llm_judge_reason": judge_reason,
-        "groundedness": groundedness,
-        "groundedness_source": groundedness_source,
-        "hallucination": hallucination,
-        "hallucination_reason": hallucination_reason,
-        "hallucination_source": hallucination_source,
-        "hallucination_model": judge_model,
-    }
-
-
-def _format_judge_context(retrieved_sources: list[Any] | None) -> str:
-    """Normalize retrieved source records into the judge's evidence view."""
-    nodes: list[dict[str, Any]] = []
-    for source in retrieved_sources or []:
-        if isinstance(source, dict):
-            node = dict(source)
-            node["title"] = node.get("title") or node.get("doc") or node.get("source") or "Unknown"
-            node["text"] = str(node.get("text") or "")
-            nodes.append(node)
-        elif isinstance(source, (list, tuple)) and source:
-            nodes.append(
-                {
-                    "title": str(source[0] or "Unknown"),
-                    "page": source[1] if len(source) > 1 else 0,
-                    "sent_id": source[2] if len(source) > 2 else 0,
-                    "text": str(source[3] if len(source) > 3 else ""),
-                }
-            )
-    return format_context_from_nodes(nodes) if nodes else "(empty retrieved context)"
 
 
 # --- Multi-hop dataset metrics (MultiHop-RAG, HotpotQA) ---
@@ -490,41 +342,14 @@ async def evaluate_multihoprag_response(
     question_type: str = "",
     dataset: str = "",
     answer_aliases: list[str] | None = None,
-    vllm_client=None,
-    judge_enabled: bool = False,
     supporting_facts: list | None = None,
     hotpot_sentence_store: str | None = None,
 ) -> dict:
     """Evaluate answer quality and dataset-appropriate evidence quality.
 
-    Deterministic normalized EM/F1 is the downstream answer signal. The LLM
-    judge keeps semantic correctness and context groundedness as separate,
-    optional diagnostic axes. Official evidence metrics follow the dataset
-    protocol; title-level evidence precision/recall/F1 is diagnostic.
+    Official evidence metrics follow the dataset protocol. Normalized EM/F1
+    and title-level evidence precision/recall/F1 remain auxiliary diagnostics.
     """
-    if judge_enabled:
-        aliases = [str(alias).strip() for alias in (answer_aliases or []) if str(alias).strip()]
-        judge_prompt = MULTIHOPRAG_JUDGE_PROMPT.format(
-            question_type=question_type or "unknown",
-            query=query,
-            ground_truth=ground_truth,
-            answer_aliases=json.dumps(aliases, ensure_ascii=False) if aliases else "(none)",
-            response=response,
-            retrieved_context=_format_judge_context(retrieved_sources),
-        )
-        judge = await _run_combined_judge(judge_prompt, response, vllm_client)
-    else:
-        judge = {
-            "llm_judge_score": UNJUDGED_SCORE,
-            "llm_judge_reason": "judge_disabled",
-            "groundedness": UNJUDGED_SCORE,
-            "groundedness_source": "judge_disabled",
-            "hallucination": UNJUDGED_SCORE,
-            "hallucination_reason": "judge_disabled",
-            "hallucination_source": "judge_disabled",
-            "hallucination_model": "",
-        }
-
     answer_metrics = calculate_answer_metrics(
         response,
         ground_truth,
@@ -553,7 +378,6 @@ async def evaluate_multihoprag_response(
             support_metrics = {"hotpot_" + key: value for key, value in official.items()}
             support_metrics.update(predicted_supporting_facts=predicted, support_prediction_policy=PROJECTION)
     else:
-        # MultiHop-RAG officially supports its any-token QA accuracy.
         answer_metrics["official_answer_em"] = UNJUDGED_SCORE
         answer_metrics["official_answer_f1"] = UNJUDGED_SCORE
         ranking = calculate_retrieval_ranking_metrics(retrieved_sources, evidence_facts or [])
@@ -561,7 +385,6 @@ async def evaluate_multihoprag_response(
     evidence_docs_metrics = calculate_evidence_doc_metrics(retrieved_sources, evidence_docs or [])
 
     return {
-        **judge,
         **answer_metrics,
         **ranking,
         **support_metrics,

@@ -90,7 +90,7 @@ def test_current_corpus_revalidates_manifest_without_rereading_source_bytes(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('method', ['generate_response', 'generate_eval_json'])
+@pytest.mark.parametrize('method', ['generate_response'])
 async def test_per_request_model_override_never_reaches_client(monkeypatch, method):
     import types
 
@@ -103,7 +103,6 @@ async def test_per_request_model_override_never_reaches_client(monkeypatch, meth
     fake = types.SimpleNamespace(base_url='http://litellm.test/v1',
                                  chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
     monkeypatch.setattr(VLLMClient, 'client', property(lambda _: fake))
-    monkeypatch.setattr(VLLMClient, 'judge_client', property(lambda _: fake))
     VLLMClient()
     assert calls == []
 

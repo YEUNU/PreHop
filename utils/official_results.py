@@ -51,6 +51,9 @@ def build_reports(result: dict[str, Any]) -> tuple[dict, dict]:
     Official values use the evaluator's native scale, including MAP above one.
     """
     dataset = dataset_key(result.get("dataset", ""))
+    retrieval_only = result.get("evaluation_task") == "retrieval_only"
+    if retrieval_only and dataset != "multihoprag":
+        raise ValueError("Retrieval-only export currently supports MultiHop-RAG")
     rows = result.get("details", [])
     if not rows:
         raise ValueError("Official report requires evaluated rows")
@@ -62,7 +65,7 @@ def build_reports(result: dict[str, Any]) -> tuple[dict, dict]:
         common = {k: row[k] for k in ("query_id", "original_query_id", "question_type") if k in row}
         common["failed"] = bool(row.get("error"))
         if dataset == "multihoprag":
-            metrics = {"qa_accuracy": _number(row, "official_qa_accuracy")}
+            metrics = {"qa_accuracy": None if retrieval_only else _number(row, "official_qa_accuracy")}
             metrics["retrieval"] = None if row.get("question_type") == "null_query" else {
                 name: _number(row, field) for name, field in RANK_FIELDS.items()
             }
@@ -96,20 +99,27 @@ def build_reports(result: dict[str, Any]) -> tuple[dict, dict]:
     }
     if "common_reader" in result:
         report["common_reader"] = result["common_reader"]
+    if retrieval_only:
+        report["evaluation_task"] = "retrieval_only"
+        report["prediction_adapter"]["answer"] = "Unmeasured: no answer generation in this experiment."
     if dataset == "multihoprag":
         def qa_group(group):
             accuracy = statistics.mean(r["metrics"]["qa_accuracy"] for r in group)
             return {"rows": len(group), "precision": accuracy, "recall": accuracy, "f1": accuracy, "accuracy": accuracy}
 
-        by_type = {kind: qa_group([r for r in official_rows if r.get("question_type", "") == kind])
-                   for kind in sorted({r.get("question_type", "") for r in official_rows})}
+        by_type = {} if retrieval_only else {
+            kind: qa_group([r for r in official_rows if r.get("question_type", "") == kind])
+            for kind in sorted({r.get("question_type", "") for r in official_rows})
+        }
         non_null = [r for r in official_rows if r.get("question_type") != "null_query"]
         retrieval = {"rows": len(non_null), "metrics": {
             name: statistics.mean(r["metrics"]["retrieval"][name] for r in non_null) if non_null else None
             for name in RANK_FIELDS
         }}
-        report["qa"] = {"overall": qa_group(official_rows), "by_question_type": by_type,
-                        "non_null": qa_group(non_null) if non_null else None}
+        report["qa"] = None if retrieval_only else {
+            "overall": qa_group(official_rows), "by_question_type": by_type,
+            "non_null": qa_group(non_null) if non_null else None,
+        }
         report["retrieval"] = retrieval
     else:
         from utils.hotpotqa import METRICS

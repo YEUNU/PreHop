@@ -8,17 +8,17 @@ import pytest
 
 def test_project_env_preserves_exported_overrides(tmp_path):
     env_file = tmp_path / ".env"
-    env_file.write_text("RAG_GRAPH_HOP_DEPTH=1\nRAG_HYPO_CHANNEL_VARIANT=full\n", encoding="utf-8")
+    env_file.write_text("RAG_GRAPH_EDGE_VARIANT=full\nRAG_HYPO_CHANNEL_VARIANT=full\n", encoding="utf-8")
     project_root = Path(__file__).resolve().parents[1]
     command = (
         f". {project_root / 'scripts/lib.sh'}; "
         f"load_project_env {env_file}; "
-        'printf "%s %s" "$RAG_GRAPH_HOP_DEPTH" "$RAG_HYPO_CHANNEL_VARIANT"'
+        'printf "%s %s" "$RAG_GRAPH_EDGE_VARIANT" "$RAG_HYPO_CHANNEL_VARIANT"'
     )
     environment = {
         "PATH": "/usr/bin:/bin",
-        "RAG_GRAPH_HOP_DEPTH": "0",
-        "RAG_HYPO_CHANNEL_VARIANT": "single_combined",
+        "RAG_GRAPH_EDGE_VARIANT": "none",
+        "RAG_HYPO_CHANNEL_VARIANT": "body_only",
     }
 
     result = subprocess.run(
@@ -29,7 +29,7 @@ def test_project_env_preserves_exported_overrides(tmp_path):
         env=environment,
     )
 
-    assert result.stdout == "0 single_combined"
+    assert result.stdout == "none body_only"
 
 
 @pytest.mark.parametrize('skip_file', [True, False])

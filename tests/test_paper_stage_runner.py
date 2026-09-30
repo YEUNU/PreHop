@@ -63,8 +63,6 @@ def test_recovery_hook_default_is_inert(monkeypatch):
     asyncio.run(recovery.checkpoint_barrier(Path('/does/not/exist'), {}))
 
 
-
-
 def test_actual_owned_child_atomic_checkpoint_then_sigterm(tmp_path):
     """Exercise only the test barrier with a new subprocess; no service/native action."""
     run_id = 'owned-test'
@@ -105,10 +103,6 @@ asyncio.run(r.checkpoint_barrier(result,summary))
     assert (base/'checkpoint_ready.pending').read_bytes() == (base/'checkpoint_ready.json').read_bytes()
 
 
-
-
-
-
 def test_shell_handoff_uses_selected_main_prefix_and_rejects_drift(monkeypatch):
     monkeypatch.delenv('PYTHON_BIN', raising=False)
     monkeypatch.delenv('UV_PROJECT_ENVIRONMENT', raising=False)
@@ -119,19 +113,15 @@ def test_shell_handoff_uses_selected_main_prefix_and_rejects_drift(monkeypatch):
     assert runner.selected_python_environment()['PYTHON_BIN'] == str(Path(sys.prefix).resolve()/'bin/python')
 
 
-
-
 def test_production_benchmark_checkpoint_resume_retains_rows_and_schema_metadata(tmp_path, monkeypatch):
     monkeypatch.delenv('RAG_EXECUTION_PROFILE', raising=False)
     from cli import benchmark
-    from core.config import RAGConfig
     from core.paper_policy import structured_query_identity
 
     monkeypatch.setenv('RAG_PAPER_MODE', 'false')
     monkeypatch.setenv('RAG_BENCHMARK_CONCURRENCY', '1')
     monkeypatch.setenv('RAG_BENCHMARK_CHECKPOINT_EVERY', '1')
     monkeypatch.delenv('RAG_BENCHMARK_RESUME', raising=False)
-    monkeypatch.setattr(RAGConfig, 'JUDGE_ENABLED', False)
     monkeypatch.setenv('RAG_LLM_SEED', '42')
     calls = []
     class NativeFixture:

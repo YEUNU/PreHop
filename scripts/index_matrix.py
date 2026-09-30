@@ -38,8 +38,8 @@ def child(campaign, strategy, dataset, phase):
     from core.paper_policy import configure_target_environment
     run_id = f'{campaign}-{phase}-{dataset}-{strategy}'
     configure_target_environment(strategy, dataset, run_id)
-    os.environ.update(RAG_CHUNK_CACHE='off', RAG_EMBEDDING_CACHE='off', RAG_JUDGE_ENABLED='false',
-                      RAG_JUDGE_BATCH='false', PYTHONDONTWRITEBYTECODE='1')
+    os.environ.update(RAG_CHUNK_CACHE='off', RAG_EMBEDDING_CACHE='off',
+                      PYTHONDONTWRITEBYTECODE='1')
     from cli.index import run_indexing
     from core.admission import sha256_file
     from core.amortized_cost import indexing_cost

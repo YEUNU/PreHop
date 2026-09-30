@@ -5,7 +5,6 @@ import pytest
 
 from models.prehop.ablation_inputs import read_input, write_input
 from scripts.ablation_statistics import cluster_interval
-from scripts.analyze_evidence_connections import connectivity, random_edges
 from scripts.datasets.prepare_hotpotqa_hipporag import prepare
 
 
@@ -30,26 +29,6 @@ def test_frozen_inputs_are_independent_mutable_copies(tmp_path):
     assert read_input(tmp_path,'q')['base_candidates'][0]['score']==1
 
 
-def test_connectivity_does_not_turn_missing_or_one_way_evidence_into_complete_graph():
-    groups={'A':{'a'},'B':{'b'},'C':set()}
-    observed=connectivity(groups,[('a','b')])
-    assert observed['any_inter_evidence_hop']==1
-    assert observed['directed_group_pair_coverage']==pytest.approx(1/6)
-    assert observed['oracle_start_all_groups_rate']==0
-    assert observed['unmapped_groups']==1
-    assert connectivity({'A':{'a'}},[])['any_inter_evidence_hop'] is None
-
-
-def test_null_preserves_each_degree_and_excludes_source_document():
-    nodes=[{'id':str(i),'source':str(i//2)} for i in range(10)]
-    edges=[('0','2'),('0','4'),('1','8')]
-    result=random_edges(nodes,edges,42)
-    assert result==random_edges(nodes,edges,42)
-    assert sum(s=='0' for s,t in result)==2 and sum(s=='1' for s,t in result)==1
-    assert len(result)==len(set(result))==3
-    assert all(nodes[int(s)]['source']!=nodes[int(t)]['source'] for s,t in result)
-
-
 def test_duplicate_rows_are_resampled_as_original_question_clusters():
     report=cluster_interval([1,1,-1],['a','a','b'],repeats=1000)
     assert report['rows']==3 and report['clusters']==2
@@ -64,44 +43,6 @@ def test_timing_waits_without_stopping_other_ready_work():
     assert ready_jobs(jobs,states,[{'id':'adopted'}],max_active=2)==[jobs[1]]
     assert ready_jobs(jobs,states,[])==[jobs[0]]
     assert ready_jobs(jobs,states,[jobs[0]])==[]
-
-
-def test_plan_keeps_fixed_start_timing_and_estimates_without_full_reruns(tmp_path):
-    from scripts.plan_link_experiments import make_plan
-    source=tmp_path/'stats.json';source.write_text(json.dumps({'index_policy':{'index_namespace':'source'},'run_id':'source'}))
-    jobs=make_plan('test-campaign',source,multihoprag_reference=tmp_path/'reference.json')['jobs'];byid={j['id']:j for j in jobs}
-    assert len(byid)==len(jobs)
-    for job in jobs:assert all(d in byid for d in job['after'])
-    b=byid['mhr-B']['command'];c=byid['mhr-C']['command']
-    assert b[b.index('--direct-inputs')+1]==c[c.index('--direct-inputs')+1]
-    assert not any('-T-' in key for key in byid)
-    assert not any('--connection-timing' in job['command'] for job in jobs)
-    assert byid['mhr-timing-replay']['exclusive']
-    assert byid['mhr-reference-timing']['exclusive']
-    assert '--reference-inputs' in byid['mhr-reference-timing']['command']
-    assert byid['mhr-estimated-total']['after']==['mhr-reference-timing']
-    assert byid['hp-reference-starts']['after']==['hp-prehop-benchmark']
-    replay = byid['mhr-timing-replay']['command']
-    assert replay[replay.index('--repetitions')+1] == '1'
-    assert replay[replay.index('--warmups')+1] == '0'
-    seen=set()
-    while len(seen)<len(jobs):
-        ready={j['id'] for j in jobs if j['id'] not in seen and set(j['after'])<=seen}
-        assert ready,'dependency cycle'
-        seen|=ready
-
-
-def test_natural_timing_comparison_reports_unpaired_and_different_inputs():
-    from scripts.compare_timing_runs import agreement
-    row = {'starts': ['a'], 'destinations': {'a': ['b']}, 'connection_ms': 2}
-    online = {'starts': ['c'], 'destinations': {'c': ['d']}, 'connection_ms': 7}
-    report = agreement({'q': row, 'stored-only': row}, {'q': online, 'online-only': online})
-    assert report['paired_event_queries'] == 1
-    assert report['missing_online'] == ['stored-only']
-    assert report['missing_precomputed'] == ['online-only']
-    assert report['identical_start_query_fraction'] == 0
-    assert report['identical_destination_query_fraction'] == 0
-    assert report['details'][0]['connection_saving_ms'] == 5
 
 
 def test_paired_quality_keeps_terminal_failures_in_denominator():
@@ -151,11 +92,7 @@ def test_primary_hotpot_jobs_do_not_depend_on_supplemental_arms(tmp_path):
     assert plan['max_active']==1 and plan['max_hoprag_active']==1
     assert jobs['hp-primary-hop-inputs']['after']==['hp-prehop-benchmark']
     assert jobs['hp-primary-without-hop']['after']==['hp-primary-hop-inputs']
-    assert jobs['hp-timing-build']['after']==['hp-reference-starts']
-    assert '--reference-inputs' in jobs['hp-timing-build']['command']
-    assert jobs['hp-reference-timing']['after']==['hp-timing-build','hp-reference-starts']
-    assert 'scripts/verify_primary_timing.py' in jobs['hp-reference-timing']['command']
-    for key in ['hp-A','hp-B','hp-C']:
+    for key in ['hp-A','hp-B']:
         assert jobs[key]['experiment_role']=='supplemental_representation_comparison'
         assert jobs[key]['priority']>jobs['hp-primary-without-hop']['priority']
 
@@ -178,10 +115,8 @@ def test_updated_policy_suite_has_separate_evidence_and_reference_dependency(tmp
             assert all(not d.startswith('mhr-') or d.startswith('mhr-updated-') for d in job['after'])
             assert job['after']
     assert jobs['mhr-updated-primary-hop-inputs']['after']==['new-reference']
-    assert jobs['mhr-updated-reference-starts']['after']==['new-reference']
     assert str(new) in jobs['mhr-updated-primary-hop-inputs']['command']
     assert str(old) in jobs['mhr-primary-hop-inputs']['command']
-    assert jobs['mhr-updated-reference-timing']['exclusive']
     assert not any('natural' in j['id'] for j in plan['jobs'])
 
 

@@ -1,11 +1,9 @@
 """Parameter-free fusion of indexed representation and body semantics."""
 
 import asyncio
-import hashlib
 import json
 import os
 import time
-from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -27,16 +25,6 @@ def _append_jsonl(path: Path, line: str) -> None:
 
 
 class SimilarityScoringMixin:
-    @staticmethod
-    def _document_identity(node: dict[str, Any]) -> str:
-        """Return the logical document identity used for evidence diversity.
-
-        Some prepared corpora store one paragraph per file, so ``source`` is
-        a chunk container rather than a document boundary. The indexed title
-        is the shared, dataset-neutral document identity in that case. Keep
-        the filename as a fallback for sources without a title.
-        """
-        return str(node.get("title") or node.get("doc") or node.get("source") or "")
 
     @staticmethod
     def _validated_similarity(query_embedding: list[float], document_embedding: Any) -> float:
@@ -59,10 +47,8 @@ class SimilarityScoringMixin:
         """Fuse representation ranks with body and stored bridge semantics.
 
         The best matching individual source Q+ represents a traversed
-        dependency bridge; linked continuation paths use the matched Q− in the
-        same role. The default uses body relevance; the historical body_bridge_min
-        option takes the minimum with bridge relevance. An ablation uses the bridge alone because the
-        offline graph already selected the target body. Equal reciprocal ranks
+        dependency bridge. The default uses body relevance; the historical
+        body_bridge_min option takes the minimum with bridge relevance. Equal reciprocal ranks
         then combine the resulting semantic order with the Q-/body/Q+ retrieval
         order. Neither path compares backend-specific raw scores or introduces
         a fitted interpolation weight or threshold.
@@ -82,8 +68,6 @@ class SimilarityScoringMixin:
             bridge_score = max(bridge_scores) if bridge_scores else None
             if bridge_score is None or RAGConfig.HOP_SEMANTIC_VARIANT == "body_only":
                 final_score = body_score
-            elif RAGConfig.HOP_SEMANTIC_VARIANT == "bridge_only":
-                final_score = bridge_score
             else:
                 final_score = min(body_score, bridge_score)
             candidate["similarity_score"] = body_score
@@ -123,9 +107,7 @@ class SimilarityScoringMixin:
             ),
             reverse=True,
         )
-        if RAGConfig.FINAL_RANK_VARIANT == "semantic_only":
-            ordered = semantic_order
-        elif RAGConfig.FINAL_RANK_VARIANT == "representation_only":
+        if RAGConfig.FINAL_RANK_VARIANT == "representation_only":
             ordered = representation_order
         else:
             ordered = fused_order
@@ -135,18 +117,6 @@ class SimilarityScoringMixin:
         active_selection_variant = selection_variant or RAGConfig.SOURCE_SELECTION_VARIANT
         if active_selection_variant == "global":
             selected = ordered[:top_k]
-        elif active_selection_variant == "round_robin":
-            selected = self._source_round_robin(ordered, top_k)
-        elif active_selection_variant == "source_balanced":
-            selected = self._source_balanced(ordered, top_k)
-        elif active_selection_variant == "graph_pairs":
-            selected = self._graph_pairs(ordered, top_k)
-        elif active_selection_variant == "source_balanced_graph_pairs":
-            selected = self._graph_pairs(self._source_balanced_order(ordered), top_k)
-        elif active_selection_variant == "role_body_owners":
-            selected = self._role_body_owners(ordered, top_k)
-        elif active_selection_variant == "role_body_rounds":
-            selected = self._role_body_rounds(ordered, top_k)
         elif active_selection_variant == "role_body_list_ranking":
             selected = await self._role_body_list_ranking(query_text, ordered, top_k)
         else:
@@ -160,8 +130,6 @@ class SimilarityScoringMixin:
         cls,
         query_text: str,
         ordered: list[dict[str, Any]],
-        input_order: str,
-        shuffle_seed: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Share native candidate identity and ordering with recorded-input replay."""
         pool: list[dict[str, Any]] = []
@@ -172,15 +140,6 @@ class SimilarityScoringMixin:
                 seen_node_ids.add(node_id)
                 pool.append(node)
         canonical_pool = list(pool)
-        if input_order == "reverse":
-            pool.reverse()
-        elif input_order == "hash_shuffle":
-            def shuffle_key(node: dict[str, Any]) -> tuple[bytes, str]:
-                node_id = cls._node_identity(node)
-                payload = f"{shuffle_seed}\0{query_text}\0{node_id}".encode()
-                return hashlib.sha256(payload).digest(), node_id
-
-            pool.sort(key=shuffle_key)
         return canonical_pool, pool
 
     @classmethod
@@ -209,36 +168,13 @@ class SimilarityScoringMixin:
         if not query_text.strip():
             raise ValueError("Body evidence candidate ordering requires the original query text")
         canonical_pool, pool = self._prepare_ranking_candidates(
-            query_text, ordered, RAGConfig.CANDIDATE_ORDER_INPUT_ORDER, RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,
+            query_text, ordered,
         )
         if not pool:
             return ordered[:top_k]
 
-        candidate_ids = [f"C{index:03d}" for index in range(len(pool))]
-        node_by_candidate_id = dict(zip(candidate_ids, pool, strict=True))
-        prompt = build_evidence_ranking_prompt(
-            query_text,
-            [
-                (
-                    candidate_id,
-                    str(node.get("title") or node.get("doc") or ""),
-                    "; ".join(
-                        f"{label}: {node[key]}"
-                        for key, label in (
-                            ("publisher", "Publisher"),
-                            ("published_at", "Published"),
-                            ("author", "Author"),
-                            ("category", "Category"),
-                        )
-                        if node.get(key)
-                    ),
-                    str(node.get("text") or ""),
-                )
-                for candidate_id, node in node_by_candidate_id.items()
-            ],
-            top_k,
-        )
-        contract = ranking_contract(candidate_ids, top_k)
+        node_by_candidate_id, prompt = self._ranking_prompt(query_text, pool, top_k)
+        contract = ranking_contract(list(node_by_candidate_id), top_k)
         payload = await self.llm.generate_json(
             [{"role": "user", "content": prompt}],
             json_debug_label="evidence ranking",
@@ -255,8 +191,8 @@ class SimilarityScoringMixin:
                 "query": query_text,
                 "structured_output": contract.provenance(),
                 "top_k": top_k,
-                "input_order": RAGConfig.CANDIDATE_ORDER_INPUT_ORDER,
-                "shuffle_seed": RAGConfig.CANDIDATE_ORDER_SHUFFLE_SEED,
+                "input_order": "search",
+                "shuffle_seed": 0,
                 "canonical_node_ids": [self._node_identity(node) for node in canonical_pool],
                 "candidates": [
                     {
@@ -295,146 +231,30 @@ class SimilarityScoringMixin:
                 await asyncio.to_thread(_append_jsonl, Path(trace_path), line)
         return self._complete_ranking(selected, ordered, top_k)
 
-    @classmethod
-    def _role_body_rounds(
-        cls,
-        ordered: list[dict[str, Any]],
-        top_k: int,
-    ) -> list[dict[str, Any]]:
-        """Give every generated role view one body rank before the next rank."""
-        by_rank: dict[int, dict[str, tuple[dict[str, Any], float]]] = defaultdict(dict)
-        for node in ordered:
-            node_id = cls._node_identity(node)
-            for entry in node.get("role_body_round_entries") or []:
-                rank = int(entry["rank"])
-                score = float(entry.get("score", 0.0))
-                current = by_rank[rank].get(node_id)
-                if current is None or score > current[1]:
-                    by_rank[rank][node_id] = (node, score)
-
-        selected: list[dict[str, Any]] = []
-        selected_ids: set[str] = set()
-
-        def append(node: dict[str, Any]) -> None:
-            node_id = cls._node_identity(node)
-            if node_id and node_id not in selected_ids and len(selected) < top_k:
-                selected.append(node)
-                selected_ids.add(node_id)
-
-        for rank in sorted(by_rank):
-            wave = sorted(
-                by_rank[rank].values(),
-                key=lambda item: (-item[1], cls._node_identity(item[0])),
-            )
-            for node, _score in wave:
-                append(node)
-        for node in ordered:
-            append(node)
-        return selected
-
-    @classmethod
-    def _role_body_owners(
-        cls,
-        ordered: list[dict[str, Any]],
-        top_k: int,
-    ) -> list[dict[str, Any]]:
-        """Retain each generated role view's first body result, then global order."""
-        owner_by_order: dict[int, dict[str, Any]] = {}
-        for node in ordered:
-            for owner_order in node.get("role_body_owner_orders") or []:
-                owner_by_order.setdefault(int(owner_order), node)
-
-        selected: list[dict[str, Any]] = []
-        selected_ids: set[str] = set()
-
-        def append(node: dict[str, Any]) -> None:
-            node_id = cls._node_identity(node)
-            if node_id and node_id not in selected_ids and len(selected) < top_k:
-                selected.append(node)
-                selected_ids.add(node_id)
-
-        for owner_order in sorted(owner_by_order):
-            append(owner_by_order[owner_order])
-        for node in ordered:
-            append(node)
-        return selected
-
     @staticmethod
-    def _source_round_robin(ordered: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
-        """Take one ranked chunk per source per round, then repeat."""
-        groups: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
-        source_order: list[str] = []
-        for node in ordered:
-            source = SimilarityScoringMixin._document_identity(node)
-            if source not in groups:
-                source_order.append(source)
-            groups[source].append(node)
-
-        selected: list[dict[str, Any]] = []
-        while len(selected) < top_k:
-            progressed = False
-            for source in source_order:
-                if groups[source] and len(selected) < top_k:
-                    selected.append(groups[source].popleft())
-                    progressed = True
-            if not progressed:
-                break
-        return selected
-
-    @staticmethod
-    def _source_balanced(ordered: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
-        """Discount repeated-source candidates by their selected occurrence."""
-        return SimilarityScoringMixin._source_balanced_order(ordered)[:top_k]
-
-    @staticmethod
-    def _source_balanced_order(ordered: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Return every candidate in soft document-diversified order."""
-        remaining = list(ordered)
-        source_counts: dict[str, int] = defaultdict(int)
-        selected: list[dict[str, Any]] = []
-        while remaining:
-            best_index = max(
-                range(len(remaining)),
-                key=lambda index: (
-                    float(remaining[index].get("rank_fusion_score", 0.0))
-                    / (source_counts[SimilarityScoringMixin._document_identity(remaining[index])] + 1),
-                    float(remaining[index].get("final_score", 0.0)),
-                    -index,
-                ),
-            )
-            node = remaining.pop(best_index)
-            source = SimilarityScoringMixin._document_identity(node)
-            selected.append(node)
-            source_counts[source] += 1
-        return selected
-
-    @classmethod
-    def _graph_pairs(cls, ordered: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
-        """Keep a high-ranked HOP target with its best-ranked source owner."""
-        by_id = {cls._node_identity(node): node for node in ordered}
-        rank = {cls._node_identity(node): index for index, node in enumerate(ordered)}
-        selected: list[dict[str, Any]] = []
-        selected_ids: set[str] = set()
-
-        def append(node: dict[str, Any]) -> None:
-            node_id = cls._node_identity(node)
-            if node_id and node_id not in selected_ids and len(selected) < top_k:
-                selected.append(node)
-                selected_ids.add(node_id)
-
-        for node in ordered:
-            if len(selected) >= top_k:
-                break
-            hop_sources = {
-                str(path.get("source_chunk_id") or "")
-                for path in (node.get("retrieval_paths") or [])
-                if path.get("kind") == "hop" and str(path.get("source_chunk_id") or "") in by_id
-            }
-            if not hop_sources or len(selected) == top_k - 1:
-                append(node)
-                continue
-            best_source_id = min(hop_sources, key=lambda source_id: rank[source_id])
-            pair = sorted((node, by_id[best_source_id]), key=lambda item: rank[cls._node_identity(item)])
-            for pair_node in pair:
-                append(pair_node)
-        return selected
+    def _ranking_prompt(query_text, pool, top_k):
+        """Share the exact selector rendering with fixed-candidate selector comparisons."""
+        candidates = {f"C{index:03d}": node for index, node in enumerate(pool)}
+        prompt = build_evidence_ranking_prompt(
+            query_text,
+            [
+                (
+                    candidate_id,
+                    str(node.get("title") or node.get("doc") or ""),
+                    "; ".join(
+                        f"{label}: {node[key]}"
+                        for key, label in (
+                            ("publisher", "Publisher"),
+                            ("published_at", "Published"),
+                            ("author", "Author"),
+                            ("category", "Category"),
+                        )
+                        if node.get(key)
+                    ),
+                    str(node.get("text") or ""),
+                )
+                for candidate_id, node in candidates.items()
+            ],
+            top_k,
+        )
+        return candidates, prompt

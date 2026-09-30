@@ -17,11 +17,11 @@ async def run(args):
     _load_runner_environment()
     from core.prehop_ablation import COMMON, PROFILES
     stats=json.loads(args.index_stats.read_text())
-    for k,v in {**COMMON,**PROFILES[args.profile],'ABLATION_Q_MINUS':True,'ABLATION_Q_PLUS':True}.items():
+    for k,v in {**COMMON,**PROFILES[args.profile]}.items():
         os.environ['RAG_'+k]=str(v).lower() if isinstance(v,bool) else str(v)
     os.environ.update(RAG_PAPER_MODE='false',RAG_PREHOP_ABLATION_PROFILE=args.profile,
         RAG_INDEX_NAMESPACE=stats['index_policy']['index_namespace'],RAG_PREHOP_TRACE='false',
-        RAG_CONNECTION_TIMING_MODE='',RAG_ABLATION_DIRECT_INPUTS='')
+        RAG_ABLATION_DIRECT_INPUTS='')
     from core.neo4j_service import Neo4jService
     from models.prehop.ablation_inputs import write_input
     from models.prehop.graphrag import GraphRAG
@@ -39,7 +39,7 @@ async def run(args):
                 value={'query':text,'query_embedding':embedding,'base_candidates':nodes,
                     'original_retrieve_ms':(time.perf_counter()-started)*1000}
                 await asyncio.to_thread(write_input,args.output,text,value)
-                details[query['_id']]={'starts':[n['id'] for n in nodes if not n.get('role_body_owner_only')],
+                details[query['_id']]={'starts':[n['id'] for n in nodes],
                     'original_query_id':query.get('original_query_id',query['_id']), 'error':None}
             except Exception as error:
                 logging.getLogger(__name__).exception("Common retrieval failed for %s",query["_id"])

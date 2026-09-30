@@ -82,7 +82,7 @@ def run(plan_path, *, resume=False):
                 states[job['id']]={'state':'dependency_failed'}
         for job in ready_jobs(jobs,states,active,max_active=plan.get('max_active',1),strategy_filter=plan.get('execution_filter')):
             env=os.environ.copy()
-            for k in ('RAG_INDEX_REUSE_LINK','RAG_INDEX_STATS_PATH','RAG_BENCHMARK_RESUME','RAG_ABLATION_DIRECT_INPUTS','RAG_CONNECTION_TIMING_MODE','RAG_CONNECTION_TIMING_STORE','RAG_PREHOP_ABLATION_PROFILE'):
+            for k in ('RAG_INDEX_REUSE_LINK','RAG_INDEX_STATS_PATH','RAG_BENCHMARK_RESUME','RAG_ABLATION_DIRECT_INPUTS','RAG_PREHOP_ABLATION_PROFILE'):
                 env.pop(k,None)
             env.update(job.get('environment',{}))
             env['RAG_RUN_ID']=job['id'];env['PYTHONUNBUFFERED']='1'

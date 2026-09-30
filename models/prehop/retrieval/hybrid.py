@@ -4,7 +4,7 @@ Each representation combines vector and full-text ranks as
 ``1 / (rank + 1)``. Both modalities contribute equally and there is no
 query-time fusion parameter.
 
-Q-/Q+ and optional sentence indices contain child representation nodes. Search
+Q-/Q+ indices contain child representation nodes. Search
 results are mapped back to their owner chunks before RRF, so several matching
 children from one chunk cannot consume several result slots. For Q+, the exact
 matched question IDs survive this owner collapse for provenance-scoped HOP
@@ -27,8 +27,6 @@ class HybridSearchMixin:
             return self.q_minus_vector_index, self.q_minus_text_index
         if channel == "q_plus":
             return self.q_plus_vector_index, self.q_plus_text_index
-        if channel == "sentence":
-            return self.sentence_vector_index, self.sentence_text_index
         return self.body_vector_index, self.body_text_index
 
     async def _hybrid_rrf_candidates(
@@ -46,7 +44,6 @@ class HybridSearchMixin:
         owner_relationship = {
             "q_minus": "HAS_Q_MINUS",
             "q_plus": "HAS_Q_PLUS",
-            "sentence": "HAS_SENTENCE",
         }.get(channel)
         # Child-representation results are collapsed to owner chunks after
         # search. Use each indexing schema's exact maximum children per chunk,
@@ -54,7 +51,6 @@ class HybridSearchMixin:
         child_bound = {
             "q_minus": RAGConfig.QUESTIONS_PER_DIRECTION,
             "q_plus": RAGConfig.QUESTIONS_PER_DIRECTION,
-            "sentence": RAGConfig.CHUNK_SENTENCES,
         }.get(channel, 1)
         representation_limit = retained_limit * child_bound
 

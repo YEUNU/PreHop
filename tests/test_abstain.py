@@ -1,14 +1,8 @@
-"""Tests for abstain detection and the shared 3-way answer labeling.
-
-The point of these tests is to pin the rule that judge score takes
-precedence over abstain detection: if the ground truth itself is a
-non-answer, an abstention IS the Correct Answer (judge score 1.0), and the
-3-way label must not downgrade it to Refusal.
-"""
+"""Tests for shared abstention-phrase detection."""
 
 import pytest
 
-from utils.abstain import ABSTAIN_PHRASES, answer_label, is_abstain
+from utils.abstain import ABSTAIN_PHRASES, is_abstain
 
 # ---------------------------------------------------------------------------
 # is_abstain
@@ -59,35 +53,3 @@ def test_abstain_phrases_includes_hypo_native_marker():
     # removing it would silently mis-classify Hypo's own abstentions as
     # Incorrect Answer with answer_attempted=1.
     assert "insufficient evidence" in ABSTAIN_PHRASES
-
-
-# ---------------------------------------------------------------------------
-# answer_label
-# ---------------------------------------------------------------------------
-
-
-def test_label_is_correct_when_judge_score_is_high():
-    assert answer_label(1.0, "Revenue was $394B.") == "Correct Answer"
-    assert answer_label(0.5, "Revenue was $394B.") == "Correct Answer"
-
-
-def test_label_correct_when_score_high_even_if_response_looks_like_abstain():
-    # Judge score takes precedence. Some datasets have questions whose GT is
-    # a legitimate non-answer; an honest abstention against such GT is
-    # awarded score=1.0 by the judge prompt and must label as "Correct Answer".
-    assert answer_label(1.0, "Insufficient evidence.") == "Correct Answer"
-
-
-def test_label_is_refusal_when_score_low_and_response_abstains():
-    assert answer_label(0.0, "I do not know.") == "Refusal"
-    assert answer_label(0.4, "The context does not contain this figure.") == "Refusal"
-
-
-def test_label_is_incorrect_when_score_low_and_response_is_substantive():
-    assert answer_label(0.0, "Revenue was $1 trillion.") == "Incorrect Answer"
-
-
-def test_label_handles_non_numeric_score():
-    # Defensive: garbage input collapses to score=0.0 and must not crash.
-    assert answer_label("not a number", "Insufficient evidence.") == "Refusal"
-    assert answer_label(None, "Revenue was $100B.") == "Incorrect Answer"

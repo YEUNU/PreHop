@@ -39,7 +39,7 @@ class FakeClient:
                 error.status_code = 429
                 error.response = SimpleNamespace(headers={'retry-after': '0'})
                 raise error
-            text = '' if 'Question empty' in request['messages'][1]['content'] else 'Final Answer: Yes'
+            text = '' if 'Question empty' in request['messages'][-1]['content'] else 'Final Answer: Yes'
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
                                    model_dump=lambda **_: {'model': request['model'], 'choices': [{'message': {'content': text}}]})
         finally:

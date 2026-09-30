@@ -1,13 +1,10 @@
 """Explicit, non-primary representation ablations. No defaults are changed."""
 
 import os
-from pathlib import Path
 
 PROFILES = {
     "question_full": {"HYPO_CHANNEL_VARIANT": "full", "HOP_LINK_VARIANT": "question"},
     "question_body": {"HYPO_CHANNEL_VARIANT": "body_only", "HOP_LINK_VARIANT": "question"},
-    "body_body": {"HYPO_CHANNEL_VARIANT": "body_only", "HOP_LINK_VARIANT": "body"},
-    "body_full": {"HYPO_CHANNEL_VARIANT": "full", "HOP_LINK_VARIANT": "body"},
 }
 COMMON = {
     "HOP_SEED_POLICY": "all",
@@ -44,14 +41,4 @@ def ablation_identity(config=None):
     if os.environ.get("RAG_ABLATION_DIRECT_INPUTS"):
         identity.update(direct_inputs=os.environ["RAG_ABLATION_DIRECT_INPUTS"],
                         latency_scope="frozen_prefix_downstream_only")
-    if getattr(config, "CONNECTION_TIMING_MODE", ""):
-        from core.admission import sha256_file
-        identity.update(connection_timing_contract="prehop-connection-timing-v2",
-                        connection_timing_arm=config.CONNECTION_TIMING_MODE,
-                        connection_timing_store_sha256=sha256_file(Path(config.CONNECTION_TIMING_STORE)),
-                        destination_memoization=False)
-    if config.HOP_LINK_VARIANT == "body":
-        from core.admission import sha256_file
-
-        identity["body_link_reference_sha256"] = sha256_file(Path(config.BODY_LINK_REFERENCE))
     return identity

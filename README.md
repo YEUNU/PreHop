@@ -1,12 +1,17 @@
-# Prehop: Precomputed Question Links for Multi-Hop Retrieval
+# Prehop: Graph Expansion versus Deeper Direct Retrieval for Multi-Hop RAG
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Prehop investigates how far multi-hop evidence retrieval can be supported by
-connections built before a user query arrives. During indexing, it generates
-questions for each passage and matches them to passages in other sources.
-At query time, it retrieves starting passages, expands their stored connections
-once, and selects evidence with an LLM before generating an answer.
+This repository supports an empirical comparison of graph expansion and deeper
+direct retrieval for multi-hop RAG. Prehop generates passage questions and
+builds links during indexing. At query time, it expands those links once from
+every initial candidate and uses an LLM to select evidence.
+
+The paper compares expansion with a fixed initial candidate pool and with
+deeper original-query retrieval under matched selector input token budgets.
+Evidence overlap and retention analyses explain how candidate coverage changes
+after selection. The [experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory)
+maps the final paper's main and appendix comparisons to their reproduction paths.
 
 [Reproduce the experiments](docs/REPRODUCING.md) ·
 [Method and implementation](docs/METHOD.md) ·

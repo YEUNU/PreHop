@@ -1,13 +1,4 @@
-"""Retrieve direct evidence and dependency seeds by representation role.
-
-Each enabled representation is searched exactly once with the original
-benchmark query. All hits are direct-evidence candidates and default HOP starts;
-Q+ hits additionally mark dependency seeds for the historical qplus policy.
-Starting chunks expose the configured ``HOP_ANSWER`` provenance (owner-wide unfiltered provenance by default; reciprocal filtering
-and exact matched-Q+ activation remain ablations).
-The representation results form an unweighted set union. Direction is
-expressed only by graph role.
-"""
+"""Search each enabled representation once, then union its owner passages."""
 
 import asyncio
 from typing import Any
@@ -38,34 +29,18 @@ class RetrieveMixin:
         after expansion, so it skips the redundant pre-expansion scoring pass.
         """
         top_k = max(1, int(top_k))
-        candidate_k = top_k * RAGConfig.CANDIDATE_POOL_MULTIPLIER
+        candidate_k = top_k
 
         variant = RAGConfig.HYPO_CHANNEL_VARIANT
         active_selection_variant = selection_variant or RAGConfig.SOURCE_SELECTION_VARIANT
         if variant == "body_only":
             channels = ["body"]
-        elif variant == "qminus_only":
-            channels = ["q_minus"]
-        elif variant == "qplus_only":
-            channels = ["q_plus"]
-        elif variant == "single_combined":
-            channels = ["q_minus", "q_plus"]
         else:
-            channels = ["body"]
-            if RAGConfig.ABLATION_Q_MINUS:
-                channels.insert(0, "q_minus")
-            if RAGConfig.ABLATION_Q_PLUS:
-                channels.append("q_plus")
+            channels = ["q_minus", "body", "q_plus"]
 
-        # Sentence retrieval is a second resolution of the body role, not a
-        # fourth evidence role. Fuse it with chunk-body retrieval before the
-        # Q-/body/Q+ union so a chunk cannot gain an extra representation vote
-        # merely because the same text matched at two granularities.
         search_specs: list[tuple[str, str, str]] = []
         for channel in channels:
             search_specs.append((channel, channel, query))
-            if channel == "body" and RAGConfig.SENTENCE_CHANNEL_ENABLED:
-                search_specs.append(("body", "sentence", query))
         query_embedding = query_embedding or await self.llm.get_embedding(query)
         if not query_embedding:
             raise ValueError(f"Retrieval received an empty query embedding for query={query!r}")
@@ -179,9 +154,7 @@ class RetrieveMixin:
             node.setdefault("dependency_seed", False)
             node.setdefault("continuation_seed", False)
 
-        # Each representation returns a bounded owner pool. The default
-        # multiplier is one; a wider pool remains a query-time ablation and
-        # never changes the final evidence count.
+        # Preserve the complete union of the bounded per-channel owner pools.
         base_candidates = list(merged.values())
 
         if not select_final:

@@ -34,7 +34,7 @@ class SynthesisInput:
         return context_digest(self.context)
 
     def messages(self) -> list[dict[str, str]]:
-        """The hook replaces answer instructions and preserves the entire evidence string."""
+        """Use the common reader with every saved passage in its original order."""
         return build_answer_messages(self.context, self.query)
 
     def as_record(self) -> dict[str, Any]:
@@ -84,7 +84,7 @@ async def evaluate_responses(
     *, sentence_store: Path,
 ) -> dict[str, Any]:
     """Score a complete reader replay without altering the original retrieval result."""
-    from core.benchmark_evaluation import _apply_judge_label, _recompute_aggregates, _update_summary_status
+    from core.benchmark_evaluation import _apply_answer_label, _recompute_aggregates, _update_summary_status
     from utils.metrics import evaluate_multihoprag_response
     from utils.official_results import dataset_key
     from utils.provenance import code_provenance
@@ -128,7 +128,7 @@ async def evaluate_responses(
             query=row['query'], response=row['answer'], ground_truth=row['ground_truth'],
             retrieved_sources=row['retrieved_sources'], evidence_facts=expected.get('facts', []),
             evidence_docs=expected.get('docs', []), question_type=row.get('question_type', ''),
-            dataset=dataset, answer_aliases=row.get('answer_aliases', []), judge_enabled=False,
+            dataset=dataset, answer_aliases=row.get('answer_aliases', []),
             supporting_facts=expected.get('supporting_facts', []), hotpot_sentence_store=str(sentence_store),
         ))
         if row.get('error'):
@@ -137,7 +137,7 @@ async def evaluate_responses(
         row['reader_seconds'] = response.get('reader_seconds')
         row['reader_request_sha256'] = response.get('request_sha256')
         row['reader_transport'] = response.get('reader_transport')
-        _apply_judge_label(row)
+        _apply_answer_label(row)
         rows.append(row)
     result = {key: source[key] for key in (
         'dataset', 'corpus_tag', 'dataset_protocol', 'strategy', 'evaluation_scope',
@@ -145,7 +145,7 @@ async def evaluate_responses(
         'corpus_manifest', 'query_provenance',
     ) if key in source}
     result.update(
-        details=rows, queries_count=len(rows), judge_enabled=False,
+        details=rows, queries_count=len(rows),
         evaluation_provenance=code_provenance(),
         common_reader={
             'source_result': str(result_path.resolve()), 'source_sha256': source_sha256,

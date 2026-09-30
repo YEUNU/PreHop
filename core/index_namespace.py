@@ -7,14 +7,15 @@ import os
 import re
 
 
-def index_namespace(corpus_tag: str) -> str:
+def index_namespace(corpus_tag: str, *, env=None) -> str:
     """Return a Neo4j-safe namespace for index labels and snapshot metadata.
 
     ``corpus_tag`` remains the public dataset identity used in result paths.
     Paper runs can set ``RAG_INDEX_NAMESPACE`` to build a fresh set of labels
     in the same Neo4j database without deleting or mutating an active index.
     """
-    raw = os.environ.get("RAG_INDEX_NAMESPACE", "").strip() or str(corpus_tag or "default")
+    environment = os.environ if env is None else env
+    raw = environment.get("RAG_INDEX_NAMESPACE", "").strip() or str(corpus_tag or "default")
     token = re.sub(r"[^A-Za-z0-9_]", "_", raw)
     token = re.sub(r"_+", "_", token).strip("_")
     if not token:

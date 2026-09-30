@@ -2,7 +2,7 @@
 [HopRAG] adapter wired to the official HopRetriever implementation.
 
 This keeps the benchmark interface while delegating traversal logic to
-the pinned runtime's `HopRetriever.py` and preserving its published top-k/order.
+the pinned runtime's `HopRetriever.py` and preserving its configured top-k/order.
 """
 
 import asyncio
@@ -105,7 +105,7 @@ class HopRAGAdapter:
         if not candidates:
             return "", []
 
-        # Preserve the official HopRetriever ordering and published top-k.
+        # Preserve the official HopRetriever ordering and configured top-k.
         # Do not add adapter-only candidate widening or extra scoring.
         nodes = candidates[:top_k]
         context = format_context_from_nodes(nodes)

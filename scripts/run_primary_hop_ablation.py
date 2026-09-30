@@ -66,14 +66,12 @@ def environment(reference, output, inputs):
         env['RAG_' + name] = str(value).lower() if isinstance(value, bool) else str(value)
     env.update({
         'RAG_GRAPH_EDGE_VARIANT': 'next_only',
-        'RAG_HOP_SEED_POLICY': reference['ablation'].get('hop_seed_policy', 'qplus'),
+        'RAG_HOP_SEED_POLICY': reference['ablation'].get('hop_seed_policy', 'all'),
         'RAG_HOP_LINK_VARIANT': reference['ablation'].get('hop_link_variant', 'question'),
         'RAG_PREHOP_ABLATION_PROFILE': 'primary_without_hop',
         'RAG_ABLATION_DIRECT_INPUTS': str(inputs.resolve()),
         'RAG_ABLATION_REUSE_EXISTING_INDEX': 'true',
-        'RAG_CONNECTION_TIMING_MODE': '', 'RAG_CONNECTION_TIMING_STORE': '',
-        'RAG_BODY_LINK_REFERENCE': '',
-        'RAG_PAPER_MODE': 'false', 'RAG_JUDGE_ENABLED': 'false',
+        'RAG_PAPER_MODE': 'false',
         'RAG_LLM_SEED': str(seed) if (seed := reference.get('execution_profile', {}).get('generation_seed')) is not None else '', 'RAG_BENCHMARK_SEEDS': '42',
         'RAG_BENCHMARK_CONCURRENCY': resolved_execution_environment()['RAG_BENCHMARK_CONCURRENCY'],
         'RAG_GENERATION_MODEL': reference['models']['default'],
@@ -212,7 +210,7 @@ async def verify(args):
         expected_nodes = expected['ordered']
         assert actual_nodes == expected_nodes, 'Deterministic scoring/order differs from primary'
         prefix = payload(directory, row['source_events']['RetrieveMixin._retrieve_with_candidate_pool.result'])[1]
-        starts = {node['id'] for node in prefix if not node.get('role_body_owner_only')}
+        starts = {node['id'] for node in prefix}
         recorded_next = {(path['source_chunk_id'], node['id']) for node in source['candidates']
                          for path in node.get('retrieval_paths', []) if path['kind'] == 'next'}
         assert {(a, b) for a, b in next_pairs if a in starts} == recorded_next, 'NEXT graph differs from primary'

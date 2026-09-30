@@ -51,8 +51,6 @@ fi
 export RAG_BENCHMARK_TIMESTAMP=$run_id
 export RAG_CHUNK_CACHE=off
 export RAG_EMBEDDING_CACHE=off
-export RAG_JUDGE_ENABLED=false
-export RAG_JUDGE_BATCH=false
 
 index_stats="$RAG_INDEX_STATS_PATH"
 
@@ -66,7 +64,7 @@ if [ -f "$partial_result" ]; then
 fi
 
 if [ "$check_only" = true ]; then
-    echo "Ready: dataset=$dataset strategy=$strategy run_id=$run_id concurrency=$RAG_BENCHMARK_CONCURRENCY embedding_batch=$RAG_EMBEDDING_BATCH_SIZE embedding_concurrency=$RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS judge=false"
+    echo "Ready: dataset=$dataset strategy=$strategy run_id=$run_id concurrency=$RAG_BENCHMARK_CONCURRENCY embedding_batch=$RAG_EMBEDDING_BATCH_SIZE embedding_concurrency=$RAG_MAX_CONCURRENT_EMBEDDING_REQUESTS"
     exit 0
 fi
 
