@@ -2,76 +2,103 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-This repository studies evidence retrieval in graph-based multi-hop RAG: which
-passages graph expansion reaches, which fit the LLM reranker's input, and which
-remain for answer generation. Standard Prehop generates passage questions and
-builds links during indexing. At query time, it expands those links once from
-every initial candidate, reranks the combined passage pool with an LLM, and
-generates an answer from the returned passages.
+Prehop is a graph-based retriever for multi-hop retrieval-augmented generation
+(RAG). During indexing it generates questions for every passage and stores
+links between passages; at query time it retrieves initial candidates, expands
+the stored links once, reranks the combined pool with an LLM and generates an
+answer from the returned passages. This repository is the implementation and
+experiment code behind two manuscripts that use Prehop as a controlled test
+bed:
 
-The one-step comparisons hold the initial candidates fixed or compare against
-direct retrieval with more candidates under the same per-query reranker input
-token ceiling. On MultiHop-RAG, expansion improves retrieval and QA from fixed
-initial candidates, while both multi-channel and body-only direct retrieval
-perform better under the token ceiling. Their returned contexts have higher
-mean evidence recall than the entire one-step graph pool. HotpotQA's Answer F1
-comparisons remain inconclusive.
+- **Does One-Step Graph Expansion Beat Retrieving More Candidates? A
+  Matched-Budget Comparison for Multi-Hop RAG** compares one-step expansion
+  with direct retrieval that receives the same reranker input token budget.
+- **Reachability versus Inherited Scores: Candidate Admission under a Reranker
+  Input Ceiling in Graph-Based Multi-Hop RAG** asks which reachable evidence
+  survives when deeper neighborhoods must fit the same input ceiling.
 
-Separate experiments expand the saved graphs through one to four steps and
-vary which passages enter the reranker's input. They compare rank fusion with
-cosine admission (ordering by query-to-body cosine), cross these policies with
-two graph constructions,
-and exchange inherited scores on a common candidate pool. These analyses
-distinguish evidence reached by a graph from evidence retained under a budget;
-they do not change the standard one-step query path. The
-[experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory) distinguishes
-the controls, saved inputs, and reproduction requirements.
-
-[Reproduce the experiments](docs/REPRODUCING.md) ·
 [Method and implementation](docs/METHOD.md) ·
+[Reproducing the experiments](docs/REPRODUCING.md) ·
 [Runtime setup](docs/SETUP.md)
 
-## How it works
+## How Prehop works
 
-Each passage has two question representations:
+![Prehop architecture: offline indexing with generated questions and stored links, then one-step expansion, LLM reranking and answer generation](docs/figures/prehop_architecture.png)
 
-- **Q−:** questions whose answers are in this passage.
-- **Q+:** questions that seek information beyond this passage.
-
-Index-time matching connects a passage's Q+ to a Q− belonging to a passage in
-another source. These directed **HOP** links complement **NEXT** links between
-adjacent passages in the same source. The question-role formulation follows
+Each passage receives two question sets from an LLM. **Q−** questions are
+answerable from the passage itself; **Q+** questions ask for information that
+lies beyond it. Index-time matching of a passage's Q+ to another source's Q−
+creates a directed **HOP** link, and adjacent passages of one source are joined
+by **NEXT** links. The question-role formulation follows
 [HopRAG](https://arxiv.org/html/2502.12442v2#S3.S2).
 
-```mermaid
-flowchart TB
-    subgraph Indexing
-        direction LR
-        D[Documents] --> P[Passages]
-        P --> Q[Generate Q- and Q+]
-        Q --> M[Match Q+ to another source's Q-]
-        M --> H[Store HOP links]
-        P --> N[Store adjacent NEXT links]
-    end
-    subgraph Retrieval
-        direction LR
-        U[Original user query] --> R[Search body, Q- and Q+]
-        R --> S[Starting passages]
-        S --> E[Expand HOP and NEXT once]
-        S --> C[Direct and expanded candidates]
-        E --> C
-        C --> L[LLM reranks and returns up to 12 passages]
-        L --> A[Generate answer]
-    end
-    H --> E
-    N --> E
-```
+![A Q+ question of passage A matches a Q− question of passage B and creates the HOP link A to B](docs/figures/question_link_example.png)
 
-The query searches all three representations and combines their passage ranks.
-Prehop follows outgoing HOP links and expands NEXT links in both directions from every
-initial candidate. Initial passages remain in the pool; expanded passages are
-not expanded again. Stored links propose additional evidence, whose relevance
-to the query is assessed during scoring and LLM reranking.
+At query time the original question searches the body, Q− and Q+ indexes; the
+fused hits form the initial candidates. Prehop follows outgoing HOP links and
+both NEXT directions once from every initial candidate, keeps the initial
+candidates in the pool, orders the pool by a fused score and passes it to one
+LLM reranking request that returns up to 12 passages for answer generation.
+Stored links propose evidence; the query decides its relevance only through
+scoring and reranking. The [method guide](docs/METHOD.md) gives the exact
+fusion, scoring and reranking rules.
+
+## What the experiments show
+
+The figures below are static exports of the manuscripts' figures. They plot
+reported means and paired bootstrap intervals from saved outputs; regenerating
+them requires the archived results described in the
+[experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory).
+
+### Expansion helps against fixed initial candidates, direct retrieval wins under a matched budget
+
+![Paired differences on MultiHop-RAG: Prehop against Direct-only with fixed initial candidates, and against direct retrieval with more candidates under matched reranker input token budgets](docs/figures/v1_paired_differences.png)
+
+With the initial candidates fixed, one-step HOP/NEXT expansion plus LLM
+reranking raises MultiHop-RAG MAP@10 by 0.0195 and official QA accuracy by 4.89
+percentage points. When direct retrieval may instead add candidates until it
+fills the same per-query reranker input token budget, it beats Prehop by 0.0379
+MAP@10 and 4.58 points. The HotpotQA comparison, on a reduced corpus whose
+initial candidates already cover 94.8% of the annotated support, is
+inconclusive. Reproduce with the
+[HOP/NEXT ablation](docs/REPRODUCING.md#compare-hop-and-next-expansion) and the
+[matched-budget comparison](docs/REPRODUCING.md#compare-graph-expansion-against-direct-retrieval-with-more-candidates).
+
+### Direct retrieval recovers most of the evidence that expansion adds
+
+![Gold-evidence coverage of the direct-retrieval pool as more of its additional candidates are retained, against the full Prehop pool, on MultiHop-RAG and HotpotQA](docs/figures/v1_evidence_coverage.png)
+
+The two methods add largely different passages, yet direct retrieval with more
+candidates recovers 89.6% (MultiHop-RAG) and 69.8% (HotpotQA) of the gold
+evidence that expansion adds, and on MultiHop-RAG its final 12-passage answer
+context covers more annotated evidence than Prehop's entire candidate pool. A
+body-only direct search under the same budget keeps that advantage. Reproduce
+with the
+[evidence accessibility analysis](docs/REPRODUCING.md#evidence-accessibility-in-saved-candidate-pools).
+
+### Both link types contribute, and the gain depends on the ranking method
+
+![Official retrieval metrics under Direct-only, Direct+NEXT, Direct+HOP and Prehop with the LLM reranker fixed](docs/figures/v1_hop_next_expansion.png)
+
+![The expansion effect on MAP@10 under LLM reranking versus fused-score ordering](docs/figures/v1_ranking_methods.png)
+
+HOP and NEXT links each improve retrieval when the other is present. Under a
+score-based ordering of the same candidate pools, however, expansion slightly
+lowers MAP@10; the gain appears only with LLM reranking. Reproduce with the
+[ranking-method comparison](docs/REPRODUCING.md#compare-ranking-methods-with-fixed-candidates).
+
+### Deeper neighborhoods reach more evidence than the input ceiling admits
+
+![Annotated evidence reached by one- to four-step neighborhoods, and retained under the original reranker input ceiling by rank-fusion and cosine admission, with body-only direct retrieval as reference](docs/figures/v2_depth_admission.png)
+
+Expanding the saved graph through four steps reaches 94.6% of MultiHop-RAG's
+annotated evidence, but only 82.6% fits the one-step input ceiling under
+Prehop's rank-fusion order; ordering candidates by query-to-body cosine admits
+86.8%, still below the 89.3% that body-only direct retrieval reaches under the
+same ceiling. On HotpotQA deeper expansion adds almost no evidence. These
+analyses replay saved graphs and candidate sets; the
+[V2 fixed-input analyses](docs/REPRODUCING.md#v2-fixed-input-analyses) list
+their inputs and limits.
 
 ## Installation
 
@@ -224,13 +251,41 @@ comparison with a shared answer generator needs the separate
 expansion controls and timing measurements. New runs produce their own results;
 identical settings do not guarantee identical generated answers or times.
 
+## Controlled experiments and the figures they produce
+
+| Figure above | Comparison | Entry point |
+| --- | --- | --- |
+| Paired differences (fixed initial candidates) | HOP/NEXT ablation and fixed-candidate QA | `scripts/run_primary_hop_ablation.py`, `scripts/analyze_expansion_factorial.py`, `scripts/compare_prehop_direct_qa.py` |
+| Paired differences (matched budget) and evidence coverage | Direct retrieval with more candidates under Prehop's per-query token budget; evidence overlap and retention | archived matched-budget protocol, `scripts/analyze_evidence_accessibility.py`, `scripts/analyze_ablation_links.py` |
+| HOP/NEXT expansion and ranking methods | Four expansion conditions; LLM reranking against score-based orders on the same pools | `scripts/run_primary_hop_ablation.py`, `scripts/compare_prehop_selectors.py` |
+| Depth and admission | One- to four-step neighborhoods under the original ceiling | saved-graph replay packages listed in the [V2 fixed-input analyses](docs/REPRODUCING.md#v2-fixed-input-analyses) |
+| Not shown: shuffled-link control | Question links against degree-preserving rewired links at matched candidate counts | `scripts/analyze_link_supply.py` |
+
+Paired intervals use `scripts/ablation_statistics.py` (10,000 resamples, seed
+42, HotpotQA clustered by original question). Official scores come from
+`scripts/export_official_results.py`.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `main.py`, `cli/` | Indexing, benchmark and shared answer-generation entry points |
+| `models/prehop/` | Passage chunking, question generation, link construction, hybrid retrieval, one-step expansion, scoring and LLM reranking |
+| `models/naive/` | The dense title/body baseline on the same index infrastructure |
+| `core/` | Configuration, inference transport, structured outputs, evaluation, checkpoints and run identity |
+| `scripts/` | Dataset preparation, experiment runners, controlled analyses, statistics and exports |
+| `utils/` | Metrics, HotpotQA support projection, prompts and provenance |
+| `configs/` | Execution profiles, the smoke fixture and prompt-development question IDs |
+| `docs/` | The three guides and the figure exports used on this page |
+| `tests/` | Unit tests with mocked services; integration tests are marked |
+
 ## Saved results and documentation
 
 The public documentation consists of this README and the three guides below.
-The repository includes implementation code, tests, configuration examples and
-dependency specifications. Working manuscripts, figure sources, agent instructions,
-review notes, credentials, downloaded corpora and generated runs remain local
-and are excluded from source tracking.
+The repository includes implementation code, tests, configuration examples,
+dependency specifications and static figure exports. Working manuscripts,
+figure sources, review notes, credentials, downloaded corpora and generated
+runs remain local and are excluded from source tracking.
 
 The commands above create new measurements. Replaying archived paper results
 requires the original outputs, indexes or traces identified in the
