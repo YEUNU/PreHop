@@ -121,7 +121,7 @@ then the selected execution profile for its throughput fields. Choose throughput
 in the profile; it overrides matching concurrency variables. Python and shell
 entrypoints use the same resolver. See the
 [configuration contract](docs/SETUP.md#configuration-ownership-and-precedence)
-for ownership and method-specific overrides.
+for ownership and precedence.
 
 ## Reviewer checks
 
@@ -133,13 +133,13 @@ Neo4j, model credentials, or downloaded benchmark corpora:
 ```
 
 These tests cover implementation behavior using fixtures and mocked service
-boundaries; they do not reproduce paper scores. Optional checks for locally
-installed native runtimes or saved experiment artifacts may be skipped.
+boundaries; they do not reproduce paper scores. Optional checks for saved
+experiment artifacts may be skipped.
 
 ## Quick start
 
 With the services ready, run a small real experiment using the included
-two-document fixture. No benchmark download or baseline installation is needed:
+two-document fixture. No benchmark download is needed:
 
 ```bash
 export REVIEW_RUN="reviewer-$(date +%Y%m%d-%H%M%S)-$$"
@@ -156,7 +156,7 @@ print("Saved result:", path)
 PY
 ```
 
-A successful execution prints `cold_native_canary_passed` and the generated
+A successful execution prints `cold_canary_passed` and the generated
 answer. The fixture's expected city is **Larkhaven**; the recorded answer lets
 you inspect generation quality. The command checks execution, not exact answer
 equality. Each invocation above creates a fresh namespace and preserves existing
@@ -197,41 +197,32 @@ scores. Its neighboring `.official.json` contains metric summaries; exports
 also produce CSV tables. `failed_rows` records terminal query failures, whose
 quality scores remain zero. Completion alone does not imply every query succeeded.
 
-To run the reference systems, which the manuscripts use only as context and do
-not report as controlled comparisons, first prepare the additional runtimes:
-
-```bash
-./scripts/setup_official_baselines.sh
-```
-
-This installs pinned HopRAG, LightRAG, GFM-RAG and LinearRAG environments and
-their local models. MS GraphRAG uses the main environment. The pinned native
-runtimes target Linux x86-64; check the
-[CUDA/compiler and model prerequisites](docs/SETUP.md#source-and-setup-isolation)
-before installation. Then run and export all fourteen dataset/system pairs:
+The dense baseline (`naive`) uses the same environment, fixed passage windows,
+embedding model, Neo4j vector index and gateway. Run and export both
+dataset/system pairs for the comparison:
 
 ```bash
 export COMPARISON_RUN="comparison-$(date +%Y%m%d-%H%M%S)-$$"
 results=()
 for dataset in multihoprag hotpotqa; do
-  for method in prehop naive hoprag ms_graphrag lightrag gfm_rag linear_rag; do
+  for method in prehop naive; do
     run_id="$COMPARISON_RUN-$dataset-$method"
     bash scripts/run_paper_target.sh "$dataset" "$method" "$run_id" || break 2
     results+=("data/results/$run_id/$method/$dataset/seed_42/${method}_${dataset}.json")
   done
 done
-if [ "${#results[@]}" -eq 14 ]; then
+if [ "${#results[@]}" -eq 4 ]; then
   "$PYTHON_BIN" scripts/export_official_results.py "${results[@]}" \
     --output-dir "data/results/$COMPARISON_RUN-tables"
 fi
 ```
 
-These commands evaluate each system's native answer pipeline. The paper's
+These commands evaluate each system's benchmark answer pipeline. The paper's
 comparison with a shared answer generator needs the separate
 [saved-evidence answer replay](docs/REPRODUCING.md#compare-answer-generation-over-saved-evidence). The
-[experiment guide](docs/REPRODUCING.md) covers that distinction, ablations and
-timing measurements. New runs produce their own results; identical settings do
-not guarantee identical generated answers or times.
+[experiment guide](docs/REPRODUCING.md) covers that distinction, the HOP/NEXT
+expansion controls and timing measurements. New runs produce their own results;
+identical settings do not guarantee identical generated answers or times.
 
 ## Saved results and documentation
 
@@ -249,14 +240,12 @@ pass their explicit paths to `scripts/export_official_results.py` to inspect
 scores without model calls. The exporter records source hashes and keeps the
 original results unchanged.
 
-- [Method and implementation](docs/METHOD.md): retrieval and adapter behavior, code ownership and traces.
-- [Runtime setup](docs/SETUP.md): services, isolated native environments and configuration ownership.
+- [Method and implementation](docs/METHOD.md): retrieval behavior, code ownership and traces.
+- [Runtime setup](docs/SETUP.md): services and configuration ownership.
 - [Reproducing and evaluation](docs/REPRODUCING.md): populations, metrics, resume, controlled experiments and measurement scope.
 
 ## License and attribution
 
 Repository-owned code is released under the [MIT License](LICENSE).
-External implementations and datasets retain their respective licenses.
-Method sources and pinned revisions are listed in
-[the strategy registry](core/strategy_registry.py); HotpotQA source attribution
-is documented in [the dataset guide](docs/REPRODUCING.md#hotpotqa-source-and-population).
+Datasets retain their respective licenses. HotpotQA source attribution is
+documented in [the dataset guide](docs/REPRODUCING.md#hotpotqa-source-and-population).

@@ -47,16 +47,12 @@ V2 additionally uses the following fixed-input analyses:
 | Dataset differences, source selection and changed evidence | Saved graph structure, source identities, initial coverage, HOP/NEXT reachability, and passage-to-annotation matches |
 
 See [V2 fixed-input analyses](#v2-fixed-input-analyses) for the available replay
-packages and the distinct limits of each one. Tooling for analyses that the
-manuscripts no longer report remains in the repository: the body-only versus
-body/Q−/Q+ search ablation (`prepare_ablation_inputs.py`, `prehop_ablation.py`),
-the five-condition link-construction pilot (`compare_link_representations.py`),
-the fixed-exposure context-grouping comparison, and the reference-system
-benchmarks with shared answer generation (README commands). Their outputs are
-not part of either paper's claims.
+packages and the distinct limits of each one. The repository keeps only the
+implementation and tooling behind these retained experiments.
 
-The source checkout supports new benchmark runs, saved-passage answer generation,
-HOP/NEXT and search-channel controls, and analysis of their saved outputs.
+The source checkout supports new Prehop and dense-baseline benchmark runs,
+saved-passage answer generation, HOP/NEXT controls, and analysis of their saved
+outputs.
 Exact replay of the archived matched-budget comparison, shuffled-link supply
 analysis and V2 analyses additionally requires their saved indexes, candidate pools, samples and
 protocol/code snapshots.
@@ -183,10 +179,10 @@ export PREHOP_INDEX="$PWD/data/index_stats/prehop_multihoprag_$BENCH_RUN-multiho
 
 For each experiment specify the hypothesis, matched query IDs, changed factor,
 fixed factors and measures before execution. Gold is evaluation-only. The
-[method](METHOD.md) describes primary behavior; the [runtime manifest](../configs/paper_runtime_requirements.json)
-and registry own native model/revision/budget requirements. Use common declared
-serving conditions for time comparisons. Preserve historical conditions instead
-of relabelling them with current defaults.
+[method](METHOD.md) describes primary behavior; the
+[registry](../core/strategy_registry.py) owns model and budget defaults. Use
+common declared serving conditions for time comparisons. Preserve historical
+conditions instead of relabelling them with current defaults.
 
 ## Compare HOP and NEXT expansion
 
@@ -298,9 +294,8 @@ Complete reranker requests in the matched-budget comparison are tokenized
 with `google/gemma-4-31B-it` at revision
 `842da3794eaa0b77d5f08bae87a17459d91ff475`, including its bundled chat template.
 This identifies the tokenizer used to measure inputs, separately from the
-served generation model's recorded revision. Other model revisions remain
-in the [runtime manifest](../configs/paper_runtime_requirements.json) and saved
-run provenance.
+served generation model's recorded revision, which stays in saved run
+provenance.
 
 ### Body-only direct retrieval under the same token ceiling
 
@@ -327,8 +322,8 @@ comparison; its repeated Prehop and multi-channel conditions quantify generation
 variability at temperature zero. Use those final full-population outputs, not a
 partial sample or the coverage-only preparation, for downstream scores. All three use the same LLM reranking and
 answer-generation settings and return at most 12 passages. Body-only direct
-retrieval differs from the body-only Prehop search-channel ablation, which still
-follows graph links. The input ceiling is shared, while the initial passages and
+retrieval differs from a body-only Prehop search that still follows graph links.
+The input ceiling is shared, while the initial passages and
 representation scores differ from the multi-channel conditions. This is not an
 isolated intervention on question generation or a measurement of body-only index
 construction cost.
@@ -444,8 +439,8 @@ Identical instructions need not be equally optimal for every retrieval output. I
 reruns indexing, search, expansion, evidence selection or embeddings. Preparation
 reads every `details[].retrieved_sources` passage in its original order with
 common title/page/chunk labels; it adds no passage or token cutoff. Gold and
-previous answers are excluded. Native-only structured graph context is not
-added, so this does not reproduce each system's native answer pipeline.
+previous answers are excluded. This replays saved passages through one answer
+generator; it does not reproduce either system's benchmark answer pipeline.
 
 Pass one completed result per dataset/system, in the intended execution order:
 
@@ -458,7 +453,7 @@ Pass one completed result per dataset/system, in the intended execution order:
   --output-dir data/results/common-reader --concurrency 24
 ```
 
-Add the other native result paths to the preparation command for comparisons.
+Add the Naive result path to the preparation command for comparisons.
 Groups run sequentially; questions within a group run concurrently. The answer generator
 uses the shared evidence-checking messages and configured generation model.
 Whole contexts are sent unchanged. Context-length rejection is an execution
@@ -545,13 +540,13 @@ result paths for all methods and both datasets:
 
 ```bash
 "$PYTHON_BIN" -m scripts.export_official_results \
-  path/to/prehop_multihoprag.json path/to/hoprag_multihoprag.json \
-  path/to/prehop_hotpotqa.json path/to/hoprag_hotpotqa.json \
+  path/to/prehop_multihoprag.json path/to/naive_multihoprag.json \
+  path/to/prehop_hotpotqa.json path/to/naive_hotpotqa.json \
   --output-dir data/results/final-comparison
 ```
 
-Add the remaining methods' result paths to the same command. Select one final
-source per dataset and method; the command does not discover the newest run.
+Select one final source per dataset and method; the command does not discover
+the newest run.
 Multiple inputs must be complete full or released-population results with
 matching question IDs and annotations within each dataset. Partial runs,
 subset runs and duplicate method entries are rejected by this offline comparison.
@@ -684,25 +679,23 @@ selection bias. Compare latency only under a declared common serving/load window
 
 | Measurement | Scope |
 | --- | --- |
-| Index wall time | Original index pipeline, including waiting/retries/native work; amortized over manifest sources. Post-timer reporting/capacity collection is separate. |
+| Index wall time | Original index pipeline, including waiting/retries; amortized over manifest sources. Post-timer reporting/capacity collection is separate. |
 | Query batch wall time | Full-batch dispatch to last answer/terminal failure, including queues and interleaved checkpoints; excludes initialization/trailing reports. Dividing by questions gives inverse throughput. |
 | Query latency | Individual response time; inspect service, worker queue and wall-latency fields separately. It is not batch time divided by questions. |
 | Benchmark segment wall time | Accumulated checkpointed segments, including setup/checkpoints. Resumed segments are not uninterrupted throughput. |
-| Reuse/clone preparation | Separate from original cold construction and prior failed attempts. |
+| Reuse preparation | Separate from original cold construction and prior failed attempts. |
 | Storage | Neo4j logical payload estimates and file-backed physical bytes are different measures. Trace bytes are separate; trace I/O remains in phase time. |
 
 Partial, target-failed or resumed batches do not supply continuous throughput.
-Fully executed batches retain terminal query failures. Missing native usage and
-cost are unavailable, not zero. Shared answer-generation replay times are separate from
-measured native online end-to-end latency.
+Fully executed batches retain terminal query failures. Missing usage and cost
+are unavailable, not zero. Shared answer-generation replay times are separate
+from measured online end-to-end latency.
 
 The paper's Prehop query latency was remeasured on every benchmark query using
-the existing indexes and eight concurrent queries. Other systems retain their
-original timing runs. The paper reports available full indexing-phase measurements.
-The saved records also retain HopRAG's MultiHop-RAG attempt total and the final
-indexing segments for LightRAG and GFM-RAG on HotpotQA; these do not supply
-the missing full-phase values in the paper. These are descriptive
-measurements under uncontrolled serving loads, not a matched efficiency comparison.
+the existing indexes and eight concurrent queries. The dense baseline retains
+its original timing run. The paper reports available full indexing-phase
+measurements. These are descriptive measurements under uncontrolled serving
+loads, not a matched efficiency comparison.
 
 ## Managed campaigns and additional analyses
 
@@ -716,12 +709,12 @@ It owns a detached session and writes `data/results/<campaign>/index-supervisor/
 plan/status and named logs. Smoke/full indexes run sequentially over registry
 targets. Smoke failure isolates a target; index completion does not run full
 query benchmarks. Complete receipts can supply `core/index_reuse.py` version-2
-links; the legacy one-query matrix uses version 1. File-backed query copies
-preserve source index identity and keep copy costs separate.
+links; the legacy one-query matrix uses version 1. A link reuses the source
+Neo4j namespace in place and records its original index identity and timing.
 
 `plan_link_experiments.py` and `link_experiment_campaign.py` handle dependencies,
-explicit concurrency and adoption of owned processes for the native systems,
-search-channel comparison and HOP/NEXT expansion conditions.
+explicit concurrency and adoption of owned processes for the primary Prehop and
+Naive runs and the HOP/NEXT expansion conditions.
 Use their `--help` for plan/launch arguments. Resume retains recorded
 completed/failed tasks, adopting live owned processes instead of silently
 retrying; failed dependencies remain explicit.
@@ -730,10 +723,8 @@ Supervisors record PID/start/boot identity and clean only verified descendants
 with bounded TERM waits. Surviving owned processes block restart. Heartbeats
 show liveness, not completed source work. Reboot recovery is not automatic.
 The separate `paper_campaign.py`/`run_paper_matrix.sh` workflow records executed
-stages and their outputs in run-local files.
-
-HopRAG recovery retains document caches and committed edge groups; uncommitted
-interrupted groups are rescored. Preserve earlier statistics and attempt costs.
+stages and their outputs in run-local files. Preserve earlier statistics and
+attempt costs.
 
 [Link usefulness](../scripts/analyze_ablation_links.py) measures evidence added
 beyond direct retrieval and retained after reranking.

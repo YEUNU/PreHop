@@ -4,20 +4,19 @@ This guide describes standard Prehop, its implementation, and the controlled
 comparisons of graph expansion, direct retrieval, and candidate admission.
 Start with the [README](../README.md) to run it; use
 [Reproducing](REPRODUCING.md) for experiment controls and evaluation, and
-[Setup](SETUP.md) for infrastructure and configuration. Exact defaults, native
-budgets and upstream revisions belong to the [strategy registry](../core/strategy_registry.py)
-and [configuration](../core/config.py), rather than duplicated tables here.
+[Setup](SETUP.md) for infrastructure and configuration. Exact defaults belong to
+the [strategy registry](../core/strategy_registry.py) and
+[configuration](../core/config.py), rather than duplicated tables here.
 
 ## Code ownership
 
 | Entry or module | Responsibility |
 | --- | --- |
-| `main.py`, `cli/index.py`, `cli/benchmark.py` | CLI dispatch, indexing coordination, query execution and adapter lifetime |
+| `main.py`, `cli/index.py`, `cli/benchmark.py` | CLI dispatch, indexing coordination, query execution and engine lifetime |
 | `core/benchmark_evaluation.py`, `core/benchmark_checkpoint.py` | Metric aggregation, completion labels, persistence and resume |
 | `models/prehop/graphrag.py` | Index/retrieval mixins and `run_workflow` |
 | `models/prehop/indexing/`, `models/prehop/retrieval/` | Prehop construction and query algorithms |
-| `models/naive/`, `models/hoprag/`, `models/ms_graphrag/` | Naive implementation and pinned native adapters |
-| `models/external_research/`, `models/official_baseline_runtime.py` | Isolated native drivers and worker transport |
+| `models/naive/` | Dense baseline over the same fixed windows, embeddings and Neo4j vector index |
 | `cli/synthesis.py`, `core/synthesis_replay.py` | Shared answer generation over saved passages |
 | `utils/metrics.py`, `utils/hotpotqa.py`, `utils/official_results.py` | Question scoring, support projection and official reports |
 | `scripts/campaign_runtime.py`, `scripts/runner_environment.py` | Owned processes, logs, interpreter and environment selection |
@@ -27,7 +26,7 @@ and [configuration](../core/config.py), rather than duplicated tables here.
 `indexing/chunking.py` accepts an optional first-line `Title:` and `--- Page N ---`
 markers. Without markers the body is one page. Prehop and Naive split within
 pages into six-sentence windows, retaining the final partial window and pipe
-delimited text. External methods retain native indexing units.
+delimited text.
 
 The default question schema generates up to three Q− and three Q+ strings per
 chunk. Q− asks about information inside the chunk; Q+ requests outside
@@ -92,8 +91,8 @@ than 12 passages can be returned.
 No additional local uniqueness or ranking-length validator retries the model.
 The runtime and fixed-candidate comparisons share ordering/completion code.
 
-Historical `body_bridge_min` scoring remains selectable for the search-channel
-ablation, which the manuscripts no longer report. Saved results retain their
+The historical `body_bridge_min` scoring variant remains an explicit
+query-policy setting for reading archived results. Saved results retain their
 recorded policy and are not relabelled with current defaults.
 
 ## Controlled retrieval comparisons
@@ -196,64 +195,22 @@ for quality. Discarded response/usage evidence is retained when available.
 instructions and question-first user message. The answer generator checks decisive facts,
 connects them to the question and ends with `Final Answer:`; insufficient
 support calls for abstention. Whole passages are fitted in rank order for the
-native Prehop answer call. Effective output settings come from
+benchmark Prehop answer call. Effective output settings come from
 `core/generation_profiles.py`. Index identity excludes answer-only prompts.
 
-Naive uses the original shared prompt; external methods retain their native
-answer-generation procedures.
-Differences in their answer scores therefore do not isolate retrieval quality.
-The [shared answer-generation experiment](REPRODUCING.md#compare-answer-generation-over-saved-evidence)
-preserves every exposed returned passage without native Prehop's context fitting.
-It measures answer quality from the returned passages under a common model and
-prompt, separately from each system's native answer pipeline.
-
-## Native method boundaries
-
-Adapters stage the common corpus, configure transport, preserve source aliases
-and observe native responses. Pinned upstream source is unchanged. Native
-retrieval, prompts, local models and budgets remain method-specific; equal
-rank cutoffs do not mean equal passage sizes or context amounts.
-
-- HopRAG stages the complete corpus as one edge group, never query-specific gold
-  contexts. Its native question-pair scoring uses vector dot products and
-  keyword Jaccard. `exact_edges.py` scores large groups in bounded exhaustive
-  blocks while retaining native dtype, exclusion, ties, trimming and deduplication;
-  small groups use the native implementation. There is no dense-only prefilter.
-  Represented and omitted source IDs are recorded when native generation omits
-  documents with empty question lists. Native-dtype answer arrays are reused per
-  group; block size controls memory, not candidate selection.
-- MS GraphRAG retains native extraction, communities and LocalSearch. Citation
-  decoding preserves all source aliases when native content-derived IDs merge
-  documents; it does not rewrite parquet membership or answers.
-- LightRAG retains native insertion, mix retrieval and document statuses. Resume
-  inserts absent sources and explicitly retries existing failed sources once per
-  invocation. Status is checked by source ID, not a reused track ID; repeated
-  native failure remains an error. LLM and embedding wrapper deadlines use the
-  configured transport timeout.
-- GFM-RAG retains native extraction, checkpoint retrieval and single-pass QA.
-  Its local linker uses run-local mutable caches, preserving model snapshots.
-  The QA transport timeout follows the common contract instead of the upstream
-  call default; a client timeout does not prove server cancellation.
-- LinearRAG retains local NER/MPNet and native QA. Concurrent questions may be
-  collected into a bounded batch and passed to native `qa(questions)`; retrieval
-  remains native/sequential and answer generation uses native workers. A batch
-  failure reaches all members without an adapter retry.
-
-HopRAG's declared JSON recovery parses valid plain/fenced JSON before the native
-cleaner, without inventing facts or adding completion retries. GFM-RAG retains
-native JSON/empty-list behavior; other adapters retain native parsing and record
-responses or exceptions. Observation alone is not evidence of indexing success.
-Missing usage and monetary costs remain unavailable. Fixture parity tests do
-not certify every numerical boundary or the full adapted pipeline.
+Naive uses the original shared prompt, so Prehop/Naive answer-score differences
+do not isolate retrieval quality. The
+[shared answer-generation experiment](REPRODUCING.md#compare-answer-generation-over-saved-evidence)
+preserves every exposed returned passage without the benchmark Prehop answer
+call's context fitting. It measures answer quality from the returned passages
+under a common model and prompt, separately from each system's benchmark answer
+pipeline. Equal rank cutoffs do not mean equal passage sizes or context amounts.
 
 ## Persistence and ownership
 
-Native indexing branches share elapsed-time, capacity and failure recording in
-`cli/index.py::_run_native_index`; actual native calls stay in adapters. Benchmark
-cancellation and checkpoint failure cancel/drain query tasks before adapter
-closure. Worker EOF, broken input pipes and absolute request timeout fail the
-target, including when upstream logs continue arriving. CLI commands propagate
-recorded execution failure as a nonzero exit status.
+Benchmark cancellation and checkpoint failure cancel/drain query tasks before
+engine closure. CLI commands propagate recorded execution failure as a nonzero
+exit status.
 
 `core/benchmark_checkpoint.py` atomically publishes trace JSONL before the main
 JSON commit point. Resume joins traces by query ID, restoring only committed
@@ -286,9 +243,7 @@ from retrieval-index capacity.
 `ablation_statistics.py` pairs occurrence IDs before resampling original-question
 clusters. Link usefulness retains its successful-query denominator, while the
 shuffled-link comparison reads frozen candidates and sampling realizations.
-`compare_link_representations.py` retains the five-condition link-representation pilot,
-which the manuscripts no longer report; its Q+ to passage search uses the shared ANN
-helper without replacing the main question-link index. `analyze_evidence_accessibility.py` evaluates frozen graph and pools from direct
+`analyze_evidence_accessibility.py` evaluates frozen graph and pools from direct
 retrieval with more candidates, recorded search channels of newly supplied evidence,
 retention after reranking, initial-coverage groups and prompt-development exclusions.
 The depth, admission, graph-score, source-selection, and sensitivity analyses

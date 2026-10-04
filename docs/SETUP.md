@@ -1,14 +1,14 @@
 # Runtime and infrastructure setup
 
-For operators preparing the services and native runtimes used by the
-[README](../README.md). Experiment commands and measurement rules are in
-[Reproducing](REPRODUCING.md); adapter behavior is in [Method](METHOD.md).
+For operators preparing the services used by the [README](../README.md).
+Experiment commands and measurement rules are in [Reproducing](REPRODUCING.md);
+method behavior is in [Method](METHOD.md).
 
 ## Main Python environment
 
 Use the README installation for a new checkout. The main Python environment is
-owned by `pyproject.toml` and `uv.lock`; it includes MS GraphRAG. To prepare a
-separate environment without replacing an active one:
+owned by `pyproject.toml` and `uv.lock`. To prepare a separate environment
+without replacing an active one:
 
 ```bash
 export UV_PROJECT_ENVIRONMENT=/absolute/new/main-venv
@@ -19,7 +19,6 @@ export PYTHON_BIN="$UV_PROJECT_ENVIRONMENT/bin/python"
 Both variables must refer to the same environment. Shell entrypoints otherwise
 prefer `.venv/bin/python`, then Python on `PATH`. A missing explicit interpreter
 is an error. Running commands never install or synchronize dependencies.
-HopRAG launchers select its separately prepared coordinator automatically.
 
 ## Common inference gateway
 
@@ -32,10 +31,9 @@ Changing them defines another experiment. Preserve actual weight-revision
 evidence when available; a serving alias alone does not establish it.
 
 `RAG_INFERENCE_TIMEOUT` and `RAG_INFERENCE_RETRY_ATTEMPTS` control the common
-transport. A method's local model or input budget can differ from the gateway
-model/limit. Native compatibility variables are injected into child processes;
-legacy provider variables are not another public configuration interface.
-Credentials stay in the local environment and must not enter saved artifacts.
+transport. Legacy provider variables are not another public configuration
+interface. Credentials stay in the local environment and must not enter saved
+artifacts.
 
 `run_servers.sh all` checks Neo4j and both gateway model names. A model-list check
 does not exercise inference; the README smoke does. The script can start a
@@ -46,12 +44,12 @@ custom ports, database permissions and model services yourself.
 
 | Source | Responsibility |
 | --- | --- |
-| `core/strategy_registry.py` | Static method/transport defaults, native budgets and pinned revisions |
+| `core/strategy_registry.py` | Static method and transport defaults for Prehop and the dense baseline |
 | `core/config.py` | Retrieval/evaluation settings consumed by core code |
 | `core/execution_profile.py` | Resolve operational defaults, caller values and selected throughput profile |
-| `core/inference_transport.py` | Effective request contract for clients, workers and provenance |
-| `core/paper_policy.py` | Run identity, namespace, output/cache paths and paper generation seed semantics |
-| `configs/paper_runtime_requirements.json` | Native interpreter, dependency, local model and content requirements |
+| `core/inference_transport.py` | Effective request contract for clients and provenance |
+| `core/paper_policy.py` | Run identity, namespace, cache paths and paper generation seed semantics |
+| `core/runtime_requirements.py` | Interpreter, installed-distribution and lockfile identity recorded with artifacts |
 
 Launchers load `.env` through `scripts/lib.sh` or
 `scripts/runner_environment.py`, preserving exports. Priority is registry
@@ -61,78 +59,26 @@ Python starts; `RAGConfig` retains import-time values. Read-only configuration
 inspection passes copied settings through `resolved_target_environment` instead
 of temporarily changing `os.environ`.
 
-The final paper's selectable Prehop controls are search channels, HOP/NEXT
-expansion, scoring and ranking method. Question-role indexing, expansion depth,
-path decay and reciprocal metadata materialization are fixed in the registry;
-their former environment overrides are inactive. Use the
+The final paper's selectable Prehop controls are HOP/NEXT expansion, scoring
+and ranking method. Question-role indexing, expansion depth, path decay and
+reciprocal metadata materialization are fixed in the registry; their former
+environment overrides are inactive. Use the
 [experiment inventory](REPRODUCING.md#paper-experiment-inventory) to select a
-reported comparison. Baseline retrieval parameters retain their native scope.
+reported comparison.
 
 The README selects [direct-8.json](../configs/execution_profiles/direct-8.json).
 Use that file to inspect/change producer and request limits; the registry owns
-unprofiled defaults. External workers' existing `RAG_<STRATEGY>_EMBEDDING_*`
-controls can override global embedding batch/concurrency/retries and are recorded
-in provenance. Requests go directly to the gateway. Per-client limits are not
-a cross-process semaphore or a statement of GPU capacity; nested native workers
-and unrelated clients affect load.
+unprofiled defaults. Requests go directly to the gateway. Per-client limits are
+not a cross-process semaphore or a statement of GPU capacity; unrelated clients
+affect load.
 
 Generation in the paper experiments omits the LLM seed; evaluation and sampling
-seeds are separate. Recorded native settings and historical results remain
-unchanged. Baseline setup checks pinned sources and dependencies before execution.
-
-## Source and setup isolation
-
-Run baseline setup on Linux x86-64 with Bash, Git, `flock` (util-linux), `uv` and
-internet access. The setup fetches pinned sources, provisions interpreters and
-downloads local models. It does not install host GPU drivers or compilers.
-GFM-RAG additionally needs a CUDA development toolkit (CUDA 12 or newer; its
-upstream recommends 12.6.3) and a C++ compiler for native graph operations.
-These requirements are independent of the remote inference gateway.
-
-```bash
-./scripts/setup_official_baselines.sh
-```
-
-The script prepares the native methods declared by the registry. Their exact
-Python versions, constraints and model snapshot hashes are in
-[the runtime manifest](../configs/paper_runtime_requirements.json), with package
-versions in its referenced constraints. GFM-RAG includes its learned checkpoint
-and ColBERT linker; LinearRAG uses pinned local MPNet/spaCy components. MS
-GraphRAG comes from the main lockfile.
-
-`RAG_OFFICIAL_BASELINE_HOME` selects the installation root, defaulting to
-`data/official_baselines`. Export an absolute path before setup and execution
-when relocating. External methods use `<home>/<strategy>/{source,artifacts,venv}`
-and record installed dependency freezes. Upstream revisions are exported to
-unique build directories and checked without patching original source. Freezes
-record installed metadata; they are not universal cross-platform locks.
-
-Use a fresh home for a replacement. Preserve existing failed attempts for
-inspection and never replace an environment used by an active process.
-
-### HopRAG runtime
-
-The common setup includes HopRAG. For that method alone:
-
-```bash
-python3 scripts/setup_hoprag_runtime.py
-```
-
-`models/hoprag/runtime_paths.py` owns `<home>/hoprag`. It contains `main-env`
-for coordinator/native imports, `pos-env` for the PaddleNLP CPU worker, `source`,
-`pos-model`, separate environment freezes and a successful `setup.json` receipt.
-Constraint files and the POS model manifest own versions/hashes.
-
-Setup builds under `<home>/.builds`, checks dependencies, native imports, source
-integrity and an actual POS request, then publishes a symlink to preserve venv
-interpreter paths. Repeating setup verifies/reuses the installation. A mismatch
-leaves it intact; choose a fresh home. Generated POS files use run-local storage.
+seeds are separate. Historical results remain unchanged.
 
 ## Storage and ongoing work
 
-Keep corpus/query manifests, original indexes, results, traces and prepared
-runtimes used by retained or active runs. Source checkouts and model snapshots
-remain immutable; generated native caches belong in run-local storage.
+Keep corpus/query manifests, original indexes, results and traces used by
+retained or active runs.
 Downloaded data and generated runs are excluded by the repository's
 [Git ignore rules](../.gitignore). Keep credentials in `.env` or the process
 environment; [.env.example](../.env.example) documents the public inputs.
