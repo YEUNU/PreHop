@@ -1,4 +1,4 @@
-"""Evaluate the paper's frozen question-link versus shuffled-link candidate pools.
+"""Evaluate frozen question-link and shuffled-link pools, optionally including body links.
 
 Keep archived per-query budgets and all sampling realizations unchanged. Gold is
 used only to score the frozen pools. Write reports into a new output directory.
@@ -86,7 +86,7 @@ def coupled_sample(pools, budget, seed):
     return [sorted(pool, key=lambda node: (priority[node], node))[:budget] for pool in pools]
 
 
-def evaluate(prepared_dir: Path, protocol: dict, output: Path):
+def evaluate(prepared_dir: Path, protocol: dict, output: Path, *, include_body: bool = False):
     from utils.metrics import _official_multihoprag_fact_match
 
     if output.resolve() == prepared_dir.resolve():
@@ -102,10 +102,11 @@ def evaluate(prepared_dir: Path, protocol: dict, output: Path):
         samples = archive["samples"]
     # The archived experiment sampled three arms jointly. Retain its exact
     # per-query budgets and samples; dropping an arm must never resample others.
+    arms = ("question", "body", "shuffled") if include_body else ARMS
     recorded_arms = protocol.get("conditions", ["question", "body", "shuffled"])
-    if set(ARMS) - set(recorded_arms) or samples.shape[2] != len(recorded_arms):
+    if set(arms) - set(recorded_arms) or samples.shape[2] != len(recorded_arms):
         raise ValueError("Prepared candidate arms do not match the protocol")
-    samples = samples[:, :, [recorded_arms.index(arm) for arm in ARMS], :]
+    samples = samples[:, :, [recorded_arms.index(arm) for arm in arms], :]
     queries = {q["_id"]: q for q in json.loads(source(protocol, "queries").read_text())}
     rows = snapshot["rows"]
     if set(queries) != {r["query_id"] for r in rows}:
@@ -131,9 +132,9 @@ def evaluate(prepared_dir: Path, protocol: dict, output: Path):
         base = int(np.bitwise_or.reduce(masks[[index_of[n] for n in row["base"]]], initial=np.uint64(0)))
         covered = np.bitwise_or.reduce(masks[samples[:, i]], axis=2)
         new = covered & np.uint64(all_mask ^ base)
-        values = np.empty((len(samples), len(ARMS), len(METRICS)))
+        values = np.empty((len(samples), len(arms), len(METRICS)))
         for repeat in range(len(samples)):
-            for arm in range(len(ARMS)):
+            for arm in range(len(arms)):
                 recovered = int(new[repeat, arm])
                 values[repeat, arm] = (recovered.bit_count() / len(facts),
                                       float((int(covered[repeat, arm]) | base) == all_mask) - float(base == all_mask),
@@ -144,7 +145,7 @@ def evaluate(prepared_dir: Path, protocol: dict, output: Path):
                   "base_complete": base == all_mask, "budget": row["budget"],
                   "base_candidates": len(row["base"]), "question_full_added": len(row["question"]),
                   "matched": {arm: dict(zip(METRICS, values.mean(axis=0)[j].tolist(), strict=True))
-                              for j, arm in enumerate(ARMS)}}
+                              for j, arm in enumerate(arms)}}
         details.append(detail)
         random_values.append(values)
         if (i + 1) % 250 == 0:
@@ -155,10 +156,13 @@ def evaluate(prepared_dir: Path, protocol: dict, output: Path):
     def interval(values):
         return cluster_interval(values, groups, seed=protocol["inference"]["bootstrap_seed"],
                                 repeats=protocol["inference"]["resamples"])
-    condition = {arm: {key: interval([r["matched"][arm][key] for r in details]) for key in METRICS} for arm in ARMS}
+    condition = {arm: {key: interval([r["matched"][arm][key] for r in details]) for key in METRICS} for arm in arms}
+    contrast_pairs = (("question", "shuffled"),)
+    if include_body:
+        contrast_pairs += (("body", "question"), ("body", "shuffled"))
     contrasts = {f"{a}_minus_{b}": {key: interval([r["matched"][a][key] - r["matched"][b][key]
                                                   for r in details]) for key in METRICS}
-                 for a, b in (("question", "shuffled"),)}
+                 for a, b in contrast_pairs}
     realizations = np.mean(np.stack(random_values), axis=0)
     report = {"analysis": protocol["analysis"], "protocol_sha256": digest(prepared_dir / "protocol.json"),
               "evaluated_script_sha256": digest(Path(__file__)), "prepared_queries": len(rows),
@@ -172,13 +176,13 @@ def evaluate(prepared_dir: Path, protocol: dict, output: Path):
               "conditions": condition, "contrasts": contrasts,
               "realization_variation": {"scope": "SD across fixed sampling/shuffled-graph repetitions; not a CI",
                                         "sd": realizations.std(axis=0, ddof=1).tolist(),
-                                        "metrics": METRICS, "arms": ARMS},
+                                        "metrics": METRICS, "arms": arms},
               "interpretation": "Pre-selector coverage with archived counts and samples; not final MAP/QA or matched tokens.",
               "prepared_source": str(prepared_dir.resolve()), "details": details}
     save_json(output / "comparison.json", report)
     with atomic_text_writer(output / "summary.csv") as stream:
         stream.write("condition,mean_added_passages,added_fact_recall,complete_pool_gain,any_new_fact\n")
-        for arm in ARMS:
+        for arm in arms:
             stream.write(f"{arm},{report['budget']['mean']}," +
                          ",".join(str(condition[arm][key]["mean"]) for key in METRICS) + "\n")
     print(json.dumps({k: report[k] for k in ("budget", "conditions", "contrasts")}), flush=True)
@@ -189,10 +193,12 @@ def main():
     parser.add_argument("--prepared", type=Path, required=True,
                         help="Archived protocol, snapshot, samples and hash manifest")
     parser.add_argument("--output", type=Path, required=True, help="New output directory")
+    parser.add_argument("--include-body", action="store_true",
+                        help="Also evaluate archived body-link samples and their paired contrasts")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     protocol = json.loads((args.prepared / "protocol.json").read_text())
-    evaluate(args.prepared, protocol, args.output)
+    evaluate(args.prepared, protocol, args.output, include_body=args.include_body)
 
 
 if __name__ == "__main__":

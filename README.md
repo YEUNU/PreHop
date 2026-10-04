@@ -1,17 +1,31 @@
-# Prehop: Graph Expansion versus Deeper Direct Retrieval for Multi-Hop RAG
+# Prehop: Graph Expansion, Direct Retrieval and Candidate Admission for Multi-Hop RAG
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-This repository supports an empirical comparison of graph expansion and deeper
-direct retrieval for multi-hop RAG. Prehop generates passage questions and
+This repository studies evidence retrieval in graph-based multi-hop RAG: which
+passages graph expansion reaches, which fit the LLM reranker's input, and which
+remain for answer generation. Standard Prehop generates passage questions and
 builds links during indexing. At query time, it expands those links once from
-every initial candidate and uses an LLM to select evidence.
+every initial candidate, reranks the combined passage pool with an LLM, and
+generates an answer from the returned passages.
 
-The paper compares expansion with a fixed initial candidate pool and with
-deeper original-query retrieval under matched selector input token budgets.
-Evidence overlap and retention analyses explain how candidate coverage changes
-after selection. The [experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory)
-maps the final paper's main and appendix comparisons to their reproduction paths.
+The one-step comparisons hold the initial candidates fixed or compare against
+direct retrieval with more candidates under the same per-query reranker input
+token ceiling. On MultiHop-RAG, expansion improves retrieval and QA from fixed
+initial candidates, while both multi-channel and body-only direct retrieval
+perform better under the token ceiling. Their returned contexts have higher
+mean evidence recall than the entire one-step graph pool. HotpotQA's Answer F1
+comparisons remain inconclusive.
+
+Separate experiments expand the saved graphs through one to four steps and
+vary which passages enter the reranker's input. They compare rank fusion with
+cosine admission (ordering by query-to-body cosine), cross these policies with
+two graph constructions,
+and exchange inherited scores on a common candidate pool. These analyses
+distinguish evidence reached by a graph from evidence retained under a budget;
+they do not change the standard one-step query path. The
+[experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory) distinguishes
+the controls, saved inputs, and reproduction requirements.
 
 [Reproduce the experiments](docs/REPRODUCING.md) ·
 [Method and implementation](docs/METHOD.md) ·
@@ -46,7 +60,7 @@ flowchart TB
         S --> E[Expand HOP and NEXT once]
         S --> C[Direct and expanded candidates]
         E --> C
-        C --> L[LLM selects up to 12 passages]
+        C --> L[LLM reranks and returns up to 12 passages]
         L --> A[Generate answer]
     end
     H --> E
@@ -54,10 +68,10 @@ flowchart TB
 ```
 
 The query searches all three representations and combines their passage ranks.
-Every retrieved starting passage can activate its stored links. Direct passages
-remain candidates; graph-discovered passages are not expanded again. Stored
-links are candidate connections, not complete answer paths: query-dependent
-retrieval, scoring and selection still determine the final evidence.
+Prehop follows outgoing HOP links and expands NEXT links in both directions from every
+initial candidate. Initial passages remain in the pool; expanded passages are
+not expanded again. Stored links propose additional evidence, whose relevance
+to the query is assessed during scoring and LLM reranking.
 
 ## Installation
 
@@ -183,7 +197,8 @@ scores. Its neighboring `.official.json` contains metric summaries; exports
 also produce CSV tables. `failed_rows` records terminal query failures, whose
 quality scores remain zero. Completion alone does not imply every query succeeded.
 
-For the seven-system comparison, first prepare the additional runtimes:
+To run the reference systems, which the manuscripts use only as context and do
+not report as controlled comparisons, first prepare the additional runtimes:
 
 ```bash
 ./scripts/setup_official_baselines.sh
@@ -212,17 +227,24 @@ fi
 ```
 
 These commands evaluate each system's native answer pipeline. The paper's
-common-reader comparison needs the separate
-[saved-evidence answer replay](docs/REPRODUCING.md#compare-a-common-reader-over-saved-evidence). The
+comparison with a shared answer generator needs the separate
+[saved-evidence answer replay](docs/REPRODUCING.md#compare-answer-generation-over-saved-evidence). The
 [experiment guide](docs/REPRODUCING.md) covers that distinction, ablations and
 timing measurements. New runs produce their own results; identical settings do
 not guarantee identical generated answers or times.
 
 ## Saved results and documentation
 
-This source release does not bundle the authors' generated results, indexes or
-traces. The commands above create new measurements; they do not display an
-included paper-result archive. If you already have saved benchmark results,
+The public documentation consists of this README and the three guides below.
+The repository includes implementation code, tests, configuration examples and
+dependency specifications. Working manuscripts, figure sources, agent instructions,
+review notes, credentials, downloaded corpora and generated runs remain local
+and are excluded from source tracking.
+
+The commands above create new measurements. Replaying archived paper results
+requires the original outputs, indexes or traces identified in the
+[experiment guide](docs/REPRODUCING.md#paper-experiment-inventory); these are not
+bundled with the source checkout. If you already have saved benchmark results,
 pass their explicit paths to `scripts/export_official_results.py` to inspect
 scores without model calls. The exporter records source hashes and keeps the
 original results unchanged.

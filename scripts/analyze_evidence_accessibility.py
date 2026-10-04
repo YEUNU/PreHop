@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import math
 import sys
@@ -84,6 +85,72 @@ def evidence_witnesses(starts: set[str], graph: set[str], direct: set[str], hits
     counts["graph_only_gold_bearing_passages"] = sum(bool(hits[nid]) for nid in graph_only)
     counts["graph_only_new_gold_bearing_passages"] = sum(bool(hits[nid] & new) for nid in graph_only)
     return {"counts": counts, "units": rows}
+
+
+def recorded_channel_ranks(node: dict, depth_limit: int) -> dict[str, int]:
+    """Recover channel membership from stored reciprocal passage-owner ranks."""
+    ranks = {}
+    for channel, score in node["representation_scores"].items():
+        if (channel not in {"body", "q_minus", "q_plus"} or isinstance(score, bool)
+                or not isinstance(score, (int, float)) or not math.isfinite(score) or score <= 0):
+            raise ValueError("Invalid recorded channel score")
+        rank = round(1 / score)
+        if not 1 <= rank <= depth_limit or not math.isclose(score, 1 / rank, rel_tol=1e-10):
+            raise ValueError("Channel score is not a reciprocal rank within the recorded search depth")
+        ranks[channel] = rank
+    if not ranks:
+        raise ValueError("Missing recorded search channels")
+    return ranks
+
+
+def direct_channel_evidence(starts: set[str], nodes: dict[str, dict], hits: dict[str, set],
+                            selected10: set, selected_all: set, *, depth_limit: int) -> list[dict]:
+    """Classify every direct-added gold unit using all its witnesses in the pool."""
+    if not starts <= nodes.keys():
+        raise ValueError("Direct pool must retain every initial passage")
+    available = coverage(nodes, hits)
+    if not selected10 <= selected_all <= available:
+        raise ValueError("Selected evidence is outside the direct pool")
+    new = available - coverage(starts, hits)
+    # Supplemented starts keep old ranks; only non-starts have depth-limit ranks.
+    ranks = {nid: recorded_channel_ranks(node, depth_limit) for nid, node in nodes.items() if nid not in starts}
+    units = []
+    for unit in sorted(new):
+        witnesses = {nid: ranks[nid] for nid in ranks if unit in hits[nid]}
+        channels = set().union(*(set(value) for value in witnesses.values()))
+        if not channels:
+            raise ValueError("Direct-added gold unit has no recorded channel witness")
+        body, questions = "body" in channels, bool(channels & {"q_minus", "q_plus"})
+        group = "both" if body and questions else "body_only" if body else "questions_only"
+        units.append({"unit": unit, "category": group, "channels": sorted(channels),
+                      "witnesses": witnesses, "retained_top10": unit in selected10,
+                      "retained_context": unit in selected_all})
+    return units
+
+
+def summarize_direct_channels(rows: list[dict]) -> dict:
+    """Count question-gold units; categories may overlap at question level."""
+    units = [(row, unit) for row in rows for unit in row["direct_channel_units"]]
+
+    def summarize(group):
+        supplied = len(group)
+        result = {"supplied": supplied, "share_of_added_units": supplied / len(units) if units else None,
+                  "queries": len({r["query_id"] for r, _ in group}),
+                  "original_questions": len({r["original_query_id"] for r, _ in group})}
+        for stage in ("top10", "context"):
+            retained = sum(u["retained_" + stage] for _, u in group)
+            result["retained_" + stage] = retained
+            result[stage + "_retention"] = retained / supplied if supplied else None
+        return result
+
+    combinations = [list(c) for n in range(1, 4)
+                    for c in itertools.combinations(("body", "q_minus", "q_plus"), n)]
+    return {"rows": len(rows), "original_questions": len({r["original_query_id"] for r in rows}),
+            "total": summarize(units),
+            "categories": {name: summarize([(r, u) for r, u in units if u["category"] == name])
+                           for name in ("body_only", "questions_only", "both")},
+            "channel_combinations": {"+".join(c): summarize([(r, u) for r, u in units if u["channels"] == c])
+                                     for c in combinations}}
 
 
 def paired_scores(left: dict, right: dict, queries: dict, metric: str, *, seed: int, repeats: int) -> dict:
@@ -164,6 +231,100 @@ def row_curves(starts: set[str], graph: list[str], direct: list[str], hits: dict
     return rows
 
 
+def initial_coverage_summary(rows: list[dict], scores: dict, metrics: list[str], *, seed: int, repeats: int) -> dict:
+    """Stratify fixed outputs by gold coverage before either candidate addition."""
+    arms = ("prehop_replay", "direct_tokens")
+    groups = {name: {} for name in ("none", "partial", "complete")}
+    values = {arm: {} for arm in arms}
+    details = []
+    seen = set()
+    for row in rows:
+        qid = row["query_id"]
+        if qid in seen:
+            raise ValueError(f"Duplicate coverage query ID: {qid}")
+        seen.add(qid)
+        initial, gold = row["initial_covered"], row["gold_units"]
+        if type(initial) is not int or type(gold) is not int or not 0 <= initial <= gold or gold <= 0:
+            raise ValueError(f"Invalid initial/gold evidence counts: {qid}")
+        group = "none" if initial == 0 else "complete" if initial == gold else "partial"
+        original = row["original_query_id"]
+        groups[group][qid] = {"original_query_id": original}
+        for arm in arms:
+            if qid not in scores[arm] or scores[arm][qid]["original_query_id"] != original:
+                raise ValueError(f"Score/coverage question identity mismatch: {qid}")
+            score = scores[arm][qid]
+            values[arm][qid] = {m: metric_value(score, m) for m in metrics}
+            for metric, expected in row.get("answers", {}).get(arm, {}).items():
+                if metric in metrics and values[arm][qid][metric] != expected:
+                    raise ValueError(f"Saved answer metric differs from coverage report: {qid}")
+            covered = {}
+            for stage in ("pool", "selected10", "selected_all"):
+                units = row["coverage"][stage][arm]
+                covered[stage] = {tuple(unit) if isinstance(unit, list) else unit for unit in units}
+                if len(covered[stage]) != len(units) or len(units) > gold:
+                    raise ValueError(f"Invalid evidence coverage set: {qid}")
+                recall = len(units) / gold
+                if not math.isclose(recall, row["recall"][stage][arm], abs_tol=1e-12):
+                    raise ValueError(f"Saved coverage count/recall mismatch: {qid}")
+                values[arm][qid][stage + "_recall"] = recall
+            if not covered["selected10"] <= covered["selected_all"] <= covered["pool"]:
+                raise ValueError(f"Selected evidence is outside its candidate pool: {qid}")
+            if len(covered["pool"]) < initial:
+                raise ValueError(f"Candidate pool lost initial evidence: {qid}")
+        details.append({"query_id": qid, "original_query_id": original, "group": group,
+                        "initial_covered": initial, "gold_units": gold,
+                        "metrics": {arm: values[arm][qid] for arm in arms}})
+    summaries = {}
+    all_queries = {qid: query for group in groups.values() for qid, query in group.items()}
+    for name, queries in [("all", all_queries), *groups.items()]:
+        subset = [r for r in details if r["query_id"] in queries]
+        summary = {"rows": len(queries), "original_questions": len({q["original_query_id"] for q in queries.values()}),
+                   "query_ids": sorted(queries),
+                   "initial_recall": sum(r["initial_covered"] / r["gold_units"] for r in subset) / len(subset)
+                   if subset else None, "metrics": {}}
+        for metric in ["pool_recall", "selected10_recall", "selected_all_recall", *metrics]:
+            summary["metrics"][metric] = paired_scores(
+                values[arms[0]], values[arms[1]], queries, metric, seed=seed, repeats=repeats
+            ) if queries else {"graph": None, "direct": None, "graph_minus_direct": cluster_interval([], [])}
+        summaries[name] = summary
+    return {"groups": summaries, "details": details}
+
+
+def analyze_initial_coverage(root: Path, protocol: dict) -> dict:
+    """Join the audited evidence report and complete saved score populations."""
+    report = read(root / protocol["pool_report"])
+    datasets = {}
+    for dataset, spec in protocol["datasets"].items():
+        raw_queries = read(root / spec["queries"])
+        queries = {q["_id"]: q for q in raw_queries}
+        if len(queries) != len(raw_queries):
+            raise ValueError("Duplicate annotation query IDs")
+        prior = report["datasets"][dataset]
+        rows, excluded = prior["details"], set(prior["excluded_null_ids"])
+        ids = {r["query_id"] for r in rows}
+        if ids & excluded or ids | excluded != set(queries):
+            raise ValueError("Coverage and annotation populations differ")
+        if len(rows) != spec["eligible_rows"] or len(excluded) != spec["null_rows"]:
+            raise ValueError("Protocol population counts differ")
+        expected_nulls = {qid for qid, q in queries.items() if q["question_type"] == "null_query"}
+        if excluded != expected_nulls:
+            raise ValueError("Excluded queries are not exactly the null population")
+        scores = {}
+        for arm, path in spec["results"].items():
+            raw = read(root / path)["details"]
+            scores[arm] = {r["query_id"]: r for r in raw}
+            if len(scores[arm]) != len(raw) or set(scores[arm]) != set(queries):
+                raise ValueError("Saved score population mismatch or duplicate query IDs")
+            for qid, score in scores[arm].items():
+                if score["original_query_id"] != (queries[qid].get("original_query_id") or qid):
+                    raise ValueError("Score and annotation original question IDs differ")
+        datasets[dataset] = initial_coverage_summary(
+            rows, scores, spec["metrics"], seed=protocol["uncertainty"]["seed"],
+            repeats=protocol["uncertainty"]["resamples"])
+        datasets[dataset]["excluded_null_ids"] = sorted(excluded)
+    return datasets
+
+
 def analyze(root: Path, run: Path) -> dict:
     protocol_path = run / "protocol.json"
     protocol = read(protocol_path)
@@ -172,6 +333,19 @@ def analyze(root: Path, run: Path) -> dict:
     for name, expected in protocol["inputs"].items():
         if digest(root / name) != expected:
             raise ValueError(f"Source changed: {name}")
+    if protocol.get("analysis") == "initial_coverage":
+        required = {protocol["pool_report"]}
+        for spec in protocol["datasets"].values():
+            required.update([spec["queries"], *spec["results"].values()])
+        if not required <= set(protocol["inputs"]):
+            raise ValueError("Initial coverage analysis requires hashes for every input")
+        report = {"protocol_sha256": digest(protocol_path), "script_sha256": digest(Path(__file__)),
+                  "datasets": analyze_initial_coverage(root, protocol),
+                  "scope": protocol["interpretation"], "new_model_calls": 0}
+        atomic_json(run / "verified-inputs.json", protocol["inputs"])
+        report["verified_inputs_sha256"] = digest(run / "verified-inputs.json")
+        atomic_json(run / "analysis.json", report)
+        return report
     manifest = read(root / ARCHIVE / "historical-source-manifest.json")
     prior = read(root / ARCHIVE / "replayed-pools.json")
     verified = {}
@@ -250,6 +424,17 @@ def analyze(root: Path, run: Path) -> dict:
                          "gold_units": len(gold), "question_type": query["question_type"], "curve": curves,
                          "witnesses": evidence_witnesses(set(initial), set(pools["prehop_replay"]),
                                                         set(pools["direct_tokens"]), hits)})
+            if "channel_analysis" in protocol:
+                selected = [prior_row["coverage"][stage]["direct_tokens"]
+                            for stage in ("selected10", "selected_all")]
+                selected = [set(map(tuple, units)) if dataset == "hotpotqa" else set(units) for units in selected]
+                units = direct_channel_evidence(set(initial), pools["direct_tokens"], hits, *selected,
+                                                depth_limit=protocol["channel_analysis"]["depth_limit"])
+                expected = prior_row["missing_partition"]["both"] + prior_row["missing_partition"]["deeper_only"]
+                expected = set(map(tuple, expected)) if dataset == "hotpotqa" else set(expected)
+                if {u["unit"] for u in units} != expected:
+                    raise ValueError("Direct-added units differ from the archived evidence partition")
+                rows[-1]["direct_channel_units"] = units
             if number % 500 == 0:
                 print(dataset, number, "source identities and evidence checked", flush=True)
         if len(rows) != spec["eligible_rows"] or len(excluded) != spec["null_rows"]:
@@ -274,6 +459,8 @@ def analyze(root: Path, run: Path) -> dict:
                              "witness_counts": {key: sum(r["witnesses"]["counts"][key] for r in rows)
                                                 for key in rows[0]["witnesses"]["counts"]},
                              "audited_endpoint": prior["datasets"][dataset]["summary"]}
+        if "channel_analysis" in protocol:
+            datasets[dataset]["direct_channels"] = summarize_direct_channels(rows)
     atomic_json(run / "verified-inputs.json", verified)
     report = {"protocol_sha256": digest(protocol_path), "script_sha256": digest(Path(__file__)),
               "verified_inputs_sha256": digest(run / "verified-inputs.json"), "datasets": datasets,
@@ -291,7 +478,14 @@ def main():
     args = parser.parse_args()
     report = analyze(args.root.resolve(), args.run.resolve())
     for dataset, values in report["datasets"].items():
-        print(dataset, json.dumps(values["curve"][-1]), flush=True)
+        if "direct_channels" in values:
+            summary = values["direct_channels"]
+        elif "groups" in values:
+            summary = {name: {key: value for key, value in group.items() if key != "query_ids"}
+                       for name, group in values["groups"].items()}
+        else:
+            summary = values["curve"][-1]
+        print(dataset, json.dumps(summary), flush=True)
 
 
 if __name__ == "__main__":

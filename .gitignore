@@ -1,5 +1,6 @@
-# Public source includes code, tests, docs, configs, .env.example and uv.lock.
-# Keep credentials, local papers, downloaded data and generated runs local.
+# Public Markdown: README.md, docs/METHOD.md, docs/SETUP.md, docs/REPRODUCING.md.
+# Public source also includes code, tests, configs, .env.example and uv.lock.
+# Keep agent instructions, working papers, review notes and generated runs local.
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -272,6 +273,7 @@ docs/acl/
 /.mcp.json
 /.mcp.*.json
 !/.mcp.example.json
+/AGENTS.md
 /AGENTS.override.md
 # Locally installed agent skills; not part of the experiment implementation.
 /.agents/skills/

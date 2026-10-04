@@ -2,7 +2,17 @@
 
 import pytest
 
-from scripts.analyze_evidence_accessibility import evidence_witnesses, indexed, paired_scores, prefix_ids, row_curves
+from scripts.analyze_evidence_accessibility import (
+    direct_channel_evidence,
+    evidence_witnesses,
+    indexed,
+    initial_coverage_summary,
+    paired_scores,
+    prefix_ids,
+    recorded_channel_ranks,
+    row_curves,
+    summarize_direct_channels,
+)
 
 
 def test_prefix_preserves_low_ranked_starts_and_never_skips_extras():
@@ -82,3 +92,92 @@ def test_saved_score_sensitivity_retains_failed_rows_and_rejects_missing_metrics
     left["b"] = {}
     with pytest.raises(ValueError, match="Unavailable required metric"):
         paired_scores(left, right, queries, "answer_f1", seed=42, repeats=50)
+
+
+def coverage_fixture():
+    arms = ("prehop_replay", "direct_tokens")
+    rows, scores = [], {arm: {} for arm in arms}
+    for qid, original, initial in [("a", "q0", 0), ("b", "q0", 0), ("c", "q1", 1), ("d", "q2", 2)]:
+        # Identical final evidence must not affect the initial-coverage groups.
+        rows.append({"query_id": qid, "original_query_id": original, "initial_covered": initial, "gold_units": 2,
+                     "coverage": {stage: {arm: [0, 1] for arm in arms}
+                                  for stage in ("pool", "selected10", "selected_all")},
+                     "recall": {stage: {arm: 1 for arm in arms}
+                                for stage in ("pool", "selected10", "selected_all")}})
+        for arm in arms:
+            scores[arm][qid] = {"original_query_id": original,
+                                "answer_f1": int((qid != "b") == (arm == "prehop_replay"))}
+    return rows, scores
+
+
+def test_initial_coverage_groups_precede_outcomes_and_preserve_original_question_clusters():
+    rows, scores = coverage_fixture()
+    result = initial_coverage_summary(rows, scores, ["answer_f1"], seed=42, repeats=50)
+    groups = result["groups"]
+    assert [groups[k]["rows"] for k in ("none", "partial", "complete")] == [2, 1, 1]
+    assert groups["none"]["original_questions"] == 1
+    assert groups["partial"]["initial_recall"] == .5
+    assert groups["none"]["metrics"]["answer_f1"]["graph_minus_direct"]["ci95"] == [0, 0]
+    assert groups["all"]["metrics"]["answer_f1"]["graph_minus_direct"]["mean"] == .5
+    empty = initial_coverage_summary(rows[2:], scores, ["answer_f1"], seed=42, repeats=50)["groups"]["none"]
+    assert empty["rows"] == 0 and empty["metrics"]["answer_f1"]["graph_minus_direct"]["ci95"] is None
+
+
+def test_initial_coverage_cannot_drop_missing_scores_or_duplicate_questions():
+    rows, scores = coverage_fixture()
+    with pytest.raises(ValueError, match="Duplicate coverage"):
+        initial_coverage_summary(rows + rows[:1], scores, ["answer_f1"], seed=42, repeats=50)
+    rows[0]["gold_units"] = 0
+    with pytest.raises(ValueError, match="Invalid initial/gold"):
+        initial_coverage_summary(rows, scores, ["answer_f1"], seed=42, repeats=50)
+    rows[0]["gold_units"] = 2
+    scores["prehop_replay"]["a"].pop("answer_f1")
+    with pytest.raises(ValueError, match="Unavailable required metric"):
+        initial_coverage_summary(rows, scores, ["answer_f1"], seed=42, repeats=50)
+    scores["prehop_replay"].pop("a")
+    with pytest.raises(ValueError, match="question identity mismatch"):
+        initial_coverage_summary(rows, scores, ["answer_f1"], seed=42, repeats=50)
+
+
+def test_direct_channel_categories_union_all_witnesses_and_keep_selection_separate():
+    nodes = {"start": {}, "b": {"representation_scores": {"body": 1 / 25}},
+             "qm": {"representation_scores": {"q_minus": 1 / 30}},
+             "qp": {"representation_scores": {"q_plus": 1 / 256}}}
+    hits = {"start": {0}, "b": {1, 3}, "qm": {2, 3}, "qp": {2, 3}}
+    units = direct_channel_evidence({"start"}, nodes, hits, {2}, {2, 3}, depth_limit=256)
+    by_unit = {u["unit"]: u for u in units}
+    assert list(by_unit) == [1, 2, 3]  # Initial evidence is outside the analysis.
+    assert by_unit[1]["category"] == "body_only" and not by_unit[1]["retained_context"]
+    assert by_unit[2]["category"] == "questions_only" and by_unit[2]["retained_top10"]
+    assert by_unit[3]["category"] == "both"  # Different passages supply the same unit.
+    assert by_unit[3]["channels"] == ["body", "q_minus", "q_plus"]
+    assert len(by_unit[3]["witnesses"]) == 3
+    assert by_unit[3]["retained_context"] and not by_unit[3]["retained_top10"]
+
+
+def test_direct_channel_summary_preserves_occurrences_and_empty_supply():
+    units = [{"unit": ("Title", 0), "category": "both", "channels": ["body", "q_minus"],
+              "witnesses": {}, "retained_top10": False, "retained_context": True}]
+    rows = [{"query_id": qid, "original_query_id": "original", "direct_channel_units": units}
+            for qid in ("a", "b")]
+    rows.append({"query_id": "c", "original_query_id": "other", "direct_channel_units": []})
+    result = summarize_direct_channels(rows)
+    assert result["rows"] == 3 and result["original_questions"] == 2
+    assert result["total"]["supplied"] == 2 and result["total"]["original_questions"] == 1
+    assert result["categories"]["both"]["context_retention"] == 1
+    assert result["categories"]["questions_only"]["context_retention"] is None
+    assert result["categories"]["questions_only"]["share_of_added_units"] == 0
+    assert sum(g["supplied"] for g in result["channel_combinations"].values()) == 2
+    empty = summarize_direct_channels(rows[-1:])
+    assert empty["total"]["supplied"] == 0 and empty["total"]["context_retention"] is None
+
+
+@pytest.mark.parametrize("scores", [{}, {"unknown": 1}, {"body": 0}, {"body": .3}, {"q_plus": 1 / 257}])
+def test_recorded_channels_reject_missing_or_invalid_provenance(scores):
+    with pytest.raises(ValueError):
+        recorded_channel_ranks({"representation_scores": scores}, 256)
+
+
+def test_direct_channels_reject_selection_outside_the_pool():
+    with pytest.raises(ValueError, match="Selected evidence"):
+        direct_channel_evidence({"s"}, {"s": {}}, {"s": {0}}, {1}, {1}, depth_limit=256)

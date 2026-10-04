@@ -8,36 +8,72 @@ from the repository root in Bash using the selected `PYTHON_BIN`.
 
 ## Paper experiment inventory
 
-The final paper, *Graph Expansion versus Deeper Direct Retrieval for Multi-Hop
-RAG*, uses the following comparisons. Appendix analyses remain part of the
-reproduction scope, including inconclusive and negative results.
+V1, *Does One-Step Graph Expansion Beat Retrieving More Candidates? A Matched-Budget Comparison for Multi-Hop RAG*,
+compares one-step expansion with retrieving more candidates. V2,
+*Reachability versus Inherited Scores: Candidate Admission under a Reranker Input Ceiling in Graph-Based Multi-Hop RAG*, studies which
+reachable evidence enters a limited LLM reranking input. Standard Prehop remains
+the one-step method described in [Method](METHOD.md); the deeper neighborhoods
+and changed admission policies are experimental conditions. Appendix analyses,
+including inconclusive and negative results, remain in the reproduction scope.
+
+The retained V1 comparisons and shared reference analyses are:
 
 | Comparison or analysis | Reproduction path |
 | --- | --- |
-| Seven systems on MultiHop-RAG and reduced-corpus HotpotQA | README benchmark commands, saved-result exporter and common reader below |
-| Fixed-start HOP/NEXT factorial | `run_primary_hop_ablation.py`, `analyze_expansion_factorial.py` |
-| Fixed-start expansion QA | `compare_prehop_direct_qa.py` with `init-fixed-start` |
-| Graph expansion versus deeper direct retrieval, token and count controls | Frozen preparation/selection/reader protocols; see the matched-budget section below |
-| Evidence overlap, retrieval-depth prefixes and selection retention | `analyze_evidence_accessibility.py`, `analyze_ablation_links.py` |
-| Body-only versus body/Q−/Q+ search in the same question index | `prepare_ablation_inputs.py`, `prehop_ablation.py` |
-| LLM, fused, representation and raw-score selection | `compare_prehop_selectors.py` |
-| Matched-count shuffled HOP evidence supply | `analyze_link_supply.py` over the archived samples |
-| Five-condition link-construction pilot | `compare_link_representations.py` |
-| LightRAG passage-exposure and HopRAG retrieval-budget sensitivity | Archived condition-specific retrieval outputs and common-reader replay |
-| Reader-development exclusion and question/evidence subgroups | `reader_development_groups.json`, saved per-query scores and paired analyses |
-| Index wall time and native query latency | Original run statistics under the measurement definitions below |
+| HOP/NEXT factorial with fixed initial candidates | `run_primary_hop_ablation.py`, `analyze_expansion_factorial.py` |
+| Expansion QA with fixed initial candidates | `compare_prehop_direct_qa.py` with `init-fixed-start` |
+| Graph expansion versus direct retrieval with more candidates, token and count controls | Archived candidate preparation, reranking and answer-generation protocols; see the matched-budget section below |
+| Evidence overlap, candidate-count prefixes, search channels, retention and initial-coverage groups | `analyze_evidence_accessibility.py`, `analyze_ablation_links.py` |
+| Body-only direct retrieval under matched token ceilings | Archived body-search outputs, original body-channel starts and token-budget preparation; the three-policy reranking and answer-generation run (V1 Appendix C.4, V2 Appendix C) |
+| Repeated-fact sensitivity of the recall contrasts (V1 Appendix F.4, V2 Appendix F) | Fixed fact-contribution ranking and whole-question exclusion masks over saved per-query coverage; no reranking or answer regeneration |
+| Graph distance of gold evidence missing from the one-step pool (V1 Appendix C.4) | Saved graph, initial candidates and corpus witnesses; shortest HOP/NEXT paths without an input budget; no model calls |
+| Direct answer context versus the entire Prehop candidate pool | Paired reaggregation of the archived per-question pool and final-context gold-coverage sets |
+| LLM reranking, fused-score, representation-score and hybrid-score ordering | `compare_prehop_selectors.py` |
+| Matched-count question, body and shuffled HOP evidence supply | `analyze_link_supply.py --include-body` over the archived samples |
+| Prompt-development exclusion of the controlled contrasts and initial-coverage groups | `reader_development_groups.json`, saved per-query scores and paired analyses |
+| Indexing time and query latency of Prehop and the dense baseline | Original indexing statistics and timings; Prehop query latency remeasured using existing indexes |
 
-Saved indexes, results, trace payloads, prepared pools and run-specific protocol
-snapshots are local artifacts, not bundled with the source checkout. Replaying
-published measurements requires those artifacts. Implementation tests use mocks
-and fixtures to check correctness; they are distinct from paper experiments.
+V2 additionally uses the following fixed-input analyses:
+
+| Comparison or analysis | Reproduction inputs and scope |
+| --- | --- |
+| One-to-four-step HOP/NEXT neighborhoods and token-limited admission | Saved graph, initial passages/scores, query–body similarities, full prompt metadata and tokenizer; reconstruct neighborhoods, orders and whole-passage prefixes |
+| Four-step rank-fusion versus cosine admission, compared against the one-step policies | The same admitted sets and recorded downstream requests; re-score saved passages and answers, including prompt-selection exclusions; post hoc contrasts against the one-step three-policy run pair both runs' per-query scores with `ablation_statistics.cluster_interval` |
+| Question-link versus body-similarity graphs crossed with admission policy | Saved graph-specific neighborhoods, scores and admitted sets; evaluate coverage, shared evidence and count-matched prefixes |
+| Inherited-score exchange on a common passage pool | Both full-graph score vectors, the intersection of passage IDs and fixed addition counts; preserve graph paths outside the intersection |
+| Distance and starting-score components | Saved shortest distances and starting scores for both graphs, with the same common pool, counts and scoring rules |
+| Token allowance, distance decay, rank-fusion offset and score ties | Fixed graph/candidate inputs and each condition's protocol; candidate coverage only |
+| Repeated-fact sensitivity of the graph and score comparisons | The same five exclusion masks applied to the graph-admission and common-pool conditions |
+| Dataset differences, source selection and changed evidence | Saved graph structure, source identities, initial coverage, HOP/NEXT reachability, and passage-to-annotation matches |
+
+See [V2 fixed-input analyses](#v2-fixed-input-analyses) for the available replay
+packages and the distinct limits of each one. Tooling for analyses that the
+manuscripts no longer report remains in the repository: the body-only versus
+body/Q−/Q+ search ablation (`prepare_ablation_inputs.py`, `prehop_ablation.py`),
+the five-condition link-construction pilot (`compare_link_representations.py`),
+the fixed-exposure context-grouping comparison, and the reference-system
+benchmarks with shared answer generation (README commands). Their outputs are
+not part of either paper's claims.
+
+The source checkout supports new benchmark runs, saved-passage answer generation,
+HOP/NEXT and search-channel controls, and analysis of their saved outputs.
+Exact replay of the archived matched-budget comparison, shuffled-link supply
+analysis and V2 analyses additionally requires their saved indexes, candidate pools, samples and
+protocol/code snapshots.
+These generated artifacts are not bundled with the source. Their requirements
+are specified in the respective sections below. Implementation tests use mocks
+and fixtures; they do not reproduce paper scores.
 
 ## Data and evaluation
 
 | Dataset | Prepared corpus and queries | Evaluation population |
 | --- | --- | --- |
 | MultiHop-RAG | `data/multihoprag_corpus/`, `data/multihoprag_queries.json` | 609 documents; 2,556 QA questions, including 301 null questions; 2,255 evidence-bearing retrieval questions |
-| HotpotQA (HippoRAG release) | `data/hotpotqa_corpus/`, `data/hotpotqa_queries.json` | 9,221 passages; 1,000 released occurrences representing 944 original questions |
+| HotpotQA (HippoRAG release) | `data/hotpotqa_corpus/`, `data/hotpotqa_queries.json` | 9,221 source paragraphs; 1,000 released occurrences representing 944 original questions |
+
+The retained Prehop indexes contain 8,529 six-sentence passages on MultiHop-RAG
+and 10,885 on HotpotQA. Source counts and indexed passage counts are different
+units; HotpotQA's released source paragraphs can be split into multiple passages.
 
 MultiHop-RAG preparation downloads the upstream JSON, normalizes titles and
 removes the fixed article boilerplate patterns defined in its script. It
@@ -123,12 +159,10 @@ Missing committed traces or mandatory checkpoint writes are errors; see
 [the persistence contract](METHOD.md#persistence-and-ownership). An index-only
 completion or one-query smoke is not a full benchmark result.
 
-`record_paper_completion.py` accepts completed result states and emits the legacy
-`admitted` receipt with `verification=disabled_by_user`, preserving an existing
-receipt. This status-based record does not recount questions, rescore answers or
-certify research validity. Inspect population, failures, source index and
-measurement scope. Source edits do not update already-loaded Python code;
-new segments retain their actual provenance.
+`record_paper_completion.py` records a completed result in `admission.json`,
+preserving an existing record. Assess a run using its question population,
+terminal failures, source index and measurement scope. Source edits do not
+update already-loaded Python code; new segments retain their actual provenance.
 
 The smoke's `query.json` holds its answer/passages; `index_evidence.json` and
 `evidence.json` bind execution sources. Full results hold `details`, including
@@ -157,7 +191,7 @@ of relabelling them with current defaults.
 ## Compare HOP and NEXT expansion
 
 This experiment changes expansion while keeping the reference graph, initial
-retrieval, scoring and LLM selection settings fixed. Every condition retains
+retrieval, scoring and LLM reranking settings fixed. Every condition retains
 the direct passages:
 
 | Condition | HOP | NEXT | `--expansion` |
@@ -169,7 +203,7 @@ the direct passages:
 
 After the reference finishes, prepare its saved initial candidates and run one
 intervention. Preparation reads trace files; the worker performs expansion,
-selection and answer generation:
+reranking and answer generation:
 
 ```bash
 "$PYTHON_BIN" scripts/run_primary_hop_ablation.py prepare \
@@ -190,9 +224,9 @@ excludes initial retrieval; it is not interchangeable with full-query latency.
 Expansion changes the candidate pool while holding the final selection budget
 fixed. Its effect is conditional on the remaining retrieval system.
 
-To measure this fixed-start expansion's effect on MultiHop-RAG answers, set
+To measure expansion's effect on MultiHop-RAG answers with fixed initial candidates, set
 `DIRECT_ONLY_RESULT` to the completed `--expansion none` result. Reuse the
-original selected passages from both conditions with a common reader:
+original selected passages from both conditions with the shared answer generator:
 
 ```bash
 export FIXED_QA_DIR="data/results/fixed-start-qa-$(date +%Y%m%d-%H%M%S)-$$"
@@ -207,52 +241,20 @@ done
 ```
 
 Preparation verifies the executed Direct-only candidates, their scores and query
-embeddings against the primary retrieval traces. The reader receives all selected
+embeddings against the primary retrieval traces. The answer generator receives all selected
 passages in their saved order, with no gold annotations or previous answers.
-Both arms receive fresh reader calls, interleaved in a fixed random order;
+Both conditions receive new answer-generation calls, interleaved in a fixed random order;
 the first eight query pairs form a retained canary. Official QA includes all
-questions, including null questions and terminal failures. This tests fixed-start
-expansion with different selector candidate pools; it does not match their input
+questions, including null questions and terminal failures. This tests expansion
+with fixed initial candidates and different reranker pools; it does not match their input
 budgets. The protocol and official exports distinguish it from the comparison below.
 Auxiliary answer EM/F1 use the 2,255 non-null questions, retaining their terminal
 failures as zero. These metrics are unmeasured for null questions; official QA
 still uses all 2,556 questions.
 
-## Compare search representations
-
-Both profiles use the same question-link index. `question_full` searches body,
-Q− and Q+; `question_body` searches body only. Keep the source index and reference
-query file fixed. A new execution is a new realization, not a relabeling of the
-paper's archived results. The historical channel comparison uses
-`body_bridge_min` scoring; current default scoring uses `body_only`. Read the
-source result's recorded policy when reproducing that comparison.
-
-```bash
-export PREHOP_NAMESPACE=$("$PYTHON_BIN" -c \
-  'import json,os; print(json.load(open(os.environ["PREHOP_INDEX"]))["index_policy"]["index_namespace"])')
-export REPRO_DIR="$PWD/data/results/reproduce-mhr-representations"
-mkdir -p "$REPRO_DIR"
-for profile in question_full question_body; do
-  "$PYTHON_BIN" scripts/prepare_ablation_inputs.py \
-    --index-stats "$PREHOP_INDEX" --queries "$PREHOP_QUERIES" \
-    --profile "$profile" --output "$REPRO_DIR/$profile-inputs"
-  "$PYTHON_BIN" scripts/prehop_ablation.py \
-    --mode benchmark --profile "$profile" --namespace "$PREHOP_NAMESPACE" \
-    --run-id "reproduce-mhr-$profile" --corpus-tag multihoprag \
-    --dataset data/multihoprag_corpus --queries "$PREHOP_QUERIES" \
-    --index-stats "$PREHOP_INDEX" --direct-inputs "$REPRO_DIR/$profile-inputs" \
-    --hop-semantic-variant body_bridge_min --reuse-existing-index --execute
-done
-```
-
-Results are under
-`data/results/ablations/reproduce-mhr-<profile>/<profile>/prehop/multihoprag/seed_42/`.
-Search-channel changes also change candidate breadth: 12 owners per channel
-need not mean 12 total initial candidates.
-
 ## Compare HOP evidence supply at matched candidate counts
 
-The paper's question-link versus degree-preserving shuffled-link comparison
+The question-link, body-link and degree-preserving shuffled-link comparison
 is evaluated from its archived `protocol.json`, `prepared.json`, `snapshot.json`
 and `samples.npz`. Set `SUPPLY_ARCHIVE` to that prepared run and provide a new
 output directory:
@@ -260,137 +262,119 @@ output directory:
 ```bash
 "$PYTHON_BIN" -m scripts.analyze_link_supply \
   --prepared "$SUPPLY_ARCHIVE" \
+  --include-body \
   --output data/results/reproduce-hop-supply
 ```
 
-The evaluator verifies the prepared hashes and retains the exact budgets and
-random samples of the question and shuffled conditions. The archived experiment
-also used a body-link condition when setting budgets and shared sampling
-priorities. The paper evaluator reports only the two retained conditions;
-removing the historical body arm must not change those samples or relabel the published scores.
+The evaluator verifies the prepared hashes and retains the original shared
+samples and per-query budgets without resampling. `--include-body` reports all
+three archived conditions and the body-minus-question and body-minus-shuffled
+contrasts. Without this flag, the default question/shuffled report is unchanged.
 Gold is read only to evaluate the saved candidates. The report measures
-pre-selector evidence supply, not selected evidence or answer quality.
+evidence supply before reranking, separately from selected evidence or answer quality.
 Original-question bootstrap intervals remain conditional on the saved graph
 and sample realizations, with variation across realizations reported separately.
 
-For an exploratory comparison of link representations, use
-[`compare_link_representations.py`](../scripts/compare_link_representations.py).
-It reuses the archived corpus, question links, passage-neighbor links, and
-direct inputs; only Q+ to passage ANN lookups are new. Preparation reads the
-original Neo4j namespace without writing to it or calling an inference model.
+## Compare graph expansion against direct retrieval with more candidates
 
-```bash
-export LINK_PILOT="data/results/link-representation-$(date +%Y%m%d-%H%M%S)-$$"
-export RAG_RUN_ID="${LINK_PILOT##*/}"
-"$PYTHON_BIN" -m scripts.compare_link_representations prepare \
-  --archive "$SUPPLY_ARCHIVE" --output "$LINK_PILOT-four-arms" --limit 256 --seed 42
-"$PYTHON_BIN" -m scripts.compare_link_representations add-base \
-  --prepared "$LINK_PILOT-four-arms" --output "$LINK_PILOT"
-"$PYTHON_BIN" -m scripts.compare_link_representations evaluate \
-  --output "$LINK_PILOT" --fused-only
-"$PYTHON_BIN" -m scripts.compare_link_representations select \
-  --output "$LINK_PILOT" --workers 8 --limit 8
-"$PYTHON_BIN" -m scripts.compare_link_representations select \
-  --output "$LINK_PILOT" --workers 8
-"$PYTHON_BIN" -m scripts.compare_link_representations evaluate --output "$LINK_PILOT"
-```
+The matched-budget comparison uses the same question index, original query, query
+embedding and initial candidates in both conditions. Direct retrieval with more
+candidates increases the passage limit to 256 per body/Q−/Q+ channel, ranks the full
+pool, retains every initial candidate and adds the longest prefix that fits Prehop's
+reranker input token budget for that question. Both pools use body-based scoring, the
+same rank fusion, LLM reranking and shared answer generation, with new rankings and
+answers. The comparison includes the input order induced by each retrieval procedure. A
+separate MultiHop-RAG control matches candidate counts exactly; it is not a
+token-matched condition.
 
-The four expansion graphs use the same unique outgoing degree per source passage, bounded
-by the smallest of the three semantic graphs; the random control rewires the
-matched question graph while preserving its in/out degrees. Every query retains
-its saved direct starts and bidirectional NEXT base, then adds the same number
-of unique HOP passages in each arm, at most 12. The shared fused scorer uses
-body semantics without bridge embeddings, followed by the unchanged selector
-prompt and a final limit of 12. These are controlled variants, not the unmodified
-main method. Passage counts do not guarantee equal token counts.
+Use the archived protocol and preparation code snapshots for these executed conditions.
+They pin the candidate identities and order, token counter, budget rule, rankings and
+generated answers. The expansion QA runner above does not construct the pools for direct
+retrieval with more candidates. The source checkout provides the saved-output evaluators
+below; it does not independently recreate the archived matched-budget run from a
+benchmark result alone.
 
-The fifth condition is Direct+NEXT-only. `add-base` extends an existing frozen
-four-arm run into a new directory without changing those arms or their query
-IDs, budgets, passage identities, orders, or fused selections. It reconstructs
-the common-base scores from saved direct inputs and trace embeddings, omitting
-all HOP score contributions and recomputing fusion ranks within the smaller
-pool. It performs no database access or inference. Comparing an expansion arm
-with this baseline intentionally changes input counts; only the four expansion
-arms have matched added-passage counts.
+Complete reranker requests in the matched-budget comparison are tokenized
+with `google/gemma-4-31B-it` at revision
+`842da3794eaa0b77d5f08bae87a17459d91ff475`, including its bundled chat template.
+This identifies the tokenizer used to measure inputs, separately from the
+served generation model's recorded revision. Other model revisions remain
+in the [runtime manifest](../configs/paper_runtime_requirements.json) and saved
+run provenance.
 
-The pilot fixes query IDs before new matching or scoring, retains null queries
-and zero-budget cases, and makes at most 1,280 logical selector requests for
-256 questions. Transport/JSON retries can increase wire attempts. The first
-eight questions remain part of the run; resume preserves successes and terminal
-failures. No answer generation is needed. Terminal failures receive zero quality
-and null questions remain outside the retrieval denominator. Reports include
-paired intervals and graph-by-selector interactions, conditional on the frozen
-index and one random graph/sample realization. Historical results remain in
-`historical-audit.json`; this pilot is exploratory, not a blind confirmation.
+### Body-only direct retrieval under the same token ceiling
 
-The five-condition protocol records the revised comparison priorities before
-LLM selection, while acknowledging the already observed candidate-supply and
-fused results. It reports all paired contrasts on the same evidence-bearing
-query population, with pointwise exploratory intervals. Intervals including
-zero are inconclusive rather than evidence of equivalence. Negative contrasts
-and terminal failures remain in the report.
+This candidate-supply control uses the original corpus, body index, query text
+and saved query embeddings. Native body vector and full-text search request a
+passage limit of 256. Preparation retains the original 12 body-channel starts,
+reconstructs body-only reciprocal-rank scores, and supplements those starts
+with the body search results. Body-based semantic scoring and rank fusion order
+the merged pool. The longest prefix of additional whole passages that fits the
+saved Prehop reranker-input token ceiling is retained, preserving the full
+ranking's relative order without recomputing ranks after taking the prefix.
 
-The descriptive evidence funnel identifies distinct gold facts absent from the
-entire common base, their supply in additional candidates, their survival in
-selected top-10 passages, and complete selected evidence after that survival.
-It also records all completeness gains and losses versus the base-only selector,
-including changes without any new fact. Supply-conditioned subsets differ by
-arm and are not used as the population for paired performance claims. Zero
-supplied facts gives an undefined conditional retention rate. Gold is used only
-by the evaluator and never enters prepared selector inputs. The LLM-versus-fused
-interaction does not separate joint comparison from other LLM capabilities.
-
-## Compare graph expansion with deeper direct retrieval
-
-The matched-budget comparison uses the same question index, original query,
-query embedding and initial candidates in both conditions. Deeper direct
-retrieval increases the passage limit to 256 per body/Q−/Q+ channel, ranks the
-full pool, retains every initial candidate and adds the longest prefix that
-fits Prehop's selector input token budget for that question. Both pools use
-body-based scoring, the same rank fusion, selector and common reader, with new
-selector and reader outputs. The comparison includes the input order induced
-by each retrieval procedure. A separate MultiHop-RAG control matches candidate
-counts exactly; it is not a token-matched condition.
-
-Use the archived protocol and preparation code snapshots for these executed
-conditions. They pin the candidate identities and order, token counter, budget
-rule and selector/reader outputs. The fixed-start QA runner above does not
-construct deeper-direct pools. The source checkout provides the saved-output
-evaluators below; it does not independently recreate the archived matched-budget
-run from a benchmark result alone.
+Use the archived preparation protocol, code snapshots, original starts, raw
+body search results and tokenizer to reproduce the executed pools. These
+artifacts are required in addition to the source checkout. The retained
+candidate sets are fixed before gold evaluation, which uses the same fact
+matching, sentence projection and paired original-question bootstrap as the
+primary comparison. Retrieval does not query generated questions or follow
+graph links. Candidate coverage is evaluated before LLM reranking. The completed
+three-policy comparison (V1 Appendix C.4, V2 Appendix C) uses saved rankings and
+generated answers for graph expansion, direct retrieval with more candidates and
+body-only direct retrieval. It is a separate run from the primary matched-budget
+comparison; its repeated Prehop and multi-channel conditions quantify generation
+variability at temperature zero. Use those final full-population outputs, not a
+partial sample or the coverage-only preparation, for downstream scores. All three use the same LLM reranking and
+answer-generation settings and return at most 12 passages. Body-only direct
+retrieval differs from the body-only Prehop search-channel ablation, which still
+follows graph links. The input ceiling is shared, while the initial passages and
+representation scores differ from the multi-channel conditions. This is not an
+isolated intervention on question generation or a measurement of body-only index
+construction cost.
 
 ### Evidence accessibility in saved candidate pools
 
 [`analyze_evidence_accessibility.py`](../scripts/analyze_evidence_accessibility.py)
-audits the paper's archived token-matched graph and deeper-direct pools. It
-requires an explicit run directory with `protocol.json`, the original saved
-inputs, query annotations, HotpotQA sentence mapping and frozen pool-analysis
-manifest. The source checkout alone does not contain these generated artifacts.
-The protocol pins source hashes, populations, prefix fractions and uncertainty
-settings before analysis. Use a new output directory for each analysis; an
+audits the paper's archived token-matched pools from graph expansion and direct
+retrieval with more candidates. It requires an explicit run directory with
+`protocol.json`, the original saved inputs, query annotations, HotpotQA sentence mapping
+and frozen pool-analysis manifest. The source checkout alone does not contain these
+generated artifacts. The protocol pins source hashes, populations, prefix fractions and
+uncertainty settings before analysis. Use a new output directory for each analysis; an
 existing `analysis.json` is not overwritten.
 
 ```bash
 "$PYTHON_BIN" -m scripts.analyze_evidence_accessibility --run "$ACCESSIBILITY_RUN"
 ```
 
-Every original start is retained. Additional candidates are taken in the saved
-deeper-direct order, with the requested fraction rounded down. Gold facts and
-support sentences are matched only after constructing these prefixes, using the
-existing evaluation rules. The audit verifies all endpoint coverage sets against
-the frozen report, preserves null-query identities, and clusters HotpotQA
-intervals by original question. `verified-inputs.json` records the checked input
-hashes; `analysis.json` contains per-query curves and aggregates.
+Every original start is retained. Additional candidates are taken in the saved order
+from direct retrieval with more candidates, with the requested fraction rounded down.
+Gold facts and support sentences are matched only after constructing these prefixes,
+using the existing evaluation rules. The audit verifies all endpoint coverage sets
+against the frozen report, preserves null-query identities, and clusters HotpotQA
+intervals by original question. `verified-inputs.json` records the checked input hashes;
+`analysis.json` contains per-query curves and aggregates.
 
-The same audit records every passage ID supporting each graph-new gold unit.
-Its exhaustive cases are a witness shared by both pools, witnesses with only
-different IDs across pools, and evidence absent from deeper direct. The shared
-case is additionally checked for graph-only witnesses; it is not counted twice.
+The same audit records every passage ID covering each graph-new gold unit. Its
+exhaustive cases are a supporting passage shared by both pools, supporting
+passages with only different IDs across pools, and evidence absent from direct
+retrieval with more candidates. The shared case is additionally checked for
+supporting passages found only in the graph pool; it is not counted twice.
 Passage-ID novelty and gold-unit overlap alone cannot distinguish these cases.
+
+The final-context versus full-pool comparison pairs the direct condition's
+saved answer-context coverage with coverage of every Prehop candidate on each
+question. It reports their mean recall difference and complete-evidence rate,
+using the same evaluation populations and original-question bootstrap. Any
+selected subset of the Prehop pool has coverage bounded by that full pool.
+This comparison therefore bounds annotated-evidence recall attainable by
+reranking the original pool, without imposing a bound on QA or MAP. It requires
+the archived per-question coverage sets and makes no new model calls.
 
 When the protocol specifies `reader_comparisons` and `development_groups`, the
 audit also reaggregates the pinned per-query scores before and after removing
-all occurrences of each reader-development question. Query hashes and both arm
+all occurrences of each prompt-development question. Query hashes and both arm
 populations must agree; unavailable required metrics are errors, while terminal
 failures retain zero quality. This recomputes score aggregates and paired
 intervals, not model outputs, and remains a retrospective sensitivity analysis.
@@ -399,16 +383,62 @@ records, analysis snapshot, protocol and checksums independently of the source
 checkout. Its `replay.py` verifies inputs and compares all per-query records and
 aggregates with the packaged expected result; no database or model is needed.
 
-These are candidate-depth diagnostics inside one frozen maximum pool. Only its
-endpoint had a matched selector-token ceiling. Intermediate prefixes have no new
-selector or reader results, and their token budgets are not matched. Graph-only
+These are candidate-count diagnostics inside one frozen maximum pool. Only its
+endpoint had a matched reranker input token budget. Intermediate prefixes have no new
+rankings or generated answers, and their token budgets are not matched. Graph-only
 evidence means absent from this recorded direct pool, not inaccessible to every
 retriever. A union-coverage gain does not predict answer quality or the result
 of fusion under a fixed budget. This audit makes no model or retrieval calls.
 
-## Compare a common reader over saved evidence
+### Search channels of newly supplied evidence
 
-Using the same reader, model and prompt controls answer-generation differences
+Adding `channel_analysis` with the recorded `depth_limit` to the accessibility protocol
+partitions every gold unit in the saved pool from direct retrieval with more candidates
+that is absent from the initial pool. `representation_scores` records each non-initial
+passage's reciprocal owner rank in body, Q− and Q+ search. The analysis takes the union
+of channels across every supporting passage in the budgeted pool, then assigns each unit
+to body only, questions only, or both. Initial passages retain their original search
+ranks and supply none of these initially missing units; their metadata is not treated as
+a measurement at the larger retrieval limit.
+
+The report preserves all seven channel combinations, unit and passage IDs,
+recorded ranks, and retention in the saved top ten and full answer context.
+Category totals count question–gold-unit pairs; a question can contain several
+categories. HotpotQA retains release occurrences and also reports original
+question counts. Zero-supply categories have undefined retention rates.
+These are descriptive counts of existing outputs. They characterize channel
+membership within the saved budgeted pool, without reconstructing the full
+unretained search union or a body-only reranking/QA condition. Source hashes
+and the previously audited evidence sets must agree before results are saved.
+
+### Quality by initial evidence coverage
+
+The same command accepts a protocol with `analysis: "initial_coverage"`.
+It reaggregates the audited `pool_report` and saved matched-budget scores,
+grouping questions by exact gold-unit counts in the shared initial pool:
+none, partial or complete coverage. The protocol's `datasets` specifies each
+query file, both `results` paths (`prehop_replay` and `direct_tokens`), eligible
+and null-query counts, and score `metrics`. Its `inputs` maps every source
+path to its SHA-256 hash; `uncertainty` specifies the seed and resample count.
+The protocol is recorded before calculating grouped results, while identifying
+the analysis as retrospective to the original experiments.
+
+Each group reports candidate-pool, selected-top-ten and answer-context recall,
+saved quality metrics, and paired Prehop-minus-direct differences. All eligible
+questions are retained, including terminal failures with zero quality; missing
+metrics or inconsistent identities are errors. MultiHop-RAG null questions are
+listed separately because their gold recall is undefined. HotpotQA preserves
+occurrence weights and clusters by original question within each group. Empty
+groups remain undefined; a one-question group is descriptive because bootstrap
+resampling cannot estimate between-question variability. `analysis.json`
+contains the group assignments and all metric summaries. This analysis makes
+no new model or retrieval calls and does not change the main full-population QA.
+
+<a id="compare-a-common-reader-over-saved-evidence"></a>
+
+## Compare answer generation over saved evidence
+
+Using the same answer-generation model and prompt controls generation differences
 and compares the downstream usefulness of each system's exposed passages.
 Identical instructions need not be equally optimal for every retrieval output. It never
 reruns indexing, search, expansion, evidence selection or embeddings. Preparation
@@ -429,7 +459,7 @@ Pass one completed result per dataset/system, in the intended execution order:
 ```
 
 Add the other native result paths to the preparation command for comparisons.
-Groups run sequentially; questions within a group run concurrently. The reader
+Groups run sequentially; questions within a group run concurrently. The answer generator
 uses the shared evidence-checking messages and configured generation model.
 Whole contexts are sent unchanged. Context-length rejection is an execution
 error; empty successful output is retained without quality-based regeneration.
@@ -447,12 +477,12 @@ Outputs are `responses.jsonl`, `status.json`, `events.jsonl` and
 `pause` between request windows. Transport timeout and the total attempt budget
 come from the common inference contract and are recorded with responses. Rate
 limits cause a shared cooldown respecting `Retry-After`; retries retain the exact input. Resume with the same command;
-only matching messages, reader settings and model reuse successful responses.
+only matching messages, generation settings and model reuse successful responses.
 Changed-input responses are removed from the current response file; original
 retrieval results stay untouched. `generation_complete` means response records
 exist, not that answer accuracy or research validity has been established.
 
-Score the common-reader responses against the same original result files:
+Score the generated answers against the same original result files:
 
 ```bash
 "$PYTHON_BIN" -m scripts.export_official_results "$PREHOP_RESULT" \
@@ -464,8 +494,7 @@ With HotpotQA, supply its prepared `--hotpot-sentence-store` if it is outside
 the default data directory. Original query identities, annotations and retrieval
 predictions are retained; source and response hashes identify the new score
 artifacts. Incomplete, duplicated or mismatched response populations are rejected by this
-offline evaluator; original retrieval failures retain zero quality. This does
-not add an execution gate. A single source writes
+offline evaluator; original retrieval failures retain zero quality. A single source writes
 `<source-stem>.common-reader.official.json` under the score directory; multiple
 sources also produce dataset-specific comparison CSVs. For the example:
 
@@ -478,7 +507,33 @@ print(report['qa']['overall'])
 PYCODE
 ```
 
-Reader times are separate from original end-to-end query latency.
+Answer-generation replay times are separate from original end-to-end query latency.
+
+<a id="v2-fixed-input-analyses"></a>
+
+## V2 fixed-input analyses
+
+The depth, admission, graph-construction and inherited-score comparisons are
+replays over saved experiment artifacts rather than new benchmark runs. Each
+package pins its inputs by hash in a `protocol.json` before measurement and
+uses gold annotations only to evaluate the constructed sets.
+
+| Package | Required saved inputs | What is regenerated |
+| --- | --- | --- |
+| Depth and admission | Saved HOP/NEXT graph, initial passages and scores, query–body similarities, reranking prompt metadata, tokenizer at the pinned revision | Neighborhoods, admission orders, whole-passage prefixes, coverage |
+| Graph crossing | Both graphs' neighborhoods, inherited scores and admitted sets | Coverage, shared/unique evidence, count-matched prefixes |
+| Common-pool score exchange | Both full-graph score vectors, passage-ID intersection, fixed addition counts | Fusion ranks over the common pool, distance/start-score components |
+| Budget, decay, offset and ties | Fixed four-step inputs and each condition's protocol | Candidate coverage only |
+| Four-step downstream | Recorded admitted sets, reranking and answer requests and responses | Scores, paired intervals, prompt-selection exclusions |
+| Repeated-fact exclusions | Fixed fact ranking and masks | Reduced-population means and intervals |
+
+Graph construction, embeddings, direct search and model inference are not
+regenerated by these packages. The four-step downstream run presents both
+admitted sets in query-to-body cosine order, unlike the fused order of the
+standard one-step pipeline; comparisons with the one-step three-policy run
+therefore mix presentation rules and are reported as post hoc. Intervals use
+10,000 paired resamples with seed 42 and original-question clusters; adjusted
+families are stated per comparison in the manuscript.
 
 ## Evaluate saved results
 
@@ -551,13 +606,15 @@ and MultiHop-RAG fact-count strata. Intervals use the recorded original-question
 bootstrap draws and seed; they do not rerun retrieval. Paired effect intervals
 must be calculated from paired query outcomes, not differences of interval endpoints.
 
-## Fixed-candidate final selection
+<a id="fixed-candidate-final-selection"></a>
 
-[The selector comparison](../scripts/compare_prehop_selectors.py) compares the
-recorded LLM selection against deterministic orders over the same complete
+## Compare ranking methods with fixed candidates
+
+[The ranking comparison](../scripts/compare_prehop_selectors.py) compares the
+recorded LLM ranking against score-based orders over the same complete
 candidate pool. It uses the recorded selection limit and produces all five
 common retrieval measures, condition means and paired differences from LLM
-selection, with original-question cluster bootstrap intervals.
+reranking, with original-question cluster bootstrap intervals.
 HotpotQA also receives full-return Supporting Fact EM, precision, recall and
 F1. No answers are generated and no new latency is measured.
 
@@ -636,8 +693,16 @@ selection bias. Compare latency only under a declared common serving/load window
 
 Partial, target-failed or resumed batches do not supply continuous throughput.
 Fully executed batches retain terminal query failures. Missing native usage and
-cost are unavailable, not zero. Common-reader replay times are separate from
+cost are unavailable, not zero. Shared answer-generation replay times are separate from
 measured native online end-to-end latency.
+
+The paper's Prehop query latency was remeasured on every benchmark query using
+the existing indexes and eight concurrent queries. Other systems retain their
+original timing runs. The paper reports available full indexing-phase measurements.
+The saved records also retain HopRAG's MultiHop-RAG attempt total and the final
+indexing segments for LightRAG and GFM-RAG on HotpotQA; these do not supply
+the missing full-phase values in the paper. These are descriptive
+measurements under uncontrolled serving loads, not a matched efficiency comparison.
 
 ## Managed campaigns and additional analyses
 
@@ -664,16 +729,14 @@ retrying; failed dependencies remain explicit.
 Supervisors record PID/start/boot identity and clean only verified descendants
 with bounded TERM waits. Surviving owned processes block restart. Heartbeats
 show liveness, not completed source work. Reboot recovery is not automatic.
-The separate `paper_campaign.py`/`run_paper_matrix.sh` evidence-ledger workflow
-records executed stages; its historical labels are not publication approval or
-extra dispatch gates. Keep progress counters, ETAs and temporary analysis in
-run artifacts, outside public method documentation.
+The separate `paper_campaign.py`/`run_paper_matrix.sh` workflow records executed
+stages and their outputs in run-local files.
 
 HopRAG recovery retains document caches and committed edge groups; uncommitted
 interrupted groups are rescored. Preserve earlier statistics and attempt costs.
 
 [Link usefulness](../scripts/analyze_ablation_links.py) measures evidence added
-beyond direct retrieval and retained by selection.
+beyond direct retrieval and retained after reranking.
 `analyze_expansion_factorial.py` computes conditional HOP/NEXT effects and
 additive interaction from saved conditions. All retain explicit source identities
 and analysis denominators; each exposes required inputs through `--help`.

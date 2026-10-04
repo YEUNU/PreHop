@@ -16,7 +16,7 @@ uv sync --locked --python 3.12 --extra dev
 export PYTHON_BIN="$UV_PROJECT_ENVIRONMENT/bin/python"
 ```
 
-Both selectors must refer to the same environment. Shell entrypoints otherwise
+Both variables must refer to the same environment. Shell entrypoints otherwise
 prefer `.venv/bin/python`, then Python on `PATH`. A missing explicit interpreter
 is an error. Running commands never install or synchronize dependencies.
 HopRAG launchers select its separately prepared coordinator automatically.
@@ -62,7 +62,7 @@ inspection passes copied settings through `resolved_target_environment` instead
 of temporarily changing `os.environ`.
 
 The final paper's selectable Prehop controls are search channels, HOP/NEXT
-expansion, scoring and selection. Question-role indexing, expansion depth,
+expansion, scoring and ranking method. Question-role indexing, expansion depth,
 path decay and reciprocal metadata materialization are fixed in the registry;
 their former environment overrides are inactive. Use the
 [experiment inventory](REPRODUCING.md#paper-experiment-inventory) to select a
@@ -76,10 +76,9 @@ in provenance. Requests go directly to the gateway. Per-client limits are not
 a cross-process semaphore or a statement of GPU capacity; nested native workers
 and unrelated clients affect load.
 
-Paper generation omits the LLM seed; evaluation/sampling seeds are separate.
-Recorded native settings and historical results remain unchanged. Setup checks
-source/dependency integrity; dispatch does not repeat model-hash, dependency or
-semantic-equality approval checks. Missing dependencies surface through imports.
+Generation in the paper experiments omits the LLM seed; evaluation and sampling
+seeds are separate. Recorded native settings and historical results remain
+unchanged. Baseline setup checks pinned sources and dependencies before execution.
 
 ## Source and setup isolation
 
@@ -132,9 +131,11 @@ leaves it intact; choose a fresh home. Generated POS files use run-local storage
 ## Storage and ongoing work
 
 Keep corpus/query manifests, original indexes, results, traces and prepared
-runtimes used by retained or active runs. Git exclusion is not deletion authority.
-Source checkouts and model snapshots remain immutable; generated native caches
-belong in run-local storage. `.env` stays private.
+runtimes used by retained or active runs. Source checkouts and model snapshots
+remain immutable; generated native caches belong in run-local storage.
+Downloaded data and generated runs are excluded by the repository's
+[Git ignore rules](../.gitignore). Keep credentials in `.env` or the process
+environment; [.env.example](../.env.example) documents the public inputs.
 
 Prehop trace storage must be writable; its data and timing contract is in
 [Method](METHOD.md#prehop-tracing). Use new run IDs/namespaces for independent
