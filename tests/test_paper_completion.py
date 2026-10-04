@@ -10,12 +10,12 @@ from scripts import record_paper_completion as recorder
 def test_completion_does_not_apply_seed_policy(tmp_path, monkeypatch, status, code):
     monkeypatch.setattr(recorder,'ROOT',tmp_path)
     base=tmp_path/'data/results/example'
-    result=base/'gfm_rag/multihoprag/seed_42/gfm_rag_multihoprag.json'
+    result=base/'naive/multihoprag/seed_42/naive_multihoprag.json'
     result.parent.mkdir(parents=True)
     result.write_text(json.dumps({'status':status,'index_provenance':{'policy':{'generation_seed':42}}}))
     original=result.read_bytes()
     output=base/'admission.json'
-    monkeypatch.setattr(sys,'argv',['record','example','multihoprag','gfm_rag','--exact-run-id','--output',str(output)])
+    monkeypatch.setattr(sys,'argv',['record','example','multihoprag','naive','--exact-run-id','--output',str(output)])
     assert recorder.main()==code
     assert result.read_bytes()==original
     assert output.exists()==(code==0)

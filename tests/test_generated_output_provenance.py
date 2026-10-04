@@ -1,4 +1,4 @@
-"""Native output creation must preserve a clean execution worktree's plan."""
+"""Generated run artifacts must preserve a clean execution worktree's plan."""
 import subprocess
 import sys
 from pathlib import Path
@@ -7,10 +7,12 @@ from scripts.paper_campaign import build_steps
 from utils.provenance import code_provenance
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUTS = ('lightrag', 'gfm_rag', 'linear_rag')
+OUTPUTS = ('data/results/fixture/prehop/multihoprag/seed_42/prehop_multihoprag.json',
+           'data/index_stats/prehop_multihoprag_fixture.json',
+           'data/traces/fixture/prehop/multihoprag/events.jsonl')
 
 
-def test_actual_clean_worktree_native_outputs_preserve_provenance_and_plan(tmp_path, monkeypatch):
+def test_actual_clean_worktree_generated_outputs_preserve_provenance_and_plan(tmp_path, monkeypatch):
     repository = tmp_path/'fixture_repository'
     checkout = tmp_path/'execution_worktree'
     repository.mkdir()
@@ -33,10 +35,10 @@ def test_actual_clean_worktree_native_outputs_preserve_provenance_and_plan(tmp_p
     plan = {'campaign': 'fixture', 'attempt': 'a1', 'python': sys.executable, 'python_prefix': sys.prefix,
             'commit': before['revision'], 'context': {'version': 'fixture', 'targets': {'model': {'temperature': 0}}},
             'steps': build_steps('fixture', 'a1', sys.executable)}
-    for method in OUTPUTS:
-        artifact = checkout/'data'/f'{method}_output/runs/fixture/multihoprag/native/index.json'
+    for relative in OUTPUTS:
+        artifact = checkout/relative
         artifact.parent.mkdir(parents=True)
-        artifact.write_text('{"native_fixture_artifact":true}\n')
+        artifact.write_text('{"generated_fixture_artifact":true}\n')
         assert git('check-ignore', str(artifact.relative_to(checkout)), cwd=checkout).stdout.strip()
         assert code_provenance(checkout) == before
         assert plan["steps"] == build_steps("fixture", "a1", sys.executable)

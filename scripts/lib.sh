@@ -65,13 +65,3 @@ resolve_python() {
     echo "  uv sync --locked --python 3.12 --extra dev" >&2
     return 1
 }
-
-resolve_method_python() {
-    local method_repo="$1"
-    local method_name="$2"
-    if [ "$method_name" = "hoprag" ]; then
-        PYTHONPATH="$method_repo${PYTHONPATH:+:$PYTHONPATH}" python3 -c 'from core.runtime_requirements import method_main_python; print(method_main_python("hoprag"))'
-    else
-        resolve_python "$method_repo"
-    fi
-}

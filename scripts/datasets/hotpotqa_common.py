@@ -1,19 +1,9 @@
 """Serialization and annotation observations shared by paper preparation tools."""
-import hashlib
 import json
-from pathlib import Path
 
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def digest_file(path, algorithm="sha256"):
-    digest = hashlib.new(algorithm)
-    with Path(path).open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def annotation_coverage(db, queries):

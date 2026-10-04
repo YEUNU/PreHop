@@ -83,22 +83,6 @@ def test_hotpot_cold_fixture_has_its_own_sentence_store(tmp_path):
     assert row["supporting_facts"][0] in predictions
 
 
-def test_official_export_preserves_answer_and_accounts_for_failure():
-    from scripts.export_hotpotqa_predictions import export
-    result = {"status":"completed_unadmitted", "evaluation_scope":"full_benchmark", "dataset":"HotpotQA",
-              "details":[{"query_id":"a", "answer":"@@ANSWER: Alpha", "predicted_supporting_facts":[["A",0]]},
-                         {"query_id":"b", "error":"timeout"}]}
-    gold = [{"_id":"a", "answer":"Alpha", "supporting_facts":[["A",0]]},
-            {"_id":"b", "answer":"Beta", "supporting_facts":[["B",0]]}]
-    predictions, metrics = export(result, gold)
-    assert predictions == {"answer":{"a":"Alpha","b":""},"sp":{"a":[["A",0]],"b":[]}}
-    assert metrics["joint_em"] == .5
-    with pytest.raises(ValueError, match="IDs"):
-        export(result, gold[:1])
-
-
-
-
 @pytest.mark.parametrize("dataset", ["hotpotqa", "multihoprag"])
 def test_paper_shell_dispatch_preserves_selected_dataset(tmp_path, dataset):
     import os
@@ -111,7 +95,7 @@ def test_paper_shell_dispatch_preserves_selected_dataset(tmp_path, dataset):
     (tmp_path / ".env").write_text("")
     (tmp_path / "core/strategy_registry.py").write_text("import sys\nsys.exit(0)\n")
     (scripts / "lib.sh").write_text('''load_project_env() { :; }
-resolve_method_python() { echo "$1/fake-python"; }
+resolve_python() { echo "$1/fake-python"; }
 canonicalize_inference_transport() {
     export RAG_GENERATION_MODEL=test RAG_EMBEDDING_MODEL=test
     export RAG_INDEX_STATS_PATH="data/index_stats/${1}_${2}_${3}.json"

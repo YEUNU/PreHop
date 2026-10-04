@@ -21,16 +21,13 @@ _GENERATED_PREFIXES = (
     b"data/index_failures/",
     b"data/index_locks/",
     b"data/index_stats/",
-    b"data/official_baselines/",
     b"data/results/",
     b"data/tmp/",
 )
 
 
 def _is_generated_path(raw_path: bytes) -> bool:
-    if raw_path.startswith(_GENERATED_PREFIXES):
-        return True
-    return raw_path.startswith(b"data/") and b"_output/" in raw_path
+    return raw_path.startswith(_GENERATED_PREFIXES)
 
 
 def code_provenance(root: Path = ROOT) -> dict[str, Any]:

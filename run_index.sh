@@ -42,9 +42,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-PYTHON_BIN="$(resolve_method_python "$SCRIPT_DIR" "$MODEL")" || exit 1
+PYTHON_BIN="$(resolve_python "$SCRIPT_DIR")" || exit 1
 export PYTHON_BIN
-if [ "$MODEL" = "hoprag" ]; then export UV_PROJECT_ENVIRONMENT="$(dirname "$(dirname "$PYTHON_BIN")")"; fi
 
 LOG_DATASET="${CORPUS_TAG:-${DATASET##*/}}"
 LOG_DATASET="${LOG_DATASET:-default}"
@@ -58,11 +57,9 @@ echo "========================================="
 echo "     Indexing Pre-flight Check           "
 echo "========================================="
 "$PYTHON_BIN" -c '
-import sys
 from core.config import RAGConfig as config
-unit = f"chunk_sentences={config.CHUNK_SENTENCES}" if sys.argv[1] in {"prehop", "naive"} else "chunking=official"
-print(f"Indexing: analyzer={config.FULLTEXT_ANALYZER}, {unit}")
-' "$MODEL"
+print(f"Indexing: analyzer={config.FULLTEXT_ANALYZER}, chunk_sentences={config.CHUNK_SENTENCES}")
+'
 
 # Validate one strategy per invocation.
 if [ "$MODEL" = "all" ]; then
@@ -73,15 +70,11 @@ if ! python3 core/strategy_registry.py --is-valid "$MODEL"; then
     echo "❌ Unknown registered model '$MODEL'."
     exit 1
 fi
-IS_EXTERNAL=false
-if python3 core/strategy_registry.py --is-external "$MODEL"; then IS_EXTERNAL=true; fi
 
 if [ "$SKIP_SERVER" != true ]; then
     echo "Step 1: Checking indexing services..."
 
-    if [ "$MODEL" != "ms_graphrag" ] && [ "$IS_EXTERNAL" != true ]; then
-        ./run_servers.sh neo4j
-    fi
+    ./run_servers.sh neo4j
 
     # Validate the externally supplied models.
     ./run_servers.sh gen

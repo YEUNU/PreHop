@@ -10,8 +10,7 @@ from openai import AsyncOpenAI
 from core.config import RAGConfig
 from core.structured_outputs import StructuredOutputError, question_contract
 from core.vllm_client import VLLMClient
-from models.prehop.tracing import TraceRecorder, attach_client, trace_identity, traced
-from scripts.inspect_prehop_trace import iter_trace
+from models.prehop.tracing import TraceRecorder, attach_client, iter_trace, trace_identity, traced
 
 
 def recorder(tmp_path):

@@ -1,88 +1,33 @@
-"""Machine-readable pinned runtime requirements for paper strategies."""
+"""Non-secret identity of the prepared project runtime recorded with paper artifacts."""
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import subprocess
 import sys
 from collections.abc import Mapping
 from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-PATH = Path(__file__).resolve().parents[1] / "configs/paper_runtime_requirements.json"
-
-
-def method_main_python(
-    strategy: str, default: str | None = None, environment: Mapping[str, str] | None = None,
-) -> str:
-    """Select the prepared coordinator runtime without resolving venv symlinks."""
-    if strategy == "hoprag":
-        from models.hoprag.runtime_paths import runtime_home
-        executable = runtime_home(environment) / "main-env/bin/python"
-        return str(executable.absolute())
-    return os.path.abspath(default or sys.executable)
-
-
-def ensure_method_runtime(strategy: str) -> None:
-    """Re-enter a model-specific CLI in its pinned interpreter before execution."""
-    if strategy != "hoprag":
-        return
-    executable = method_main_python(strategy)
-    prefix = Path(executable).parent.parent
-    if Path(sys.prefix).resolve() == prefix.resolve():
-        return
-    environment = os.environ.copy()
-    environment.update(PYTHON_BIN=executable, UV_PROJECT_ENVIRONMENT=str(prefix), PYTHONUNBUFFERED="1")
-    os.execve(executable, [executable, *sys.argv], environment)
-
-
-def load_runtime_requirements() -> dict[str, Any]:
-    payload = json.loads(PATH.read_text(encoding="utf-8"))
-    return payload
-
-
-def runtime_requirement(strategy: str) -> dict[str, Any]:
-    requirement = load_runtime_requirements().get(strategy)
-    return requirement
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def runtime_identity(strategy: str, environment: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """Return current non-secret lock/constraint byte identities."""
-    root = PATH.parents[1]
-    environment = dict(os.environ if environment is None else environment)
-    if strategy == "hoprag":
-        executable = method_main_python(strategy, environment=environment)
-        prefix = Path(executable).parent.parent
-        if Path(sys.prefix).resolve() != prefix.resolve():
-            environment.update(PYTHON_BIN=executable, UV_PROJECT_ENVIRONMENT=str(prefix))
-            raw = subprocess.check_output([executable, "-c",
-                "import json; from core.runtime_requirements import runtime_identity; print(json.dumps(runtime_identity('hoprag')))"],
-                cwd=root, env=environment, text=True)
-            return json.loads(raw)
-    requirement = load_runtime_requirements().get(strategy, {})
-    constraints = requirement.get("constraints_file") if isinstance(requirement, dict) else None
-    constraints_path = (root / constraints).resolve() if isinstance(constraints, str) else None
-    from core.strategy_registry import get_strategy
+    """Return the current interpreter, installed-distribution digest and lockfile identity.
 
-    if get_strategy(strategy).external:
-        from models.official_baseline_runtime import official_root
+    Every retained strategy runs in the main project environment, so the
+    identity does not depend on ``strategy`` or ``environment``; both are kept
+    so saved-run readers and callers keep one call shape.
+    """
+    _ = strategy, environment
+    freeze_path = ROOT / "uv.lock"
 
-        freeze_path = official_root(strategy, environment).parent / "runtime.freeze.txt"
-    else:
-        freeze_path = root / "uv.lock"
-
-    def identity(path: Path | None) -> dict[str, Any] | None:
-        if path is None or not path.is_file():
+    def identity(path: Path) -> dict[str, Any] | None:
+        if not path.is_file():
             return None
         with path.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        try:
-            label = path.relative_to(root).as_posix()
-        except ValueError:
-            label = str(path)
-        return {"path": label, "sha256": digest, "size": path.stat().st_size}
+        return {"path": path.relative_to(ROOT).as_posix(), "sha256": digest, "size": path.stat().st_size}
 
     installed = sorted((str(dist.metadata.get("Name", "")).lower(), dist.version)
                        for dist in metadata.distributions())
@@ -91,16 +36,4 @@ def runtime_identity(strategy: str, environment: Mapping[str, str] | None = None
         "python": str(Path(sys.executable).absolute()),
         "installed_sha256": hashlib.sha256(json.dumps(installed, separators=(",", ":")).encode()).hexdigest(),
     }
-    if strategy == 'hoprag':
-        from models.hoprag.runtime_paths import runtime_home
-        main_runtime['pos_runtime_freeze'] = identity(runtime_home(environment) / 'pos-env.freeze.txt')
-        main_runtime['main_runtime_freeze'] = identity(runtime_home(environment) / 'main-env.freeze.txt')
-        main_runtime['upstream_revision'] = get_strategy(strategy).revision
-    return {
-        "main_runtime": main_runtime,
-        "runtime_freeze": identity(freeze_path),
-        "constraints": identity(constraints_path),
-        "declared_constraints_sha256": (
-            requirement.get("constraints_sha256") if isinstance(requirement, dict) else None
-        ),
-    }
+    return {"main_runtime": main_runtime, "runtime_freeze": identity(freeze_path)}

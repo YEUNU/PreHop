@@ -49,7 +49,7 @@ class FakeClient:
 def test_prepare_preserves_all_returned_text_and_order_without_answers(tmp_path):
     sources = [{'doc': f'D{i}', 'page': 0, 'sent_id': i, 'text': ('word ' * 1000) + f'FINAL FACT {i}'} for i in range(20)]
     source = tmp_path/'source.json'
-    source.write_text(json.dumps({'dataset': 'MultiHop-RAG', 'strategy': 'gfm_rag', 'details': [
+    source.write_text(json.dumps({'dataset': 'MultiHop-RAG', 'strategy': 'naive', 'details': [
         {'query_id': 'q', 'query': 'target', 'question_type': 'comparison_query',
          'retrieved_sources': sources, 'answer': 'old answer', 'ground_truth': 'gold label'}]}))
     output = tmp_path/'inputs.jsonl'
@@ -67,7 +67,7 @@ def test_prepare_preserves_all_returned_text_and_order_without_answers(tmp_path)
 async def test_synthesis_only_keeps_full_context_and_runs_groups_sequentially(tmp_path):
     huge = 'preserved evidence ' * 20000
     rows = [record('prehop', '1', huge), record('prehop', '2', 'second'),
-            record('hoprag', '3', 'third'), record('hoprag', 'empty', 'fourth')]
+            record('naive', '3', 'third'), record('naive', 'empty', 'fourth')]
     inputs = tmp_path/'inputs.jsonl'
     write_inputs(inputs, rows)
     client = FakeClient()

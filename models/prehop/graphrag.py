@@ -21,7 +21,7 @@ from core.vllm_client import VLLMClient, get_llm_client
 from models.prehop.indexing import IndexingPipeline
 from models.prehop.retrieval import RetrievalPipeline
 from models.prehop.tracing import TracedNeo4j, TraceRecorder, attach_client, traced
-from utils.prompts.prehop_answer import build_answer_messages, build_answer_prompt
+from utils.prompts.prehop_answer import build_answer_messages
 from utils.prompts.shared import mark_answer_boundary
 
 logger = logging.getLogger(__name__)
@@ -147,10 +147,6 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
             unique.append(source_record)
             seen.add(key)
         return unique
-
-    @staticmethod
-    def _build_answer_prompt(context: str, user_query: str) -> str:
-        return build_answer_prompt(context, user_query)
 
     def _fit_ranked_context(self, nodes: list[dict[str, Any]], query: str) -> str:
         """Add ranked chunks until the actual synthesis prompt reaches its budget."""

@@ -6,7 +6,13 @@ import pytest
 from models.prehop import parallel_adapter
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing import chunking
-from tests.test_adapter_producer_concurrency import profile
+
+
+def profile():
+    return {'version': 2, 'name': 'producer-test', 'settings': {
+        'generation_concurrency': 60, 'embedding_batch_size': 16,
+        'embedding_concurrency': 2, 'benchmark_concurrency': 8,
+        'index_document_concurrency': 60, 'index_prefetch_documents': 120}}
 
 
 def setup(tmp_path, monkeypatch):

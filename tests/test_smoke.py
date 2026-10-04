@@ -163,4 +163,3 @@ def test_graphrag_inherits_indexing_and_retrieval():
 def test_baselines_still_importable():
     # Keep the lightweight baseline import independent from optional packages.
     from models.naive.naive_rag import NaiveRAG  # noqa: F401
-    # HopRAG and MS GraphRAG load optional packages at import time.

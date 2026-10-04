@@ -26,9 +26,9 @@ class VLLMClient:
     # Request budgets belong to an inference endpoint, not to a client
     # wrapper.  Sharing these objects prevents two VLLMClient instances on
     # the same event loop from each consuming the full server budget.
-    # Embedding calls can originate from several event loops/worker threads
-    # (notably HopRAG). A thread semaphore is endpoint-global; an
-    # asyncio.Semaphore keyed by loop would multiply the configured cap.
+    # Embedding calls can originate from several event loops/worker threads.
+    # A thread semaphore is endpoint-global; an asyncio.Semaphore keyed by
+    # loop would multiply the configured cap.
     _embed_semaphores: ClassVar[dict[str, threading.BoundedSemaphore]] = {}
     _embed_semaphores_lock: ClassVar[threading.Lock] = threading.Lock()
     _generation_semaphores: ClassVar[dict[tuple[str, int], asyncio.Semaphore]] = {}
@@ -191,25 +191,6 @@ class VLLMClient:
         if requested is None:
             return cap
         return min(requested, cap)
-
-    @staticmethod
-    def _json_error_context(text: Any, pos: int | None, radius: int = 120) -> str:
-        raw = str(text or "")
-        if not raw:
-            return ""
-
-        if pos is None or pos < 0:
-            excerpt = raw[: max(1, radius * 2)]
-            return excerpt.replace("\n", "\\n").replace("\r", "\\r")
-
-        idx = min(max(int(pos), 0), max(0, len(raw) - 1))
-        start = max(0, idx - radius)
-        end = min(len(raw), idx + radius)
-        excerpt = raw[start:end]
-        marker = idx - start
-        if 0 <= marker < len(excerpt):
-            excerpt = excerpt[:marker] + "<<<ERR>>>" + excerpt[marker] + "<<<ERR>>>" + excerpt[marker + 1 :]
-        return excerpt.replace("\n", "\\n").replace("\r", "\\r")
 
     def _embedding_token_limit(self, aggressive: bool = False) -> int:
         """
@@ -424,10 +405,8 @@ class VLLMClient:
     def _get_cached_client(self, url: str) -> AsyncOpenAI:
         # Key the cache by the *running event loop* as well as the url. httpx's
         # connection pool binds to the loop that first used it, so a client
-        # cached on one loop and reused by a native worker's fresh asyncio.run loop
-        # deadlocks forever in select() — the loop-bound read timeout never
-        # fires either. Per-loop clients keep prehop/naive (single main loop)
-        # unchanged while isolating hoprag's multi-loop path.
+        # cached on one loop and reused from a fresh asyncio.run loop deadlocks
+        # forever in select(); the loop-bound read timeout never fires either.
         key = (url, self._running_loop_id())
         if key not in self._client_cache:
             timeout = httpx.Timeout(self._request_timeout, connect=60.0)
@@ -505,8 +484,6 @@ class VLLMClient:
     async def generate_response(
         self,
         messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
         temperature: float | None = None,
         **kwargs,
     ) -> Any:
@@ -530,10 +507,6 @@ class VLLMClient:
             seed = InferenceTransport.resolve("core").generation_seed
             if seed is not None:
                 params["seed"] = seed
-            if tools:
-                params["tools"] = tools
-            if tool_choice:
-                params["tool_choice"] = tool_choice
             if kwargs.get("response_format"):
                 params["response_format"] = kwargs["response_format"]
             params["extra_body"] = (
@@ -558,9 +531,6 @@ class VLLMClient:
                 message = response.choices[0].message
                 return message.content
             msg = response.choices[0].message
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                return msg
-
             content = msg.content or (msg.reasoning_content if hasattr(msg, "reasoning_content") else "")
 
             # If JSON format was requested, don't attempt to unwrap common keys

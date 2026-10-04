@@ -1,48 +1,27 @@
 
 from core.inference_transport import InferenceTransport
-from core.strategy_registry import (
-    ALL_STRATEGIES,
-    BY_NAME,
-    PRIMARY_STRATEGIES,
-    RESEARCH_EXTERNAL_STRATEGIES,
-)
-from models.official_baseline_runtime import OFFICIAL_REVISIONS, _command
+from core.strategy_registry import ALL_STRATEGIES, BY_NAME, PRIMARY_STRATEGIES, get_strategy
 
 
 def test_primary_matrix_and_legacy_admission_are_centralized():
-    assert PRIMARY_STRATEGIES == (
-        "prehop",
-        "naive",
-        "hoprag",
-        "ms_graphrag",
-        "lightrag",
-        "gfm_rag",
-        "linear_rag",
-    )
-    assert "hoprag" in ALL_STRATEGIES
+    assert PRIMARY_STRATEGIES == ("prehop", "naive")
+    assert ALL_STRATEGIES == PRIMARY_STRATEGIES
+    assert set(BY_NAME) == set(ALL_STRATEGIES)
     assert not {"browsenet", "proprag", "youtu_graphrag"} & set(ALL_STRATEGIES)
-    assert set(RESEARCH_EXTERNAL_STRATEGIES) == {"lightrag", "gfm_rag", "linear_rag"}
 
 
-def test_runtime_revision_and_worker_are_registry_views(monkeypatch, tmp_path):
-    for name, spec in BY_NAME.items():
-        if spec.external:
-            assert OFFICIAL_REVISIONS[name] == spec.revision
-    monkeypatch.setenv("RAG_LIGHTRAG_PYTHON", str(tmp_path / "python"))
-    command = _command("lightrag", "corpus", "index")
-    assert command[1].endswith("scripts/research_baseline_worker.py")
+def test_unknown_strategy_is_rejected():
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown strategy"):
+        get_strategy("unregistered")
 
 
-def test_license_boundaries_are_explicit():
-    assert "GPL" in BY_NAME["linear_rag"].license_note
-
-
-def test_strategy_embedding_override_only_applies_to_isolated_worker(monkeypatch):
+def test_strategy_embedding_override_is_not_a_public_input(monkeypatch):
     monkeypatch.setenv("RAG_EMBEDDING_BATCH_SIZE", "16")
     monkeypatch.setenv("RAG_PREHOP_EMBEDDING_BATCH_SIZE", "3")
-    monkeypatch.setenv("RAG_LIGHTRAG_EMBEDDING_BATCH_SIZE", "7")
     assert InferenceTransport.resolve("prehop").embedding_batch_size == 16
-    assert InferenceTransport.resolve("lightrag").embedding_batch_size == 7
+    assert InferenceTransport.resolve("naive").embedding_batch_size == 16
 
 
 def test_transport_consumes_only_canonical_single_endpoint(monkeypatch):

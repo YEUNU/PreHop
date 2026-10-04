@@ -228,3 +228,40 @@ class TracedNeo4j:
     @traced
     async def execute_query(self, query, parameters=None, **kwargs):
         return await self.service.execute_query(query, parameters, **kwargs)
+
+
+def iter_trace(path, *, source=None, query_id=None, errors=False, payloads=False):
+    """Read a session's ordered events, verifying every referenced payload hash."""
+    path = Path(path).resolve()
+    root = path.parent
+    verified = {}
+    previous = 0
+    with path.open() as stream:
+        for line in stream:
+            event = json.loads(line)
+            if event['sequence'] != previous + 1:
+                raise ValueError('Trace sequence is missing or reordered')
+            previous = event['sequence']
+            target = (root / event['payload']).resolve()
+            if root not in target.parents:
+                raise ValueError('Trace payload escapes its session directory')
+            if target not in verified:
+                data = gzip.decompress(target.read_bytes())
+                verified[target] = hashlib.sha256(data).hexdigest()
+                json.loads(data)
+            if verified[target] != event['payload_sha256']:
+                raise ValueError('Trace payload hash mismatch')
+            identity = event.get('identity', {})
+            if source and source not in (identity.get('source'), identity.get('document_filename'),
+                                          *identity.get('sources', [])):
+                continue
+            if query_id and identity.get('query_id') != query_id:
+                continue
+            data = json.loads(gzip.decompress(target.read_bytes())) if errors or payloads else None
+            if errors and not (event['event'].endswith('.error')
+                               or event['event'] == 'structured.attempt' and not data['valid']
+                               or event['event'] == 'http.response' and data['status_code'] >= 400):
+                continue
+            if payloads:
+                event['data'] = data
+            yield event

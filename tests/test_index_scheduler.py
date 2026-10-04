@@ -74,24 +74,3 @@ async def test_prehop_capacity_uses_fixed_logical_payload_formula():
     assert capacity["bytes"] == 10 * 8 + 25 + 3 * 8 + 6 * 8
     assert capacity["definition_version"] == 1
     assert all("PR_mu_sique" in query for query in neo4j.queries)
-
-
-@pytest.mark.asyncio
-async def test_ms_graphrag_capacity_excludes_nonretrieval_directories(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    root = tmp_path / "data" / "ms_graphrag_output" / "hotpotqa"
-    (root / "artifacts").mkdir(parents=True)
-    (root / "_cache").mkdir()
-    (root / "_logs").mkdir()
-    (root / "_input").mkdir()
-    (root / "artifacts" / "retrieval.parquet").write_bytes(b"12345")
-    (root / "root.bin").write_bytes(b"123")
-    (root / "_cache" / "cache.bin").write_bytes(b"x" * 100)
-    (root / "_logs" / "run.log").write_bytes(b"x" * 100)
-    (root / "_input" / "docs.json").write_bytes(b"x" * 100)
-
-    capacity = await _collect_index_capacity("ms_graphrag", "hotpotqa")
-
-    assert capacity["measurement"] == "physical_retrieval_artifact_size"
-    assert capacity["bytes"] == 8
-    assert capacity["excluded_directories"] == ["_cache", "_input", "_logs"]

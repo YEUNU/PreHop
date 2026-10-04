@@ -116,7 +116,8 @@ def test_build_unique_sources_preserves_retrieval_provenance():
 def test_build_answer_prompt_contains_context_and_query():
     context = "[[First]]\nA {literal} fact.\n\n[[Second]]\nAnother fact."
     question = "How are these facts connected?"
-    prompt = GraphRAG._build_answer_prompt(context, question)
+    from utils.prompts.prehop_answer import build_answer_prompt
+    prompt = build_answer_prompt(context, question)
     assert f"<context>\n{context}\n</context>" in prompt
     assert f"<question>{question}</question>" in prompt
 
@@ -218,25 +219,6 @@ async def test_naive_run_workflow_uses_shared_default_top_k():
     assert trace[0]["output"] == answer
 
 
-@pytest.mark.asyncio
-async def test_hoprag_run_workflow_marks_answer_boundary():
-    from models.hoprag.hoprag_adapter import HopRAGAdapter
-
-    adapter = object.__new__(HopRAGAdapter)
-    adapter.top_k = 8
-    node = {"title": "Doc", "text": "context", "source": "doc.txt", "page": 0, "sent_id": 0}
-    adapter.retrieve = AsyncMock(return_value=("context", [node]))
-    adapter._pipeline = MagicMock()
-    adapter._pipeline.rag.return_value = ("answer", ["context"], [1.0])
-    adapter._lookup_nodes_by_text = AsyncMock(return_value=[node])
-
-    answer, _sources, trace = await adapter.run_workflow("question")
-
-    assert answer == "@@ANSWER: answer"
-    assert trace[0]["output"] == "answer"
-    adapter._pipeline.rag.assert_called_once_with("question")
-
-
 def test_naive_context_budget_keeps_complete_chunks_in_rank_order(monkeypatch):
     from core.config import RAGConfig
     from models.naive.naive_rag import NaiveRAG
@@ -300,13 +282,6 @@ async def test_prehop_synthesis_uses_versioned_messages_budget_and_final_answer_
         assert [source["text"] for source in sources] == [node["text"] for node in nodes]
     finally:
         p.stop()
-
-
-def test_hoprag_adapter_keeps_official_top_k():
-    from models.hoprag.hoprag_adapter import OFFICIAL_HOPRAG_TOP_K, HopRAGAdapter
-
-    assert OFFICIAL_HOPRAG_TOP_K == 8
-    assert HopRAGAdapter.__init__.__defaults__[2] == OFFICIAL_HOPRAG_TOP_K
 
 
 def _make_rag_with_mocks(

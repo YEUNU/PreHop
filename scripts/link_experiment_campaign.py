@@ -21,20 +21,8 @@ def ready_jobs(jobs,states,active,*,max_active=1,strategy_filter=None):
     # Timing waits for an idle campaign; useful non-timing work can continue.
     exclusive=next((j for j in ready if j.get('exclusive')),None)
     if exclusive and not active:return [exclusive]
-    def hoprag(job):
-        return job.get('strategy') == 'hoprag' or 'hoprag' in job['id']
     ordinary=[j for j in ready if not j.get('exclusive')]
-    # One HopRAG slot across datasets; prefer its next ready phase.
-    if not any(hoprag(j) for j in active):
-        ordinary.sort(key=lambda j: not hoprag(j))
-    selected=[]
-    hop_busy=any(hoprag(j) for j in active)
-    for job in ordinary:
-        if hoprag(job) and hop_busy:continue
-        if len(selected)>=max(0,max_active-len(active)):break
-        selected.append(job)
-        hop_busy=hop_busy or hoprag(job)
-    return selected
+    return ordinary[:max(0,max_active-len(active))]
 
 
 def primary(campaign,phase,strategy,dataset):
@@ -93,7 +81,7 @@ def run(plan_path, *, resume=False):
             states[job['id']]={'state':'running','identity':identity(proc.pid),'started_at':time.time()}
         unfinished=any(s['state'] in {'pending','running'} for s in states.values())
         atomic_json(base/'status.json',{'state':'running' if unfinished else ('completed_with_failures' if any(s['state']!='completed' for s in states.values()) else 'completed'),
-            'controller':identity(os.getpid()),'max_active':plan.get('max_active',1),'execution_filter':plan.get('execution_filter'),'max_hoprag_active':1,'active':[j['id'] for j in active],
+            'controller':identity(os.getpid()),'max_active':plan.get('max_active',1),'execution_filter':plan.get('execution_filter'),'active':[j['id'] for j in active],
             'tasks':states,'updated_at':time.time()})
         if not unfinished:return
         time.sleep(5)

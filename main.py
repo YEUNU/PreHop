@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 
 _DEFAULT_DATASET = "data/multihoprag_corpus"
-_DEFAULT_QUERIES_FILE = "data/multihoprag_sample200_queries.json"
+_DEFAULT_QUERIES_FILE = "data/multihoprag_queries.json"
 
 
 def _ensure_run_id() -> str:
@@ -166,7 +166,7 @@ async def main():
             await _clear_graph_and_schema(neo4j)
             logger.info("Neo4j graph and application schema cleared successfully.")
         elif args.mode == "index":
-            if args.clear_graph and args.strategy in {"prehop", "naive", "hoprag"}:
+            if args.clear_graph:
                 if os.environ.get("RAG_INDEX_NAMESPACE", "").strip():
                     raise RuntimeError(
                         "--clear-graph is global and is forbidden for a namespace-scoped run; "
@@ -176,8 +176,6 @@ async def main():
                 logger.warning("Clearing all Neo4j data and application schema before indexing...")
                 await _clear_graph_and_schema(neo4j)
                 logger.info("Neo4j graph and application schema cleared successfully.")
-            elif args.clear_graph:
-                logger.info("%s uses file artifacts; Neo4j clear is not applicable.", args.strategy)
             await run_indexing(args.dataset, args.strategy, args.model, args.corpus_tag, args.save_intermediate)
         elif args.mode == "hop_rebuild":
             await rebuild_hop_edges(args.corpus_tag or "default", args.strategy)

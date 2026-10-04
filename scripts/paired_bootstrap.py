@@ -24,8 +24,8 @@ PNG into fig/ — all named after the dataset's corpus tag.
 Usage:
   python scripts/paired_bootstrap.py \
     --prehop data/results/<new>/prehop/multihoprag/prehop_multihoprag.json \
-    --baselines data/results/<base>/{naive,hoprag,ms_graphrag}/multihoprag/*.json \
-    --exclude-queries data/multihoprag_sample200_queries.json \
+    --baselines data/results/<base>/naive/multihoprag/*.json \
+    --exclude-queries data/<development-subset>_queries.json \
     --out-dir data/results/<new>
 
 """
@@ -402,8 +402,6 @@ def _plot(results: dict, metrics: list[str], fig_path: Path, treatment_strat: st
     baselines = list(next(iter(results.values())).keys())
     colors = {
         "naive": "#888888",
-        "hoprag": "#4C72B0",
-        "ms_graphrag": "#DD8452",
     }
     ncol = len(metrics)
     fig, axes = plt.subplots(1, ncol, figsize=(3.0 * ncol, 3.4), sharey=True)

@@ -59,13 +59,9 @@ def record(kind: str, response: Any) -> None:
         state["cost_complete"] = False
 
 
-def finish(token: contextvars.Token, *, external_complete: bool = True) -> dict[str, Any]:
+def finish(token: contextvars.Token) -> dict[str, Any]:
     state = dict(_CURRENT.get() or {})
     _CURRENT.reset(token)
-    if not external_complete:
-        state["token_usage_complete"] = False
-        state["cost_complete"] = False
-        state["external_worker_usage_complete"] = False
     return state
 
 

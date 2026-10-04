@@ -13,7 +13,7 @@ from pathlib import Path
 from core.config import RAGConfig
 from core.index_namespace import index_namespace
 from core.neo4j_service import Neo4jService
-from core.strategy_registry import EXTERNAL_STRATEGIES, get_strategy
+from core.strategy_registry import get_strategy
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from models.prehop.indexing.chunking import parse_pages_offline
@@ -28,7 +28,7 @@ _PARSE_MP_CTX = _mp.get_context("spawn")
 
 
 def _write_json(path, payload):
-    # Every index backend uses this writer; failure artifacts remain unnormalized.
+    # Every index artifact uses this writer; failure artifacts remain unnormalized.
     if isinstance(payload, dict) and "timing_seconds" in payload and "corpus_manifest_paragraph_count" in payload:
         from core.amortized_cost import indexing_cost
         from core.execution_profile import execution_profile
@@ -85,17 +85,15 @@ def _artifact_run_id() -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._-") or "run"
 
 
-def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: str | None = None) -> dict:
+def _resolved_index_policy(strategy: str, indexing_model_id: str) -> dict:
     """Record the settings actually used by both ordinary and comparison runs."""
     from core.inference_transport import InferenceTransport
     from core.paper_policy import canonical_semantic_index_policy
-    from core.runtime_requirements import runtime_identity, runtime_requirement
-    from core.strategy_registry import method_setting
+    from core.runtime_requirements import runtime_identity
 
-    spec = get_strategy(strategy)
+    get_strategy(strategy)
     transport = InferenceTransport.resolve(strategy)
     policy = canonical_semantic_index_policy(strategy)
-    local_embedding = spec.local_embedding_revision is not None or strategy == "gfm_rag"
     model = transport.generation_model
     if strategy == "prehop" and indexing_model_id not in {None, "", "default"}:
         model = indexing_model_id
@@ -104,19 +102,18 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: st
         "indexing_model": None if strategy == "naive" else model,
         "generation_revision": os.environ.get("RAG_GENERATION_REVISION", "").strip() or model,
         "generation_seed": transport.generation_seed,
-        "embedding_model": spec.paper_embedding_model if local_embedding else transport.embedding_model,
-        "embedding_revision": spec.local_embedding_revision if local_embedding else os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or transport.embedding_model,
-        "embedding_query_instruction": None if local_embedding else transport.embedding_query_instruction,
-        "embedding_query_template": None if local_embedding else transport.embedding_query_template,
-        "embedding_dimensions": spec.paper_embedding_dimensions if local_embedding else transport.embedding_dimensions,
+        "embedding_model": transport.embedding_model,
+        "embedding_revision": os.environ.get("RAG_EMBEDDING_REVISION", "").strip() or transport.embedding_model,
+        "embedding_query_instruction": transport.embedding_query_instruction,
+        "embedding_query_template": transport.embedding_query_template,
+        "embedding_dimensions": transport.embedding_dimensions,
         "embedding_max_input_tokens": transport.embedding_max_input_tokens,
         "embedding_token_reserve": transport.embedding_token_reserve,
         "generation_max_context_tokens": transport.generation_max_context_tokens,
         "fulltext_analyzer": RAGConfig.FULLTEXT_ANALYZER,
+        "chunk_sentences": RAGConfig.CHUNK_SENTENCES,
+        "default_top_k": RAGConfig.DEFAULT_TOP_K,
     })
-    policy.update({field: method_setting(strategy, field) for field, _ in spec.paper_index_environment})
-    if strategy in {"prehop", "naive"}:
-        policy.update(chunk_sentences=RAGConfig.CHUNK_SENTENCES, default_top_k=RAGConfig.DEFAULT_TOP_K)
     if strategy == "prehop":
         policy.update({
             "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
@@ -129,21 +126,14 @@ def _resolved_index_policy(strategy: str, indexing_model_id: str, corpus_tag: st
             "continuation_anchor_policy": RAGConfig.CONTINUATION_ANCHOR_POLICY,
             "hop_construction": "qplus_to_qminus_owner",
         })
-    if strategy == "gfm_rag":
-        from models.official_baseline_runtime import official_root
-        runtime_spec = runtime_requirement(strategy)
-        checkpoint = official_root(strategy).parent / "artifacts" / runtime_spec["checkpoint_snapshot_subdir"]
-        policy.update(gfm_checkpoint=str(checkpoint),
-                      gfm_checkpoint_sha256=hashlib.sha256((checkpoint / "model.pth").read_bytes()).hexdigest(),
-                      gfm_config_sha256=hashlib.sha256((checkpoint / "config.json").read_bytes()).hexdigest())
     policy["operational_config"] = {**transport.policy_dict(), **runtime_identity(strategy)}
     return policy
 
 
-def _index_policy_artifact(strategy: str, indexing_model_id: str, corpus_tag: str) -> dict[str, object]:
+def _index_policy_artifact(strategy: str, indexing_model_id: str) -> dict[str, object]:
     from core.semantic_config import semantic_config_sha256
 
-    policy = _resolved_index_policy(strategy, indexing_model_id, corpus_tag)
+    policy = _resolved_index_policy(strategy, indexing_model_id)
     return {"index_policy": policy, "index_policy_sha256": semantic_config_sha256(policy)}
 
 
@@ -219,39 +209,6 @@ async def _publish_neo4j_snapshot(engine, strategy, corpus_tag, source_ids, corp
     return {"status": "complete", "source_count": len(source_ids), "verification": "not_checked"}
 
 
-def _write_runtime_stage_stats(
-    strategy: str,
-    corpus_tag: str,
-    dataset_path: str,
-    timing_seconds: dict[str, float],
-    status: str,
-    corpus_manifest: dict | None = None,
-    indexing_model_id: str = "default",
-    index_capacity: dict | None = None,
-) -> None:
-    """Persist timing even for official adapters that do not use our graph stats."""
-    stats_dir = Path("data/index_stats")
-    stats_dir.mkdir(parents=True, exist_ok=True)
-    stats_path = stats_dir / f"{strategy}_{corpus_tag}_{_artifact_run_id()}.json"
-    _write_json(
-        stats_path,
-        {
-            "run_id": _artifact_run_id(),
-            "index_code_provenance": code_provenance(),
-            **_index_policy_artifact(strategy, indexing_model_id, corpus_tag),
-            "strategy": strategy,
-            "corpus_tag": corpus_tag,
-            "dataset_path": dataset_path,
-            "timing_seconds": dict(timing_seconds),
-            "index_capacity": index_capacity,
-            **({"inference_usage": __import__('models.hoprag.native_runtime',fromlist=['usage_snapshot']).usage_snapshot()} if strategy == 'hoprag' else {}),
-            "status": status,
-            "corpus_manifest_fingerprint": (corpus_manifest or {}).get("fingerprint"),
-            "corpus_manifest_paragraph_count": (corpus_manifest or {}).get("paragraph_count"),
-        },
-    )
-
-
 async def _collect_index_capacity(
     strategy: str,
     corpus_tag: str,
@@ -259,27 +216,6 @@ async def _collect_index_capacity(
 ) -> dict[str, object]:
     """Measure strategy storage with the fixed comparison-table definitions."""
     safe_corpus = index_namespace(corpus_tag)
-    if strategy in {"ms_graphrag", *EXTERNAL_STRATEGIES}:
-        spec = get_strategy(strategy)
-        root = Path(os.environ.get(spec.output_env, spec.output_default)) / corpus_tag
-        excluded = (
-            {"_cache", "_logs", "_input"}
-            if strategy == "ms_graphrag"
-            else {"input", "datasets", "results", "logs", "llm_cache"}
-        )
-        total_bytes = sum(
-            path.stat().st_size
-            for path in root.rglob("*")
-            if path.is_file() and not any(part in excluded for part in path.relative_to(root).parts)
-        )
-        return {
-            "measurement": "physical_retrieval_artifact_size",
-            "bytes": total_bytes,
-            "gib": total_bytes / 1024**3,
-            "excluded_directories": sorted(excluded),
-            "definition_version": 1,
-        }
-
     service = neo4j or Neo4jService()
     if strategy == "prehop":
         labels = [
@@ -325,27 +261,6 @@ async def _collect_index_capacity(
                        coalesce(size(n.source), 0) + coalesce(size(n.title), 0)) AS chars,
                    0 AS list_items, count(n) AS records
             """
-        ]
-    elif strategy == "hoprag":
-        label = f"HO_{safe_corpus}"
-        queries = [
-            f"""
-            MATCH (n:{label})
-            RETURN sum(coalesce(size(n.embed), 0)) AS floats,
-                   sum(coalesce(size(n.text), 0) + coalesce(size(n.source), 0) +
-                       coalesce(size(n.title), 0)) +
-                       sum(reduce(total = 0, item IN coalesce(n.keywords, []) |
-                           total + size(item))) AS chars,
-                   0 AS list_items, count(n) AS records
-            """,
-            f"""
-            MATCH (:{label})-[r]->(:{label})
-            RETURN sum(coalesce(size(r.embed), 0)) AS floats,
-                   sum(coalesce(size(r.question), 0)) +
-                       sum(reduce(total = 0, item IN coalesce(r.keywords, []) |
-                           total + size(item))) AS chars,
-                   0 AS list_items, count(r) AS records
-            """,
         ]
     else:
         raise ValueError(f"Unsupported capacity measurement strategy: {strategy}")
@@ -681,36 +596,6 @@ async def run_indexing(
             finish(token)
 
 
-async def _run_native_index(run_native, strategy, dataset_path, corpus_tag, corpus_manifest, model_id, started_at):
-    """Measure and persist native execution without changing its indexing calls."""
-    official_started = time.perf_counter()
-    timing = {}
-    status = "complete"
-    capacity = None
-    try:
-        adapter_timing = await run_native(
-            dataset_path=dataset_path, corpus_tag=corpus_tag, corpus_manifest=corpus_manifest,
-        )
-        timing.update(adapter_timing or {})
-        timing["official_pipeline_seconds"] = time.perf_counter() - official_started
-        timing["total_elapsed_seconds"] = time.perf_counter() - started_at
-        capacity = await _collect_index_capacity(strategy, corpus_tag)
-    except BaseException:
-        status = "failed"
-        raise
-    finally:
-        timing.setdefault("official_pipeline_seconds", time.perf_counter() - official_started)
-        timing.setdefault("total_elapsed_seconds", time.perf_counter() - started_at)
-        try:
-            _write_runtime_stage_stats(
-                strategy, corpus_tag, dataset_path, timing, status, corpus_manifest, model_id, capacity,
-            )
-        except Exception:
-            if status != "failed":
-                raise
-            logger.warning("Failed to record native index failure for %s", strategy, exc_info=True)
-
-
 async def _run_indexing_unlocked(
     dataset_path: str,
     strategy: str,
@@ -734,26 +619,6 @@ async def _run_indexing_unlocked(
 
     files = sorted(file for file in os.listdir(dataset_path) if file.endswith((".txt", ".md")))
     source_ids = _source_ids_from_filenames(files)
-
-    native_index = None
-    if strategy == "ms_graphrag":
-        from models.ms_graphrag.official_indexer import run_official_index as native_index
-    elif strategy == "hoprag":
-        from models.hoprag.official_indexer import run_official_index as native_index
-    elif strategy in EXTERNAL_STRATEGIES:
-        from models.external_research.official_indexer import run_official_index as external_index
-
-        async def native_index(dataset_path, corpus_tag, corpus_manifest):
-            return await external_index(
-                strategy, dataset_path, corpus_tag, corpus_manifest,
-                index_policy=_resolved_index_policy(strategy, model_id, corpus_tag),
-            )
-    if native_index is not None:
-        await _run_native_index(
-            native_index, strategy, dataset_path, corpus_tag or "default",
-            corpus_manifest, model_id, started_at,
-        )
-        return
 
     if strategy == "prehop":
         from core.execution_profile import execution_profile
@@ -1076,7 +941,7 @@ async def _run_indexing_unlocked(
                 {
                     "run_id": _artifact_run_id(),
                     "index_code_provenance": code_provenance(),
-                    **_index_policy_artifact(strategy, model_id, corpus_tag or "default"),
+                    **_index_policy_artifact(strategy, model_id),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
@@ -1117,7 +982,7 @@ async def _run_indexing_unlocked(
                 {
                     "run_id": _artifact_run_id(),
                     "index_code_provenance": code_provenance(),
-                    **_index_policy_artifact(strategy, model_id, corpus_tag or "default"),
+                    **_index_policy_artifact(strategy, model_id),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,
@@ -1146,7 +1011,7 @@ async def _run_indexing_unlocked(
                 {
                     "run_id": _artifact_run_id(),
                     "index_code_provenance": code_provenance(),
-                    **_index_policy_artifact(strategy, model_id, corpus_tag or "default"),
+                    **_index_policy_artifact(strategy, model_id),
                     "strategy": strategy,
                     "corpus_tag": corpus_tag or "default",
                     "dataset_path": dataset_path,

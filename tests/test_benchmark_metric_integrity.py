@@ -3,7 +3,6 @@ import hashlib
 import json
 import os
 
-import pandas as pd
 import pytest
 
 from cli.benchmark import _latest_index_manifest_metadata
@@ -16,10 +15,8 @@ from core.benchmark_evaluation import (
     _recompute_aggregates,
     _update_summary_status,
 )
-from models.hoprag import official_indexer as hop_official_indexer
-from models.ms_graphrag import official_indexer as ms_official_indexer
 from models.prehop.indexing.chunking import parse_pages_offline
-from scripts.datasets import prepare_multihoprag, refresh_sample_records
+from scripts.datasets import prepare_multihoprag
 from scripts.paired_bootstrap import (
     MULTIHOPRAG_METRICS,
     _dataset_marker,
@@ -28,20 +25,6 @@ from scripts.paired_bootstrap import (
     _paired,
     _validate_artifact_pair,
 )
-
-
-def test_refresh_sample_records_preserves_ids_and_uses_current_annotations():
-    full = [
-        {"_id": "q1", "query": "new one", "evidence_docs": ["p1"]},
-        {"_id": "q2", "query": "new two", "evidence_docs": ["p2"]},
-    ]
-    sample = [{"_id": "q2", "query": "old two"}, {"_id": "q1", "query": "old one"}]
-
-    refreshed = refresh_sample_records.refresh_records(full, sample)
-
-    assert [row["_id"] for row in refreshed] == ["q2", "q1"]
-    assert refreshed[0]["query"] == "new two"
-    assert refreshed[0]["evidence_docs"] == ["p2"]
 
 
 def test_multihoprag_manifest_binds_corpus_and_query_content(tmp_path):
@@ -95,8 +78,8 @@ def test_benchmark_checkpoint_interval_is_bounded_and_always_writes_final_state(
     assert _benchmark_checkpoint_due(25, 25, 10)
 
 
-def _write_resume_fixture(tmp_path, rows, *, status="in_progress", strategy="hoprag"):
-    result_file = tmp_path / "hoprag_multihoprag.json"
+def _write_resume_fixture(tmp_path, rows, *, status="in_progress", strategy="naive"):
+    result_file = tmp_path / "naive_multihoprag.json"
     result_file.write_text(
         json.dumps({"status": status, "strategy": strategy, "details": rows}),
         encoding="utf-8",
@@ -110,7 +93,7 @@ def _write_resume_fixture(tmp_path, rows, *, status="in_progress", strategy="hop
         }
         for idx, row in enumerate(rows, start=1)
     ]
-    result_file.with_name("hoprag_multihoprag.traces.jsonl").write_text(
+    result_file.with_name("naive_multihoprag.traces.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in trace_rows),
         encoding="utf-8",
     )
@@ -241,64 +224,6 @@ def test_index_manifest_selection_does_not_cross_prefixing_corpus_tags(tmp_path)
     selected = _latest_index_manifest_metadata("prehop", "multihoprag", tmp_path)
 
     assert selected["path"] == str(legacy)
-
-
-def test_ms_snapshot_metadata_is_sidecar_and_requires_actual_document_sources(tmp_path, monkeypatch):
-    monkeypatch.setattr(ms_official_indexer, "_OUTPUT_ROOT", tmp_path)
-    output_dir = ms_official_indexer.output_dir_for("hotpotqa")
-    output_dir.mkdir(parents=True)
-    monkeypatch.setattr(
-        "pandas.read_parquet",
-        lambda _path: pd.DataFrame({"title": ["hotpotqa_alpha.txt", "hotpotqa_beta.txt"]}),
-    )
-
-    payload = ms_official_indexer._publish_snapshot(
-        "hotpotqa",
-        {"fingerprint": "fp", "paragraph_count": 2},
-        {"hotpotqa_alpha": "Alpha", "hotpotqa_beta": "Beta"},
-    )
-
-    assert payload["status"] == "complete"
-    persisted = json.loads(ms_official_indexer.snapshot_metadata_path("hotpotqa").read_text(encoding="utf-8"))
-    assert persisted["source_set_sha256"] == payload["source_set_sha256"]
-    assert persisted["source_titles_sha256"] == payload["source_titles_sha256"]
-
-
-def test_hoprag_snapshot_preserves_periods_in_stored_source_ids():
-    class Result(list):
-        def consume(self):
-            return None
-
-    class Session:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def run(self, query, _parameters=None, **_kwargs):
-            if "RETURN DISTINCT n.source AS source" in query:
-                return Result([{"source": "Article_about_the_U.S._economy"}])
-            return Result()
-
-    class Driver:
-        def session(self):
-            return Session()
-
-    class Builder:
-        driver = Driver()
-        label = "HO_multihoprag"
-
-    payload = hop_official_indexer._publish_snapshot(
-        Builder(),
-        "multihoprag",
-        ["Article_about_the_U.S._economy"],
-        {"fingerprint": "fp", "paragraph_count": 1},
-    )
-
-    assert payload["source_count"] == 1
-    assert payload["input_source_count"] == 1
-    assert payload["omitted_source_count"] == 0
 
 
 def test_paired_bootstrap_retains_runtime_failure_as_zero():

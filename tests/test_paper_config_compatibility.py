@@ -14,8 +14,8 @@ from core.structured_outputs import structured_bundle_sha256
 @pytest.fixture(autouse=True)
 def configured(monkeypatch):
     _canonical_transport(monkeypatch)
-    # Configuration tests exercise policy resolution, not installed native
-    # interpreters. In particular, HopRAG runs in a separately prepared venv.
+    # Configuration tests exercise policy resolution, not the installed
+    # interpreter's distribution digest.
     monkeypatch.setattr('core.runtime_requirements.runtime_identity',
                         lambda strategy, environment=None: {'main_runtime': {'strategy': strategy, 'installed_sha256': 'test-runtime'}})
 
@@ -24,7 +24,7 @@ def test_resolved_matrix_is_config_only_and_preserves_environment(monkeypatch):
     import os
     before = dict(os.environ)
     context = compatibility.context_configuration()
-    assert len(context['targets']) == 14
+    assert len(context['targets']) == 4
     assert dict(os.environ) == before
     monkeypatch.setattr('utils.provenance.code_provenance', lambda: {'revision': 'new', 'dirty': True})
     assert context == compatibility.context_configuration()
@@ -61,10 +61,10 @@ def test_parallel_resolution_keeps_explicit_environments_isolated():
 
 def test_only_changed_method_contract_invalidates_target(monkeypatch):
     first = compatibility.target_configuration('prehop', 'hotpotqa')
-    unrelated = compatibility.target_configuration('lightrag', 'hotpotqa')
+    unrelated = compatibility.target_configuration('naive', 'hotpotqa')
     monkeypatch.setitem(compatibility.METHOD_CONTRACT_VERSIONS, 'prehop', 'paper-method-future')
     assert first != compatibility.target_configuration('prehop', 'hotpotqa')
-    assert unrelated == compatibility.target_configuration('lightrag', 'hotpotqa')
+    assert unrelated == compatibility.target_configuration('naive', 'hotpotqa')
 
 
 def test_real_prompt_contents_change_policy_but_docstrings_do_not(monkeypatch):

@@ -12,8 +12,8 @@
 #   ./run_dataset.sh hotpotqa all --model prehop              # index + benchmark, one strategy
 #
 # Options:
-#   --model   {prehop|naive|hoprag|ms_graphrag|lightrag|gfm_rag|linear_rag} default: prehop
-#   --queries {sample200|full}                                default: full
+#   --model   {prehop|naive}                                  default: prehop
+#   --queries {full}                                          default: full
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
 set -e
@@ -24,8 +24,7 @@ export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 DATASET="$1"; shift || true
 STAGE="${1:-all}"; shift || true
 MODEL="prehop"
-QUERIES="sample200"
-if [ "$DATASET" = "hotpotqa" ]; then QUERIES="full"; fi
+QUERIES="full"
 COMMON_PASS=()
 INDEX_PASS=()
 BENCH_PASS=()
@@ -47,18 +46,12 @@ esac
 CORPUS_DIR="data/${DATASET}_corpus"
 CORPUS_TAG="$DATASET"
 case "$QUERIES" in
-    sample200)
-        QUERIES_FILE=""
-        for candidate in data/${DATASET}_sample*_queries.json; do
-            if [ -f "$candidate" ]; then QUERIES_FILE="$candidate"; break; fi
-        done
-        ;;
     full)      QUERIES_FILE="data/${DATASET}_queries.json" ;;
-    *) echo "Unknown --queries '$QUERIES' (use sample200|full)"; exit 1 ;;
+    *) echo "Unknown --queries '$QUERIES' (use full)"; exit 1 ;;
 esac
 if { [ "$STAGE" = "benchmark" ] || [ "$STAGE" = "bench" ] || [ "$STAGE" = "all" ]; } \
-   && { [ -z "$QUERIES_FILE" ] || [ ! -f "$QUERIES_FILE" ]; }; then
-    echo "Queries file for --queries $QUERIES not found. Run scripts/datasets/prepare_hotpotqa_hipporag.py --download first; use --queries full for the released population." >&2
+   && [ ! -f "$QUERIES_FILE" ]; then
+    echo "Queries file not found: $QUERIES_FILE. Run scripts/datasets/prepare_hotpotqa_hipporag.py --download first." >&2
     exit 1
 fi
 
@@ -78,5 +71,5 @@ case "$STAGE" in
     index)           do_index ;;
     benchmark|bench) do_benchmark ;;
     all)             do_index; do_benchmark ;;
-    *) echo "Usage: $0 <hotpotqa> <index|benchmark|all> [--model prehop|naive|hoprag|ms_graphrag|lightrag|gfm_rag|linear_rag] [--queries sample200|full] [extra run_*.sh flags]"; exit 1 ;;
+    *) echo "Usage: $0 <hotpotqa> <index|benchmark|all> [--model prehop|naive] [--queries full] [extra run_*.sh flags]"; exit 1 ;;
 esac

@@ -27,7 +27,7 @@ PYTHON_BIN=$(resolve_python "$repo_root") || exit 1
 export PYTHON_BIN
 runner="$repo_root/scripts/run_paper_target.sh"
 datasets=(multihoprag hotpotqa)
-# Keeping strategy as the outer loop completes both datasets for one baseline
+# Keeping strategy as the outer loop completes both datasets for one strategy
 # before moving on.
 strategy_lines=$(python3 "$repo_root/core/strategy_registry.py" --primary-lines) || {
     echo "strategy registry query failed" >&2

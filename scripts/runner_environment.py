@@ -22,7 +22,7 @@ def export_runner_environment() -> None:
     import shlex
 
     from core.inference_transport import InferenceTransport, validate_public_inference_environment
-    from core.paper_policy import configure_target_environment, preserve_method_environment
+    from core.paper_policy import configure_target_environment
 
     before = os.environ.copy()
     _load_runner_environment()
@@ -30,7 +30,6 @@ def export_runner_environment() -> None:
         validate_public_inference_environment(os.environ)
     except ValueError as exc:
         raise SystemExit(f"ERROR: {exc}") from exc
-    preserve_method_environment()
     os.environ['RAG_INFERENCE_BASE_URL'] = InferenceTransport.resolve('core').generation_base_url
     if sys.argv[1:]:
         configure_target_environment(*sys.argv[1:])
@@ -54,15 +53,13 @@ def safe_environment() -> dict[str, str]:
         inference_environment_keys,
         preserve_provider_environment,
     )
-    from core.paper_policy import method_environment_defaults, preserve_method_environment
     current = selected_python_environment()
     preserve_provider_environment(current)
-    preserve_method_environment(current)
-    allowed = {'RAG_MEASUREMENT_MAX_TARGETS', 'RAG_PREHOP_TRACE', 'RAG_PREHOP_TRACE_DIR', 'RAG_EXECUTION_PROFILE', 'PYTHON_BIN', 'UV_PROJECT_ENVIRONMENT', 'RAG_OFFICIAL_BASELINE_HOME',
+    allowed = {'RAG_MEASUREMENT_MAX_TARGETS', 'RAG_PREHOP_TRACE', 'RAG_PREHOP_TRACE_DIR', 'RAG_EXECUTION_PROFILE',
+        'PYTHON_BIN', 'UV_PROJECT_ENVIRONMENT',
         'NEO4J_URI', 'NEO4J_URL', 'NEO4J_USERNAME', 'NEO4J_USER',
-        'NEO4J_PASSWORD', 'NEO4J_DATABASE', 'HF_HOME', 'HF_HUB_CACHE', 'TRANSFORMERS_CACHE', 'PATH', 'HOME', 'LITELLM_MODE'}
+        'NEO4J_PASSWORD', 'NEO4J_DATABASE', 'PATH', 'HOME', 'LITELLM_MODE'}
     allowed.update(_FORBIDDEN_AMBIENT_PROVIDER_KEYS)
-    allowed.update(method_environment_defaults())
     allowed.update(inference_environment_keys())
     env = {key: current[key] for key in allowed if key in current}
     env.update(PYTHONDONTWRITEBYTECODE='1', RAG_SKIP_PROJECT_ENV='true', RAG_PAPER_MODE='true')

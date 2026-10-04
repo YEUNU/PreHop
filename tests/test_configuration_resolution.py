@@ -31,50 +31,17 @@ def test_client_uses_direct_gateway_despite_stale_proxy_environment(monkeypatch,
 
 
 @pytest.mark.parametrize('paper_mode', ['true', 'false'])
-def test_recorded_index_policy_uses_effective_method_settings(monkeypatch, paper_mode):
+def test_recorded_index_policy_uses_effective_transport_settings(monkeypatch, paper_mode):
     from cli.index import _resolved_index_policy
-    from core.strategy_registry import method_setting
     monkeypatch.setenv('RAG_PAPER_MODE', paper_mode)
-    monkeypatch.setenv('RAG_LIGHTRAG_TOP_K', '17')
     monkeypatch.setenv('RAG_INFERENCE_TIMEOUT', '21')
     monkeypatch.setenv('RAG_GENERATION_MODEL', 'actual-model')
     monkeypatch.setenv('RAG_EMBEDDING_MODEL', 'actual-embedding')
-    policy = _resolved_index_policy('lightrag', 'default', 'fixture')
-    assert policy['retrieval_top_k'] == method_setting('lightrag', 'retrieval_top_k') == 17
+    policy = _resolved_index_policy('prehop', 'default')
     assert policy['indexing_model'] == 'actual-model'
     assert policy['embedding_model'] == 'actual-embedding'
     assert policy['operational_config']['timeout_seconds'] == 21
-
-
-def test_fixed_upstream_model_settings_have_no_inert_overrides(monkeypatch):
-    from core.strategy_registry import get_strategy, method_setting
-    monkeypatch.setenv('RAG_LINEAR_RAG_MPNET_MODEL', 'unused-override')
-    assert method_setting('linear_rag', 'official_embedding_model') == get_strategy('linear_rag').paper_embedding_model
-    assert 'RAG_LINEAR_RAG_MPNET_MODEL' not in get_strategy('linear_rag').index_environment_defaults()
-
-
-def test_isolated_worker_preserves_explicit_transport_overrides(monkeypatch):
-    from models.official_baseline_runtime import _runtime_env
-    from scripts.runner_environment import safe_environment
-
-    monkeypatch.setenv('RAG_LIGHTRAG_EMBEDDING_BATCH_SIZE', '7')
-    monkeypatch.setenv('RAG_LIGHTRAG_EMBEDDING_CONCURRENCY', '2')
-    monkeypatch.setenv('RAG_LIGHTRAG_EMBEDDING_RETRY_ATTEMPTS', '3')
-    monkeypatch.setenv('NEO4J_VECTOR_DIMENSIONS', '128')
-    monkeypatch.setenv('MAX_EMBEDDING_LENGTH', '512')
-    monkeypatch.setenv('RAG_UNRELATED_TEST_SETTING', 'discard')
-    expected = InferenceTransport.resolve('lightrag')
-    filtered = safe_environment()
-    assert 'RAG_UNRELATED_TEST_SETTING' not in filtered
-    # Follow the actual supervisor -> native worker boundary.
-    monkeypatch.setattr('os.environ', filtered)
-    native = _runtime_env('lightrag')
-    observed = InferenceTransport.resolve('lightrag', native)
-    for field in ('embedding_batch_size', 'embedding_concurrency', 'retry_attempts',
-                  'embedding_dimensions', 'embedding_max_input_tokens'):
-        assert getattr(observed, field) == getattr(expected, field)
-    assert native['RAG_EMBEDDING_BATCH_SIZE'] == '7'
-    assert native['RAG_EMBEDDING_CONCURRENCY'] == '2'
+    assert policy['operational_config']['transport_profile'] == 'openai_compatible_litellm'
 
 
 def test_core_query_settings_keep_types_normalization_and_fixed_parameters(monkeypatch):

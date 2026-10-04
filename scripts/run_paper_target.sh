@@ -34,14 +34,12 @@ repo_root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_root"
 . "$repo_root/scripts/lib.sh"
 load_project_env "$repo_root/.env"
-PYTHON_BIN=$(resolve_method_python "$repo_root" "$strategy") || exit 1
+PYTHON_BIN=$(resolve_python "$repo_root") || exit 1
 export PYTHON_BIN
-if [ "$strategy" = "hoprag" ]; then export UV_PROJECT_ENVIRONMENT="$(dirname "$(dirname "$PYTHON_BIN")")"; fi
 
 canonicalize_inference_transport "$strategy" "$dataset" "$run_id" || exit 1
 # Preserve an observed or explicitly pinned backend revision when supplied;
 # otherwise the served alias remains the only available revision identity.
-# Local method revisions come from the typed strategy registry.
 export RAG_GENERATION_REVISION="${RAG_GENERATION_REVISION:-$RAG_GENERATION_MODEL}"
 export RAG_EMBEDDING_REVISION="${RAG_EMBEDDING_REVISION:-$RAG_EMBEDDING_MODEL}"
 export RAG_PAPER_MODE=true

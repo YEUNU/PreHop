@@ -220,13 +220,9 @@ neo4j_data/
 # Data is local by default, including new experiment directories, corpora,
 # checkpoints, traces, indexes, caches, native runtimes and maintenance records.
 # Full request/response and graph payloads may contain credentials or source text.
-# Publish only the existing curated query subset needed for reproduction.
 /data/*
-!/data/multihoprag_sample200_queries.json
 tmp/
 
-# graphrag library writes its default file_storage here when reporting_config
-# isn't overridden (separate from our explicit output_storage).
 output/
 
 # Local debug, report/PPT generation, and one-off helper scripts.

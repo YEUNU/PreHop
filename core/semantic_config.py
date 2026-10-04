@@ -20,7 +20,6 @@ def parse_strict_bool(value: str, *, name: str) -> bool:
 _NON_SEMANTIC_FIELDS = {
     "index_namespace",
     "schema_path",
-    "gfm_checkpoint",
 }
 
 

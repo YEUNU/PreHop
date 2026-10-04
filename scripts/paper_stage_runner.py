@@ -77,9 +77,8 @@ async def fresh_index(strategy: str, dataset: str) -> None:
     try:
         await run_indexing(str(ROOT / 'data' / f'{dataset}_corpus'), strategy, 'default', dataset)
     finally:
-        if strategy in {'prehop', 'naive'}:
-            from core.neo4j_service import Neo4jService
-            await Neo4jService.global_close()
+        from core.neo4j_service import Neo4jService
+        await Neo4jService.global_close()
 
 
 def full_target(campaign: str, strategy: str, dataset: str, attempt: str) -> None:
@@ -132,9 +131,8 @@ def reuse_benchmark(campaign: str, strategy: str, dataset: str) -> None:
             await run_benchmark(str(ROOT / 'data' / f'{dataset}_queries.json'), strategy, 'default',
                                 corpus_tag=dataset, output_dir=path.parent, seed=42)
         finally:
-            if strategy in {'prehop', 'naive'}:
-                from core.neo4j_service import Neo4jService
-                await Neo4jService.global_close()
+            from core.neo4j_service import Neo4jService
+            await Neo4jService.global_close()
     asyncio.run(run())
 
 
@@ -218,9 +216,6 @@ def main() -> None:
     parser.add_argument('--dataset', choices=['multihoprag', 'hotpotqa'], default='multihoprag')
     parser.add_argument('--mode', choices=['interrupt', 'resume'])
     args = parser.parse_args()
-    if args.action in {'one-query', 'full-target', 'reuse-target', '_reuse_benchmark'}:
-        from core.runtime_requirements import ensure_method_runtime
-        ensure_method_runtime(args.strategy)
     from scripts.runner_environment import _load_runner_environment
     _load_runner_environment()
     if args.action == 'reattest':

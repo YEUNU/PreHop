@@ -7,7 +7,6 @@ import pytest
 from cli.index import _collect_prehop_integrity, _resolved_index_policy, run_indexing
 from core.benchmark_evaluation import _recompute_aggregates
 from core.vllm_client import VLLMClient
-from models.hoprag.hoprag_adapter import HopRAGAdapter
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from utils.prompts.shared import build_answer_prompt
@@ -290,19 +289,6 @@ async def test_graph_flush_writes_a_document_wave_in_one_query():
     assert rag.retry_query.await_args.args[1]["documents"][1]["doc_id"] == "two.txt"
 
 
-@pytest.mark.asyncio
-async def test_hoprag_official_failure_is_not_replaced_by_vector_search():
-    class BrokenRetriever:
-        def search_docs(self, _query):
-            raise RuntimeError("official traversal failed")
-
-    adapter = object.__new__(HopRAGAdapter)
-    adapter._retriever = BrokenRetriever()
-
-    with pytest.raises(RuntimeError, match="official traversal failed"):
-        await adapter._run_official_retrieval("query")
-
-
 def test_cli_has_no_domain_gate():
     import main
 
@@ -376,9 +362,9 @@ def test_debug_output_is_namespaced_by_run_strategy_and_corpus(monkeypatch):
 
 def test_prehop_reader_matches_its_recorded_prompt_identity():
     from core.paper_compatibility import prompt_configuration
+    from utils.prompts import prehop_answer
     from utils.prompts.prehop_answer import build_answer_messages
-
-    assert GraphRAG._build_answer_prompt("{context}", "{query}") == prompt_configuration('prehop')['answer']
+    assert prehop_answer.build_answer_prompt("{context}", "{query}") == prompt_configuration('prehop')['answer']
     assert build_answer_messages("{context}", "{query}") == prompt_configuration('prehop')['answer_messages']
     assert prompt_configuration('naive')['answer'] == build_answer_prompt("{context}", "{query}")
     assert prompt_configuration('prehop')['answer'] != prompt_configuration('naive')['answer']

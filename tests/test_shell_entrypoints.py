@@ -5,8 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from models.ms_graphrag import official_indexer
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -54,7 +52,7 @@ def _entrypoint_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
-@pytest.mark.parametrize("arguments", [["--model", "lightrag"], ["--all"]])
+@pytest.mark.parametrize("arguments", [["--model", "naive"], ["--all"]])
 def test_benchmark_preflight_reaches_dispatch_for_current_methods(tmp_path, arguments):
     env = _entrypoint_env(tmp_path)
     python = Path(env["PYTHON_BIN"])
@@ -67,7 +65,6 @@ def test_benchmark_preflight_reaches_dispatch_for_current_methods(tmp_path, argu
         ["bash", str(ROOT / "run_benchmark.sh"), "--skip-server", *arguments],
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=60, check=True,
     )
-    assert "Dependency preflight: OK" in result.stdout
     assert "dispatch:<main.py>" in result.stdout
 
 
@@ -315,30 +312,6 @@ def test_shell_preflight_reports_naive_controlled_protocol(tmp_path):
     assert "top_k=12" in benchmark.stdout
 
 
-def test_ms_graphrag_internal_log_is_dataset_scoped(tmp_path, monkeypatch):
-    monkeypatch.setattr(official_indexer, "_OUTPUT_ROOT", tmp_path / "ms-output")
-    monkeypatch.setattr(official_indexer, "_register_external_models_with_litellm", lambda: None)
-    monkeypatch.delenv("RAG_INDEX_LOG_DIR", raising=False)
-    monkeypatch.setenv("VLLM_API_BASE", "http://generation/v1")
-    monkeypatch.setenv("VLLM_EMBED_API_BASE", "http://embedding/v1")
-    monkeypatch.setenv("VLLM_SERVED_MODEL_NAME", "generation")
-    monkeypatch.setenv("VLLM_SERVED_EMBED_MODEL_NAME", "embedding")
-    monkeypatch.setenv("VLLM_API_KEY", "test-key")
-    monkeypatch.setenv("RAG_INFERENCE_BASE_URL", "http://litellm/v1")
-    monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
-    monkeypatch.setenv("RAG_GENERATION_MODEL", "generation")
-    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding")
-    monkeypatch.setattr(official_indexer, "_GEN_API_BASE", "http://generation/v1")
-    monkeypatch.setattr(official_indexer, "_GEN_MODEL_NAME", "generation")
-    monkeypatch.setattr(official_indexer, "_EMBED_API_BASE", "http://embedding/v1")
-    monkeypatch.setattr(official_indexer, "_EMBED_MODEL_NAME", "embedding")
-    monkeypatch.setattr(official_indexer, "_GEN_API_KEY", "test-key")
-
-    config = official_indexer.build_config("hotpotqa", tmp_path / "input")
-
-    assert Path(config.reporting.base_dir) == tmp_path / "ms-output/hotpotqa/_logs/internal"
-
-
 def test_multihoprag_wrapper_runs_exactly_one_strategy(tmp_path):
     env = _entrypoint_env(tmp_path)
     completed = subprocess.run(
@@ -370,14 +343,6 @@ def test_dataset_wrapper_rejects_multi_strategy_mode(tmp_path):
     assert "Unknown --model 'all'" in completed.stderr
 
 
-def test_dataset_wrappers_never_launch_an_implicit_second_strategy():
-    multihop = (ROOT / "run_multihoprag.sh").read_text(encoding="utf-8")
-    dataset = (ROOT / "run_dataset.sh").read_text(encoding="utf-8")
-
-    assert "./run_multihoprag.sh all --model hoprag" not in multihop
-    assert "./run_multihoprag.sh all --model hoprag" not in dataset
-
-
 def test_shell_and_python_share_target_configuration(tmp_path, monkeypatch):
     import json
 
@@ -390,19 +355,20 @@ def test_shell_and_python_share_target_configuration(tmp_path, monkeypatch):
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     keys = ['RAG_RUN_ID', 'RAG_INDEX_NAMESPACE', 'RAG_INDEX_STATS_PATH', 'RAG_CHUNK_CACHE_DIR',
-            'RAG_LIGHTRAG_OUTPUT_ROOT', 'RAG_LLM_SEED', 'EMBEDDING_QUERY_INSTRUCTION',
+            'RAG_LLM_SEED', 'EMBEDDING_QUERY_INSTRUCTION',
             'RAG_BENCHMARK_CONCURRENCY', 'RAG_GENERATION_CONCURRENCY', 'RAG_MAX_PARALLEL_FILES']
     result = subprocess.run(['bash', '-c', '''
 source scripts/lib.sh
-canonicalize_inference_transport lightrag hotpotqa fixture-run || exit 1
+canonicalize_inference_transport prehop hotpotqa fixture-run || exit 1
 "$PYTHON_BIN" -c 'import json, os, sys; print(json.dumps({k: os.environ[k] for k in sys.argv[1:]}))' "$@"
 ''', 'test', *keys], cwd=ROOT, env=env, check=True, capture_output=True, text=True)
     observed = json.loads(result.stdout)
-    configure_target_environment('lightrag', 'hotpotqa', 'fixture-run')
+    configure_target_environment('prehop', 'hotpotqa', 'fixture-run')
     assert observed == {key: os.environ[key] for key in keys}
     assert observed['RAG_INDEX_NAMESPACE'] == 'hotpotqa_fixture-run'
+    assert observed['RAG_LLM_SEED'] == ''
     assert observed['RAG_MAX_PARALLEL_FILES'] == observed['RAG_BENCHMARK_CONCURRENCY'] == '8'
-    assert int(observed['RAG_GENERATION_CONCURRENCY']) == InferenceTransport.resolve('lightrag').generation_concurrency
+    assert int(observed['RAG_GENERATION_CONCURRENCY']) == InferenceTransport.resolve('prehop').generation_concurrency
 
 
 def test_paper_runner_uses_shared_conservative_embedding_load():

@@ -32,7 +32,7 @@ from core.paper_compatibility import method_identity
 from core.paper_policy import canonical_query_policy, structured_query_identity
 from core.prehop_ablation import ablation_identity
 from core.semantic_config import parse_strict_bool
-from core.strategy_registry import RESEARCH_EXTERNAL_STRATEGIES
+from core.strategy_registry import get_strategy
 from models.naive.naive_rag import NaiveRAG
 from models.prehop.graphrag import GraphRAG
 from utils.io import _write_json
@@ -136,19 +136,6 @@ def _query_records_sha256(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(records).encode("utf-8")).hexdigest()
 
 
-def _build_benchmark_query(query: str, item: dict[str, Any]) -> str:
-    """Return the user-facing query as-is.
-
-    The previous implementation appended `[Benchmark Output Format]` blocks
-    that forced verbose CoT inside `\\boxed{}`. That suffix leaked into
-    retrieval embeddings as noise and collided with the citation-first
-    answer format. The deterministic evaluator extracts `\\boxed{}` / `Final Answer:`
-    internally, so the scaffolding adds no signal upstream.
-    """
-    _ = item  # kept for signature stability; type detection no longer alters the query.
-    return query
-
-
 @asynccontextmanager
 async def _benchmark_engine(strategy: str, model_id: str, corpus_tag: str):
     """Close owned adapters on success, initialization failure, cancellation, and I/O errors."""
@@ -160,18 +147,6 @@ async def _benchmark_engine(strategy: str, model_id: str, corpus_tag: str):
                 engine = GraphRAG(strategy=strategy, corpus_tag=corpus_tag)
             elif strategy == "naive":
                 engine = NaiveRAG(strategy=strategy, corpus_tag=corpus_tag)
-            elif strategy == "hoprag":
-                from models.hoprag.hoprag_adapter import HopRAGAdapter
-
-                engine = HopRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
-            elif strategy == "ms_graphrag":
-                from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter
-
-                engine = MSGraphRAGAdapter(model_id=model_id, corpus_tag=corpus_tag)
-            elif strategy in RESEARCH_EXTERNAL_STRATEGIES:
-                from models.external_research.adapter import ExternalResearchAdapter
-
-                engine = ExternalResearchAdapter(strategy, model_id=model_id, corpus_tag=corpus_tag)
             else:
                 raise ValueError(f"Unknown strategy: {strategy}")
 
@@ -202,9 +177,8 @@ async def run_benchmark(
 ):
     """Run one benchmark seed in its own output directory.
 
-    Paper generation seeds follow the method registry; native unseeded APIs
-    remain unseeded. Non-paper generation uses the supplied benchmark seed.
-    Multi-seed orchestration lives in run_benchmark_multi_seed.
+    Paper generation omits the LLM seed; non-paper generation uses the supplied
+    benchmark seed. Multi-seed orchestration lives in run_benchmark_multi_seed.
     """
     from core.execution_profile import execution_profile
     from core.phase_timing import BenchmarkTiming
@@ -221,10 +195,10 @@ async def run_benchmark(
         reuse_link = load_link(link_path)
         reuse_reference = ref(link_path)
 
+    get_strategy(strategy)
     if seed is not None:
-        from core.strategy_registry import get_strategy
-
-        generation_seed = None if RAGConfig.PREHOP_ABLATION_PROFILE else (get_strategy(strategy).paper_generation_seed if parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE") else int(seed))
+        paper_mode = parse_strict_bool(os.environ.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
+        generation_seed = None if RAGConfig.PREHOP_ABLATION_PROFILE or paper_mode else int(seed)
         if generation_seed is None:
             os.environ["RAG_LLM_SEED"] = ""
         else:
@@ -381,7 +355,7 @@ async def run_benchmark(
                     "q_minus": RAGConfig.ABLATION_Q_MINUS,
                     "q_plus": RAGConfig.ABLATION_Q_PLUS,
                     "sentence_channel_enabled": RAGConfig.SENTENCE_CHANNEL_ENABLED,
-                    **({"chunk_sentences": RAGConfig.CHUNK_SENTENCES} if strategy in {"prehop", "naive"} else {}),
+                    "chunk_sentences": RAGConfig.CHUNK_SENTENCES,
                     "questions_per_direction": RAGConfig.QUESTIONS_PER_DIRECTION,
                     "graph_hop_depth": RAGConfig.GRAPH_HOP_DEPTH,
                     "graph_path_decay": RAGConfig.GRAPH_PATH_DECAY,
@@ -405,7 +379,7 @@ async def run_benchmark(
                         **structured_query_identity(strategy),
                         **method_identity(strategy),
                         **(ablation_identity() if strategy == "prehop" else {}),
-                        **(canonical_query_policy(strategy) if strategy in {"prehop", "hoprag", "linear_rag"} else {}),
+                        **(canonical_query_policy(strategy) if strategy == "prehop" else {}),
                 },
             }
             if resume_metadata is not None:
@@ -478,17 +452,15 @@ async def run_benchmark(
                 started = time.time()
                 stage_timing: dict[str, float] = {}
                 original_query = str(item.get("query", ""))
-                query = original_query
                 ground_truth = item.get("ground_truth", "")
                 category = item.get("category", "Uncategorized")
                 try:
-                    query = _build_benchmark_query(original_query, item)
                     from contextlib import nullcontext
 
                     from models.prehop.tracing import trace_identity
                     with (trace_identity(query_id=str(item["_id"]), query_index=idx, phase="benchmark")
                           if strategy == "prehop" else nullcontext()):
-                        response, retrieved_sources, trace = await engine.run_workflow(query, [])
+                        response, retrieved_sources, trace = await engine.run_workflow(original_query, [])
                     last_answer_finished = time.perf_counter()
                     latency = time.time() - started
                     stage_timing = _extract_stage_timing(trace)
@@ -586,9 +558,7 @@ async def run_benchmark(
                     }
 
                 finally:
-                    inference_usage = finish_inference(
-                        telemetry_token, external_complete=strategy not in RESEARCH_EXTERNAL_STRATEGIES
-                    )
+                    inference_usage = finish_inference(telemetry_token)
                     query_inflight -= 1
 
                 result_item["queue_wait_seconds"] = queue_wait_seconds
@@ -600,8 +570,6 @@ async def run_benchmark(
                 # queueing is reported independently rather than hidden in it.
                 result_item["latency"] = result_item["service_latency"]
                 result_item["inference_usage"] = inference_usage
-                if query != original_query:
-                    result_item["benchmark_query"] = query
 
                 recorder = getattr(engine, "trace_recorder", None) if strategy == "prehop" else None
                 if recorder is not None:

@@ -46,33 +46,27 @@ async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, 
         source_ref = {'path': str((corpus / 'corpus_manifest.json').relative_to(ROOT)),
                       'sha256': sha256_file(corpus / 'corpus_manifest.json')}
         record_ref = save(base / 'query_record.json', row)
-        print(f"native_index_start strategy={strategy} dataset={dataset} sources={loaded['paragraph_count']}", flush=True)
+        print(f"index_start strategy={strategy} dataset={dataset} sources={loaded['paragraph_count']}", flush=True)
         await run_indexing(str(corpus), strategy, 'default', dataset)
         raw = json.loads(raw_path.read_text())
-        if strategy == 'ms_graphrag':
-            from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter
-            engine = MSGraphRAGAdapter(corpus_tag=dataset)
-        elif strategy == 'prehop':
+        if strategy == 'prehop':
             from models.prehop.graphrag import GraphRAG
             engine = GraphRAG(strategy=strategy, corpus_tag=dataset)
         elif strategy == 'naive':
             from models.naive.naive_rag import NaiveRAG
             engine = NaiveRAG(strategy=strategy, corpus_tag=dataset)
-        elif strategy == 'hoprag':
-            from models.hoprag.hoprag_adapter import HopRAGAdapter
-            engine = HopRAGAdapter(corpus_tag=dataset)
         else:
-            from models.external_research.adapter import ExternalResearchAdapter
-            engine = ExternalResearchAdapter(strategy, corpus_tag=dataset)
+            raise ValueError(f'Unknown strategy: {strategy}')
         snapshot = {'status': 'not_checked'}
         index = {**raw, 'dataset': dataset, 'fresh_index': True, 'source_count': loaded['paragraph_count'],
                  'source_manifest': source_ref,
                  **({} if full_corpus else {'cold_fixture': fixture_identity()}),
                  'native_index_stats': {'path': str(raw_path.relative_to(ROOT)), 'sha256': sha256_file(raw_path)}}
+        # ``native_index_stats`` is the saved-evidence key read by core/index_reuse.py.
         index_path = base / 'index_evidence.json'
         index_ref = save(index_path, index)
         answer, sources, _trace = await engine.run_workflow(row['query'])
-        documents = [{'source_id': item['source'] if strategy == 'hoprag' else Path(item['source']).stem, 'native_source': item['source'],
+        documents = [{'source_id': Path(item['source']).stem, 'native_source': item['source'],
                       'title': item['doc'], 'text': item['text']} for item in sources]
         query = {'strategy': strategy, 'dataset': dataset, 'run_id': run_id, 'query_count': 1,
                  'query_id': row['_id'], 'query': row['query'], 'query_record': record_ref,
@@ -89,13 +83,12 @@ async def workflow(campaign: str, strategy: str, dataset: str, attempt: str, *, 
         save(base / 'evidence.json', {'stage': stage, 'status': 'canary_passed', 'strategy': strategy,
             'dataset': dataset, 'exit_code': 0, 'index': index_ref, 'query': query_ref,
             'admission': admission_ref, 'invocation': invocation_ref})
-        print(f'cold_native_canary_passed strategy={strategy} dataset={dataset}', flush=True)
+        print(f'cold_canary_passed strategy={strategy} dataset={dataset}', flush=True)
     finally:
         if engine is not None and hasattr(engine, 'close'):
             engine.close()
-        if strategy in {'prehop', 'naive', 'hoprag'}:
-            from core.neo4j_service import Neo4jService
-            await Neo4jService.global_close()
+        from core.neo4j_service import Neo4jService
+        await Neo4jService.global_close()
 
 
 def main() -> None:
@@ -105,8 +98,6 @@ def main() -> None:
     parser.add_argument('dataset')
     parser.add_argument('--attempt', required=True, help='Fresh attempt namespace; existing attempts are never overwritten')
     args = parser.parse_args()
-    from core.runtime_requirements import ensure_method_runtime
-    ensure_method_runtime(args.strategy)
     from scripts.runner_environment import _load_runner_environment
     _load_runner_environment()
     asyncio.run(workflow(args.campaign, args.strategy, args.dataset, args.attempt))

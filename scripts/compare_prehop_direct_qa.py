@@ -29,22 +29,6 @@ def read_json(path):
     return json.loads(Path(path).read_text())
 
 
-def observed_prompt_tokens(record):
-    """Measure one selector input, separately from total usage across retries."""
-    trace = record.get('trace')
-    if trace:
-        if sha(trace['path']) != trace['sha256']:
-            raise ValueError('Committed selector trace changed')
-        for attempt in reversed(read_json(trace['path'])['attempts']):
-            tokens = (attempt.get('usage') or {}).get('prompt_tokens')
-            if isinstance(tokens, int) and not isinstance(tokens, bool):
-                return tokens
-    usage = record['usage']
-    if usage['token_usage_complete'] and usage['generation_calls'] == 1:
-        return usage['prompt_tokens']
-    return None
-
-
 ARMS = ('prehop_replay', 'direct_only')
 FIXED_START = 'fixed-start-common-reader-v1'
 

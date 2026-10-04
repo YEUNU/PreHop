@@ -55,15 +55,6 @@ def test_paired_quality_keeps_terminal_failures_in_denominator():
     assert report['left_failures'] == 1
 
 
-def test_only_one_hoprag_job_can_use_the_two_campaign_slots():
-    from scripts.link_experiment_campaign import ready_jobs
-    jobs=[{'id':'hp-hoprag-index','priority':8},{'id':'mhr-hoprag-index','priority':8},{'id':'ordinary','priority':0}]
-    states={j['id']:{'state':'pending'} for j in jobs}
-    picked=ready_jobs(jobs,states,[],max_active=2)
-    assert len(picked)==2 and sum('hoprag' in j['id'] for j in picked)==1
-    assert ready_jobs(jobs,states,[{'id':'adopted-hoprag-mhr'}],max_active=2)==[jobs[2]]
-
-
 def test_campaign_resume_does_not_repeat_completed_adopted_work(tmp_path):
     from scripts.link_experiment_campaign import run
     plan=tmp_path/'plan.json'
@@ -75,34 +66,22 @@ def test_campaign_resume_does_not_repeat_completed_adopted_work(tmp_path):
     assert not (tmp_path/'done.log').exists()
 
 
-def test_hoprag_only_mode_runs_one_task_and_leaves_other_models_pending():
-    from scripts.link_experiment_campaign import ready_jobs
-    jobs=[{'id':'hp-hoprag-index'},{'id':'mhr-hoprag-index'},{'id':'hp-lightrag-index','priority':0}]
-    states={j['id']:{'state':'pending'} for j in jobs}
-    assert ready_jobs(jobs,states,[],max_active=1,strategy_filter='hoprag')==[jobs[0]]
-    assert ready_jobs(jobs,states,[jobs[0]],max_active=1,strategy_filter='hoprag')==[]
-
-
-def test_primary_hotpot_jobs_do_not_depend_on_supplemental_arms(tmp_path):
+def test_primary_hotpot_jobs_follow_the_prehop_benchmark(tmp_path):
     from scripts.plan_link_experiments import make_plan
-    source=tmp_path/'stats.json'
-    source.write_text(json.dumps({'index_policy':{'index_namespace':'source'},'run_id':'source'}))
-    plan=make_plan('test',source,multihoprag_reference=tmp_path/'reference.json')
+    plan=make_plan('test',multihoprag_reference=tmp_path/'reference.json')
     jobs={j['id']:j for j in plan['jobs']}
-    assert plan['max_active']==1 and plan['max_hoprag_active']==1
+    assert plan['max_active']==1
     assert jobs['hp-primary-hop-inputs']['after']==['hp-prehop-benchmark']
     assert jobs['hp-primary-without-hop']['after']==['hp-primary-hop-inputs']
-    for key in ['hp-A','hp-B']:
-        assert jobs[key]['experiment_role']=='supplemental_representation_comparison'
-        assert jobs[key]['priority']>jobs['hp-primary-without-hop']['priority']
+    assert jobs['hp-primary-without-hop']['experiment_role']=='primary_anchored_ablation'
+    assert jobs['hp-naive-benchmark']['after']==['hp-naive-index']
+    assert not any(j['id'].startswith(('hp-A','hp-B','hp-direct','mhr-A','mhr-B','mhr-direct')) for j in plan['jobs'])
 
 
 def test_updated_policy_suite_has_separate_evidence_and_reference_dependency(tmp_path):
     from scripts.plan_link_experiments import make_plan
-    source=tmp_path/'stats.json'
-    source.write_text(json.dumps({'index_policy':{'index_namespace':'source'},'run_id':'source'}))
     old=tmp_path/'historical.json';new=tmp_path/'updated.json'
-    plan=make_plan('suite',source,multihoprag_reference=old,updated_reference=new,
+    plan=make_plan('suite',multihoprag_reference=old,updated_reference=new,
                    updated_after=['new-reference'],adopt=[{'id':'new-reference','command':[], 'after':[]}])
     jobs={j['id']:j for j in plan['jobs']}
     for short in ('hp','mhr-updated'):

@@ -1,8 +1,8 @@
 """HotpotQA official scoring rules and gold-independent sentence projection.
 
-Native RAG methods do not emit sentence selections. The declared common adapter
-predicts every complete corpus sentence present in returned passage text. It
-never consults supporting-fact annotations to select a prediction.
+Retrieval systems return passages, not sentence selections. The declared common
+adapter predicts every complete corpus sentence present in returned passage text.
+It never consults supporting-fact annotations to select a prediction.
 """
 import json
 import re

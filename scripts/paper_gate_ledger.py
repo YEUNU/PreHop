@@ -82,11 +82,6 @@ def execute_stage(path: Path, campaign: str, stage: str) -> None:
                 targets[target] = save(f"{dataset}-{strategy}", {"stage": stage, "status": "canary_passed",
                     "strategy": strategy, "dataset": dataset, "exit_code": 0, "invocation": invocation})
         evidence["targets"] = targets
-    elif stage == "runtime_setup":
-        command = ["bash", "scripts/setup_official_baselines.sh"]
-        subprocess.run(command, cwd=ROOT, check=True)
-        evidence["receipt"] = save("invocation", {"argv": command, "exit_code": 0, "stage": stage,
-                                                   "checks": {name: "passed" for name in PRIMARY_STRATEGIES}})
     else:
         command = [sys.executable, "scripts/probe_inference_gateway.py", "--probe", stage.removesuffix("_probe")]
         completed = subprocess.run(command, cwd=ROOT, check=True, text=True, capture_output=True)

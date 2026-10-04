@@ -22,7 +22,7 @@ def previous(tmp_path, monkeypatch):
     plan = {'schema_version': 1, 'campaign': 'fixture', 'attempt': 'a1', 'commit': 'historical',
             'python': sys.executable, 'python_prefix': sys.prefix, 'context': gate._context(),
             'steps': c.build_steps('fixture', 'a1', sys.executable)}
-    failed = 'cold/multihoprag/ms_graphrag'
+    failed = 'cold/multihoprag/naive'
     ids = [row['id'] for row in plan['steps']]
     status = {'state': 'failed', 'stage': failed, 'completed_steps': ids[:ids.index(failed)], 'child': None}
     path = tmp_path / 'data/results/fixture/supervisor/plan.json'
@@ -60,10 +60,10 @@ def test_aggregate_uses_same_attempt_map_for_actual_file_references(previous, mo
             path.parent.mkdir(parents=True)
             path.write_text(json.dumps({'target': f'{dataset}/{method}', 'attempt': attempt}))
     stage.aggregate('fixture', 'cold_canary_16', 'a1', {failed: 'a2'})
-    assert len(recorded[0]['targets']) == 14
+    assert len(recorded[0]['targets']) == 4
     for target, ref in recorded[0]['targets'].items():
         actual = json.loads((gate.ROOT / ref['path']).read_text())
-        assert actual['attempt'] == ('a2' if target == 'multihoprag/ms_graphrag' else 'a1')
+        assert actual['attempt'] == ('a2' if target == 'multihoprag/naive' else 'a1')
 
 
 def test_supervisor_inheritance_is_not_mutated_as_new_steps_finish(previous, monkeypatch):

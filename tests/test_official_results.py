@@ -93,7 +93,7 @@ def test_comparison_keeps_dataset_metrics_populations_and_sources_separate(tmp_p
     import csv
 
     first = save_complete(tmp_path, "prehop", mhr_result())
-    second = save_complete(tmp_path, "hoprag", mhr_result())
+    second = save_complete(tmp_path, "naive", mhr_result())
     hotpot = {"dataset": "HotpotQA", "details": [
         {"query_id": "release-0", **{"hotpot_" + k: v for k, v in
          score("Alpha", [["A", 0]], "Alpha", [["A", 0]]).items()}}]}
@@ -112,7 +112,7 @@ def test_comparison_keeps_dataset_metrics_populations_and_sources_separate(tmp_p
     assert "MAP@10" not in json.dumps(hp)
     with (out / "multihoprag/comparison.csv").open() as handle:
         csv_rows = list(csv.DictReader(handle))
-    assert [r["strategy"] for r in csv_rows] == ["prehop", "hoprag"]
+    assert [r["strategy"] for r in csv_rows] == ["prehop", "naive"]
     assert float(csv_rows[0]["qa.overall.accuracy"]) == 1 / 3
     assert len(csv_rows[0]["source_sha256"]) == 64
     assert all(p.exists() for p in written)
@@ -129,7 +129,7 @@ def test_comparison_keeps_dataset_metrics_populations_and_sources_separate(tmp_p
 ])
 def test_comparison_rejects_partial_or_duplicate_final_sources(tmp_path, change, message):
     first = save_complete(tmp_path, "prehop", mhr_result())
-    second = save_complete(tmp_path, "hoprag", mhr_result())
+    second = save_complete(tmp_path, "naive", mhr_result())
     second.write_text(json.dumps({**json.loads(second.read_text()), **change}))
     with pytest.raises(ValueError, match=message):
         export_comparison([first, second], tmp_path / "comparison")
@@ -140,7 +140,7 @@ def test_comparison_rejects_different_questions_with_the_same_row_count(tmp_path
     first = save_complete(tmp_path, "prehop", mhr_result())
     result = mhr_result()
     result["details"][0]["query_id"] = "different-question"
-    second = save_complete(tmp_path, "hoprag", result)
+    second = save_complete(tmp_path, "naive", result)
     with pytest.raises(ValueError, match="Mismatched question population"):
         export_comparison([first, second], tmp_path / "comparison")
 
@@ -154,7 +154,7 @@ def test_comparison_matches_annotations_across_historical_storage_metadata(tmp_p
     for row in second_result["details"]:
         row["expected_sources"] = {"facts": ["gold fact"], "paragraph_ids": []}
     first = save_complete(tmp_path, "prehop", first_result)
-    second = save_complete(tmp_path, "hoprag", second_result)
+    second = save_complete(tmp_path, "naive", second_result)
     assert export_comparison([first, second], tmp_path / "comparison")
     second_result["details"][0]["expected_sources"]["facts"] = ["different gold"]
     payload = json.loads(second.read_text())

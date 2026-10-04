@@ -6,25 +6,24 @@
 # corpus, queries, and corpus tag. MultiHop-RAG articles are plain text, so
 # there is no OCR stage.
 #
-# Tagging: all strategies share one dataset-level corpus tag (`multihoprag`)
-# because the strategy is already encoded in the Neo4j label prefix
-# (PR_/NA_/HO_) and the ms_graphrag parquet path. Benchmarks are still run
-# per strategy.
+# Tagging: both strategies share one dataset-level corpus tag (`multihoprag`)
+# because the strategy is already encoded in the Neo4j label prefix (PR_/NA_).
+# Benchmarks are still run per strategy.
 #
 # Usage:
-#   ./run_multihoprag.sh all --model prehop           # index + benchmark (sample200)
+#   ./run_multihoprag.sh all --model prehop           # index + benchmark
 #   ./run_multihoprag.sh index --model naive          # one strategy only
 #   ./run_multihoprag.sh benchmark --model prehop --queries full
 #
 # Options:
 #   --model   registered strategy                    default: prehop
-#   --queries {sample200|full}                         default: sample200
+#   --queries {full}                                   default: full
 # Any other flags are forwarded to the underlying run_*.sh (e.g. --clear-graph,
 # --skip-server).
 set -e
 usage() {
-    echo "Usage: $0 <index|benchmark|all> [--model STRATEGY] [--queries sample200|full] [run-script flags]"
-    echo "Defaults: --model prehop --queries sample200. Strategies are listed in core/strategy_registry.py."
+    echo "Usage: $0 <index|benchmark|all> [--model STRATEGY] [--queries full] [run-script flags]"
+    echo "Defaults: --model prehop --queries full. Strategies are listed in core/strategy_registry.py."
 }
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 ulimit -n 65536 2>/dev/null || true
@@ -33,7 +32,7 @@ export RAG_RUN_ID="${RAG_RUN_ID:-$(date +"%Y%m%d_%H%M%S_%N")_$$}"
 
 STAGE="${1:-all}"; shift || true
 MODEL="prehop"
-QUERIES="sample200"
+QUERIES="full"
 COMMON_PASS=()
 INDEX_PASS=()
 BENCH_PASS=()
@@ -49,9 +48,8 @@ done
 
 # Map the query-set selector to its corpus dir, corpus tag, and queries file.
 case "$QUERIES" in
-    sample200) CORPUS_DIR="data/multihoprag_corpus";       CORPUS_TAG="multihoprag";       QUERIES_FILE="data/multihoprag_sample200_queries.json" ;;
     full)      CORPUS_DIR="data/multihoprag_corpus";       CORPUS_TAG="multihoprag";       QUERIES_FILE="data/multihoprag_queries.json" ;;
-    *) echo "Unknown --queries '$QUERIES' (use sample200|full)"; exit 1 ;;
+    *) echo "Unknown --queries '$QUERIES' (use full)"; exit 1 ;;
 esac
 
 if { [ "$STAGE" = "benchmark" ] || [ "$STAGE" = "bench" ] || [ "$STAGE" = "all" ]; } \

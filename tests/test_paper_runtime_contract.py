@@ -1,6 +1,4 @@
-import json
 import os
-from pathlib import Path
 
 import pytest
 
@@ -11,7 +9,7 @@ from core.strategy_registry import BY_NAME
 from utils.provenance import _is_generated_path
 
 
-def _canonical_transport(monkeypatch, strategy="prehop"):
+def _canonical_transport(monkeypatch):
     from core.strategy_registry import PAPER_TRANSPORT, paper_environment_defaults
     for name, value in paper_environment_defaults().items():
         monkeypatch.setenv(name, value)
@@ -23,21 +21,19 @@ def _canonical_transport(monkeypatch, strategy="prehop"):
             "OPENAI_API_BASE",
             "OPENAI_BASE_URL",
             "OPENAI_PROVIDER",
-            "RAG_MS_CONCURRENT_REQUESTS",
         }:
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("RAG_INFERENCE_BASE_URL", "http://litellm.test/v1")
     monkeypatch.setenv("RAG_INFERENCE_API_KEY", "test-key")
     monkeypatch.setenv("RAG_GENERATION_MODEL", "gemma-4-31b-it")
     monkeypatch.setenv("RAG_EMBEDDING_MODEL", "qwen3-embedding-4b")
-    if strategy == "lightrag":
-        monkeypatch.delenv("RAG_LLM_SEED", raising=False)
-    else:
-        monkeypatch.setenv("RAG_LLM_SEED", "42")
+    monkeypatch.setenv("RAG_LLM_SEED", "42")
 
 
-def test_every_strategy_has_one_explicit_litellm_transport_profile():
-    assert {spec.transport_profile for spec in BY_NAME.values()} == {"openai_compatible_litellm"}
+def test_every_strategy_records_the_single_litellm_transport_profile(monkeypatch):
+    _canonical_transport(monkeypatch)
+    profiles = {InferenceTransport.resolve(name).policy_dict()["transport_profile"] for name in BY_NAME}
+    assert profiles == {"openai_compatible_litellm"}
 
 
 def test_canonical_policy_records_shared_dimensions_context_and_reserve():
@@ -52,34 +48,23 @@ def test_canonical_policy_records_shared_dimensions_context_and_reserve():
     assert naive["precompute_reciprocal_hops"] is True
 
 
-@pytest.mark.parametrize(
-    "strategy",
-    ["prehop", "naive", "ms_graphrag", "lightrag", "linear_rag"],
-)
+@pytest.mark.parametrize("strategy", ["prehop", "naive"])
 def test_paper_index_builder_emits_registry_canonical_semantics(monkeypatch, strategy):
     from cli.index import _resolved_index_policy
 
     monkeypatch.setenv("RAG_PAPER_MODE", "true")
-    _canonical_transport(monkeypatch, strategy)
-    observed = semantic_index_policy(_resolved_index_policy(strategy, "default", "hotpotqa"))
+    _canonical_transport(monkeypatch)
+    observed = semantic_index_policy(_resolved_index_policy(strategy, "default"))
     assert observed == {
         **canonical_semantic_index_policy(strategy),
         "operational_config": canonical_operational_policy(strategy),
     }
 
 
-def test_runtime_requirements_are_valid_json_and_cover_external_primary_methods():
-    payload = json.loads(Path("configs/paper_runtime_requirements.json").read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 2
-    assert {"ms_graphrag", "lightrag", "gfm_rag", "linear_rag"} <= payload.keys()
-
-
-
-
 def test_code_provenance_excludes_failed_and_generated_output_roots_without_reading_them():
     assert _is_generated_path(b"data/failed_runs/opaque.json")
     assert _is_generated_path(b"data/results/run/result.json")
-    assert _is_generated_path(b"data/linear_rag_output/run/artifact.bin")
+    assert _is_generated_path(b"data/index_stats/prehop_hotpotqa_run.json")
     assert not _is_generated_path(b"core/paper_policy.py")
 
 
@@ -90,28 +75,3 @@ def test_paper_generation_omits_ambient_seed(monkeypatch, seed):
     monkeypatch.setenv("RAG_PAPER_MODE", "true")
     monkeypatch.setenv("RAG_LLM_SEED", seed)
     assert InferenceTransport.resolve("prehop").generation_seed is None
-
-
-def test_hoprag_cli_selects_its_pinned_runtime_without_resolving_launcher(tmp_path, monkeypatch):
-    import sys
-
-    from core import runtime_requirements as runtime
-    runtime_home = tmp_path / "hoprag"
-    launcher = runtime_home / "main-env/bin/python"
-    launcher.parent.mkdir(parents=True)
-    launcher.symlink_to(sys.executable)
-    monkeypatch.setenv("RAG_OFFICIAL_BASELINE_HOME", str(tmp_path))
-    argv = ["scripts/paper_cold_canary.py", "fixture", "hoprag", "hotpotqa", "--attempt", "a1"]
-    monkeypatch.setattr(sys, "argv", argv)
-    captured = {}
-    def execute(path, args, env):
-        captured.update(path=path, args=args, env=env)
-    monkeypatch.setattr(runtime.os, "execve", execute)
-    runtime.ensure_method_runtime("hoprag")
-    assert captured["path"] == str(launcher)
-    assert captured["args"] == [str(launcher), *argv]
-    assert captured["env"]["PYTHON_BIN"] == str(launcher)
-    assert captured["env"]["UV_PROJECT_ENVIRONMENT"] == str(runtime_home / "main-env")
-    captured.clear()
-    runtime.ensure_method_runtime("prehop")
-    assert captured == {}

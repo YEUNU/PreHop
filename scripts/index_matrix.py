@@ -58,9 +58,8 @@ def child(campaign, strategy, dataset, phase):
         try:
             await run_indexing(str(corpus), strategy, 'default', dataset)
         finally:
-            if strategy in {'prehop', 'naive'}:
-                from core.neo4j_service import Neo4jService
-                await Neo4jService.global_close()
+            from core.neo4j_service import Neo4jService
+            await Neo4jService.global_close()
     asyncio.run(run())
     stats = json.loads(stats_path.read_text())
     manifest = json.loads((corpus / 'corpus_manifest.json').read_text())
@@ -176,9 +175,6 @@ def main():
     parser.add_argument('--dataset', choices=('multihoprag', 'hotpotqa'))
     parser.add_argument('--phase', choices=('smoke', 'pilot', 'pilot-wide', 'index'))
     args = parser.parse_args()
-    if args.action == 'child':
-        from core.runtime_requirements import ensure_method_runtime
-        ensure_method_runtime(args.strategy)
     from scripts.runner_environment import _load_runner_environment
     _load_runner_environment()
     from core.execution_profile import execution_profile

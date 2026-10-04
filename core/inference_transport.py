@@ -9,7 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from core.execution_profile import execution_profile, resolved_execution_environment
 from core.semantic_config import parse_strict_bool
-from core.strategy_registry import EXTERNAL_STRATEGIES, PAPER_TRANSPORT, get_strategy
+from core.strategy_registry import PAPER_TRANSPORT, get_strategy
 
 _FORBIDDEN_AMBIENT_PROVIDER_KEYS = (
     "AZURE_OPENAI_API_KEY",
@@ -44,14 +44,11 @@ def inference_environment_keys() -> set[str]:
         'RAG_GENERATION_REVISION', 'RAG_EMBEDDING_REVISION', 'RAG_LLM_SEED',
         'EMBEDDING_QUERY_INSTRUCTION', 'MAX_EMBEDDING_LENGTH', 'NEO4J_VECTOR_DIMENSIONS',
         'RAG_EMBEDDING_TOKEN_RESERVE', 'RAG_MAX_CONTEXT_LENGTH',
-    } | {
-        f'RAG_{strategy.upper()}_EMBEDDING_{suffix}'
-        for strategy in EXTERNAL_STRATEGIES for suffix in _EMBEDDING_CONTROLS
     }
 
 
 def preserve_provider_environment(environment=None) -> None:
-    """Freeze the already-canonical paper environment before native imports."""
+    """Freeze the already-canonical paper environment before launching a target."""
     environment = os.environ if environment is None else environment
     for name in _FORBIDDEN_AMBIENT_PROVIDER_KEYS:
         environment.setdefault(name, '')
@@ -117,21 +114,17 @@ class InferenceTransport:
             "gateway_embedding_dimensions": self.embedding_dimensions,
             "embedding_token_reserve": self.embedding_token_reserve,
             "generation_max_context_tokens": self.generation_max_context_tokens,
-            "transport_profile": (
-                "openai_compatible_litellm"
-                if self.strategy == "core"
-                else get_strategy(self.strategy).transport_profile
-            ),
+            "transport_profile": "openai_compatible_litellm",
         }
 
     @classmethod
     def resolve(cls, strategy: str, environment: Mapping[str, str] | None = None) -> InferenceTransport:
         environment = resolved_execution_environment(environment)
-        # Only isolated workers accept method-specific embedding overrides.
+        if strategy != "core":
+            get_strategy(strategy)
+
         def embedding_setting(suffix: str) -> int:
-            name = f"RAG_{strategy.upper()}_EMBEDDING_{suffix}"
-            value = environment.get(name) if strategy in EXTERNAL_STRATEGIES else None
-            return int(environment[_EMBEDDING_CONTROLS[suffix]] if value is None else value)
+            return int(environment[_EMBEDDING_CONTROLS[suffix]])
 
         timeout = float(environment["RAG_INFERENCE_TIMEOUT"])
         generation_concurrency = int(
@@ -139,10 +132,8 @@ class InferenceTransport:
         )
         seed_raw = environment.get("RAG_LLM_SEED", "").strip()
         paper_mode = parse_strict_bool(environment.get("RAG_PAPER_MODE", "false"), name="RAG_PAPER_MODE")
-        method_policy = {} if strategy == "core" else dict(get_strategy(strategy).paper_index_policy)
-        expected_instruction = method_policy.get("embedding_query_instruction", PAPER_TRANSPORT.query_instruction)
-        query_template = method_policy.get("embedding_query_template", PAPER_TRANSPORT.query_template)
-        query_instruction = environment.get("EMBEDDING_QUERY_INSTRUCTION", expected_instruction).strip()
+        query_template = PAPER_TRANSPORT.query_template
+        query_instruction = environment.get("EMBEDDING_QUERY_INSTRUCTION", PAPER_TRANSPORT.query_instruction).strip()
         embedding_max_input_tokens = int(
             environment.get("MAX_EMBEDDING_LENGTH", str(PAPER_TRANSPORT.embedding_max_input_tokens))
         )

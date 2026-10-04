@@ -8,7 +8,6 @@
     "benchmark_concurrency": 8,
     "index_document_concurrency": 8,
     "index_prefetch_documents": 16,
-    "prehop_chunk_concurrency": 8,
-    "lightrag_document_concurrency": 8
+    "prehop_chunk_concurrency": 8
   }
 }

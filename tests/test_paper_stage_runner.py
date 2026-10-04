@@ -42,7 +42,7 @@ def test_readonly_reattest_resolves_each_target_without_environment_mutation(mon
         recorded[path.name] = payload
         return {'path': str(path)}
 
-    monkeypatch.setattr('core.strategy_registry.PRIMARY_STRATEGIES', ['prehop', 'hoprag'])
+    monkeypatch.setattr('core.strategy_registry.PRIMARY_STRATEGIES', ['prehop', 'naive'])
     monkeypatch.setattr('core.runtime_requirements.runtime_identity', identity)
     monkeypatch.setattr(runner, 'stage_base', lambda *args: tmp_path)
     monkeypatch.setattr('scripts.paper_cold_canary.save', save)
@@ -51,10 +51,10 @@ def test_readonly_reattest_resolves_each_target_without_environment_mutation(mon
         readonly.setattr(os, 'environ', MappingProxyType(before))
         runner.reattest('review', 'a1')
     assert recorded['receipt.json']['runtime_identities'] == {
-        'prehop': {'strategy': 'prehop'}, 'hoprag': {'strategy': 'hoprag'},
+        'prehop': {'strategy': 'prehop'}, 'naive': {'strategy': 'naive'},
     }
     assert environments['prehop']['RAG_RUN_ID'] == 'review-reattest-prehop'
-    assert environments['hoprag']['RAG_RUN_ID'] == 'review-reattest-hoprag'
+    assert environments['naive']['RAG_RUN_ID'] == 'review-reattest-naive'
     assert dict(os.environ) == before
 
 

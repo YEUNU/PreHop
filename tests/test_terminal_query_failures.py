@@ -22,7 +22,7 @@ def test_terminal_failure_keeps_denominator_latency_and_completion():
 
 
 def test_failed_index_reports_unavailable_quality_and_attempt_time():
-    result=index_outcomes({'targets':{'hotpotqa/gfm_rag':{'state':'index_failed','started_at':10,'finished_at':40,'index_exit_code':1}}})['targets'][0]
+    result=index_outcomes({'targets':{'hotpotqa/naive':{'state':'index_failed','started_at':10,'finished_at':40,'index_exit_code':1}}})['targets'][0]
     assert result['quality_score'] is None and result['quality_evaluation']=='unavailable'
     assert result['attempt_wall_seconds']==30 and result['attempt_phase']=='index'
 
@@ -71,17 +71,3 @@ async def test_live_query_loop_isolates_failure_without_zeroing_success(monkeypa
         assert calls==['good','bad','after'] and s['avg_answer_em']==pytest.approx(2/3)
         assert s['status']=='completed_unadmitted'
         assert s['amortized_query_cost']['continuous_run_eligible']
-
-
-@pytest.mark.asyncio
-async def test_external_adapter_keeps_native_empty_answer_and_no_evidence():
-    from types import SimpleNamespace
-
-    from models.external_research.adapter import ExternalResearchAdapter
-    adapter=object.__new__(ExternalResearchAdapter)
-    adapter.strategy='gfm_rag'
-    adapter._batcher=None
-    adapter._worker=SimpleNamespace(request=lambda payload:{'documents':[],'answer':''})
-    answer,sources,trace=await adapter.run_workflow('query')
-    assert 'Insufficient evidence' not in answer
-    assert sources==[] and trace[0]['retrieved']==0

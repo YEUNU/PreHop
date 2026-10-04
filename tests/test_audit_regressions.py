@@ -2,16 +2,13 @@
 import hashlib
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from core.admission import identity_sha256
 from core.inference_transport import InferenceTransport
-from core.strategy_registry import get_strategy, paper_environment_defaults
-from models.official_baseline_runtime import _runtime_env
+from core.strategy_registry import paper_environment_defaults
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,7 +21,7 @@ def restore_process_environment():
     os.environ.update(before)
 
 
-def _transport(monkeypatch, strategy):
+def _transport(monkeypatch):
     for key in tuple(os.environ):
         if key.startswith(('RAG_', 'VLLM_', 'OPENAI_', 'AZURE_', 'EMBEDDING_', 'MAX_EMBEDDING', 'NEO4J_VECTOR')):
             monkeypatch.delenv(key, raising=False)
@@ -34,34 +31,6 @@ def _transport(monkeypatch, strategy):
                        'RAG_GENERATION_MODEL': 'gemma-4-31b-it', 'RAG_EMBEDDING_MODEL': 'qwen3-embedding-4b',
                        'RAG_PAPER_MODE': 'true', 'RAG_SKIP_PROJECT_ENV': 'true'}.items():
         monkeypatch.setenv(key, value)
-    seed = get_strategy(strategy).paper_generation_seed
-    if seed is not None:
-        monkeypatch.setenv('RAG_LLM_SEED', str(seed))
-
-
-@pytest.mark.parametrize('strategy', ['lightrag', 'gfm_rag', 'linear_rag'])
-def test_primary_child_can_resolve_actual_parent_environment(monkeypatch, strategy):
-    _transport(monkeypatch, strategy)
-    environment = _runtime_env(strategy)
-    assert not any(value for key, value in environment.items() if key.startswith('VLLM_'))
-    code = ('import hashlib; import core.inference_transport as t; '
-            't._approved_gateway_identity=lambda: hashlib.sha256(b"http://litellm.test/v1").hexdigest(); '
-            f'assert t.InferenceTransport.resolve({strategy!r}).strategy == {strategy!r}')
-    result = subprocess.run([sys.executable, '-c', code], env=environment, cwd=ROOT, capture_output=True, check=False)
-    assert result.returncode == 0, result.stderr.decode()
-
-
-def test_native_unseeded_adapter_initializes_without_generic_synthesis(monkeypatch):
-    _transport(monkeypatch, 'lightrag')
-    from models.external_research import adapter
-    monkeypatch.setattr(adapter, 'get_llm_client', lambda _: pytest.fail('native adapter created generic client'))
-    monkeypatch.setattr(adapter, 'OfficialQueryWorker', lambda *args: object())
-    instance = adapter.ExternalResearchAdapter('lightrag')
-    assert instance.llm is None
-
-
-def test_paper_model_override_fails_before_request(monkeypatch):
-    _transport(monkeypatch, 'prehop')
 
 
 def test_current_corpus_revalidates_manifest_without_rereading_source_bytes(tmp_path, monkeypatch):
@@ -95,7 +64,7 @@ async def test_per_request_model_override_never_reaches_client(monkeypatch, meth
     import types
 
     from core.vllm_client import VLLMClient
-    _transport(monkeypatch, 'prehop')
+    _transport(monkeypatch)
     calls = []
     async def create(**kwargs):
         calls.append(kwargs)
@@ -107,16 +76,19 @@ async def test_per_request_model_override_never_reaches_client(monkeypatch, meth
     assert calls == []
 
 
-def test_target_empty_seed_and_native_instruction_survive_dotenv_reload(tmp_path, monkeypatch):
+def test_target_empty_seed_and_query_instruction_survive_dotenv_reload(tmp_path, monkeypatch):
     from dotenv import load_dotenv
 
     from core.paper_policy import configure_target_environment
-    _transport(monkeypatch, 'lightrag')
+    from core.strategy_registry import PAPER_TRANSPORT
+    _transport(monkeypatch)
     fixture = tmp_path / 'synthetic.env'
     fixture.write_text('RAG_LLM_SEED=42\nEMBEDDING_QUERY_INSTRUCTION=shared_default\n')
-    configure_target_environment('lightrag', 'hotpotqa', 'run')
+    configure_target_environment('prehop', 'hotpotqa', 'run')
     load_dotenv(fixture, override=False)
-    assert InferenceTransport.resolve('lightrag').generation_seed is None
+    transport = InferenceTransport.resolve('prehop')
+    assert transport.generation_seed is None
+    assert transport.embedding_query_instruction == PAPER_TRANSPORT.query_instruction
 
 
 @pytest.mark.asyncio
@@ -124,7 +96,7 @@ async def test_paper_request_uses_transport_seed_after_late_environment_resoluti
     import types
 
     from core.vllm_client import VLLMClient
-    _transport(monkeypatch, 'prehop')
+    _transport(monkeypatch)
     calls = []
     async def create(**kwargs):
         calls.append(kwargs)

@@ -20,10 +20,9 @@ def answer_role() -> str:
 
 
 def build_answer_prompt(context: str, query: str) -> str:
-    """Original synthesis prompt retained by Naive and generic adapters.
+    """Original synthesis prompt retained by the Naive baseline.
 
     Prehop's current reader is versioned separately in ``prehop_answer``.
-    Native external readers retain their upstream answer procedures.
     """
     return (
         f"You are {answer_role()}. Answer the question using only the provided context.\n"

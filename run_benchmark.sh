@@ -40,9 +40,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-PYTHON_BIN="$(resolve_method_python "$SCRIPT_DIR" "$MODEL")" || exit 1
+PYTHON_BIN="$(resolve_python "$SCRIPT_DIR")" || exit 1
 export PYTHON_BIN
-if [ "$MODEL" = "hoprag" ]; then export UV_PROJECT_ENVIRONMENT="$(dirname "$(dirname "$PYTHON_BIN")")"; fi
 
 SAFE_RUN_ID="${RAG_RUN_ID//[^A-Za-z0-9_.-]/_}"
 LOG_DATASET="${CORPUS_TAG:-${QUERIES_FILE##*/}}"
@@ -58,46 +57,20 @@ echo "     Benchmark Pre-flight Check          "
 echo "========================================="
 echo "Python: $PYTHON_BIN"
 "$PYTHON_BIN" -c '
-import sys
 from core.config import RAGConfig as config
-budget = f"top_k={config.DEFAULT_TOP_K}" if sys.argv[1] in {"prehop", "naive"} else "budget=official"
-print(f"Retrieval: analyzer={config.FULLTEXT_ANALYZER}, {budget}")
-' "$MODEL"
+print(f"Retrieval: analyzer={config.FULLTEXT_ANALYZER}, top_k={config.DEFAULT_TOP_K}")
+'
 
-echo "Step 0: Python/Dependency preflight..."
-IS_EXTERNAL=false
-if python3 core/strategy_registry.py --is-external "$MODEL"; then IS_EXTERNAL=true; fi
-if [ "$MODEL" = "hoprag" ] || [ "$MODEL" = "ms_graphrag" ] || [ "$IS_EXTERNAL" = true ] || [ "$RUN_ALL" = true ]; then
-    if ! PREFLIGHT_MODEL="$MODEL" PREFLIGHT_ALL="$RUN_ALL" "$PYTHON_BIN" - <<'PY'
-import importlib
-import os
-import sys
-print(f"Python executable: {sys.executable}")
-print(f"Python version: {sys.version}")
-importlib.import_module("loguru")
-importlib.import_module("typing_extensions")
-model = os.environ["PREFLIGHT_MODEL"]
-run_all = os.environ["PREFLIGHT_ALL"] == "true"
-if model == "hoprag" or run_all:
-    from models.hoprag.hoprag_adapter import HopRAGAdapter  # noqa: F401
-if model == "ms_graphrag" or run_all:
-    from models.ms_graphrag.ms_adapter import MSGraphRAGAdapter  # noqa: F401
-print("Dependency preflight: OK")
-PY
-    then
-        echo "ERROR: Python preflight failed."
-        exit 1
-    fi
+if [ "$RUN_ALL" != true ] && ! python3 core/strategy_registry.py --is-valid "$MODEL"; then
+    echo "Unknown registered model '$MODEL'." >&2
+    exit 1
 fi
 
 if [ "$SKIP_SERVER" != true ]; then
     echo "Step 1: Checking benchmark services..."
 
-    # MS GraphRAG's benchmark reads its parquet/LanceDB artifacts directly. The
-    # other strategies query Neo4j, as does benchmark_all.
-    if { [ "$MODEL" != "ms_graphrag" ] && [ "$IS_EXTERNAL" != true ]; } || [ "$RUN_ALL" = true ]; then
-        ./run_servers.sh neo4j
-    fi
+    # Every strategy queries Neo4j, as does benchmark_all.
+    ./run_servers.sh neo4j
 
     # Validate the externally supplied models.
     ./run_servers.sh gen

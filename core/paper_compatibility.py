@@ -10,10 +10,7 @@ from typing import Any
 
 COMPATIBILITY_VERSION = 'paper-config-v1'
 EVIDENCE_VERSION = 'paper-evidence-v3'
-METHOD_CONTRACT_VERSIONS = {name: 'paper-method-v1' for name in
-    ('prehop', 'naive', 'ms_graphrag', 'lightrag', 'gfm_rag', 'linear_rag')}
-METHOD_CONTRACT_VERSIONS['hoprag'] = 'paper-method-v1'
-METHOD_CONTRACT_VERSIONS.update(prehop='paper-method-v6', naive='paper-method-v3')
+METHOD_CONTRACT_VERSIONS = {'prehop': 'paper-method-v6', 'naive': 'paper-method-v3'}
 
 
 def runtime_compatibility(value: dict) -> dict:
@@ -29,12 +26,13 @@ def prompt_configuration(strategy: str) -> dict[str, Any]:
         result['answer'] = prehop_answer.build_answer_prompt('{context}', '{query}')
         result['answer_messages'] = prehop_answer.build_answer_messages('{context}', '{query}')
         result['answer_version'] = prehop_answer.SYNTHESIS_PROMPT_VERSION
-    elif strategy in {'naive', 'gfm_rag'}:
+    elif strategy == 'naive':
         result['answer'] = shared.build_answer_prompt('{context}', '{query}')
-    if strategy in {'prehop', 'naive'}:
-        result['index'] = {key: value for key, value in vars(indexing).items()
-                           if key.isupper() and isinstance(value, str)}
-        result['ranking'] = evidence_ranking.build_evidence_ranking_prompt('{query}', [('C000', '{title}', '{metadata}', '{text}')], 1)
+    else:
+        raise ValueError(f"unknown strategy: {strategy}")
+    result['index'] = {key: value for key, value in vars(indexing).items()
+                       if key.isupper() and isinstance(value, str)}
+    result['ranking'] = evidence_ranking.build_evidence_ranking_prompt('{query}', [('C000', '{title}', '{metadata}', '{text}')], 1)
     return result
 
 
@@ -58,12 +56,11 @@ def _prompt_identity(configuration):
 
 def index_method_identity(strategy, environment: Mapping[str, str] | None = None):
     """Query-only changes do not change the construction identity."""
+    from core.admission import identity_sha256
+    from core.generation_profiles import generation_profiles
     identity = method_identity(strategy, environment)
-    if strategy in {"prehop", "naive"}:
-        from core.admission import identity_sha256
-        from core.generation_profiles import generation_profiles
-        identity["prompt_configuration_sha256"] = _prompt_identity({"index":prompt_configuration(strategy)["index"]})
-        identity["generation_profiles_sha256"] = identity_sha256({"question_index":generation_profiles(strategy, environment)["question_index"]})
+    identity["prompt_configuration_sha256"] = _prompt_identity({"index":prompt_configuration(strategy)["index"]})
+    identity["generation_profiles_sha256"] = identity_sha256({"question_index":generation_profiles(strategy, environment)["question_index"]})
     return identity
 
 
@@ -98,12 +95,11 @@ def context_configuration() -> dict:
 
 
 def method_identity(strategy: str, environment: Mapping[str, str] | None = None) -> dict[str, str]:
-    if strategy not in METHOD_CONTRACT_VERSIONS:
-        return {}  # Reserve/development methods do not acquire a primary paper contract.
     from core.admission import identity_sha256
     from core.generation_profiles import generation_profiles
-    from core.runtime_requirements import load_runtime_requirements
     return {'method_contract': METHOD_CONTRACT_VERSIONS[strategy],
             'prompt_configuration_sha256': _prompt_identity(prompt_configuration(strategy)),
             'generation_profiles_sha256': identity_sha256(generation_profiles(strategy, environment)),
-            'runtime_requirement_sha256': identity_sha256(load_runtime_requirements().get(strategy, {}))}
+            # Prehop and Naive never had a pinned native runtime requirement; the
+            # digest of the empty requirement keeps saved identities comparable.
+            'runtime_requirement_sha256': identity_sha256({})}
