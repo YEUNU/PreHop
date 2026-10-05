@@ -24,9 +24,10 @@ The retained V1 comparisons and shared reference analyses are:
 | Expansion QA with fixed initial candidates | `compare_prehop_direct_qa.py` with `init-fixed-start` |
 | Graph expansion versus direct retrieval with more candidates, token and count controls | Archived candidate preparation, reranking and answer-generation protocols; see the matched-budget section below |
 | Evidence overlap, candidate-count prefixes, search channels, retention and initial-coverage groups | `analyze_evidence_accessibility.py`, `analyze_ablation_links.py` |
-| Body-only direct retrieval under matched token ceilings | Archived body-search outputs, original body-channel starts and token-budget preparation; the three-policy reranking and answer-generation run (V1 Appendix C.4, V2 Appendix C) |
-| Repeated-fact sensitivity of the recall contrasts (V1 Appendix F.4, V2 Appendix F) | Fixed fact-contribution ranking and whole-question exclusion masks over saved per-query coverage; no reranking or answer regeneration |
-| Graph distance of gold evidence missing from the one-step pool (V1 Appendix C.4) | Saved graph, initial candidates and corpus witnesses; shortest HOP/NEXT paths without an input budget; no model calls |
+| Body-only direct retrieval under matched token ceilings | Archived body-search outputs, original body-channel starts and token-budget preparation; the three-policy reranking and answer-generation run and its byte-identical repeat (V1 Appendix C.4, V2 Appendix C) |
+| Reranker token-allowance sweep at a quarter and a half of Prehop's allowance (V1 Appendix C.6, V2 Appendix H) | Saved one-step and direct pools, mandatory initial candidates, whole-passage prefix fitter and tokenizer; fused-order, cosine-order and direct prefixes reranked and answered under common per-query ceilings |
+| Repeated-fact sensitivity of the recall contrasts (V1 Appendix F.3, V2 Appendix F) | Fixed fact-contribution ranking and whole-question exclusion masks over saved per-query coverage; no reranking or answer regeneration |
+| Graph distance of gold evidence missing from the one-step pool (V1 Appendix C.5) | Saved graph, initial candidates and corpus witnesses; shortest HOP/NEXT paths without an input budget; no model calls |
 | Direct answer context versus the entire Prehop candidate pool | Paired reaggregation of the archived per-question pool and final-context gold-coverage sets |
 | LLM reranking, fused-score, representation-score and hybrid-score ordering | `compare_prehop_selectors.py` |
 | Matched-count question, body and shuffled HOP evidence supply | `analyze_link_supply.py --include-body` over the archived samples |
@@ -38,7 +39,7 @@ V2 additionally uses the following fixed-input analyses:
 | Comparison or analysis | Reproduction inputs and scope |
 | --- | --- |
 | One-to-four-step HOP/NEXT neighborhoods and token-limited admission | Saved graph, initial passages/scores, query–body similarities, full prompt metadata and tokenizer; reconstruct neighborhoods, orders and whole-passage prefixes |
-| Four-step rank-fusion versus cosine admission, compared against the one-step policies | The same admitted sets and recorded downstream requests; re-score saved passages and answers, including prompt-selection exclusions; post hoc contrasts against the one-step three-policy run pair both runs' per-query scores with `ablation_statistics.cluster_interval` |
+| Four-step rank-fusion versus cosine admission, compared against the one-step policies | The same admitted sets and recorded downstream requests from two runs: the primary run presents each set in its own admission order, the secondary run presents both in query-to-body cosine order; re-score saved passages and answers, including prompt-selection exclusions; post hoc contrasts against the one-step three-policy run pair both runs' per-query scores with `ablation_statistics.cluster_interval` |
 | Question-link versus body-similarity graphs crossed with admission policy | Saved graph-specific neighborhoods, scores and admitted sets; evaluate coverage, shared evidence and count-matched prefixes |
 | Inherited-score exchange on a common passage pool | Both full-graph score vectors, the intersection of passage IDs and fixed addition counts; preserve graph paths outside the intersection |
 | Distance and starting-score components | Saved shortest distances and starting scores for both graphs, with the same common pool, counts and scoring rules |
@@ -297,6 +298,26 @@ This identifies the tokenizer used to measure inputs, separately from the
 served generation model's recorded revision, which stays in saved run
 provenance.
 
+### Reranker token-allowance sweep
+
+The sweep reuses the saved one-step Prehop pool and the saved multi-channel
+direct-retrieval pool of the matched-budget comparison on MultiHop-RAG. For each
+question the ceiling is `T0 + floor(lambda * (T1 - T0))`, where `T1` is Prehop's
+original reranker prompt length and `T0` the largest prompt length of the
+mandatory initial candidates alone under the three presentations; `lambda` takes
+0.25 and 0.5, so only the allowance beyond the initial candidates is scaled.
+Three candidate policies fill each ceiling with whole passages: the Prehop pool
+in its fused order, the same pool in query–body cosine order (a query-conditioned
+pruning of the expansion), and the direct pool in its saved order. At
+`lambda = 1` the fused and direct prefixes reproduce the matched-budget requests
+exactly, which the preparation verifies per question before any model call. Each
+condition is reranked and answered once with the shared settings; the evaluation
+reports official QA, MAP@10, normalized EM/F1, candidate recall and returned
+recall with paired question bootstraps, and the follow-up analysis adds the
+budget interaction, within-policy budget effects, final-answer-label rates and
+label-restricted contrasts. Reproducing the sweep requires the archived pools,
+protocol and preparation snapshots in addition to the source checkout.
+
 ### Body-only direct retrieval under the same token ceiling
 
 This candidate-supply control uses the original corpus, body index, query text
@@ -318,8 +339,12 @@ graph links. Candidate coverage is evaluated before LLM reranking. The completed
 three-policy comparison (V1 Appendix C.4, V2 Appendix C) uses saved rankings and
 generated answers for graph expansion, direct retrieval with more candidates and
 body-only direct retrieval. It is a separate run from the primary matched-budget
-comparison; its repeated Prehop and multi-channel conditions quantify generation
-variability at temperature zero. Use those final full-population outputs, not a
+comparison; its repeated Prehop and multi-channel conditions, and a later
+byte-identical repeat of all three conditions, quantify generation variability at
+temperature zero (reported as three generation draws in V1 Section 4.4 and
+Appendix C.4). Repeating requests also exposes the saved per-condition
+final-answer-label rates and the reranker's repeated-ID counts used in both
+manuscripts' appendices. Use those final full-population outputs, not a
 partial sample or the coverage-only preparation, for downstream scores. All three use the same LLM reranking and
 answer-generation settings and return at most 12 passages. Body-only direct
 retrieval differs from a body-only Prehop search that still follows graph links.
@@ -519,14 +544,16 @@ uses gold annotations only to evaluate the constructed sets.
 | Graph crossing | Both graphs' neighborhoods, inherited scores and admitted sets | Coverage, shared/unique evidence, count-matched prefixes |
 | Common-pool score exchange | Both full-graph score vectors, passage-ID intersection, fixed addition counts | Fusion ranks over the common pool, distance/start-score components |
 | Budget, decay, offset and ties | Fixed four-step inputs and each condition's protocol | Candidate coverage only |
-| Four-step downstream | Recorded admitted sets, reranking and answer requests and responses | Scores, paired intervals, prompt-selection exclusions |
+| Four-step downstream | Recorded admitted sets, reranking and answer requests and responses of the primary (own-order) and secondary (common cosine order) runs | Scores, paired intervals, prompt-selection exclusions, presentation-order contrast |
 | Repeated-fact exclusions | Fixed fact ranking and masks | Reduced-population means and intervals |
 
 Graph construction, embeddings, direct search and model inference are not
-regenerated by these packages. The four-step downstream run presents both
-admitted sets in query-to-body cosine order, unlike the fused order of the
-standard one-step pipeline; comparisons with the one-step three-policy run
-therefore mix presentation rules and are reported as post hoc. Intervals use
+regenerated by these packages. The primary four-step downstream run presents
+each admitted set in its own admission order, so the rank-fusion set follows the
+fused order of the standard one-step pipeline; a secondary run presents both sets
+in query-to-body cosine order and measures the presentation-order effect across
+two generation runs. Comparisons with the one-step three-policy run pair the
+same questions across different generation runs and are reported as post hoc. Intervals use
 10,000 paired resamples with seed 42 and original-question clusters; adjusted
 families are stated per comparison in the manuscript.
 

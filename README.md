@@ -58,9 +58,12 @@ With the initial candidates fixed, one-step HOP/NEXT expansion plus LLM
 reranking raises MultiHop-RAG MAP@10 by 0.0195 and official QA accuracy by 4.89
 percentage points. When direct retrieval may instead add candidates until it
 fills the same per-query reranker input token budget, it beats Prehop by 0.0379
-MAP@10 and 4.58 points. The HotpotQA comparison, on a reduced corpus whose
-initial candidates already cover 94.8% of the annotated support, is
-inconclusive. Reproduce with the
+MAP@10 and 4.58 points, and the gap grows with the budget: at a quarter and a
+half of the allowance beyond the initial candidates it is 1.7 and 3.5 QA points,
+more budget raises direct retrieval's QA but not expansion's, and pruning the
+expansion pool by query similarity does not close it. The HotpotQA comparison,
+on a reduced corpus whose initial candidates already cover 94.8% of the
+annotated support, is inconclusive. Reproduce with the
 [HOP/NEXT ablation](docs/REPRODUCING.md#compare-hop-and-next-expansion) and the
 [matched-budget comparison](docs/REPRODUCING.md#compare-graph-expansion-against-direct-retrieval-with-more-candidates).
 
@@ -95,7 +98,11 @@ Expanding the saved graph through four steps reaches 94.6% of MultiHop-RAG's
 annotated evidence, but only 82.6% fits the one-step input ceiling under
 Prehop's rank-fusion order; ordering candidates by query-to-body cosine admits
 86.8%, still below the 89.3% that body-only direct retrieval reaches under the
-same ceiling. On HotpotQA deeper expansion adds almost no evidence. These
+same ceiling. Carried through LLM reranking, cosine admission raises the
+recall of the returned passages by 3.0 points, while its QA gain of 1.2 points
+does not resolve, and presenting the rank-fusion set in Prehop's own fused order
+rather than cosine order is worth a similar 1.3 QA points. On HotpotQA deeper
+expansion adds almost no evidence. These
 analyses replay saved graphs and candidate sets; the
 [V2 fixed-input analyses](docs/REPRODUCING.md#v2-fixed-input-analyses) list
 their inputs and limits.
