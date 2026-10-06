@@ -1,7 +1,7 @@
 [project]
 name = "prehop"
 version = "0.0.0"
-description = "Question-level offline HOP construction for deterministic multi-hop retrieval"
+description = "Question-linked passage graphs and LLM reranking for multi-hop retrieval-augmented generation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -28,11 +28,8 @@ dev = [
     "ruff",
 ]
 
-# The repo is a flat-layout collection of top-level dirs (cli/core/models/
-# utils/...) run via `python main.py` from the repo root (main.py does
-# sys.path.append), not an importable distribution. Declare no top-level
-# modules so setuptools doesn't auto-discover them and abort the editable
-# build with "Multiple top-level packages discovered in a flat-layout".
+# Run the CLI from the repository root; no importable distribution is built.
+# Explicit discovery keeps the flat cli/core/models/utils layout supported.
 [tool.setuptools]
 py-modules = []
 

@@ -281,3 +281,43 @@ id_rsa
 id_ed25519
 credentials.json
 secrets.json
+
+# Public documentation allowlist; manuscript and internal Markdown stay local.
+/docs/*
+!/docs/figures/
+*.md
+*.MD
+!/README.md
+!/docs/METHOD.md
+!/docs/SETUP.md
+!/docs/REPRODUCING.md
+
+# Agent instructions, editor conversations and machine-local automation.
+.agents/
+.cursor/
+.ai/
+.aider*
+/AGENTS.*
+/CLAUDE.*
+/GEMINI.*
+
+# Internal reviews, audits, requests and operational notes (any file format).
+/internal/
+/reviews/
+/audits/
+/notes/
+/requests/
+/docs/internal/
+/docs/reviews/
+/docs/audits/
+/scripts/local/
+
+# Standalone internal exports outside the directories above.
+/REVIEW*
+/AUDIT*
+/AI_REQUEST*
+/HANDOFF*
+/SESSION*
+/review*.txt
+/audit*.txt
+/ai_request*

@@ -1,6 +1,7 @@
 # Runtime and infrastructure setup
 
-For operators preparing the services used by the [README](../README.md).
+Configure Python, Neo4j and the inference gateway before running the
+[quick start](../README.md#quick-start).
 Experiment commands and measurement rules are in [Reproducing](REPRODUCING.md);
 method behavior is in [Method](METHOD.md).
 
@@ -59,12 +60,12 @@ Python starts; `RAGConfig` retains import-time values. Read-only configuration
 inspection passes copied settings through `resolved_target_environment` instead
 of temporarily changing `os.environ`.
 
-The final paper's selectable Prehop controls are HOP/NEXT expansion, scoring
-and ranking method. Question-role indexing, expansion depth, path decay and
+The benchmark runtime exposes HOP/NEXT expansion, scoring and ranking controls. Question-role indexing, expansion depth, path decay and
 reciprocal metadata materialization are fixed in the registry; their former
 environment overrides are inactive. Use the
 [experiment inventory](REPRODUCING.md#paper-experiment-inventory) to select a
-reported comparison.
+reported comparison. The paper's deeper-neighborhood and admission experiments
+use saved-input analysis packages; they are not additional runtime depth flags.
 
 The README selects [direct-8.json](../configs/execution_profiles/direct-8.json).
 Use that file to inspect/change producer and request limits; the registry owns
@@ -73,12 +74,18 @@ not a cross-process semaphore or a statement of GPU capacity; unrelated clients
 affect load.
 
 Generation in the paper experiments omits the LLM seed; evaluation and sampling
-seeds are separate. Historical results remain unchanged.
+seeds are separate. Temperature zero does not guarantee identical responses to
+repeated requests. Preserve each generation separately, including its actual
+model provenance and settings.
 
-## Storage and ongoing work
+Re-scoring stored answers and replaying fixed candidate sets require the
+archived inputs listed in [Reproducing](REPRODUCING.md#fixed-input-analyses).
+Those offline checks do not require starting the gateway or rebuilding indexes.
 
-Keep corpus/query manifests, original indexes, results and traces used by
-retained or active runs.
+## Data storage
+
+Keep corpus/query manifests, original indexes, results and traces together
+with the run IDs that produced them.
 Downloaded data and generated runs are excluded by the repository's
 [Git ignore rules](../.gitignore). Keep credentials in `.env` or the process
 environment; [.env.example](../.env.example) documents the public inputs.

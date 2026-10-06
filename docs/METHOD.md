@@ -1,12 +1,24 @@
 # Method and implementation
 
-This guide describes standard Prehop, its implementation, and the controlled
+Prehop combines question-linked passage graphs with LLM reranking. This guide
+describes its index construction, query pipeline, implementation, and the controlled
 comparisons of graph expansion, direct retrieval, and candidate admission.
 Start with the [README](../README.md) to run it; use
 [Reproducing](REPRODUCING.md) for experiment controls and evaluation, and
 [Setup](SETUP.md) for infrastructure and configuration. Exact defaults belong to
 the [strategy registry](../core/strategy_registry.py) and
 [configuration](../core/config.py), rather than duplicated tables here.
+
+## Pipeline overview
+
+| Stage | Operation | Output |
+| --- | --- | --- |
+| Passage preparation | Split source text into fixed sentence windows | Passages with source identities |
+| Question generation | Generate Q− and Q+ questions for each passage | Searchable question representations |
+| Graph construction | Match Q+ to Q− across sources and connect adjacent passages | HOP and NEXT links |
+| Initial retrieval | Search body, Q− and Q+ channels with the original query | Initial passages |
+| Expansion and LLM reranking | Follow links once and rerank the combined pool | Ordered passages for answer generation |
+| Answer generation | Generate an answer from the returned evidence | Answer and retrieval trace |
 
 ## Code ownership
 
@@ -64,8 +76,8 @@ construction and timing conditions; query expansion does not filter by reciproci
 ## Prehop query path
 
 The original question searches body, Q− and Q+ once. The complete union of
-directly retrieved passages forms the initial candidate pool. Prehop expands
-from every initial candidate without iterative LLM-guided traversal:
+directly retrieved passages forms the initial passage set. Prehop expands
+from every initial passage without iterative LLM-guided traversal:
 
 1. `hybrid.py` orders vector and full-text hits separately and combines reciprocal
    ranks `1 / (rank + 1)` for zero-based `rank`, preserving stable identity tie breaks.
@@ -77,7 +89,7 @@ from every initial candidate without iterative LLM-guided traversal:
    the default one-step traversal.
 4. Candidates added by expansion inherit the strongest incoming starting score with
    path decay. Direct candidates keep their direct score. `scoring.py` combines
-   query-to-body similarity and representation ranks, then invokes the LLM
+   ranks based on query-to-body similarity and retrieval-rank scores, then invokes the LLM
    reranker on the full union.
 5. The selected passages supply one final-answer request. Empty context returns
    the fixed insufficient-evidence response.
@@ -98,17 +110,25 @@ recorded policy and are not relabelled with current defaults.
 ## Controlled retrieval comparisons
 
 Standard Prehop submits its complete one-step pool to LLM reranking. The
-comparisons below separately control initial candidates, input tokens, or
+comparisons below separately control initial passages, input tokens, or
 admitted counts. They are experimental conditions rather than changes to that
 default query path. The [experiment guide](REPRODUCING.md#paper-experiment-inventory)
 identifies the required saved artifacts and commands.
+
+The paper denotes the one-step graph by **G**, multi-channel direct retrieval
+by **D**, and body-only direct retrieval by **B**. A graph neighborhood is the
+candidate pool before admission; the admitted set is the subset supplied to
+LLM reranking. Returned passages supply answer generation. These names describe
+experimental conditions; archived code and field identifiers remain unchanged.
 
 ### One-step expansion and direct retrieval
 
 The HOP/NEXT ablation retains the index and saved initial passages while varying
 which edge types are expanded. The comparison of LLM reranking with score-based
 ordering instead retains each complete candidate pool. Neither comparison
-equalizes the input tokens across different expansion conditions.
+equalizes the input tokens across different expansion conditions. Appendix K.1
+reports the fixed-initial-passage QA ablation from its own generation run; its
+ranking interaction is measured in MAP@10.
 
 The direct-retrieval comparison uses the original one-step reranking prompt's
 token count as a per-query ceiling. Multi-channel direct retrieval increases
@@ -116,7 +136,7 @@ the body, Q−, and Q+ search limits while retaining the original initial union.
 Body-only direct retrieval searches passage bodies and retains its original
 12 body-channel passages. Both omit graph expansion and add an ordered prefix
 of whole passages under the ceiling, using query-to-body cosine fused with their
-respective representation scores. Counts include the prompt and chat template.
+respective retrieval-rank scores. Counts include the prompt and chat template.
 The final three-condition comparison evaluates candidate coverage, LLM
 reranking, and common answer generation. The ceiling does not equalize realized
 tokens, final answer-context length, or total retrieval cost. Body-only search
@@ -124,30 +144,38 @@ reuses the constructed corpus and index; it does not measure body-only indexing.
 
 ### Expansion depth and candidate admission
 
+Appendix K.2 partitions initially absent annotated evidence into graph-only,
+direct-only, shared and unrecovered units. K.3 measures coverage as the direct
+prefix grows; intermediate prefixes do not constitute additional QA runs.
+
 The depth analysis repeatedly expands the saved HOP/NEXT graph to construct
 nested one-to-four-step neighborhoods. Candidate admission selects which of
 these passages enter LLM reranking: all original initial passages remain,
 followed by a whole-passage prefix under the original one-step token ceiling.
-Within each neighborhood, rank-fusion and cosine admission share
+Within each neighborhood, rank-fusion and similarity-only admission share
 passages, initial scores, query embeddings, and the ceiling. Rank fusion combines
-query-to-body rank with representation rank; cosine admission orders by
+ranks based on query-to-body similarity and retrieval-rank scores; similarity-only admission orders by
 query-to-body cosine alone. The name distinguishes the admission policy from the
 body-similarity graph and from body-only direct retrieval. A newly reached passage inherits half the strongest
-representation score among predecessors at the preceding distance. Scores of
+retrieval-rank score among predecessors at the preceding distance. Scores of
 previously reached passages remain fixed.
 
-Coverage is evaluated before and after admission at every depth. Downstream
+Reachable recall measures the full neighborhood before admission; admitted recall
+measures the passages entering LLM reranking; returned recall measures those
+supplied to answer generation. Coverage is evaluated at every depth. Downstream
 LLM reranking and QA compare the two admitted four-step sets from the original
-question-link graph, with a common query-to-body cosine presentation order and
-the same answer prompt. That order differs from the fused-score order of the
-standard one-step query path, so contrasts against the one-step policies compare
-runs with different presentation rules. This comparison measures an
-admission-policy change at four steps, not an isolated depth effect. The runtime query path still
+question-link graph. The primary comparison presents each admitted set in its
+own admission order and uses the same answer prompt. A secondary comparison
+presents both sets in query-to-body cosine order. Comparing the fusion set
+between these runs changes presentation and the generation realization together.
+Contrasts against the one-step policies also cross generation runs. The primary
+comparison measures admission together with its induced presentation order;
+it does not isolate a depth effect. The runtime query path still
 requires exactly one expansion step; the saved-graph analysis is separate.
 
 ### Graph construction and inherited scores
 
-Question-link and body-similarity graphs share passages, initial candidates,
+Question-link and body-similarity graphs share passages, initial passages,
 NEXT links, and each passage's outgoing HOP degree. Comparing both admission
 policies in both four-step neighborhoods changes candidate membership and
 inherited scores together. Equal outgoing degree does not equalize incoming
@@ -161,7 +189,7 @@ ranks over this common pool using each graph's inherited scores, with fixed quer
 and tie rules. Scores retain their original full-graph paths, including
 predecessors outside the intersection. Exchanging their shortest-distance and
 starting-score components provides additional scalar score controls. These
-experiments measure candidate recall at a common count; they do not match exact
+experiments measure admitted recall at a common count; they do not match exact
 tokens, evaluate QA, or decompose the original token-limited QA effect.
 
 Source-level controls also distinguish passages included in a one-step pool

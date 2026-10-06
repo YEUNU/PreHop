@@ -1,3 +1,5 @@
+"""Command-line entry point for Prehop indexing, evaluation and answer generation."""
+
 import argparse
 import asyncio
 import logging
@@ -101,7 +103,10 @@ async def _clear_graph_and_schema(neo4j: Neo4jService) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Index passages and evaluate Prehop or the dense retrieval baseline.",
+        epilog="See README.md for quick start and docs/REPRODUCING.md for controlled experiments.",
+    )
     parser.add_argument(
         "--mode",
         choices=["index", "benchmark", "benchmark_all", "synthesize", "hop_rebuild", "clear_graph"],

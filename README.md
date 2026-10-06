@@ -1,21 +1,15 @@
-# Prehop: Graph Expansion, Direct Retrieval and Candidate Admission for Multi-Hop RAG
+# Prehop: Multi-Hop Retrieval-Augmented Generation
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Prehop is a graph-based retriever for multi-hop retrieval-augmented generation
 (RAG). During indexing it generates questions for every passage and stores
-links between passages; at query time it retrieves initial candidates, expands
+links between passages; at query time it retrieves initial passages, expands
 the stored links once, reranks the combined pool with an LLM and generates an
-answer from the returned passages. This repository is the implementation and
-experiment code behind two manuscripts that use Prehop as a controlled test
-bed:
-
-- **Does One-Step Graph Expansion Beat Retrieving More Candidates? A
-  Matched-Budget Comparison for Multi-Hop RAG** compares one-step expansion
-  with direct retrieval that receives the same reranker input token budget.
-- **Reachability versus Inherited Scores: Candidate Admission under a Reranker
-  Input Ceiling in Graph-Based Multi-Hop RAG** asks which reachable evidence
-  survives when deeper neighborhoods must fit the same input ceiling.
+answer from the returned passages. This repository provides the implementation and experiment code for
+**Reached but Not Retained: Candidate Admission under Reranker Input Limits in Graph-Based Multi-Hop RAG**.
+The paper separates evidence reached by graph expansion from evidence retained
+under an LLM reranker input ceiling, using Prehop as a controlled test bed.
 
 [Method and implementation](docs/METHOD.md) ·
 [Reproducing the experiments](docs/REPRODUCING.md) ·
@@ -35,77 +29,13 @@ by **NEXT** links. The question-role formulation follows
 ![A Q+ question of passage A matches a Q− question of passage B and creates the HOP link A to B](docs/figures/question_link_example.png)
 
 At query time the original question searches the body, Q− and Q+ indexes; the
-fused hits form the initial candidates. Prehop follows outgoing HOP links and
-both NEXT directions once from every initial candidate, keeps the initial
+fused hits form the initial passages. Prehop follows outgoing HOP links and
+both NEXT directions once from every initial passage, keeps the initial
 candidates in the pool, orders the pool by a fused score and passes it to one
 LLM reranking request that returns up to 12 passages for answer generation.
 Stored links propose evidence; the query decides its relevance only through
 scoring and reranking. The [method guide](docs/METHOD.md) gives the exact
 fusion, scoring and reranking rules.
-
-## What the experiments show
-
-The figures below are static exports of the manuscripts' figures. They plot
-reported means and paired bootstrap intervals from saved outputs; regenerating
-them requires the archived results described in the
-[experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory).
-
-### Expansion helps against fixed initial candidates, direct retrieval wins under a matched budget
-
-![Paired differences on MultiHop-RAG: Prehop against Direct-only with fixed initial candidates, and against direct retrieval with more candidates under matched reranker input token budgets](docs/figures/v1_paired_differences.png)
-
-With the initial candidates fixed, one-step HOP/NEXT expansion plus LLM
-reranking raises MultiHop-RAG MAP@10 by 0.0195 and official QA accuracy by 4.89
-percentage points. When direct retrieval may instead add candidates until it
-fills the same per-query reranker input token budget, it beats Prehop by 0.0379
-MAP@10 and 4.58 points, and the gap grows with the budget: at a quarter and a
-half of the allowance beyond the initial candidates it is 1.7 and 3.5 QA points,
-more budget raises direct retrieval's QA but not expansion's, and pruning the
-expansion pool by query similarity does not close it. The HotpotQA comparison,
-on a reduced corpus whose initial candidates already cover 94.8% of the
-annotated support, is inconclusive. Reproduce with the
-[HOP/NEXT ablation](docs/REPRODUCING.md#compare-hop-and-next-expansion) and the
-[matched-budget comparison](docs/REPRODUCING.md#compare-graph-expansion-against-direct-retrieval-with-more-candidates).
-
-### Direct retrieval recovers most of the evidence that expansion adds
-
-![Gold-evidence coverage of the direct-retrieval pool as more of its additional candidates are retained, against the full Prehop pool, on MultiHop-RAG and HotpotQA](docs/figures/v1_evidence_coverage.png)
-
-The two methods add largely different passages, yet direct retrieval with more
-candidates recovers 89.6% (MultiHop-RAG) and 69.8% (HotpotQA) of the gold
-evidence that expansion adds, and on MultiHop-RAG its final 12-passage answer
-context covers more annotated evidence than Prehop's entire candidate pool. A
-body-only direct search under the same budget keeps that advantage. Reproduce
-with the
-[evidence accessibility analysis](docs/REPRODUCING.md#evidence-accessibility-in-saved-candidate-pools).
-
-### Both link types contribute, and the gain depends on the ranking method
-
-![Official retrieval metrics under Direct-only, Direct+NEXT, Direct+HOP and Prehop with the LLM reranker fixed](docs/figures/v1_hop_next_expansion.png)
-
-![The expansion effect on MAP@10 under LLM reranking versus fused-score ordering](docs/figures/v1_ranking_methods.png)
-
-HOP and NEXT links each improve retrieval when the other is present. Under a
-score-based ordering of the same candidate pools, however, expansion slightly
-lowers MAP@10; the gain appears only with LLM reranking. Reproduce with the
-[ranking-method comparison](docs/REPRODUCING.md#compare-ranking-methods-with-fixed-candidates).
-
-### Deeper neighborhoods reach more evidence than the input ceiling admits
-
-![Annotated evidence reached by one- to four-step neighborhoods, and retained under the original reranker input ceiling by rank-fusion and cosine admission, with body-only direct retrieval as reference](docs/figures/v2_depth_admission.png)
-
-Expanding the saved graph through four steps reaches 94.6% of MultiHop-RAG's
-annotated evidence, but only 82.6% fits the one-step input ceiling under
-Prehop's rank-fusion order; ordering candidates by query-to-body cosine admits
-86.8%, still below the 89.3% that body-only direct retrieval reaches under the
-same ceiling. Carried through LLM reranking, cosine admission raises the
-recall of the returned passages by 3.0 points, while its QA gain of 1.2 points
-does not resolve, and presenting the rank-fusion set in Prehop's own fused order
-rather than cosine order is worth a similar 1.3 QA points. On HotpotQA deeper
-expansion adds almost no evidence. These
-analyses replay saved graphs and candidate sets; the
-[V2 fixed-input analyses](docs/REPRODUCING.md#v2-fixed-input-analyses) list
-their inputs and limits.
 
 ## Installation
 
@@ -157,31 +87,18 @@ entrypoints use the same resolver. See the
 [configuration contract](docs/SETUP.md#configuration-ownership-and-precedence)
 for ownership and precedence.
 
-## Reviewer checks
-
-After installing the test tools above, these checks work even before configuring
-Neo4j, model credentials, or downloaded benchmark corpora:
-
-```bash
-.venv/bin/python -m pytest -q -m "not integration"
-```
-
-These tests cover implementation behavior using fixtures and mocked service
-boundaries; they do not reproduce paper scores. Optional checks for saved
-experiment artifacts may be skipped.
-
 ## Quick start
 
 With the services ready, run a small real experiment using the included
 two-document fixture. No benchmark download is needed:
 
 ```bash
-export REVIEW_RUN="reviewer-$(date +%Y%m%d-%H%M%S)-$$"
-"$PYTHON_BIN" scripts/paper_cold_canary.py "$REVIEW_RUN" prehop multihoprag --attempt a1
+export DEMO_RUN="demo-$(date +%Y%m%d-%H%M%S)-$$"
+"$PYTHON_BIN" scripts/paper_cold_canary.py "$DEMO_RUN" prehop multihoprag --attempt a1
 "$PYTHON_BIN" - <<'PY'
 import json, os
 from pathlib import Path
-path = Path("data/results") / os.environ["REVIEW_RUN"] / "cold_v2/a1/multihoprag/prehop/query.json"
+path = Path("data/results") / os.environ["DEMO_RUN"] / "cold_v2/a1/multihoprag/prehop/query.json"
 result = json.loads(path.read_text())
 print("Question:", result["query"])
 print("Answer:", result["answer"])
@@ -258,19 +175,47 @@ comparison with a shared answer generator needs the separate
 expansion controls and timing measurements. New runs produce their own results;
 identical settings do not guarantee identical generated answers or times.
 
-## Controlled experiments and the figures they produce
+## Experimental results
 
-| Figure above | Comparison | Entry point |
+Prehop supports controlled comparisons of candidate acquisition and LLM
+reranking. The values below describe the reported configurations; new runs can
+produce different outputs even at temperature zero. Differences in percentage-valued
+metrics use percentage points (pp).
+
+| Comparison | MultiHop-RAG result | Evaluation scope |
 | --- | --- | --- |
-| Paired differences (fixed initial candidates) | HOP/NEXT ablation and fixed-candidate QA | `scripts/run_primary_hop_ablation.py`, `scripts/analyze_expansion_factorial.py`, `scripts/compare_prehop_direct_qa.py` |
-| Paired differences (matched budget) and evidence coverage | Direct retrieval with more candidates under Prehop's per-query token budget; evidence overlap and retention | archived matched-budget protocol, `scripts/analyze_evidence_accessibility.py`, `scripts/analyze_ablation_links.py` |
-| HOP/NEXT expansion and ranking methods | Four expansion conditions; LLM reranking against score-based orders on the same pools | `scripts/run_primary_hop_ablation.py`, `scripts/compare_prehop_selectors.py` |
-| Depth and admission | One- to four-step neighborhoods under the original ceiling | saved-graph replay packages listed in the [V2 fixed-input analyses](docs/REPRODUCING.md#v2-fixed-input-analyses) |
-| Not shown: shuffled-link control | Question links against degree-preserving rewired links at matched candidate counts | `scripts/analyze_link_supply.py` |
+| One-step expansion versus fixed initial passages | +0.0195 MAP@10; +4.89 pp in QA | Same initial passages and LLM reranking |
+| Body-only direct retrieval versus the one-step graph | +5.67 pp in QA | Same per-query reranker input ceiling; separate initial passages |
+| Four-step reachable versus rank-fusion admitted recall | 94.60% versus 82.55% annotated recall | Reachable evidence versus evidence admitted under the original input ceiling |
+| Four-step similarity-only admission versus rank fusion | +4.29 pp admitted recall; +3.02 pp returned recall | Same neighborhood and input ceiling; QA difference is unresolved |
 
-Paired intervals use `scripts/ablation_statistics.py` (10,000 resamples, seed
-42, HotpotQA clustered by original question). Official scores come from
-`scripts/export_official_results.py`.
+![Candidate coverage as multi-channel direct retrieval retains additional passages](docs/figures/direct_prefix_coverage.png)
+
+![Annotated recall before and after admission at increasing expansion depths](docs/figures/v2_depth_admission.png)
+
+Appendix K reports the fixed-initial-passage ablation, evidence partition and
+direct-prefix coverage. Intermediate prefixes measure coverage only; only the
+full direct pool is matched to the one-step input ceiling.
+
+The fixed-initial, three-policy and four-step comparisons use separate
+recorded generations. They answer different questions and are not one combined
+leaderboard. Direct retrieval's returned context can contain more annotated evidence
+than the entire one-step graph pool, locating part of the recall deficit before
+LLM reranking. Body-only direct retrieval retains the MultiHop-RAG advantage
+under the same input ceiling; its QA difference from four-step similarity-only admission
+is unresolved.
+
+Dataset conditions matter. Initial evidence recall is 66.98% on MultiHop-RAG
+and 94.83% on the reduced HotpotQA corpus. Relative to the initial mean recall
+deficit, one-step expansion recovers 29.50% and 45.11%, respectively. The smaller
+absolute HotpotQA gain does not imply less recovery relative to initially
+missing evidence. These are descriptive retrieval ratios, not QA metrics or a
+causal comparison of datasets.
+
+See the [experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory)
+for inputs, paired intervals, repeated-generation comparisons and limitations.
+Figure exports are included in `docs/figures/`; exact reconstruction of archived
+results requires the saved inputs listed in the reproduction guide.
 
 ## Repository layout
 
@@ -286,28 +231,40 @@ Paired intervals use `scripts/ablation_statistics.py` (10,000 resamples, seed
 | `docs/` | The three guides and the figure exports used on this page |
 | `tests/` | Unit tests with mocked services; integration tests are marked |
 
-## Saved results and documentation
+## Development
 
-The public documentation consists of this README and the three guides below.
-The repository includes implementation code, tests, configuration examples,
-dependency specifications and static figure exports. Working manuscripts,
-figure sources, review notes, credentials, downloaded corpora and generated
-runs remain local and are excluded from source tracking.
+Run the unit tests from the repository root using the prepared environment:
 
-The commands above create new measurements. Replaying archived paper results
-requires the original outputs, indexes or traces identified in the
-[experiment guide](docs/REPRODUCING.md#paper-experiment-inventory); these are not
-bundled with the source checkout. If you already have saved benchmark results,
-pass their explicit paths to `scripts/export_official_results.py` to inspect
-scores without model calls. The exporter records source hashes and keeps the
-original results unchanged.
+```bash
+.venv/bin/python -m pytest -q -m "not integration"
+```
 
-- [Method and implementation](docs/METHOD.md): retrieval behavior, code ownership and traces.
-- [Runtime setup](docs/SETUP.md): services and configuration ownership.
-- [Reproducing and evaluation](docs/REPRODUCING.md): populations, metrics, resume, controlled experiments and measurement scope.
+Unit tests use fixtures and mocked Neo4j/inference boundaries. Some tests need
+optional saved experiment artifacts and are skipped when those are absent.
+Integration tests require configured services and are explicitly marked.
+Tests check implementation behavior; they do not reproduce paper scores.
+
+Keep retrieval and indexing changes in `models/`, shared execution and
+configuration in `core/`, and CLI orchestration in `cli/` and `scripts/`.
+The [module map](docs/METHOD.md#code-ownership) describes those responsibilities.
+Method, prompt or metric changes define new experimental conditions; preserve
+the original results and use a new run ID for comparison.
+
+## Data and reproducibility
+
+The source checkout contains code, tests, configuration examples, dependency
+specifications and static figures. Downloaded corpora, indexes, checkpoints,
+traces and generated results are stored locally under `data/` and excluded from
+Git. Reuse explicit result paths when exporting scores; the exporter records
+source hashes and preserves the inputs.
+
+New benchmark runs are supported directly by this checkout. Exact replay of
+archived experiments additionally requires the graphs, candidate pools and
+recorded outputs listed in [Reproducing experiments](docs/REPRODUCING.md).
 
 ## License and attribution
 
 Repository-owned code is released under the [MIT License](LICENSE).
-Datasets retain their respective licenses. HotpotQA source attribution is
-documented in [the dataset guide](docs/REPRODUCING.md#hotpotqa-source-and-population).
+Datasets retain their respective licenses. HotpotQA source attribution and
+its reduced-corpus evaluation setting are documented in the
+[dataset guide](docs/REPRODUCING.md#hotpotqa-source-and-population).
