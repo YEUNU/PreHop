@@ -60,7 +60,6 @@ class VLLMClient:
         self._embedding_query_instruction = transport.embedding_query_instruction
         self._embedding_query_template = transport.embedding_query_template
         self._embedding_max_input_tokens = transport.embedding_max_input_tokens
-        self._embedding_dimensions = transport.embedding_dimensions
         self._embedding_token_reserve = transport.embedding_token_reserve
         self._generation_max_context_tokens = transport.generation_max_context_tokens
         # 0 = infinite timeout (None)

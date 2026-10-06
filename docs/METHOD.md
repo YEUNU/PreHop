@@ -31,7 +31,9 @@ the [strategy registry](../core/strategy_registry.py) and
 | `models/naive/` | Dense baseline over the same fixed windows, embeddings and Neo4j vector index |
 | `cli/synthesis.py`, `core/synthesis_replay.py` | Shared answer generation over saved passages |
 | `utils/metrics.py`, `utils/hotpotqa.py`, `utils/official_results.py` | Question scoring, support projection and official reports |
-| `scripts/campaign_runtime.py`, `scripts/runner_environment.py` | Owned processes, logs, interpreter and environment selection |
+| `scripts/campaign_runtime.py`, `scripts/runner_environment.py`, `scripts/lib.sh` | Owned processes, logs, interpreter and environment selection |
+| `scripts/run_paper_target.sh` | Run-scoped indexing, benchmark continuation and completion records |
+| `scripts/analyze_*.py`, `scripts/compare_*.py` | Explicit experimental controls and saved-output analyses |
 
 ## Prehop index construction
 
@@ -67,8 +69,10 @@ answer, exact global nearest neighbor or completed reasoning path. Prepared
 file identity defines source exclusion; distinct files can share a title.
 
 Questions selecting the same source/destination chunks merge into one
-`HOP_ANSWER` edge with question provenance. `ANSWERED_BY` and `SUPPORTED_BY`
-retain question-to-evidence paths. Both question roles are indexed in every
+`HOP_ANSWER` edge with question provenance. `ANSWERED_BY` retains the Q+ to Q−
+provenance for those links.
+The runtime construction path searches Q− owners only; the body-similarity
+graph is a separate saved-input comparison. Both question roles are indexed in every
 retained condition; body-only search changes query-time channels, not the index.
 Reciprocal-link metadata remains materialized to preserve the published index
 construction and timing conditions; query expansion does not filter by reciprocity.
@@ -256,14 +260,15 @@ run-identity rules.
 `models/prehop/tracing.py` records stage inputs/outputs, embeddings, Cypher,
 candidates and answers in session-specific `data/traces/` directories. Ordered
 `events.jsonl` entries refer to hashed compressed payloads; index/query artifacts
-retain references. `RAG_PREHOP_TRACE` enables recording and
-`RAG_PREHOP_TRACE_DIR` selects storage.
+retain references. `RAG_PREHOP_TRACE` defaults to `true`; set it to `false` to
+disable recording. `RAG_PREHOP_TRACE_DIR` selects storage.
 
 Credentials/HTTP headers are excluded and known secrets redacted, but payloads
 contain source and model data. Directories use mode 0700 and files 0600. Inline
 writes must not wait for the embedding waiters' executor. Storage errors
 propagate. Trace I/O contributes to phase wall time; trace bytes are excluded
-from retrieval-index capacity.
+from retrieval-index capacity. `iter_trace` reads and verifies saved session events
+and can filter them by source, query or error.
 
 ## Controlled analysis modules
 

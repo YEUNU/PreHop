@@ -11,10 +11,8 @@ dependencies = [
     "typing_extensions>=4.13.0",
     "httpx",
     "pydantic",
-    "loguru",
     "python-dotenv",
     "matplotlib",
-    "tqdm",
     "requests",
     "tiktoken",
     # Generation and embeddings use the configured external LiteLLM gateway.

@@ -11,9 +11,16 @@ answer from the returned passages. This repository provides the implementation a
 The paper separates evidence reached by graph expansion from evidence retained
 under an LLM reranker input ceiling, using Prehop as a controlled test bed.
 
-[Method and implementation](docs/METHOD.md) ·
-[Reproducing the experiments](docs/REPRODUCING.md) ·
-[Runtime setup](docs/SETUP.md)
+This checkout runs Prehop and the dense baseline (`naive`). Archived results for
+other systems can be evaluated from their saved outputs; their implementations
+and installation scripts are not included.
+
+| Guide | Purpose |
+| --- | --- |
+| This README | Understand the project, install it and run a first benchmark |
+| [Method](docs/METHOD.md) | Retrieval behavior, comparison controls and code ownership |
+| [Setup](docs/SETUP.md) | Service requirements, environment selection and configuration precedence |
+| [Reproducing](docs/REPRODUCING.md) | Dataset preparation, experiment commands, evaluation and measurement definitions |
 
 ## How Prehop works
 
@@ -49,22 +56,9 @@ uv sync --locked --python 3.12 --extra dev
 test -f .env || cp .env.example .env
 ```
 
-Edit `.env` to match your infrastructure:
-
-| Setting | Value to supply |
-| --- | --- |
-| `NEO4J_URI` | Bolt URI, including your host and port |
-| `NEO4J_USER`, `NEO4J_PASSWORD` | Database credentials |
-| `NEO4J_DATABASE` | Optional database name; defaults to `neo4j` |
-| `RAG_INFERENCE_BASE_URL` | Gateway API base URL, including `/v1` when applicable |
-| `RAG_INFERENCE_API_KEY` | Gateway credential |
-| `RAG_GENERATION_MODEL` | Registered generation model; paper alias is in `.env.example` |
-| `RAG_EMBEDDING_MODEL` | Registered embedding model; paper alias is in `.env.example` |
-| `NEO4J_VECTOR_DIMENSIONS` | Actual embedding dimensions; paper value is in `.env.example` |
-
-The gateway must support chat completions with JSON-schema output and embeddings.
-The embedding model must return the configured number of dimensions. Changing
-models or method settings defines a different experiment.
+Fill in the connection and model fields in [.env.example](.env.example), copied
+to `.env` above. The [connection settings](docs/SETUP.md#connection-settings)
+explain the required services and fields.
 
 Select the environment and request concurrency, then check the connections:
 
@@ -80,12 +74,8 @@ names. It can start a default local Neo4j installation if needed; remote hosts
 and custom ports must already be running. It does not start model processes.
 Shell launchers and the smoke runner load `.env`, preserving exported overrides.
 Keep the exports above in the shell used for the remaining commands.
-Settings resolve in this order: registry defaults, `.env`, exported values,
-then the selected execution profile for its throughput fields. Choose throughput
-in the profile; it overrides matching concurrency variables. Python and shell
-entrypoints use the same resolver. See the
-[configuration contract](docs/SETUP.md#configuration-ownership-and-precedence)
-for ownership and precedence.
+The [configuration contract](docs/SETUP.md#configuration-ownership-and-precedence)
+defines defaults, exported overrides and execution-profile precedence.
 
 ## Quick start
 
@@ -148,32 +138,10 @@ scores. Its neighboring `.official.json` contains metric summaries; exports
 also produce CSV tables. `failed_rows` records terminal query failures, whose
 quality scores remain zero. Completion alone does not imply every query succeeded.
 
-The dense baseline (`naive`) uses the same environment, fixed passage windows,
-embedding model, Neo4j vector index and gateway. Run and export both
-dataset/system pairs for the comparison:
-
-```bash
-export COMPARISON_RUN="comparison-$(date +%Y%m%d-%H%M%S)-$$"
-results=()
-for dataset in multihoprag hotpotqa; do
-  for method in prehop naive; do
-    run_id="$COMPARISON_RUN-$dataset-$method"
-    bash scripts/run_paper_target.sh "$dataset" "$method" "$run_id" || break 2
-    results+=("data/results/$run_id/$method/$dataset/seed_42/${method}_${dataset}.json")
-  done
-done
-if [ "${#results[@]}" -eq 4 ]; then
-  "$PYTHON_BIN" scripts/export_official_results.py "${results[@]}" \
-    --output-dir "data/results/$COMPARISON_RUN-tables"
-fi
-```
-
-These commands evaluate each system's benchmark answer pipeline. The paper's
-comparison with a shared answer generator needs the separate
-[saved-evidence answer replay](docs/REPRODUCING.md#compare-answer-generation-over-saved-evidence). The
-[experiment guide](docs/REPRODUCING.md) covers that distinction, the HOP/NEXT
-expansion controls and timing measurements. New runs produce their own results;
-identical settings do not guarantee identical generated answers or times.
+To compare with the dense baseline, follow the
+[baseline comparison](docs/REPRODUCING.md#run-a-baseline-comparison). Benchmark
+answers use each system's own prompt; the paper's shared-prompt comparison uses
+[saved-evidence answer generation](docs/REPRODUCING.md#compare-answer-generation-over-saved-evidence).
 
 ## Experimental results
 
@@ -204,13 +172,6 @@ than the entire one-step graph pool, locating part of the recall deficit before
 LLM reranking. Body-only direct retrieval retains the MultiHop-RAG advantage
 under the same input ceiling; its QA difference from four-step similarity-only admission
 is unresolved.
-
-Dataset conditions matter. Initial evidence recall is 66.98% on MultiHop-RAG
-and 94.83% on the reduced HotpotQA corpus. Relative to the initial mean recall
-deficit, one-step expansion recovers 29.50% and 45.11%, respectively. The smaller
-absolute HotpotQA gain does not imply less recovery relative to initially
-missing evidence. These are descriptive retrieval ratios, not QA metrics or a
-causal comparison of datasets.
 
 See the [experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory)
 for inputs, paired intervals, repeated-generation comparisons and limitations.
@@ -244,11 +205,9 @@ optional saved experiment artifacts and are skipped when those are absent.
 Integration tests require configured services and are explicitly marked.
 Tests check implementation behavior; they do not reproduce paper scores.
 
-Keep retrieval and indexing changes in `models/`, shared execution and
-configuration in `core/`, and CLI orchestration in `cli/` and `scripts/`.
-The [module map](docs/METHOD.md#code-ownership) describes those responsibilities.
-Method, prompt or metric changes define new experimental conditions; preserve
-the original results and use a new run ID for comparison.
+Use the [module map](docs/METHOD.md#code-ownership) to locate implementation
+changes and [experiment controls](docs/REPRODUCING.md#select-a-reference) when
+changing methods, prompts or metrics.
 
 ## Data and reproducibility
 

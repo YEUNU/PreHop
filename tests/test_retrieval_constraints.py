@@ -629,7 +629,7 @@ async def test_qplus_similarity_is_not_an_indexing_candidate_channel():
         return []
 
     rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
-    edges = await rag._process_hop_wave(
+    candidates = await rag._collect_hop_page_candidates(
         [
             {
                 "id": "source-chunk",
@@ -639,6 +639,7 @@ async def test_qplus_similarity_is_not_an_indexing_candidate_channel():
         ],
     )
 
+    edges = await rag._merge_hop_candidates(candidates)
     assert edges == []
 
 
@@ -652,22 +653,24 @@ async def test_hop_ann_pool_is_sized_per_source_not_by_corpus_max(monkeypatch):
             {
                 "id": "short-source-chunk",
                 "source": "short.txt",
-                "ann_pools": {"body": 22},
+                "ann_pools": {"q_minus": 22},
                 "questions": [{"id": "q-short", "query_embedding": [1.0]}],
             },
             {
                 "id": "long-source-chunk",
                 "source": "long.txt",
-                "ann_pools": {"body": 180},
+                "ann_pools": {"q_minus": 180},
                 "questions": [{"id": "q-long", "query_embedding": [1.0]}],
             },
         ],
-        "body",
+        "q_minus",
     )
 
     parameters = rag.retry_query.await_args.args[1]
     assert [item["ann_pool"] for item in parameters["source_questions"]] == [22, 180]
     assert "candidate_limit" not in parameters
+    assert parameters["index"] == rag.q_minus_vector_index
+    assert "HAS_Q_MINUS" in rag.retry_query.await_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -684,7 +687,7 @@ async def test_full_hop_policy_follows_qminus_owner_without_second_body_search()
         return []
 
     rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
-    edges = await rag._process_hop_wave(
+    candidates = await rag._collect_hop_page_candidates(
         [
             {
                 "id": "source-chunk",
@@ -694,6 +697,7 @@ async def test_full_hop_policy_follows_qminus_owner_without_second_body_search()
         ],
     )
 
+    edges = await rag._merge_hop_candidates(candidates)
     assert [edge["tgt_id"] for edge in edges] == ["manual-2023"]
     assert [call.args[1] for call in rag._find_hop_candidates_batch.await_args_list] == ["q_minus"]
 
@@ -726,7 +730,7 @@ async def test_each_individual_qplus_keeps_one_direct_evidence_target():
         return candidates
 
     rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
-    edges = await rag._process_hop_wave(
+    candidates = await rag._collect_hop_page_candidates(
         [
             {
                 "id": "source-chunk",
@@ -739,6 +743,7 @@ async def test_each_individual_qplus_keeps_one_direct_evidence_target():
         ],
     )
 
+    edges = await rag._merge_hop_candidates(candidates)
     assert {edge["tgt_id"] for edge in edges} == {"first-best", "second-best"}
     assert all(edge["direct_channels"] == ["q_minus"] for edge in edges)
 
@@ -763,7 +768,7 @@ async def test_questions_sharing_one_target_keep_all_provenance():
 
     rag._find_hop_candidates_batch = AsyncMock(side_effect=fake_candidates)  # type: ignore[method-assign]
 
-    edges = await rag._process_hop_wave(
+    candidates = await rag._collect_hop_page_candidates(
         [
             {
                 "id": "source-chunk",
@@ -776,6 +781,7 @@ async def test_questions_sharing_one_target_keep_all_provenance():
         ]
     )
 
+    edges = await rag._merge_hop_candidates(candidates)
     assert len(edges) == 1
     assert edges[0]["source_question_ids"] == ["q-first", "q-second"]
 

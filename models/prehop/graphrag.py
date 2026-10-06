@@ -44,7 +44,6 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         self.doc_label = f"{self.prefix}{self._safe_corpus}_Document"
         self.q_minus_label = f"{self.prefix}{self._safe_corpus}_QMinus"
         self.q_plus_label = f"{self.prefix}{self._safe_corpus}_QPlus"
-        self.sentence_label = f"{self.prefix}{self._safe_corpus}_Sentence"
         self.answer_anchor_label = f"{self.prefix}{self._safe_corpus}_AnswerAnchor"
 
         self.body_vector_index = f"{self.strategy}_{self._safe_corpus}_vector_idx"
@@ -53,10 +52,7 @@ class GraphRAG(IndexingPipeline, RetrievalPipeline):
         self.q_plus_vector_index = f"{self.strategy}_{self._safe_corpus}_qplus_vector_idx"
         self.q_minus_text_index = f"{self.strategy}_{self._safe_corpus}_qminus_text_idx"
         self.q_plus_text_index = f"{self.strategy}_{self._safe_corpus}_qplus_text_idx"
-        self.sentence_vector_index = f"{self.strategy}_{self._safe_corpus}_sentence_vector_idx"
-        self.sentence_text_index = f"{self.strategy}_{self._safe_corpus}_sentence_text_idx"
         self.vector_index = self.body_vector_index
-        self.text_index = self.body_text_index
 
         self.neo4j = Neo4jService()
         self.llm = VLLMClient()

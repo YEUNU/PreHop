@@ -3,11 +3,14 @@
 For researchers reproducing comparisons or interpreting saved results. Follow
 the [README](../README.md) for installation, data preparation, the small live
 smoke and full system runs. This guide describes data and evaluation definitions,
-continuation, controlled experiments and measurement boundaries. Commands run
+continuation, controlled experiments and measurement boundaries.
+[Setup](SETUP.md) owns service and environment configuration;
+[Method](METHOD.md) defines retrieval behavior. Commands run
 from the repository root in Bash using the selected `PYTHON_BIN`.
 
 | Task | Section |
 | --- | --- |
+| Compare Prehop with the dense baseline | [Baseline comparison](#run-a-baseline-comparison) |
 | Understand datasets, populations and metrics | [Data and evaluation](#data-and-evaluation) |
 | Resume an existing benchmark run | [Completion and continuation](#completion-and-continuation) |
 | Compare HOP/NEXT expansion | [Expansion ablation](#compare-hop-and-next-expansion) |
@@ -15,7 +18,6 @@ from the repository root in Bash using the selected `PYTHON_BIN`.
 | Evaluate saved passages with one answer generator | [Answer-generation replay](#compare-answer-generation-over-saved-evidence) |
 | Reconstruct depth and admission comparisons | [Fixed-input analyses](#fixed-input-analyses) |
 | Export dataset scores | [Evaluate saved results](#evaluate-saved-results) |
-
 
 ## Paper experiment inventory
 
@@ -48,7 +50,7 @@ The candidate-acquisition controls and supporting reference analyses are:
 | LLM reranking, fused-score, retrieval-rank-score and hybrid-score ordering | `compare_prehop_selectors.py` |
 | Matched-count question, body and shuffled HOP evidence supply | `analyze_link_supply.py --include-body` over the archived samples |
 | Prompt-development exclusion of the controlled contrasts and initial-coverage groups | `reader_development_groups.json`, saved per-query scores and paired analyses |
-| Archived seven-system QA, indexing time and query latency (main Table 5, Appendix I) | `data/final_experiments/provenance/uniform_reader_result_index.json` and `data/results/timing-audit-20260928/paper_timing_sources.json`; common-answer QA and native pipeline timing are separate measurements |
+| Archived seven-system QA, indexing time and query latency (cross-system comparison) | `data/final_experiments/provenance/uniform_reader_result_index.json` and `data/results/timing-audit-20260928/paper_timing_sources.json`; common-answer QA and native pipeline timing are separate measurements |
 | Indexing time and query latency of Prehop and the dense baseline | Original indexing statistics and timings; Prehop query latency remeasured using existing indexes |
 
 The depth and admission comparisons use the following fixed-input analyses:
@@ -182,6 +184,34 @@ The smoke's `query.json` holds its answer/passages; `index_evidence.json` and
 `evidence.json` bind execution sources. Full results hold `details`, including
 answers, ordered `retrieved_sources`, scores and `index_manifest_stats_path`.
 Retain the graph and trace references for the analyses below.
+
+## Run a baseline comparison
+
+After the [README benchmark setup](../README.md#run-the-benchmarks-and-inspect-scores),
+compare Prehop with the dense baseline (`naive`). Both use the same environment,
+fixed passage windows, embedding model, Neo4j vector-index infrastructure and gateway. Run and export both
+dataset/system pairs for the comparison:
+
+```bash
+export COMPARISON_RUN="comparison-$(date +%Y%m%d-%H%M%S)-$$"
+results=()
+for dataset in multihoprag hotpotqa; do
+  for method in prehop naive; do
+    run_id="$COMPARISON_RUN-$dataset-$method"
+    bash scripts/run_paper_target.sh "$dataset" "$method" "$run_id" || break 2
+    results+=("data/results/$run_id/$method/$dataset/seed_42/${method}_${dataset}.json")
+  done
+done
+if [ "${#results[@]}" -eq 4 ]; then
+  "$PYTHON_BIN" scripts/export_official_results.py "${results[@]}" \
+    --output-dir "data/results/$COMPARISON_RUN-tables"
+fi
+```
+
+These commands evaluate each system's benchmark answer pipeline. The paper's
+comparison with a shared answer generator needs the separate
+[saved-evidence answer replay](#compare-answer-generation-over-saved-evidence). New runs produce their own results;
+identical settings do not guarantee identical generated answers or times.
 
 ## Select a reference
 
@@ -357,7 +387,8 @@ three-policy comparison (Appendix C) uses saved rankings and
 generated answers for graph expansion, direct retrieval with more candidates and
 body-only direct retrieval. It is a separate run from the primary matched-budget
 comparison; its repeated Prehop and multi-channel conditions, and a later
-byte-identical repeat of all three conditions, quantify generation variability at
+repeat with identical reranking requests and the same answer-generation procedure,
+quantify observed generation variability at
 temperature zero (Appendix C). Repeating requests also exposes the saved per-condition
 final-answer-label rates and the reranker's repeated-ID counts reported in Appendix C. Use those final full-population outputs, not a
 partial sample or the coverage-only preparation, for downstream scores. All three use the same LLM reranking and
@@ -482,6 +513,12 @@ from that neighborhood; it need not be achievable under the token ceiling.
 Compare initial-coverage strata and report recovered and displaced annotations
 separately before attributing different effects to corpus or graph structure.
 
+Dataset conditions matter. Initial evidence recall is 66.98% on MultiHop-RAG
+and 94.83% on the reduced HotpotQA corpus. Relative to the initial mean recall
+deficit, one-step expansion recovers 29.50% and 45.11%, respectively. The smaller
+absolute HotpotQA gain does not imply less recovery relative to initially
+missing evidence. These are descriptive retrieval ratios, not QA metrics or a
+causal comparison of datasets.
 
 <a id="compare-a-common-reader-over-saved-evidence"></a>
 
@@ -705,8 +742,8 @@ matching reference and query file, and
 pass their `events.jsonl` paths with `--trace-events`; each event's relative
 payload path must still resolve beside that event file.
 
-The default comparison includes the recorded LLM order, fused
-semantic/representation order, and representation-rank order. The latter sums
+The default comparison includes the recorded LLM order, fusion of
+query-to-body similarity and retrieval-rank scores, and retrieval-rank order. The latter sums
 channel reciprocal ranks, retains the recorded graph-score propagation, and
 breaks ties by descending passage identity. The fused alternative retains the
 recorded order, including ties. Each deterministic condition takes the first
@@ -735,7 +772,7 @@ The live replay implements body/Q−/Q+ search using the reference's default
 top-k and recorded query vectors. It is intended for the documented full-channel,
 multiplier-one, sentence-channel-disabled reference. A different search policy
 requires a matching replay implementation; matching model names alone is
-insufficient. Offline fused and representation conditions need no database.
+insufficient. Offline fused and retrieval-rank conditions need no database.
 
 Conditions write `llm.json`, `fused.json`, `representation.json`, and optional
 `raw.json`, each with benchmark-shaped `details` and `retrieved_sources`.

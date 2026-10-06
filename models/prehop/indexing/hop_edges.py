@@ -32,29 +32,7 @@ class HopEdgeMixin:
         if not source_questions:
             return []
 
-        if channel == "body":
-            query = """
-                UNWIND $source_questions AS source_question
-                CALL db.index.vector.queryNodes($index, source_question.ann_pool, source_question.embed)
-                YIELD node, score
-                WHERE node.source <> source_question.source
-                WITH source_question, node, score
-                ORDER BY source_question.id, score DESC, node.id
-                WITH source_question, collect({
-                    target_id: node.id,
-                    target_question_id: null,
-                    score: score
-                })[0..1] AS candidates
-                UNWIND candidates AS candidate
-                RETURN source_question.chunk_id AS source_chunk_id,
-                       source_question.id AS source_question_id,
-                       candidate.target_id AS target_id,
-                       candidate.target_question_id AS target_question_id,
-                       candidate.score AS score
-                ORDER BY source_question_id, score DESC
-            """
-            index_name = self.body_vector_index
-        elif channel == "q_minus":
+        if channel == "q_minus":
             relationship = "HAS_Q_MINUS"
             index_name = self.q_minus_vector_index
             query = f"""
@@ -215,14 +193,6 @@ class HopEdgeMixin:
                 selected_edges.append(edge)
 
         return selected_edges
-
-    async def _process_hop_wave(
-        self,
-        wave: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Build answer-owner edges for one bounded collection wave."""
-        tentative_by_source = await self._collect_hop_wave_candidates(wave)
-        return await self._merge_hop_candidates(tentative_by_source)
 
     async def _collect_hop_page_candidates(
         self,
