@@ -36,7 +36,7 @@ by **NEXT** links. The question-role formulation follows
 ![A Q+ question of passage A matches a Q− question of passage B and creates the HOP link A to B](docs/figures/question_link_example.png)
 
 At query time the original question searches the body, Q− and Q+ indexes; the
-fused hits form the initial passages. Prehop follows outgoing HOP links and
+fused hits form the initial passages (**I** in the diagram). Prehop follows outgoing HOP links and
 both NEXT directions once from every initial passage, keeps the initial
 candidates in the pool, orders the pool by a fused score and passes it to one
 LLM reranking request that returns up to 12 passages for answer generation.
@@ -158,6 +158,9 @@ metrics use percentage points (pp).
 | Four-step similarity-only admission versus rank fusion | +4.29 pp admitted recall; +3.02 pp returned recall | Same neighborhood and input ceiling; QA difference is unresolved |
 
 ![Candidate coverage as multi-channel direct retrieval retains additional passages](docs/figures/direct_prefix_coverage.png)
+
+Shading shows pointwise 95% bootstrap intervals. The horizontal axis measures
+additional passages beyond the initial set; the dashed line is one-step graph coverage.
 
 ![Annotated recall before and after admission at increasing expansion depths](docs/figures/v2_depth_admission.png)
 
