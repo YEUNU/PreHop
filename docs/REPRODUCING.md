@@ -59,11 +59,11 @@ The depth and admission comparisons use the following fixed-input analyses:
 | --- | --- |
 | One-to-four-step HOP/NEXT neighborhoods and token-limited admission | Saved graph, initial passages/scores, query–body similarities, full prompt metadata and tokenizer; reconstruct neighborhoods, orders and whole-passage prefixes |
 | Four-step rank-fusion versus similarity-only admission, compared against the one-step policies | The same admitted sets and recorded downstream requests from two runs: the primary run presents each set in its own admission order, the secondary run presents both in query-to-body cosine order; re-score saved passages and answers, including prompt-selection exclusions; post hoc contrasts against the one-step three-policy run pair both runs' per-query scores with `ablation_statistics.cluster_interval` |
-| Question-link versus body-similarity graphs crossed with admission policy | Saved graph-specific neighborhoods, scores and admitted sets; evaluate coverage, shared evidence and count-matched prefixes |
-| Inherited-score exchange on a common passage pool | Both full-graph score vectors, the intersection of passage IDs and fixed addition counts; preserve graph paths outside the intersection |
-| Distance and starting-score components | Saved shortest distances and starting scores for both graphs, with the same common pool, counts and scoring rules |
+| Question-link versus body-similarity graphs crossed with admission policy (archived; not in the manuscript) | Saved graph-specific neighborhoods, scores and admitted sets; evaluate coverage, shared evidence and count-matched prefixes |
+| Inherited-score exchange on a common passage pool (archived; not in the manuscript) | Both full-graph score vectors, the intersection of passage IDs and fixed addition counts; preserve graph paths outside the intersection |
+| Distance and starting-score components (archived; not in the manuscript) | Saved shortest distances and starting scores for both graphs, with the same common pool, counts and scoring rules |
 | Input ceiling, distance decay, rank-fusion offset and score ties | Fixed graph/candidate inputs and each condition's protocol; candidate coverage only |
-| Repeated-fact sensitivity of the graph and score comparisons | The same five exclusion masks applied to the graph-admission and common-pool conditions |
+| Repeated-fact sensitivity of the graph and score comparisons (archived; not in the manuscript) | The same five exclusion masks applied to the graph-admission and common-pool conditions |
 | Dataset differences, source selection and changed evidence | Saved graph structure, source identities, initial coverage, HOP/NEXT reachability, and passage-to-annotation matches |
 
 See [Fixed-input analyses](#fixed-input-analyses) for the available replay
@@ -604,8 +604,8 @@ each package, including historical comparisons outside the final manuscript.
 Preserve those files when reanalyzing outputs; current paper scope and appendix
 locations are defined by the inventory above.
 
-The depth, admission, graph-construction and inherited-score comparisons are
-replays over saved experiment artifacts rather than new benchmark runs. Each
+The depth and admission comparisons, and the archived graph-construction and
+inherited-score comparisons, are replays over saved experiment artifacts rather than new benchmark runs. Each
 package pins its inputs by hash in a `protocol.json` before measurement and
 uses gold annotations only to evaluate the constructed sets.
 
