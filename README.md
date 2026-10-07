@@ -7,7 +7,7 @@ Prehop is a graph-based retriever for multi-hop retrieval-augmented generation
 links between passages; at query time it retrieves initial passages, expands
 the stored links once, reranks the combined pool with an LLM and generates an
 answer from the returned passages. This repository provides the implementation and experiment code for
-**Reached but Not Retained: Candidate Admission under Reranker Input Limits in Graph-Based Multi-Hop RAG**.
+**Reached but Not Retained: Candidate Admission under Reranker Input Ceilings in Graph-Based Multi-Hop RAG**.
 The paper separates evidence reached by graph expansion from evidence retained
 under an LLM reranker input ceiling, using Prehop as a controlled test bed.
 
@@ -155,7 +155,7 @@ metrics use percentage points (pp).
 | One-step expansion versus fixed initial passages | +0.0195 MAP@10; +4.89 pp in QA | Same initial passages and LLM reranking |
 | Body-only direct retrieval versus the one-step graph | +5.67 pp in QA | Same per-query reranker input ceiling; separate initial passages |
 | Four-step reachable versus rank-fusion admitted recall | 94.60% versus 82.55% annotated recall | Reachable evidence versus evidence admitted under the original input ceiling |
-| Four-step similarity-only admission versus rank fusion | +4.29 pp admitted recall; +3.02 pp returned recall | Same neighborhood and input ceiling; QA difference is unresolved |
+| Four-step similarity-only admission versus rank fusion | +4.29 pp admitted recall; +3.02 pp returned recall | Same neighborhood and input ceiling; QA difference is not statistically significant |
 
 ![Candidate coverage as multi-channel direct retrieval retains additional passages](docs/figures/direct_prefix_coverage.png)
 
@@ -164,7 +164,7 @@ additional passages beyond the initial set; the dashed line is one-step graph co
 
 ![Annotated recall before and after admission at increasing expansion depths](docs/figures/v2_depth_admission.png)
 
-Appendix K reports the fixed-initial-passage ablation, evidence partition and
+Appendix H reports the fixed-initial-passage ablation, evidence partition and
 direct-prefix coverage. Intermediate prefixes measure coverage only; only the
 full direct pool is matched to the one-step input ceiling.
 
@@ -174,7 +174,7 @@ leaderboard. Direct retrieval's returned context can contain more annotated evid
 than the entire one-step graph pool, locating part of the recall deficit before
 LLM reranking. Body-only direct retrieval retains the MultiHop-RAG advantage
 under the same input ceiling; its QA difference from four-step similarity-only admission
-is unresolved.
+is not statistically significant.
 
 See the [experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory)
 for inputs, paired intervals, repeated-generation comparisons and limitations.

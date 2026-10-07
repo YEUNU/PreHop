@@ -130,7 +130,7 @@ experimental conditions; archived code and field identifiers remain unchanged.
 The HOP/NEXT ablation retains the index and saved initial passages while varying
 which edge types are expanded. The comparison of LLM reranking with score-based
 ordering instead retains each complete candidate pool. Neither comparison
-equalizes the input tokens across different expansion conditions. Appendix K.1
+equalizes the input tokens across different expansion conditions. Appendix H.1
 reports the fixed-initial-passage QA ablation from its own generation run; its
 ranking interaction is measured in MAP@10.
 
@@ -148,8 +148,8 @@ reuses the constructed corpus and index; it does not measure body-only indexing.
 
 ### Expansion depth and candidate admission
 
-Appendix K.2 partitions initially absent annotated evidence into graph-only,
-direct-only, shared and unrecovered units. K.3 measures coverage as the direct
+Appendix H.2 partitions initially absent annotated evidence into graph-only,
+direct-only, shared and unrecovered units. H.3 measures coverage as the direct
 prefix grows; intermediate prefixes do not constitute additional QA runs.
 
 The depth analysis repeatedly expands the saved HOP/NEXT graph to construct

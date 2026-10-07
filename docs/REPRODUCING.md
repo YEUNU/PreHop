@@ -21,7 +21,7 @@ from the repository root in Bash using the selected `PYTHON_BIN`.
 
 ## Paper experiment inventory
 
-*Reached but Not Retained: Candidate Admission under Reranker Input Limits in Graph-Based Multi-Hop RAG* studies which
+*Reached but Not Retained: Candidate Admission under Reranker Input Ceilings in Graph-Based Multi-Hop RAG* studies which
 reachable evidence enters a limited LLM reranking input. Standard Prehop remains
 the one-step method described in [Method](METHOD.md); the deeper neighborhoods
 and changed admission policies are experimental conditions. Appendix analyses,
@@ -29,7 +29,7 @@ including inconclusive and negative results, remain in the reproduction scope.
 Archived graph-construction and link-control analyses remain available even where
 they are no longer included in the manuscript.
 
-The main paper evaluates reachability, admission and returned evidence. Appendix K
+The main paper evaluates reachability, admission and returned evidence. Appendix H
 contains the fixed-initial-passage QA ablation, evidence partition and direct-prefix
 coverage. The ablation uses a separate generation run and does not match input
 tokens; intermediate direct prefixes measure coverage without new QA evaluations.
@@ -39,11 +39,11 @@ The candidate-acquisition controls and supporting reference analyses are:
 | Comparison or analysis | Reproduction path |
 | --- | --- |
 | HOP/NEXT factorial with fixed initial passages | `run_primary_hop_ablation.py`, `analyze_expansion_factorial.py` |
-| Expansion QA with fixed initial passages (Appendix K.1) | `compare_prehop_direct_qa.py` with `init-fixed-start` |
+| Expansion QA with fixed initial passages (Appendix H.1) | `compare_prehop_direct_qa.py` with `init-fixed-start` |
 | Graph expansion versus direct retrieval with more candidates, token and count controls | Archived candidate preparation, reranking and answer-generation protocols; see the matched-budget section below |
-| Evidence overlap and candidate-count prefixes (Appendix K.2–K.3), with supporting channel and retention analyses | `analyze_evidence_accessibility.py`, `analyze_ablation_links.py` |
+| Evidence overlap and candidate-count prefixes (Appendix H.2–H.3), with supporting channel and retention analyses | `analyze_evidence_accessibility.py`, `analyze_ablation_links.py` |
 | Body-only direct retrieval under matched token ceilings | Archived body-search outputs, original body-channel starts and token-budget preparation; the three-policy reranking and answer-generation run and its repeat with identical reranking requests and the same answer-generation procedure (Appendix C) |
-| Reranker token-allowance sweep at a quarter and a half of Prehop's allowance (Appendix F) | Saved one-step and direct pools, mandatory initial passages, whole-passage prefix fitter and tokenizer; fused-order, cosine-order and direct prefixes reranked and answered under common per-query ceilings |
+| Reranker input-ceiling sweep at a quarter and a half of the additional token allowance (Appendix F) | Saved one-step and direct pools, mandatory initial passages, whole-passage prefix fitter and tokenizer; fused-order, cosine-order and direct prefixes reranked and answered under common per-query ceilings |
 | Repeated-fact sensitivity of the recall contrasts (Appendix D) | Fixed fact-contribution ranking and whole-question exclusion masks; an additional paired bootstrap resamples connected components of questions sharing a fact string over the same saved outputs; no reranking or answer regeneration |
 | Graph distance of gold evidence missing from the one-step pool (supporting acquisition analysis) | Saved graph, initial passages and corpus witnesses; shortest HOP/NEXT paths without an input budget; no model calls |
 | Direct answer context versus the entire Prehop candidate pool | Paired reaggregation of the archived per-question pool and final-context gold-coverage sets |
@@ -62,7 +62,7 @@ The depth and admission comparisons use the following fixed-input analyses:
 | Question-link versus body-similarity graphs crossed with admission policy | Saved graph-specific neighborhoods, scores and admitted sets; evaluate coverage, shared evidence and count-matched prefixes |
 | Inherited-score exchange on a common passage pool | Both full-graph score vectors, the intersection of passage IDs and fixed addition counts; preserve graph paths outside the intersection |
 | Distance and starting-score components | Saved shortest distances and starting scores for both graphs, with the same common pool, counts and scoring rules |
-| Token allowance, distance decay, rank-fusion offset and score ties | Fixed graph/candidate inputs and each condition's protocol; candidate coverage only |
+| Input ceiling, distance decay, rank-fusion offset and score ties | Fixed graph/candidate inputs and each condition's protocol; candidate coverage only |
 | Repeated-fact sensitivity of the graph and score comparisons | The same five exclusion masks applied to the graph-admission and common-pool conditions |
 | Dataset differences, source selection and changed evidence | Saved graph structure, source identities, initial coverage, HOP/NEXT reachability, and passage-to-annotation matches |
 
@@ -345,7 +345,7 @@ This identifies the tokenizer used to measure inputs, separately from the
 served generation model's recorded revision, which stays in saved run
 provenance.
 
-### Reranker token-allowance sweep
+### Reranker input-ceiling sweep
 
 The sweep reuses the saved one-step Prehop pool and the saved multi-channel
 direct-retrieval pool of the matched-budget comparison on MultiHop-RAG. For each
