@@ -2,18 +2,20 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Prehop is a graph-based retriever for multi-hop retrieval-augmented generation
-(RAG). During indexing it generates questions for every passage and stores
-links between passages; at query time it retrieves initial passages, expands
-the stored links once, reranks the combined pool with an LLM and generates an
-answer from the returned passages. This repository provides the implementation and experiment code for
+This repository provides the implementation and experiment code for
 **Reached but Not Retained: Candidate Admission under Reranker Token Budgets in Graph-Based Multi-Hop RAG**.
-The paper separates evidence reached by graph expansion from evidence retained
-under an LLM reranker input ceiling, using Prehop as a controlled test bed.
-The manuscript reports retrieval evaluation only: reachable, admitted and returned
-recall, complete coverage, and benchmark-specific retrieval MAP. Answer generation
-remains available in the implementation, but QA, Answer EM/F1, answer-generation
-experiments and cross-system answer comparisons are outside the manuscript.
+
+The paper studies where graph-retrieved evidence is lost between three stages:
+**reachable → admitted → returned**. Prehop, a static question-link passage graph
+with one LLM reranking call, is the controlled test bed. On MultiHop-RAG,
+four-step expansion reaches **94.60%** annotated recall, but rank-fusion admission
+retains **82.55%** under the original one-step reranker input budget. An
+annotation-aware construction verifies that all reachable annotations can fit
+within that budget on every evidence-bearing question.
+
+The evaluation reports retrieval recall, complete coverage and benchmark-specific
+MAP. The implementation also supports answer generation; answer-quality
+experiments are outside the paper's scope.
 
 This checkout runs Prehop and the dense baseline (`naive`). Archived results for
 other systems can be evaluated from their saved outputs; their implementations
@@ -28,7 +30,7 @@ and installation scripts are not included.
 
 ## How Prehop works
 
-![Prehop architecture: offline indexing with generated questions and stored links, then one-step expansion, LLM reranking and answer generation](docs/figures/prehop_architecture.png)
+![Prehop architecture and admission diagnosis: indexing, reachable neighborhoods, token-limited admission and returned passages, with an actual HotpotQA cutoff case](docs/figures/prehop_architecture.png)
 
 Each passage receives two question sets from an LLM. **Q−** questions are
 answerable from the passage itself; **Q+** questions ask for information that
@@ -43,7 +45,10 @@ At query time the original question searches the body, Q− and Q+ indexes; the
 fused hits form the initial passages (**I** in the diagram). Prehop follows outgoing HOP links and
 both NEXT directions once from every initial passage, keeps the initial
 candidates in the pool, orders the pool by a fused score and passes it to one
-LLM reranking request that returns up to 12 passages for answer generation.
+LLM reranking request that returns up to 12 passages. The paper traces evidence
+through these returned passages. Its depth experiment expands the saved graph
+up to four steps and admits whole-passage prefixes under the same per-query
+one-step token budget; the standard runtime still expands once.
 Stored links propose evidence; the query decides its relevance only through
 scoring and reranking. The [method guide](docs/METHOD.md) gives the exact
 fusion, scoring and reranking rules.
@@ -164,6 +169,14 @@ HotpotQA intervals cluster the 944 original questions.
 | Four-step reachable versus rank-fusion admitted recall | 94.60% versus 82.55% annotated recall | Reachable evidence versus evidence admitted under the original input ceiling |
 | Four-step similarity-only admission versus rank fusion | +4.29 pp admitted recall; +3.02 pp returned recall | Same neighborhood, initial passages and input ceiling; membership and presentation order change together |
 | Annotation-aware capacity-feasibility diagnostic | All four-step reachable annotations fit on every evidence-bearing question | Same neighborhood, mandatory initial passages and original token ceiling; no reranking |
+
+The central four-step result (paper Table 3) traces the same reachable
+neighborhood through both admission policies and their own-order reranking:
+
+| Dataset | Reachable recall | Fusion admitted | Fusion returned | Similarity-only admitted | Similarity-only returned |
+| --- | --- | --- | --- | --- | --- |
+| MultiHop-RAG | 94.60% | 82.55% | 76.58% | 86.84% | 79.60% |
+| HotpotQA | 97.38% | 97.29% | 97.24% | 96.86% | 96.86% |
 
 The annotation-aware construction is a capacity-feasibility certificate: it attains
 full-neighborhood annotation coverage, an upper bound for any subset, within the
