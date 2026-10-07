@@ -5,6 +5,11 @@ Configure Python, Neo4j and the inference gateway before running the
 Experiment commands and measurement rules are in [Reproducing](REPRODUCING.md);
 method behavior is in [Method](METHOD.md).
 
+The current paper reports retrieval evaluation only. Full benchmark commands
+still run the implementation's answer generator and may write QA/EM/F1 fields;
+those outputs are outside the manuscript. Offline coverage, admission, weighted
+fusion and capacity-feasibility analyses use saved inputs without new model calls.
+
 ## Main Python environment
 
 Use the README installation for a new checkout. The main Python environment is
@@ -96,10 +101,19 @@ seeds are separate. Temperature zero does not guarantee identical responses to
 repeated requests. Preserve each generation separately, including its actual
 model provenance and settings.
 
-Re-scoring stored answers and reconstructing coverage from saved candidate sets require the
+Reconstructing annotated coverage, reranking metrics and feasibility certificates
+from saved candidate sets requires the
 archived inputs listed in [Reproducing](REPRODUCING.md#fixed-input-analyses).
 Those offline checks do not require starting the gateway or rebuilding indexes.
-Generating new rankings or answers from saved passages still needs the gateway.
+Generating new rankings from saved passages still needs the gateway. Optional
+answer-generation replay also needs it, but is outside the paper's scope.
+
+The controlled resource is each query's one-step reranker prompt token count,
+including its chat template. It is an experimental allowance, not the model's
+maximum context length or a serving configuration flag. Matching that allowance
+does not match retrieval compute or latency. Saved model aliases and the pinned
+tokenizer support input accounting; unverified model weight revisions, hardware
+and serving configurations limit exact reproduction from a rebuilt index.
 
 ## Data storage
 

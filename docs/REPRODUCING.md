@@ -21,64 +21,56 @@ from the repository root in Bash using the selected `PYTHON_BIN`.
 
 ## Paper experiment inventory
 
-*Reached but Not Retained: Candidate Admission under Reranker Input Ceilings in Graph-Based Multi-Hop RAG* studies which
-reachable evidence enters a limited LLM reranking input. Standard Prehop remains
-the one-step method described in [Method](METHOD.md); the deeper neighborhoods
-and changed admission policies are experimental conditions. Appendix analyses,
-including inconclusive and negative results, remain in the reproduction scope.
-Archived graph-construction and link-control analyses remain available even where
-they are no longer included in the manuscript.
+*Reached but Not Retained: Candidate Admission under Reranker Token Budgets in
+Graph-Based Multi-Hop RAG* reports retrieval evaluation only: reachable, admitted
+and returned recall, complete coverage, and benchmark-specific retrieval MAP.
+QA, Answer EM/F1, answer-generation experiments/prompts and the cross-system
+comparison appendix are outside the current manuscript. Standard Prehop remains
+the one-step runtime described in [Method](METHOD.md); deeper neighborhoods and
+admission policies are experimental conditions.
 
-The main paper evaluates reachability, admission and returned evidence. Appendix H
-contains the fixed-initial-passage QA ablation, evidence partition and direct-prefix
-coverage. The ablation uses a separate generation run and does not match input
-tokens; intermediate direct prefixes measure coverage without new QA evaluations.
+The current manuscript uses the following saved packages. Paths are relative to
+`data/results/`; these local artifacts are not bundled with the public checkout.
 
-The candidate-acquisition controls and supporting reference analyses are:
+| Comparison or analysis | Manuscript location | Saved package |
+| --- | --- | --- |
+| One-step graph G versus multi-channel direct D and body-only direct B | Section 4, Table 1; Appendix C | `body-direct-final-20261001-e1/`; reranking repeat `body-direct-repeat-20261004-bm2/` |
+| Reachable and admitted evidence at depths 1–4 | Sections 5–6, Figure 2; Appendix C.1 | `depth-admission-order-20261003-aq4/` |
+| Four-step reranking in each admitted set's own order | Sections 5–6, Table 3 | `fourstep-own-order-20261004-bm1/` (retrieval outputs only) |
+| New and displaced evidence, route/depth structure, changed HotpotQA passages | Section 6, Table 4; Appendix E | `dataset-difference-20261003-as3/` |
+| Returned complete coverage and annotation survival through reranking | Tables 1 and 3; Appendix E | `retrieval-offline-followup-20261007-rf1/` |
+| Annotation-aware capacity-feasibility certificate | Section 5; Appendix E | `budget-feasible-coverage-20261007-fc1/` |
+| Fact/source-cluster sensitivity | Appendix D | `fact-cluster-bootstrap-20261005-bn1/` |
+| Four-step admission budgets and smaller one-step reranking budgets | Section 5; Appendix F | `budget-admission-sensitivity-20261003-as4/`; `budget-sweep-direct-20261005-bm6/` (retrieval outputs only) |
+| Fusion decay, offset and tie controls | Section 6; Appendix G | `admission-policy-controls-20261004-aw1/` |
+| Exploratory five-weight fusion sweep | Section 6, Table 5; Appendix G | `weighted-fusion-sweep-20261007-wf1/` |
+| Fixed-initial-passage MAP@10 and complete coverage@10 | Appendix H.1 | `fixed-start-qa-20260929-a1/`; `paper-score-replay-20260929-b3/` (retrieval outputs only) |
+| Initially missing evidence partition and direct-prefix coverage | Section 4, Table 2; Appendix H.2 | `evidence-accessibility-20260930-c1/`; `evidence-witness-20260930-e1/` |
 
-| Comparison or analysis | Reproduction path |
-| --- | --- |
-| HOP/NEXT factorial with fixed initial passages | `run_primary_hop_ablation.py`, `analyze_expansion_factorial.py` |
-| Expansion QA with fixed initial passages (Appendix H.1) | `compare_prehop_direct_qa.py` with `init-fixed-start` |
-| Graph expansion versus direct retrieval with more candidates, token and count controls | Archived candidate preparation, reranking and answer-generation protocols; see the matched-budget section below |
-| Evidence overlap and candidate-count prefixes (Appendix H.2–H.3), with supporting channel and retention analyses | `analyze_evidence_accessibility.py`, `analyze_ablation_links.py` |
-| Body-only direct retrieval under matched token ceilings | Archived body-search outputs, original body-channel starts and token-budget preparation; the three-policy reranking and answer-generation run and its repeat with identical reranking requests and the same answer-generation procedure (Appendix C) |
-| Reranker input-ceiling sweep at a quarter and a half of the additional token allowance (Appendix F) | Saved one-step and direct pools, mandatory initial passages, whole-passage prefix fitter and tokenizer; fused-order, cosine-order and direct prefixes reranked and answered under common per-query ceilings |
-| Repeated-fact sensitivity of the recall contrasts (Appendix D) | Fixed fact-contribution ranking and whole-question exclusion masks; an additional paired bootstrap resamples connected components of questions sharing a fact string over the same saved outputs; no reranking or answer regeneration |
-| Graph distance of gold evidence missing from the one-step pool (supporting acquisition analysis) | Saved graph, initial passages and corpus witnesses; shortest HOP/NEXT paths without an input budget; no model calls |
-| Direct answer context versus the entire Prehop candidate pool | Paired reaggregation of the archived per-question pool and final-context gold-coverage sets |
-| LLM reranking, fused-score, retrieval-rank-score and hybrid-score ordering | `compare_prehop_selectors.py` |
-| Matched-count question, body and shuffled HOP evidence supply | `analyze_link_supply.py --include-body` over the archived samples |
-| Prompt-development exclusion of the controlled contrasts and initial-coverage groups | `reader_development_groups.json`, saved per-query scores and paired analyses |
-| Archived seven-system QA, indexing time and query latency (cross-system comparison) | `data/final_experiments/provenance/uniform_reader_result_index.json` and `data/results/timing-audit-20260928/paper_timing_sources.json`; common-answer QA and native pipeline timing are separate measurements |
-| Indexing time and query latency of Prehop and the dense baseline | Original indexing statistics and timings; Prehop query latency remeasured using existing indexes |
+`paper-audit-final/number_map.md` records numerical provenance, including the
+indexing-time sources. Historical directory names containing `qa` do not change
+which metrics the current manuscript reports. Preserve archived source records.
 
-The depth and admission comparisons use the following fixed-input analyses:
+MultiHop-RAG is the main setting; reduced-corpus HotpotQA deliberately tests a
+near-saturated boundary case for the admission intervention. The direct control
+matches initial passages, the shared index and reranker input budget, not compute
+or latency. Body-only B keeps its own initial passages and is a complete-policy
+comparison. Appendix H.1's fixed-initial ablation has unequal input sizes; only
+the full direct prefix in H.2 uses the matched ceiling.
 
-| Comparison or analysis | Reproduction inputs and scope |
-| --- | --- |
-| One-to-four-step HOP/NEXT neighborhoods and token-limited admission | Saved graph, initial passages/scores, query–body similarities, full prompt metadata and tokenizer; reconstruct neighborhoods, orders and whole-passage prefixes |
-| Four-step rank-fusion versus similarity-only admission, compared against the one-step policies | The same admitted sets and recorded downstream requests from two runs: the primary run presents each set in its own admission order, the secondary run presents both in query-to-body cosine order; re-score saved passages and answers, including prompt-selection exclusions; post hoc contrasts against the one-step three-policy run pair both runs' per-query scores with `ablation_statistics.cluster_interval` |
-| Question-link versus body-similarity graphs crossed with admission policy (archived; not in the manuscript) | Saved graph-specific neighborhoods, scores and admitted sets; evaluate coverage, shared evidence and count-matched prefixes |
-| Inherited-score exchange on a common passage pool (archived; not in the manuscript) | Both full-graph score vectors, the intersection of passage IDs and fixed addition counts; preserve graph paths outside the intersection |
-| Distance and starting-score components (archived; not in the manuscript) | Saved shortest distances and starting scores for both graphs, with the same common pool, counts and scoring rules |
-| Input ceiling, distance decay, rank-fusion offset and score ties | Fixed graph/candidate inputs and each condition's protocol; candidate coverage only |
-| Repeated-fact sensitivity of the graph and score comparisons (archived; not in the manuscript) | The same five exclusion masks applied to the graph-admission and common-pool conditions |
-| Dataset differences, source selection and changed evidence | Saved graph structure, source identities, initial coverage, HOP/NEXT reachability, and passage-to-annotation matches |
+The source checkout supports new benchmark runs, saved-passage evaluations,
+HOP/NEXT controls and optional answer-generation replay. Exact reconstruction
+of the reported runs additionally requires saved indexes, candidate pools,
+outputs, tokenizer and protocol/code snapshots. See [Fixed-input analyses](#fixed-input-analyses).
+Saved hashes establish input identity; model aliases do not verify immutable
+weights or serving configurations. Implementation tests use mocks and fixtures
+and do not reproduce paper scores.
 
-See [Fixed-input analyses](#fixed-input-analyses) for the available replay
-packages and the distinct limits of each one. The repository keeps only the
-implementation and tooling behind these retained experiments.
-
-The source checkout supports new Prehop and dense-baseline benchmark runs,
-saved-passage answer generation, HOP/NEXT controls, and analysis of their saved
-outputs.
-Exact replay of the archived matched-budget comparison, shuffled-link supply
-analysis and depth/admission analyses additionally requires their saved indexes, candidate pools, samples and
-protocol/code snapshots.
-These generated artifacts are not bundled with the source. Their requirements
-are specified in the respective sections below. Implementation tests use mocks
-and fixtures; they do not reproduce paper scores.
+Historical answer repetitions, common-reader and seven-system QA comparisons,
+graph-construction variants, score-exchange experiments, source oracles and
+prompt-development exclusions remain archived. Instructions below preserve
+supported runtime and analysis capabilities; their presence does not make them
+part of the current paper.
 
 ## Data and evaluation
 
@@ -122,7 +114,34 @@ titles. Gold annotations never repair corpus content. Missing supporting
 sentences remain in the denominator and are recorded in `annotation_coverage`.
 A complete run is labelled `released_benchmark`, not fullwiki completion.
 
+### Manuscript retrieval metrics and uncertainty
+
+For each evidence-bearing question, recall is the fraction of annotated units
+covered by a passage set; complete coverage is one only when all its units are
+covered. Average each metric over questions, preserving HotpotQA occurrence
+weights. Reachable uses the full graph neighborhood, admitted uses the reranker
+input, and returned uses its output. The 301 MultiHop-RAG questions without
+annotations are excluded from these coverage metrics. Complete coverage@10 in
+Appendix H.1 applies the same rule to the first ten returned passages.
+
+Primary intervals use 10,000 paired bootstrap resamples with Bonferroni-adjusted
+95% familywise confidence within the separately defined comparison families in
+Appendix B. HotpotQA resamples original-question clusters. Post hoc complete
+coverage has its own six-contrast family. Weighted-fusion and fact/source-cluster
+sensitivity intervals are pointwise 95%; do not label them family-adjusted.
+
+Fact clustering retains the main recall contrasts, but one source component
+contains 1,895 of 2,255 MultiHop-RAG evidence-bearing questions. Under this nearly
+degenerate source clustering, only the one-step direct-retrieval recall contrasts
+exclude zero. Preserve this limit on generalization rather than interpreting
+all question-level significance as robustness across sources.
+
 ### Official metrics and prediction adapters
+
+This section documents the benchmark export schema, including historical answer
+metrics. The paper uses annotated retrieval recall and complete coverage through
+reach, admission and return, plus the fixed-initial MAP@10 analysis. It does not
+report QA, Answer EM/F1, Joint metrics or answer-generation comparisons.
 
 MultiHop-RAG reports Hits@4/10, MRR@10, MAP@10 and its official token-intersection
 QA success rule. QA includes null questions and reports question-type/non-null
@@ -208,8 +227,8 @@ if [ "${#results[@]}" -eq 4 ]; then
 fi
 ```
 
-These commands evaluate each system's benchmark answer pipeline. The paper's
-comparison with a shared answer generator needs the separate
+These commands evaluate each system's runtime benchmark pipeline. Optional
+answer comparisons outside the manuscript use the separate
 [saved-evidence answer replay](#compare-answer-generation-over-saved-evidence). New runs produce their own results;
 identical settings do not guarantee identical generated answers or times.
 
@@ -268,7 +287,7 @@ excludes initial retrieval; it is not interchangeable with full-query latency.
 Expansion changes the candidate pool while holding the final selection budget
 fixed. Its effect is conditional on the remaining retrieval system.
 
-To measure expansion's effect on MultiHop-RAG answers with fixed initial passages, set
+For the archived answer experiment, outside the current manuscript, set
 `DIRECT_ONLY_RESULT` to the completed `--expansion none` result. Reuse the
 original selected passages from both conditions with the shared answer generator:
 
@@ -326,8 +345,10 @@ embedding and initial passages in both conditions. Direct retrieval with more
 candidates increases the passage limit to 256 per body/Q−/Q+ channel, ranks the full
 pool, retains every initial candidate and adds the longest prefix that fits Prehop's
 reranker input token budget for that question. Both pools use body-based scoring, the
-same rank fusion, LLM reranking and shared answer generation, with new rankings and
-answers. The comparison includes the input order induced by each retrieval procedure. A
+same rank fusion and LLM reranking. The paper evaluates admitted/returned recall
+and complete coverage; answer outputs in the archived package are outside its
+scope. The comparison includes the input order induced by each retrieval procedure.
+It matches reranker input budgets, not compute or latency. A
 separate MultiHop-RAG control matches candidate counts exactly and evaluates
 retrieval after new rankings; it does not generate answers or match input tokens.
 
@@ -358,11 +379,9 @@ in its fused order, the same pool in query–body cosine order (a query-conditio
 pruning of the expansion), and the direct pool in its saved order. At
 `lambda = 1` the fused and direct prefixes reproduce the matched-budget requests
 exactly, which the preparation verifies per question before any model call. Each
-condition is reranked and answered once with the shared settings; the evaluation
-reports official QA, MAP@10, normalized EM/F1, candidate recall and returned
-recall with paired question bootstraps, and the follow-up analysis adds the
-budget interaction, within-policy budget effects, final-answer-label rates and
-label-restricted contrasts. Reproducing the sweep requires the archived pools,
+condition has a saved reranking run. Appendix F reports the smaller-budget
+returned-recall effects. The archive also contains answers and additional
+QA/EM/F1 analyses, which are outside the current manuscript. Reproducing the sweep requires the archived pools,
 protocol and preparation snapshots in addition to the source checkout.
 
 ### Body-only direct retrieval under the same token ceiling
@@ -383,16 +402,14 @@ candidate sets are fixed before gold evaluation, which uses the same fact
 matching, sentence projection and paired original-question bootstrap as the
 primary comparison. Retrieval does not query generated questions or follow
 graph links. Candidate coverage is evaluated before LLM reranking. The completed
-three-policy comparison (Appendix C) uses saved rankings and
-generated answers for graph expansion, direct retrieval with more candidates and
-body-only direct retrieval. It is a separate run from the primary matched-budget
-comparison; its repeated Prehop and multi-channel conditions, and a later
-repeat with identical reranking requests and the same answer-generation procedure,
-quantify observed generation variability at
-temperature zero (Appendix C). Repeating requests also exposes the saved per-condition
-final-answer-label rates and the reranker's repeated-ID counts reported in Appendix C. Use those final full-population outputs, not a
-partial sample or the coverage-only preparation, for downstream scores. All three use the same LLM reranking and
-answer-generation settings and return at most 12 passages. Body-only direct
+three-policy comparison (Table 1 and Appendix C) uses the final full-population
+saved rankings for graph expansion, multi-channel direct retrieval and body-only
+direct retrieval. Appendix C reports a reranking repeat: MultiHop-RAG MAP@10
+changes by at most 0.0011 and returned recall by at most 0.17 pp across G/D/B.
+Use these full-population outputs for returned evidence, rather than a partial
+sample or coverage-only preparation. All three use the same LLM reranking
+settings and return at most 12 passages. Archived answer outputs are outside
+the manuscript. Body-only direct
 retrieval differs from a body-only Prehop search that still follows graph links.
 The input ceiling is shared, while the initial passages and
 retrieval-rank scores differ from the multi-channel conditions. This is not an
@@ -498,7 +515,8 @@ occurrence weights and clusters by original question within each group. Empty
 groups remain undefined; a one-question group is descriptive because bootstrap
 resampling cannot estimate between-question variability. `analysis.json`
 contains the group assignments and all metric summaries. This analysis makes
-no new model or retrieval calls and does not change the main full-population QA.
+no new model or retrieval calls. Historical answer metrics remain outside the
+current manuscript; the full evidence-bearing retrieval population stays primary.
 
 When comparing evidence gains across datasets, distinguish absolute recall
 changes from the initial evidence deficit. If `r_initial` and `r_expanded`
@@ -509,7 +527,12 @@ do not substitute a mean of per-question ratios or pooled annotation counts.
 A zero denominator leaves this ratio undefined. It is not an answer-quality
 metric or evidence of a causal dataset effect. For admission diagnostics,
 reachable recall minus admitted recall bounds further recall gains
-from that neighborhood; it need not be achievable under the token ceiling.
+from that neighborhood. In general this bound need not be achievable under the
+token ceiling. For the evaluated four-step neighborhoods, the verified
+annotation-aware construction attains it on every evidence-bearing question
+while preserving all initial passages under the original ceiling. This is a
+capacity-feasibility certificate, not an annotation-free policy or a prediction
+of reranker performance (Appendix E).
 Compare initial-coverage strata and report recovered and displaced annotations
 separately before attributing different effects to corpus or graph structure.
 
@@ -523,6 +546,9 @@ causal comparison of datasets.
 <a id="compare-a-common-reader-over-saved-evidence"></a>
 
 ## Compare answer generation over saved evidence
+
+This optional runtime workflow and its historical results are outside the current
+retrieval-only manuscript. It is not required to re-score the reported evidence.
 
 Using the same answer-generation model and prompt controls generation differences
 and compares the downstream usefulness of each system's exposed passages.
@@ -552,7 +578,7 @@ error; empty successful output is retained without quality-based regeneration.
 
 If a prompt was developed on evaluation questions, report that development
 population and distinguish its exclusion from a previously untouched test set.
-The paper's original development IDs and query-file hashes are in
+The archived answer-prompt development IDs and query-file hashes are in
 [`reader_development_groups.json`](../configs/reader_development_groups.json).
 Exclude every released occurrence of each listed original question, using the
 same retained IDs for all systems. The file controls this answer-evaluation
@@ -607,31 +633,36 @@ locations are defined by the inventory above.
 The depth and admission comparisons, and the archived graph-construction and
 inherited-score comparisons, are replays over saved experiment artifacts rather than new benchmark runs. Each
 package pins its inputs by hash in a `protocol.json` before measurement and
-uses gold annotations only to evaluate the constructed sets.
+uses annotations for evaluation and analysis groups. The capacity-feasibility
+diagnostic explicitly also uses annotations to select passages; ordinary
+admission policies do not.
 
 | Package | Required saved inputs | What is regenerated |
 | --- | --- | --- |
 | Depth and admission | Saved HOP/NEXT graph, initial passages and scores, query–body similarities, reranking prompt metadata, tokenizer at the pinned revision | Neighborhoods, admission orders, whole-passage prefixes, coverage |
-| Graph crossing | Both graphs' neighborhoods, inherited scores and admitted sets | Coverage, shared/unique evidence, count-matched prefixes |
-| Common-pool score exchange | Both full-graph score vectors, passage-ID intersection, fixed addition counts | Fusion ranks over the common pool, distance/start-score components |
+| Graph crossing (archived) | Both graphs' neighborhoods, inherited scores and admitted sets | Coverage, shared/unique evidence, count-matched prefixes |
+| Common-pool score exchange (archived) | Both full-graph score vectors, passage-ID intersection, fixed addition counts | Fusion ranks over the common pool, distance/start-score components |
 | Budget, decay, offset and ties | Fixed four-step inputs and each condition's protocol | Candidate coverage only |
-| Four-step downstream | Recorded admitted sets, reranking and answer requests and responses of the primary (own-order) and secondary (common cosine order) runs | Scores, paired intervals, prompt-selection exclusions, presentation-order contrast |
+| Four-step returned evidence | Recorded admitted sets and own-order reranker requests/responses | Returned recall, complete coverage, paired intervals and annotation survival |
+| Capacity feasibility | Four-step neighborhood, mandatory initial passages, annotation witnesses, original prompt and pinned tokenizer | Annotation-aware covering sets, exact token recounts and coverage verification |
+| Weighted fusion | Fixed four-step inputs, similarity/inherited ranks and tie rules | Five admission weights, coverage and exploratory pointwise intervals |
 | Repeated-fact exclusions | Fixed fact ranking and masks | Reduced-population means and intervals |
 
 Graph construction, embeddings, direct search and model inference are not
 regenerated by these packages. The primary four-step downstream run presents
 each admitted set in its own admission order, so the rank-fusion set follows the
-fused order of the standard one-step pipeline; a secondary run presents both sets
-in query-to-body cosine order. The fusion-set contrast between them combines
-presentation-order and generation-run differences. Comparisons with the one-step three-policy run pair the
-same questions across different generation runs and are reported as post hoc. Intervals use
+fused order of the standard one-step pipeline. Membership and presentation
+order change together, so returned-recall gains are policy-level effects. The
+secondary common-cosine-order and answer-generation runs are archived analyses
+outside the current manuscript. Comparisons with the one-step three-policy run
+pair the same questions across different reranking runs. Intervals use
 10,000 paired resamples with seed 42 and original-question clusters; adjusted
 families are stated per comparison in the manuscript.
 
 The additional MultiHop-RAG fact-cluster bootstrap links questions sharing an
 annotated fact string into connected components, then resamples those components
 while retaining all questions in each sampled component. Report pointwise 95%
-intervals distinctly from family-adjusted intervals. For graph and score-component
+intervals distinctly from family-adjusted intervals. For archived graph and score-component
 sensitivity, preserve the original separate comparison families: two graph gaps,
 three admission gains/interactions, and six score-component contrasts across the
 two datasets (including identically zero HotpotQA contrasts). Resample component
@@ -801,11 +832,12 @@ Fully executed batches retain terminal query failures. Missing usage and cost
 are unavailable, not zero. Shared answer-generation replay times are separate
 from measured online end-to-end latency.
 
-The paper's Prehop query latency was remeasured on every benchmark query using
-the existing indexes and eight concurrent queries. The dense baseline retains
-its original timing run. The paper reports available full indexing-phase
-measurements. These are descriptive measurements under uncontrolled serving
-loads, not a matched efficiency comparison.
+The archived system comparison remeasured Prehop query latency using existing
+indexes and eight concurrent queries; the dense baseline retained its original
+timing run. Those query-latency and cross-system results are outside the current
+manuscript. Appendix A.2 reports recorded indexing wall times, including waiting
+and retries, with uncontrolled hardware and cold-start accounting. The retrieval
+comparisons match reranker input budgets and do not establish matched efficiency.
 
 ## Managed campaigns and additional analyses
 

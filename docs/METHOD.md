@@ -9,6 +9,11 @@ Start with the [README](../README.md) to run it; use
 the [strategy registry](../core/strategy_registry.py) and
 [configuration](../core/config.py), rather than duplicated tables here.
 
+The manuscript evaluates retrieval through the returned passages. The runtime
+also generates answers; its answer prompts and QA/EM/F1 outputs are outside the
+current paper. MultiHop-RAG is the main setting; reduced-corpus HotpotQA is a
+near-saturated boundary case for testing the limits of admission changes.
+
 ## Pipeline overview
 
 | Stage | Operation | Output |
@@ -131,8 +136,8 @@ The HOP/NEXT ablation retains the index and saved initial passages while varying
 which edge types are expanded. The comparison of LLM reranking with score-based
 ordering instead retains each complete candidate pool. Neither comparison
 equalizes the input tokens across different expansion conditions. Appendix H.1
-reports the fixed-initial-passage QA ablation from its own generation run; its
-ranking interaction is measured in MAP@10.
+reports the fixed-initial-passage retrieval ablation with MAP@10 and complete
+coverage@10; its ranking interaction is measured in MAP@10.
 
 The direct-retrieval comparison uses the original one-step reranking prompt's
 token count as a per-query ceiling. Multi-channel direct retrieval increases
@@ -141,16 +146,17 @@ Body-only direct retrieval searches passage bodies and retains its original
 12 body-channel passages. Both omit graph expansion and add an ordered prefix
 of whole passages under the ceiling, using query-to-body cosine fused with their
 respective retrieval-rank scores. Counts include the prompt and chat template.
-The final three-condition comparison evaluates candidate coverage, LLM
-reranking, and common answer generation. The ceiling does not equalize realized
-tokens, final answer-context length, or total retrieval cost. Body-only search
+The paper evaluates admitted and returned recall and complete coverage for the
+three conditions. This is an input-budget-matched comparison, not a compute- or
+latency-matched comparison. The ceiling does not equalize realized tokens,
+returned-context length, or total retrieval cost. Body-only search
 reuses the constructed corpus and index; it does not measure body-only indexing.
 
 ### Expansion depth and candidate admission
 
 Appendix H.2 partitions initially absent annotated evidence into graph-only,
-direct-only, shared and unrecovered units. H.3 measures coverage as the direct
-prefix grows; intermediate prefixes do not constitute additional QA runs.
+direct-only, shared and unrecovered units and measures coverage as the direct
+prefix grows. Only the full direct pool uses the matched input ceiling.
 
 The depth analysis repeatedly expands the saved HOP/NEXT graph to construct
 nested one-to-four-step neighborhoods. Candidate admission selects which of
@@ -166,18 +172,42 @@ previously reached passages remain fixed.
 
 Reachable recall measures the full neighborhood before admission; admitted recall
 measures the passages entering LLM reranking; returned recall measures those
-supplied to answer generation. Coverage is evaluated at every depth. Downstream
-LLM reranking and QA compare the two admitted four-step sets from the original
-question-link graph. The primary comparison presents each admitted set in its
-own admission order and uses the same answer prompt. A secondary comparison
-presents both sets in query-to-body cosine order. Comparing the fusion set
-between these runs changes presentation and the generation realization together.
-Contrasts against the one-step policies also cross generation runs. The primary
-comparison measures admission together with its induced presentation order;
-it does not isolate a depth effect. The runtime query path still
+selected by the reranker. Complete coverage requires all annotated units of a
+question. Coverage is evaluated at every depth. The four-step reranking
+comparison presents each admitted set in its own admission order. It measures
+the combined effects of membership and presentation order, not an isolated
+depth or membership effect. Contrasts against one-step policies also cross
+reranking runs. Archived answer outputs and common-cosine-order reranking are
+not additional results in the current manuscript. The runtime query path still
 requires exactly one expansion step; the saved-graph analysis is separate.
 
+### Capacity feasibility and admission controls
+
+The post hoc annotation-aware construction retains every initial passage and
+selects witnesses from the same four-step neighborhood. It greedily adds
+passages covering uncovered reachable annotations, preferring shorter tokenized
+bodies and then ascending passage IDs on ties. Each proposed set is rendered in
+the saved fusion order with the original prompt, metadata, chat template and
+tokenizer; additions exceeding the original ceiling are skipped.
+
+Verified sets cover every reachable annotation on all 2,255 MultiHop-RAG
+evidence-bearing questions and all 1,000 HotpotQA occurrences. Since no subset
+can exceed full-neighborhood coverage, this is a capacity-feasibility certificate
+on these questions. The greedy algorithm has no general guarantee; the verified
+sets establish feasibility here. This diagnostic uses annotations for selection
+and makes no reranking calls. It is not a deployable policy or a prediction of
+returned recall (Appendix E).
+
+The admission controls also vary the budget (Appendix F), distance decay,
+fusion offset and tie order (Appendix G). An exploratory five-weight sweep holds
+the neighborhood, initial passages and ceiling fixed: similarity rank receives
+weight `w` and inherited rank receives `1-w`. Equal weights reproduce rank fusion;
+`w=1` reproduces similarity-only admission. These controls require no new LLM calls.
+
 ### Graph construction and inherited scores
+
+The following graph-construction, score-exchange and source-selection analyses
+are archived supporting work outside the current manuscript.
 
 Question-link and body-similarity graphs share passages, initial passages,
 NEXT links, and each passage's outgoing HOP degree. Comparing both admission
@@ -209,6 +239,9 @@ reported analysis groups.
 <a id="generation-and-reader-boundaries"></a>
 
 ## Generation settings and answer generation
+
+This section documents runtime behavior and historical answer experiments.
+The current manuscript includes indexing-question and reranking prompts only.
 
 Documentation uses **LLM reranking** for ordering the candidate pool and
 **answer generation** for producing the final answer. Existing code and saved

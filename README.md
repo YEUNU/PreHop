@@ -7,9 +7,13 @@ Prehop is a graph-based retriever for multi-hop retrieval-augmented generation
 links between passages; at query time it retrieves initial passages, expands
 the stored links once, reranks the combined pool with an LLM and generates an
 answer from the returned passages. This repository provides the implementation and experiment code for
-**Reached but Not Retained: Candidate Admission under Reranker Input Ceilings in Graph-Based Multi-Hop RAG**.
+**Reached but Not Retained: Candidate Admission under Reranker Token Budgets in Graph-Based Multi-Hop RAG**.
 The paper separates evidence reached by graph expansion from evidence retained
 under an LLM reranker input ceiling, using Prehop as a controlled test bed.
+The manuscript reports retrieval evaluation only: reachable, admitted and returned
+recall, complete coverage, and benchmark-specific retrieval MAP. Answer generation
+remains available in the implementation, but QA, Answer EM/F1, answer-generation
+experiments and cross-system answer comparisons are outside the manuscript.
 
 This checkout runs Prehop and the dense baseline (`naive`). Archived results for
 other systems can be evaluated from their saved outputs; their implementations
@@ -140,22 +144,37 @@ quality scores remain zero. Completion alone does not imply every query succeede
 
 To compare with the dense baseline, follow the
 [baseline comparison](docs/REPRODUCING.md#run-a-baseline-comparison). Benchmark
-answers use each system's own prompt; the paper's shared-prompt comparison uses
-[saved-evidence answer generation](docs/REPRODUCING.md#compare-answer-generation-over-saved-evidence).
+answers use each system's own prompt. Optional
+[saved-evidence answer generation](docs/REPRODUCING.md#compare-answer-generation-over-saved-evidence)
+is a runtime capability outside the paper's retrieval evaluation.
 
 ## Experimental results
 
 Prehop supports controlled comparisons of candidate acquisition and LLM
 reranking. The values below describe the reported configurations; new runs can
 produce different outputs even at temperature zero. Differences in percentage-valued
-metrics use percentage points (pp).
+metrics use percentage points (pp). Retrieval recall and complete coverage use
+2,255 evidence-bearing MultiHop-RAG questions and 1,000 HotpotQA occurrences;
+HotpotQA intervals cluster the 944 original questions.
 
 | Comparison | MultiHop-RAG result | Evaluation scope |
 | --- | --- | --- |
-| One-step expansion versus fixed initial passages | +0.0195 MAP@10; +4.89 pp in QA | Same initial passages and LLM reranking |
-| Body-only direct retrieval versus the one-step graph | +5.67 pp in QA | Same per-query reranker input ceiling; separate initial passages |
+| One-step expansion versus fixed initial passages | +0.0195 MAP@10; complete coverage@10 rises from 36.45% to 42.53% | Same initial passages and LLM reranking; input sizes differ |
+| Multi-channel direct retrieval versus the one-step graph | 80.98% returned recall versus 76.72% graph reachable recall (+4.26 pp) | Same initial passages, index and per-query reranker input ceiling |
 | Four-step reachable versus rank-fusion admitted recall | 94.60% versus 82.55% annotated recall | Reachable evidence versus evidence admitted under the original input ceiling |
-| Four-step similarity-only admission versus rank fusion | +4.29 pp admitted recall; +3.02 pp returned recall | Same neighborhood and input ceiling; QA difference is not statistically significant |
+| Four-step similarity-only admission versus rank fusion | +4.29 pp admitted recall; +3.02 pp returned recall | Same neighborhood, initial passages and input ceiling; membership and presentation order change together |
+| Annotation-aware capacity-feasibility diagnostic | All four-step reachable annotations fit on every evidence-bearing question | Same neighborhood, mandatory initial passages and original token ceiling; no reranking |
+
+The annotation-aware construction is a capacity-feasibility certificate: it attains
+full-neighborhood annotation coverage, an upper bound for any subset, within the
+original ceiling. Thus capacity alone cannot explain the observed admission loss
+on these questions. It does not provide an annotation-free policy or predict
+reranker performance. Reduced-corpus HotpotQA tests a near-saturated boundary
+case: similarity-only admission lowers admitted recall by 0.43 pp, illustrating
+the limits of the intervention rather than replicating the MultiHop-RAG gain.
+
+The direct control matches reranker input budgets, not compute or latency. It
+searches up to 256 passages per channel; graph retrieval traverses stored links.
 
 ![Candidate coverage as multi-channel direct retrieval retains additional passages](docs/figures/direct_prefix_coverage.png)
 
@@ -164,20 +183,22 @@ additional passages beyond the initial set; the dashed line is one-step graph co
 
 ![Annotated recall before and after admission at increasing expansion depths](docs/figures/v2_depth_admission.png)
 
+Recall axes in the depth figure are truncated and use different ranges; slopes
+and vertical distances are not comparable across panels.
+
 Appendix H reports the fixed-initial-passage ablation, evidence partition and
 direct-prefix coverage. Intermediate prefixes measure coverage only; only the
 full direct pool is matched to the one-step input ceiling.
 
 The fixed-initial, three-policy and four-step comparisons use separate
-recorded generations. They answer different questions and are not one combined
+recorded reranking runs. They answer different questions and are not one combined
 leaderboard. Direct retrieval's returned context can contain more annotated evidence
 than the entire one-step graph pool, locating part of the recall deficit before
-LLM reranking. Body-only direct retrieval retains the MultiHop-RAG advantage
-under the same input ceiling; its QA difference from four-step similarity-only admission
-is not statistically significant.
+LLM reranking. Body-only direct retrieval returns 81.57% recall under the same input ceiling;
+it uses its own initial passages and is a complete-policy comparison.
 
 See the [experiment inventory](docs/REPRODUCING.md#paper-experiment-inventory)
-for inputs, paired intervals, repeated-generation comparisons and limitations.
+for inputs, paired intervals, reranking repetitions and limitations.
 Figure exports are included in `docs/figures/`; exact reconstruction of archived
 results requires the saved inputs listed in the reproduction guide.
 
