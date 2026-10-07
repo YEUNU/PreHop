@@ -4,20 +4,11 @@
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
-build/
-dist/
 .pytest_cache/
 .ruff_cache/
-.mypy_cache/
-.coverage
-htmlcov/
-.ipynb_checkpoints/
 
 # Environments and secrets
-.venv/
 .venv*/
-venv/
 .env
 .env.*
 !.env.example
@@ -31,8 +22,6 @@ secrets.json
 /neo4j_data/
 /logs/
 /artifacts/
-/output/
-/tmp/
 *.log
 *.tmp
 .DS_Store
@@ -41,11 +30,6 @@ secrets.json
 /docs/*
 !/docs/figures/
 /fig/
-prehop_paper*
-/*.pdf
-/*.pptx
-/*.zip
-/*.csv
 
 # Markdown: only the public guides
 *.md
@@ -54,14 +38,10 @@ prehop_paper*
 !/docs/SETUP.md
 !/docs/REPRODUCING.md
 
-# Agent and editor state
+# Agent state
 /AGENTS.*
 /CLAUDE.*
-/GEMINI.*
 .claude/
 .codex/
 .agents/
-.cursor/
-.idea/
-.vscode/
 /.mcp*.json
