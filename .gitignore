@@ -1,323 +1,67 @@
-# Public Markdown: README.md, docs/METHOD.md, docs/SETUP.md, docs/REPRODUCING.md.
-# Public source also includes code, tests, configs, .env.example and uv.lock.
-# Keep agent instructions, working papers, review notes and generated runs local.
+# Public source: code, tests, configs, .env.example, uv.lock and the four
+# public Markdown guides. Manuscript, figures sources, data and agent state stay local.
 
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
-*.py[codz]
-*$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
+*.py[cod]
 *.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py.cover
-.hypothesis/
+build/
+dist/
 .pytest_cache/
-cover/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
 
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
-
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
-
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
-
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-#poetry.toml
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
-#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
-#pdm.lock
-#pdm.toml
-.pdm-python
-.pdm-build/
-
-# pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
-#pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
-.pixi
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
+# Environments and secrets
+.venv/
+.venv*/
+venv/
 .env
 .env.*
 !.env.example
-.envrc
-.venv
-.venv*/
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+*.pem
+*.key
+credentials.json
+secrets.json
 
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# Local IDE settings
-.idea/
-.vscode/
-
-# Abstra
-# Abstra is an AI-powered process automation framework.
-# Ignore directories containing user credentials, local state, and settings.
-# Learn more at https://abstra.io/docs
-.abstra/
-
-# Ruff stuff:
-.ruff_cache/
-
-# PyPI configuration file
-.pypirc
-
-# Cursor
-#  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
-#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
-#  refer to https://docs.cursor.com/context/ignore-files
-.cursorignore
-.cursorindexingignore
-
-# Marimo
-marimo/_static/
-marimo/_lsp/
-__marimo__/
-
-*.out
-# Local, run-specific orchestration helpers (their run IDs and log locations
-# are intentionally not part of the portable project configuration).
-run_pipeline_nohup.sh
-run_*_pipeline_nohup.sh
-
-logs/
-exception_log.txt
-# All run reports are reproducible and may contain very large per-target logs.
-artifacts/
-fig/
-neo4j_data/
-
-.claude/
-# Data is local by default, including new experiment directories, corpora,
-# checkpoints, traces, indexes, caches, native runtimes and maintenance records.
-# Full request/response and graph payloads may contain credentials or source text.
-/data/*
-tmp/
-
-output/
-
-# Local debug, report/PPT generation, and one-off helper scripts.
-scripts/_test_*.py
-scripts/*_tmp.py
-_workspace/
-ppt/
-presentation/
-
-# Session-scratch orchestration scripts (hardcoded PIDs; not part of the repo).
-run_mhr_finish.sh
-run_flashinfer_switch.sh
-run_mhr_full_benchmark.sh
-.tmp*
+# Local data, services and run outputs
+/data/
+/neo4j_data/
+/logs/
+/artifacts/
+/output/
+/tmp/
+*.log
 *.tmp
-*.tmp.sh
 .DS_Store
 
-# Local working documents and revision copies, at any depth.
-SUBMISSION_TARGET*.md
-RESEARCH_POLICY*.md
-PAPER_CHECKLIST*.md
-PAPER_ABLATION_DESIGN*.md
+# Manuscript, figure sources and local exports
+/docs/*
+!/docs/figures/
+/fig/
 prehop_paper*
-prehop_presentation*
-
-# Local report and handoff exports. Source documents stay in Markdown; release
-# copies are added deliberately when they are ready to publish.
 /*.pdf
 /*.pptx
 /*.zip
 /*.csv
 
-# Local build bundle.
-docs/acl/
-
-# Local evidence and rendering tools.
-/docs/RESULTS*.md
-/scripts/render_acl_paper*.py
-/scripts/render_paper_figures*.py
-# Local credentials and editor/agent state.
-.codex/
-# Machine-specific MCP configuration and personal instruction overrides.
-/.mcp.json
-/.mcp.*.json
-!/.mcp.example.json
-/AGENTS.md
-/AGENTS.override.md
-# Locally installed agent skills; not part of the experiment implementation.
-/.agents/skills/
-*.pem
-*.key
-*.p12
-*.pfx
-id_rsa
-id_ed25519
-credentials.json
-secrets.json
-
-# Public documentation allowlist; manuscript and internal Markdown stay local.
-/docs/*
-!/docs/figures/
+# Markdown: only the public guides
 *.md
-*.MD
 !/README.md
 !/docs/METHOD.md
 !/docs/SETUP.md
 !/docs/REPRODUCING.md
 
-# Agent instructions, editor conversations and machine-local automation.
-.agents/
-.cursor/
-.ai/
-.aider*
+# Agent and editor state
 /AGENTS.*
 /CLAUDE.*
 /GEMINI.*
-
-# Internal reviews, audits, requests and operational notes (any file format).
-/internal/
-/reviews/
-/audits/
-/notes/
-/requests/
-/docs/internal/
-/docs/reviews/
-/docs/audits/
-/scripts/local/
-
-# Standalone internal exports outside the directories above.
-/REVIEW*
-/AUDIT*
-/AI_REQUEST*
-/HANDOFF*
-/SESSION*
-/review*.txt
-/audit*.txt
-/ai_request*
+.claude/
+.codex/
+.agents/
+.cursor/
+.idea/
+.vscode/
+/.mcp*.json
